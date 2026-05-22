@@ -4,7 +4,12 @@ use std::sync::Mutex;
 use tauri::async_runtime::spawn;
 use tauri::{AppHandle, Manager, State};
 
+mod app_state;
 mod services;
+
+use app_state::AppState;
+use services::vector_index::SearchResult;
+use services::metadata::KnowledgeStats;
 
 const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
 
@@ -28,13 +33,6 @@ fn ensure_data_dir() -> Result<PathBuf, String> {
     for subdir in subdirs {
         fs::create_dir_all(data_dir.join(subdir))
             .map_err(|e| format!("Failed to create {}: {}", subdir, e))?;
-    }
-
-    // Create metadata.db empty file (SQLite will initialize it later)
-    let db_path = data_dir.join("metadata.db");
-    if !db_path.exists() {
-        fs::File::create(&db_path)
-            .map_err(|e| format!("Failed to create metadata.db: {}", e))?;
     }
 
     Ok(data_dir)
@@ -95,7 +93,6 @@ async fn set_complete(
         _ => return Err(format!("invalid task: {}", task)),
     }
 
-    // Close splashscreen and show main window when both tasks are complete
     if state_lock.frontend_task && state_lock.backend_task {
         if let Some(splash_window) = app.get_webview_window("splashscreen") {
             let _ = splash_window.close();
@@ -108,11 +105,96 @@ async fn set_complete(
     Ok(())
 }
 
+// ─── Phase 2: Embedding & Vector Store Commands ───
+
+/// Get the current model status (ready / not ready)
+#[tauri::command]
+async fn get_model_status(
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let mm = state.model_manager.lock().map_err(|e| e.to_string())?;
+    Ok(mm.is_ready())
+}
+
+/// Initialize the embedding model (downloads on first call)
+#[tauri::command]
+async fn init_model(
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
+    mm.init()?;
+    Ok(mm.is_ready())
+}
+
+/// Embed a single text — returns a 512-dim vector
+#[tauri::command]
+async fn embed_text(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<Vec<f32>, String> {
+    let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
+    emb.embed_text(&text)
+}
+
+/// Batch embed multiple texts
+#[tauri::command]
+async fn embed_batch(
+    state: State<'_, AppState>,
+    texts: Vec<String>,
+) -> Result<Vec<Vec<f32>>, String> {
+    let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
+    let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+    emb.embed_batch(&refs)
+}
+
+/// Search for similar vectors in the HNSW index
+#[tauri::command]
+async fn search_similar(
+    state: State<'_, AppState>,
+    query: Vec<f32>,
+    top_k: u32,
+) -> Result<Vec<SearchResult>, String> {
+    let index = state.vector_index.lock().map_err(|e| e.to_string())?;
+    index.search(&query, top_k as usize)
+}
+
+/// Load the vector index from disk
+#[tauri::command]
+async fn load_index(
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let index = state.vector_index.lock().map_err(|e| e.to_string())?;
+    Ok(index.len())
+}
+
+/// Get vector index statistics
+#[tauri::command]
+async fn get_index_stats(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let index = state.vector_index.lock().map_err(|e| e.to_string())?;
+    let stats = index.stats();
+    serde_json::to_value(stats).map_err(|e| format!("Serialization error: {}", e))
+}
+
+/// Get knowledge base statistics (document and chunk counts)
+#[tauri::command]
+async fn get_knowledge_stats(
+    state: State<'_, AppState>,
+) -> Result<KnowledgeStats, String> {
+    let meta = state.metadata.lock().map_err(|e| e.to_string())?;
+    meta.get_stats()
+}
+
 /// Perform backend initialization tasks
 async fn setup_backend(app: AppHandle) -> Result<(), String> {
-    // Create data directory structure on first launch
     let data_dir = ensure_data_dir()?;
     println!("Data directory initialized at: {:?}", data_dir);
+
+    // Initialize Phase 2 services
+    let app_state = AppState::new(&data_dir)?;
+    app.manage(app_state);
+    println!("Phase 2 services initialized (embedding, vector index, metadata)");
 
     set_complete(
         app.clone(),
@@ -132,17 +214,26 @@ pub fn run() {
             backend_task: false,
         }))
         .setup(|app| {
-            // Start backend setup asynchronously
             spawn(setup_backend(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // Phase 1 commands
             greet,
             set_complete,
             get_data_dir,
             set_api_key,
             get_api_key,
-            delete_api_key
+            delete_api_key,
+            // Phase 2 commands
+            get_model_status,
+            init_model,
+            embed_text,
+            embed_batch,
+            search_similar,
+            load_index,
+            get_index_stats,
+            get_knowledge_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
