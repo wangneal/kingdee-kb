@@ -11,9 +11,9 @@
 
 - [x] **Phase 1: 项目脚手架与基础设施** ✅ — Tauri 2.x 脚手架、Splash Screen、OS Keyring、本地存储目录
 - [x] **Phase 2: 嵌入与向量存储引擎** ✅ — bge-small-zh-v1.5 embedding + usearch HNSW 索引 + rusqlite 元数据
-- [ ] **Phase 3: 入库流水线** — 粘贴/拖拽/文件夹导入、递归分块、标签提取、SHA256 去重
-- [ ] **Phase 4: BM25 全文检索** — tantivy + jieba 中文分词关键词检索
-- [ ] **Phase 5: 混合检索引擎** — RRFR 融合向量+BM25 结果、项目级知识隔离
+- [x] **Phase 3: 入库流水线** ✅ — 粘贴/拖拽/文件夹导入、递归分块、标签提取、SHA256 去重
+- [x] **Phase 4: BM25 全文检索** ✅ — tantivy + jieba 中文分词关键词检索
+- [x] **Phase 5: 混合检索引擎** ✅ — RRFR 融合向量+BM25 结果、项目级知识隔离
 - [ ] **Phase 6: LLM 集成与 AI 问答** — OpenAI API 流式 RAG 问答、token 感知上下文管理
 - [ ] **Phase 7: 知识管理与检索前端** — 树形目录、内容预览、搜索框、结果高亮与标注
 - [ ] **Phase 8: AI 对话与设置前端** — 多轮对话面板、API 配置、连接测试、存储统计
