@@ -397,6 +397,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_keyring_store::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(SetupState {
             frontend_task: false,
             backend_task: false,
