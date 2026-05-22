@@ -4,6 +4,8 @@ use std::sync::Mutex;
 use tauri::async_runtime::spawn;
 use tauri::{AppHandle, Manager, State};
 
+mod services;
+
 const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
 
 /// Tracks completion of setup tasks before closing splashscreen

@@ -1,0 +1,257 @@
+//! usearch HNSW vector index management
+//!
+//! Wraps usearch Index for create/insert/search/save/load operations.
+//! Uses 512-dim vectors with cosine distance, BF16 quantization.
+//! Index persisted to `~/.kingdee-kb/index/vectors.usearch`.
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use usearch::{new_index, Index, IndexOptions, MetricKind, ScalarKind};
+
+/// Default HNSW parameters for bge-small-zh-v1.5 (512-dim)
+const DEFAULT_DIMENSIONS: usize = 512;
+const DEFAULT_CONNECTIVITY: usize = 16;
+const DEFAULT_EXPANSION_ADD: usize = 200;
+const DEFAULT_EXPANSION_SEARCH: usize = 64;
+
+/// A search result from the vector index
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResult {
+    /// The key (vector ID) in the index
+    pub key: u64,
+    /// Cosine distance (0 = identical, 2 = opposite)
+    pub distance: f32,
+    /// Cosine similarity = 1 - distance (for cosine metric)
+    pub similarity: f32,
+}
+
+/// Index statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexStats {
+    pub vector_count: usize,
+    pub dimensions: usize,
+    pub index_path: String,
+}
+
+/// HNSW vector index manager
+pub struct VectorIndex {
+    index: Index,
+    index_path: PathBuf,
+}
+
+impl VectorIndex {
+    /// Create a new empty index, persisting to the given directory
+    pub fn new(index_dir: PathBuf) -> Result<Self, String> {
+        std::fs::create_dir_all(&index_dir)
+            .map_err(|e| format!("Failed to create index directory: {}", e))?;
+
+        let index_path = index_dir.join("vectors.usearch");
+
+        let options = IndexOptions {
+            dimensions: DEFAULT_DIMENSIONS,
+            metric: MetricKind::Cos,
+            quantization: ScalarKind::BF16,
+            connectivity: DEFAULT_CONNECTIVITY,
+            expansion_add: DEFAULT_EXPANSION_ADD,
+            expansion_search: DEFAULT_EXPANSION_SEARCH,
+            multi: false,
+        };
+
+        let index = new_index(&options).map_err(|e| format!("Failed to create index: {}", e))?;
+
+        Ok(Self { index, index_path })
+    }
+
+    /// Load an existing index from disk
+    pub fn load(index_path: PathBuf) -> Result<Self, String> {
+        if !index_path.exists() {
+            return Err(format!("Index file not found: {:?}", index_path));
+        }
+
+        let options = IndexOptions {
+            dimensions: DEFAULT_DIMENSIONS,
+            metric: MetricKind::Cos,
+            quantization: ScalarKind::BF16,
+            connectivity: DEFAULT_CONNECTIVITY,
+            expansion_add: DEFAULT_EXPANSION_ADD,
+            expansion_search: DEFAULT_EXPANSION_SEARCH,
+            multi: false,
+        };
+
+        let index = new_index(&options).map_err(|e| format!("Failed to create index: {}", e))?;
+
+        let path_str = index_path
+            .to_str()
+            .ok_or("Invalid index path (non-UTF8)")?;
+
+        index
+            .load(path_str)
+            .map_err(|e| format!("Failed to load index from {:?}: {}", index_path, e))?;
+
+        Ok(Self { index, index_path })
+    }
+
+    /// Add a single vector with the given key
+    pub fn add(&self, key: u64, vector: &[f32]) -> Result<(), String> {
+        self.index
+            .add(key, vector)
+            .map_err(|e| format!("Failed to add vector {}: {}", key, e))
+    }
+
+    /// Add multiple vectors in batch
+    pub fn add_batch(&self, keys: &[u64], vectors: &[Vec<f32>]) -> Result<(), String> {
+        if keys.len() != vectors.len() {
+            return Err(format!(
+                "keys.len() ({}) != vectors.len() ({})",
+                keys.len(),
+                vectors.len()
+            ));
+        }
+
+        for (key, vector) in keys.iter().zip(vectors.iter()) {
+            self.add(*key, vector)?;
+        }
+
+        Ok(())
+    }
+
+    /// Search for the top_k nearest neighbors
+    pub fn search(&self, query: &[f32], top_k: usize) -> Result<Vec<SearchResult>, String> {
+        let results = self
+            .index
+            .search(query, top_k)
+            .map_err(|e| format!("Search failed: {}", e))?;
+
+        let search_results: Vec<SearchResult> = results
+            .keys
+            .iter()
+            .zip(results.distances.iter())
+            .map(|(&key, &distance)| SearchResult {
+                key,
+                distance,
+                similarity: 1.0 - distance,
+            })
+            .collect();
+
+        Ok(search_results)
+    }
+
+    /// Remove a vector by key (marks as removed in usearch)
+    pub fn remove(&self, key: u64) -> Result<(), String> {
+        self.index
+            .remove(key)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to remove key {}: {}", key, e))
+    }
+
+    /// Save the index to disk
+    pub fn save(&self) -> Result<(), String> {
+        let path_str = self
+            .index_path
+            .to_str()
+            .ok_or("Invalid index path (non-UTF8)")?;
+
+        self.index
+            .save(path_str)
+            .map_err(|e| format!("Failed to save index to {:?}: {}", self.index_path, e))
+    }
+
+    /// Get the number of vectors in the index
+    pub fn len(&self) -> usize {
+        self.index.size()
+    }
+
+    /// Check if the index is empty
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Get index capacity
+    pub fn capacity(&self) -> usize {
+        self.index.capacity()
+    }
+
+    /// Reserve capacity for expected number of vectors
+    pub fn reserve(&self, capacity: usize) -> Result<(), String> {
+        self.index
+            .reserve(capacity)
+            .map_err(|e| format!("Failed to reserve {}: {}", capacity, e))
+    }
+
+    /// Get index statistics
+    pub fn stats(&self) -> IndexStats {
+        IndexStats {
+            vector_count: self.len(),
+            dimensions: DEFAULT_DIMENSIONS,
+            index_path: self.index_path.to_string_lossy().to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn random_vector(dim: usize, seed: u64) -> Vec<f32> {
+        let mut v = Vec::with_capacity(dim);
+        let mut s = seed;
+        for _ in 0..dim {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            v.push(((s as f64 / u64::MAX as f64) * 2.0 - 1.0) as f32);
+        }
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        for x in &mut v {
+            *x /= norm;
+        }
+        v
+    }
+
+    #[test]
+    fn test_vector_index_crud() {
+        let tmp = tempfile::tempdir().unwrap();
+        let index = VectorIndex::new(tmp.path().to_path_buf()).unwrap();
+
+        assert_eq!(index.len(), 0);
+        assert!(index.is_empty());
+
+        let v0 = random_vector(512, 42);
+        index.add(1, &v0).unwrap();
+        assert_eq!(index.len(), 1);
+        assert!(!index.is_empty());
+
+        // Search for self
+        let results = index.search(&v0, 3).unwrap();
+        assert_eq!(results[0].key, 1);
+        assert!(results[0].distance < 0.01);
+        assert!(results[0].similarity > 0.99);
+
+        // Remove
+        index.remove(1).unwrap();
+        assert_eq!(index.len(), 1); // usearch marks as removed, size stays
+
+        // Save and reload
+        index.save().unwrap();
+        let index_path = tmp.path().join("vectors.usearch");
+        assert!(index_path.exists());
+
+        let loaded = VectorIndex::load(index_path).unwrap();
+        assert_eq!(loaded.len(), 1);
+    }
+
+    #[test]
+    fn test_vector_index_batch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let index = VectorIndex::new(tmp.path().to_path_buf()).unwrap();
+
+        let vectors: Vec<Vec<f32>> = (0..10).map(|i| random_vector(512, i)).collect();
+        let keys: Vec<u64> = (0..10).collect();
+        index.add_batch(&keys, &vectors).unwrap();
+        assert_eq!(index.len(), 10);
+
+        let results = index.search(&vectors[0], 5).unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].key, 0); // self should be first
+    }
+}

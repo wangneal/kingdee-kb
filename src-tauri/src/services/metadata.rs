@@ -1,0 +1,476 @@
+//! SQLite metadata store for chunk↔vector mapping
+//!
+//! Manages documents and chunks tables with SHA256 dedup,
+//! project filtering, and WAL journal mode.
+
+use rusqlite::{params, Connection, Result as SqlResult};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// Document metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentMeta {
+    pub id: i64,
+    pub title: String,
+    pub source_path: Option<String>,
+    pub sha256: Option<String>,
+    pub created_at: String,
+    pub project: String,
+}
+
+/// Chunk metadata (one per vector in the HNSW index)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkMeta {
+    pub id: i64,
+    pub vector_key: i64,
+    pub document_id: i64,
+    pub content: String,
+    pub section_path: Option<String>,
+    pub tags: Option<String>,
+    pub line_no: Option<i64>,
+    pub created_at: String,
+}
+
+/// Knowledge base statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeStats {
+    pub document_count: i64,
+    pub chunk_count: i64,
+    pub db_path: String,
+}
+
+/// SQLite-based metadata store
+pub struct MetadataStore {
+    db: Connection,
+    db_path: PathBuf,
+}
+
+impl MetadataStore {
+    /// Open or create the metadata database at the given path
+    pub fn new(db_path: PathBuf) -> Result<Self, String> {
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create DB directory: {}", e))?;
+        }
+
+        let db = Connection::open(&db_path)
+            .map_err(|e| format!("Failed to open database: {}", e))?;
+
+        // Enable WAL mode for better concurrent read performance
+        db.execute_batch("PRAGMA journal_mode=WAL;")
+            .map_err(|e| format!("Failed to set WAL mode: {}", e))?;
+
+        // Enable foreign keys
+        db.execute_batch("PRAGMA foreign_keys=ON;")
+            .map_err(|e| format!("Failed to enable foreign keys: {}", e))?;
+
+        let store = Self { db, db_path };
+        store.init_schema()?;
+        Ok(store)
+    }
+
+    /// Create tables and indexes (idempotent)
+    fn init_schema(&self) -> Result<(), String> {
+        self.db
+            .execute_batch(
+                "
+            CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                source_path TEXT,
+                sha256 TEXT UNIQUE,
+                created_at TEXT DEFAULT (datetime('now')),
+                project TEXT DEFAULT 'default'
+            );
+
+            CREATE TABLE IF NOT EXISTS chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vector_key INTEGER UNIQUE,
+                document_id INTEGER REFERENCES documents(id),
+                content TEXT NOT NULL,
+                section_path TEXT,
+                tags TEXT,
+                line_no INTEGER,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_chunks_vector_key ON chunks(vector_key);
+            CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
+            CREATE INDEX IF NOT EXISTS idx_documents_sha256 ON documents(sha256);
+            CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project);
+            ",
+            )
+            .map_err(|e| format!("Failed to initialize schema: {}", e))
+    }
+
+    // ─── Document operations ───
+
+    /// Insert a new document. Returns the document ID.
+    pub fn insert_document(
+        &self,
+        title: &str,
+        source_path: Option<&str>,
+        sha256: Option<&str>,
+        project: Option<&str>,
+    ) -> Result<i64, String> {
+        self.db
+            .execute(
+                "INSERT OR IGNORE INTO documents (title, source_path, sha256, project)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![title, source_path, sha256, project.unwrap_or("default")],
+            )
+            .map_err(|e| format!("Failed to insert document: {}", e))?;
+
+        // If sha256 was provided and already existed, return existing ID
+        if let Some(hash) = sha256 {
+            if let Some(doc) = self.get_document_by_sha256(hash)? {
+                return Ok(doc.id);
+            }
+        }
+
+        Ok(self.db.last_insert_rowid())
+    }
+
+    /// Get a document by its SHA256 hash
+    pub fn get_document_by_sha256(&self, sha256: &str) -> Result<Option<DocumentMeta>, String> {
+        self.query_one_document(
+            "SELECT id, title, source_path, sha256, created_at, project
+             FROM documents WHERE sha256 = ?1",
+            params![sha256],
+        )
+    }
+
+    /// Get a document by its ID
+    pub fn get_document(&self, id: i64) -> Result<Option<DocumentMeta>, String> {
+        self.query_one_document(
+            "SELECT id, title, source_path, sha256, created_at, project
+             FROM documents WHERE id = ?1",
+            params![id],
+        )
+    }
+
+    /// Get all documents, optionally filtered by project
+    pub fn get_documents(&self, project: Option<&str>) -> Result<Vec<DocumentMeta>, String> {
+        if let Some(proj) = project {
+            self.query_documents(
+                "SELECT id, title, source_path, sha256, created_at, project
+                 FROM documents WHERE project = ?1 ORDER BY created_at DESC",
+                params![proj],
+            )
+        } else {
+            self.query_documents(
+                "SELECT id, title, source_path, sha256, created_at, project
+                 FROM documents ORDER BY created_at DESC",
+                [],
+            )
+        }
+    }
+
+    /// Delete a document and its associated chunks
+    pub fn delete_document(&self, id: i64) -> Result<(), String> {
+        self.db
+            .execute("DELETE FROM chunks WHERE document_id = ?1", params![id])
+            .map_err(|e| format!("Failed to delete chunks: {}", e))?;
+        self.db
+            .execute("DELETE FROM documents WHERE id = ?1", params![id])
+            .map_err(|e| format!("Failed to delete document: {}", e))?;
+        Ok(())
+    }
+
+    // ─── Chunk operations ───
+
+    /// Insert a chunk linked to a document and vector key
+    pub fn insert_chunk(
+        &self,
+        vector_key: i64,
+        document_id: i64,
+        content: &str,
+        section_path: Option<&str>,
+        tags: Option<&[String]>,
+        line_no: Option<i64>,
+    ) -> Result<i64, String> {
+        let tags_json = tags.map(|t| serde_json::to_string(t).unwrap_or_default());
+
+        self.db
+            .execute(
+                "INSERT INTO chunks (vector_key, document_id, content, section_path, tags, line_no)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![vector_key, document_id, content, section_path, tags_json, line_no],
+            )
+            .map_err(|e| format!("Failed to insert chunk: {}", e))?;
+
+        Ok(self.db.last_insert_rowid())
+    }
+
+    /// Get a chunk by its vector key
+    pub fn get_chunk_by_vector_key(&self, vector_key: i64) -> Result<Option<ChunkMeta>, String> {
+        self.query_one_chunk(
+            "SELECT id, vector_key, document_id, content, section_path, tags, line_no, created_at
+             FROM chunks WHERE vector_key = ?1",
+            params![vector_key],
+        )
+    }
+
+    /// Get multiple chunks by their vector keys
+    pub fn get_chunks_by_vector_keys(&self, keys: &[i64]) -> Result<Vec<ChunkMeta>, String> {
+        if keys.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let placeholders: Vec<String> = keys.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+        let sql = format!(
+            "SELECT id, vector_key, document_id, content, section_path, tags, line_no, created_at
+             FROM chunks WHERE vector_key IN ({})",
+            placeholders.join(",")
+        );
+
+        let mut stmt = self
+            .db
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare query: {}", e))?;
+
+        let params: Vec<&dyn rusqlite::types::ToSql> = keys.iter().map(|k| k as &dyn rusqlite::types::ToSql).collect();
+        let rows = stmt
+            .query_map(params.as_slice(), Self::row_to_chunk)
+            .map_err(|e| format!("Failed to query chunks: {}", e))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| format!("Failed to read chunk row: {}", e))?);
+        }
+        Ok(results)
+    }
+
+    /// Get all chunks for a document
+    pub fn get_chunks_by_document(&self, document_id: i64) -> Result<Vec<ChunkMeta>, String> {
+        self.query_chunks(
+            "SELECT id, vector_key, document_id, content, section_path, tags, line_no, created_at
+             FROM chunks WHERE document_id = ?1 ORDER BY line_no, id",
+            params![document_id],
+        )
+    }
+
+    /// Delete a chunk by its vector key
+    pub fn delete_chunk_by_vector_key(&self, vector_key: i64) -> Result<(), String> {
+        self.db
+            .execute("DELETE FROM chunks WHERE vector_key = ?1", params![vector_key])
+            .map_err(|e| format!("Failed to delete chunk: {}", e))?;
+        Ok(())
+    }
+
+    // ─── Stats ───
+
+    /// Get knowledge base statistics
+    pub fn get_stats(&self) -> Result<KnowledgeStats, String> {
+        let doc_count: i64 = self
+            .db
+            .query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0))
+            .map_err(|e| format!("Failed to count documents: {}", e))?;
+
+        let chunk_count: i64 = self
+            .db
+            .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
+            .map_err(|e| format!("Failed to count chunks: {}", e))?;
+
+        Ok(KnowledgeStats {
+            document_count: doc_count,
+            chunk_count: chunk_count,
+            db_path: self.db_path.to_string_lossy().to_string(),
+        })
+    }
+
+    // ─── Private helpers ───
+
+    fn row_to_document(row: &rusqlite::Row) -> SqlResult<DocumentMeta> {
+        Ok(DocumentMeta {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            source_path: row.get(2)?,
+            sha256: row.get(3)?,
+            created_at: row.get(4)?,
+            project: row.get(5)?,
+        })
+    }
+
+    fn row_to_chunk(row: &rusqlite::Row) -> SqlResult<ChunkMeta> {
+        Ok(ChunkMeta {
+            id: row.get(0)?,
+            vector_key: row.get(1)?,
+            document_id: row.get(2)?,
+            content: row.get(3)?,
+            section_path: row.get(4)?,
+            tags: row.get(5)?,
+            line_no: row.get(6)?,
+            created_at: row.get(7)?,
+        })
+    }
+
+    fn query_one_document(
+        &self,
+        sql: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Option<DocumentMeta>, String> {
+        let mut stmt = self
+            .db
+            .prepare(sql)
+            .map_err(|e| format!("Failed to prepare query: {}", e))?;
+
+        let mut rows = stmt
+            .query_map(params, Self::row_to_document)
+            .map_err(|e| format!("Failed to query documents: {}", e))?;
+
+        match rows.next() {
+            Some(Ok(doc)) => Ok(Some(doc)),
+            Some(Err(e)) => Err(format!("Failed to read document row: {}", e)),
+            None => Ok(None),
+        }
+    }
+
+    fn query_documents(
+        &self,
+        sql: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Vec<DocumentMeta>, String> {
+        let mut stmt = self
+            .db
+            .prepare(sql)
+            .map_err(|e| format!("Failed to prepare query: {}", e))?;
+
+        let rows = stmt
+            .query_map(params, Self::row_to_document)
+            .map_err(|e| format!("Failed to query documents: {}", e))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| format!("Failed to read document row: {}", e))?);
+        }
+        Ok(results)
+    }
+
+    fn query_one_chunk(
+        &self,
+        sql: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Option<ChunkMeta>, String> {
+        let mut stmt = self
+            .db
+            .prepare(sql)
+            .map_err(|e| format!("Failed to prepare query: {}", e))?;
+
+        let mut rows = stmt
+            .query_map(params, Self::row_to_chunk)
+            .map_err(|e| format!("Failed to query chunks: {}", e))?;
+
+        match rows.next() {
+            Some(Ok(chunk)) => Ok(Some(chunk)),
+            Some(Err(e)) => Err(format!("Failed to read chunk row: {}", e)),
+            None => Ok(None),
+        }
+    }
+
+    fn query_chunks(
+        &self,
+        sql: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Vec<ChunkMeta>, String> {
+        let mut stmt = self
+            .db
+            .prepare(sql)
+            .map_err(|e| format!("Failed to prepare query: {}", e))?;
+
+        let rows = stmt
+            .query_map(params, Self::row_to_chunk)
+            .map_err(|e| format!("Failed to query chunks: {}", e))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| format!("Failed to read chunk row: {}", e))?);
+        }
+        Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_metadata_store_crud() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let store = MetadataStore::new(db_path).unwrap();
+
+        // Insert document
+        let doc_id = store
+            .insert_document("测试文档", Some("/path/to/doc.md"), Some("abc123"), None)
+            .unwrap();
+        assert!(doc_id > 0);
+
+        // Check document
+        let doc = store.get_document(doc_id).unwrap().unwrap();
+        assert_eq!(doc.title, "测试文档");
+        assert_eq!(doc.sha256.unwrap(), "abc123");
+
+        // SHA256 dedup
+        let doc_id2 = store
+            .insert_document("重复文档", None, Some("abc123"), None)
+            .unwrap();
+        assert_eq!(doc_id2, doc_id); // Should return existing ID
+
+        // Insert chunks
+        let chunk_id = store
+            .insert_chunk(100, doc_id, "这是测试内容", Some("section/1"), Some(&["tag1".to_string()]), Some(1))
+            .unwrap();
+        assert!(chunk_id > 0);
+
+        // Get chunk by vector key
+        let chunk = store.get_chunk_by_vector_key(100).unwrap().unwrap();
+        assert_eq!(chunk.content, "这是测试内容");
+        assert_eq!(chunk.vector_key, 100);
+
+        // Stats
+        let stats = store.get_stats().unwrap();
+        assert_eq!(stats.document_count, 1);
+        assert_eq!(stats.chunk_count, 1);
+
+        // Delete chunk
+        store.delete_chunk_by_vector_key(100).unwrap();
+        assert!(store.get_chunk_by_vector_key(100).unwrap().is_none());
+
+        // Delete document cascades
+        store.delete_document(doc_id).unwrap();
+        assert_eq!(store.get_stats().unwrap().document_count, 0);
+    }
+
+    #[test]
+    fn test_sha256_dedup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MetadataStore::new(tmp.path().join("test.db")).unwrap();
+
+        let id1 = store
+            .insert_document("Doc A", None, Some("sha256_hash_xyz"), None)
+            .unwrap();
+        let id2 = store
+            .insert_document("Doc B", None, Some("sha256_hash_xyz"), None)
+            .unwrap();
+
+        assert_eq!(id1, id2);
+        assert_eq!(store.get_stats().unwrap().document_count, 1);
+    }
+
+    #[test]
+    fn test_project_filtering() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MetadataStore::new(tmp.path().join("test.db")).unwrap();
+
+        store.insert_document("Project A doc", None, Some("hash1"), Some("project_a")).unwrap();
+        store.insert_document("Project B doc", None, Some("hash2"), Some("project_b")).unwrap();
+
+        let docs_a = store.get_documents(Some("project_a")).unwrap();
+        assert_eq!(docs_a.len(), 1);
+        assert_eq!(docs_a[0].project, "project_a");
+
+        let docs_all = store.get_documents(None).unwrap();
+        assert_eq!(docs_all.len(), 2);
+    }
+}
