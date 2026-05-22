@@ -1,6 +1,6 @@
 //! Application state management
 //!
-//! Holds all Phase 2 services (embedding, vector index, metadata store)
+//! Holds all Phase 2+ services (embedding, vector index, metadata store, BM25, LLM)
 //! in Arc<Mutex<>> for thread-safe access from Tauri commands.
 
 use std::sync::{Arc, Mutex};
@@ -8,6 +8,7 @@ use crate::services::embedding::{EmbeddingService, ModelManager};
 use crate::services::vector_index::VectorIndex;
 use crate::services::metadata::MetadataStore;
 use crate::services::bm25_service::BM25Service;
+use crate::services::llm_service::LLMService;
 
 /// Global application state shared across all Tauri commands
 pub struct AppState {
@@ -21,6 +22,8 @@ pub struct AppState {
     pub metadata: Arc<Mutex<MetadataStore>>,
     /// BM25 full-text search service (tantivy + jieba)
     pub bm25: Arc<Mutex<BM25Service>>,
+    /// LLM service for RAG queries (OpenAI-compatible API)
+    pub llm: LLMService,
 }
 
 impl AppState {
@@ -58,6 +61,7 @@ impl AppState {
             vector_index: Arc::new(Mutex::new(vector_index)),
             metadata: Arc::new(Mutex::new(metadata)),
             bm25: Arc::new(Mutex::new(bm25)),
+            llm: LLMService::new(),
         })
     }
 }

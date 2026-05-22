@@ -41,3 +41,8 @@ regex = "1"
 tantivy = "0.22"
 jieba-rs = { version = "0.7", features = ["default-dict"] }
 
+# Phase 6: LLM Integration & RAG
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tiktoken-rs = "0.6"
+futures-util = "0.3"
+

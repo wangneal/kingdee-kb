@@ -13,6 +13,7 @@ use services::hybrid_search::HybridSearchResult;
 use services::vector_index::SearchResult;
 use services::metadata::KnowledgeStats;
 use services::ingestion::{IngestionResult, ingest_text as ingest_text_fn, ingest_file as ingest_file_fn, ingest_directory as ingest_directory_fn};
+use services::llm_service::{ChatMessage, LLMConfig, RAGResponse, StreamChunk};
 
 const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
 
@@ -280,6 +281,99 @@ async fn hybrid_search(
     )
 }
 
+// ─── Phase 6: LLM Integration & RAG Commands ───
+
+/// Configure the LLM provider (API key, base URL, model, etc.)
+#[tauri::command]
+async fn set_llm_config(
+    state: State<'_, AppState>,
+    config: LLMConfig,
+) -> Result<(), String> {
+    state.llm.set_config(config)
+}
+
+/// Get current LLM configuration (API key is masked)
+#[tauri::command]
+async fn get_llm_config(
+    state: State<'_, AppState>,
+) -> Result<LLMConfig, String> {
+    let mut config = state.llm.get_config()?;
+    // Mask the API key for security
+    if config.api_key.len() > 8 {
+        config.api_key = format!(
+            "{}...{}",
+            &config.api_key[..4],
+            &config.api_key[config.api_key.len() - 4..]
+        );
+    }
+    Ok(config)
+}
+
+/// Check if LLM is configured (has API key)
+#[tauri::command]
+async fn is_llm_configured(
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    Ok(state.llm.is_configured())
+}
+
+/// RAG query: hybrid search → context assembly → LLM streaming completion.
+///
+/// Returns the full response as a list of stream chunks.
+/// If LLM is unavailable, returns search results in fallback mode.
+#[tauri::command]
+async fn rag_query(
+    state: State<'_, AppState>,
+    query: String,
+    project_id: Option<String>,
+    conversation_history: Option<Vec<ChatMessage>>,
+) -> Result<RAGResponse, String> {
+    let history = conversation_history.unwrap_or_default();
+    state
+        .llm
+        .rag_query_sync(
+            &query,
+            project_id.as_deref(),
+            history,
+            &state.embedding,
+            &state.vector_index,
+            &state.bm25,
+            &state.metadata,
+        )
+        .await
+}
+
+/// RAG query with streaming: returns chunks incrementally.
+///
+/// The frontend should listen for StreamChunk events.
+#[tauri::command]
+async fn rag_query_stream(
+    state: State<'_, AppState>,
+    query: String,
+    project_id: Option<String>,
+    conversation_history: Option<Vec<ChatMessage>>,
+) -> Result<Vec<StreamChunk>, String> {
+    let history = conversation_history.unwrap_or_default();
+    state
+        .llm
+        .rag_query(
+            &query,
+            project_id.as_deref(),
+            history,
+            &state.embedding,
+            &state.vector_index,
+            &state.bm25,
+            &state.metadata,
+        )
+        .await
+}
+
+/// Count tokens in text (utility for frontend)
+#[tauri::command]
+async fn count_tokens(text: String) -> Result<u32, String> {
+    Ok(services::llm_service::count_tokens(&text))
+}
+
 /// Perform backend initialization tasks
 async fn setup_backend(app: AppHandle) -> Result<(), String> {
     let data_dir = ensure_data_dir()?;
@@ -336,6 +430,13 @@ pub fn run() {
             bm25_search,
             // Phase 5 commands
             hybrid_search,
+            // Phase 6 commands
+            set_llm_config,
+            get_llm_config,
+            is_llm_configured,
+            rag_query,
+            rag_query_stream,
+            count_tokens,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
