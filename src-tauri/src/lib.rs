@@ -1,7 +1,8 @@
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::async_runtime::spawn;
 use tauri::{AppHandle, Manager, State};
-use tokio::time::{sleep, Duration};
 
 /// Tracks completion of setup tasks before closing splashscreen
 struct SetupState {
@@ -12,6 +13,34 @@ struct SetupState {
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+/// Ensure the ~/.kingdee-kb/ data directory structure exists
+fn ensure_data_dir() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+    let data_dir = home.join(".kingdee-kb");
+
+    let subdirs = ["knowledge", "index", "models", "bm25_index"];
+    for subdir in subdirs {
+        fs::create_dir_all(data_dir.join(subdir))
+            .map_err(|e| format!("Failed to create {}: {}", subdir, e))?;
+    }
+
+    // Create metadata.db empty file (SQLite will initialize it later)
+    let db_path = data_dir.join("metadata.db");
+    if !db_path.exists() {
+        fs::File::create(&db_path)
+            .map_err(|e| format!("Failed to create metadata.db: {}", e))?;
+    }
+
+    Ok(data_dir)
+}
+
+/// Get the data directory path (available to frontend)
+#[tauri::command]
+fn get_data_dir() -> Result<String, String> {
+    let data_dir = ensure_data_dir()?;
+    Ok(data_dir.to_string_lossy().to_string())
 }
 
 /// Called by the frontend when React has mounted and is ready
@@ -43,9 +72,9 @@ async fn set_complete(
 
 /// Perform backend initialization tasks
 async fn setup_backend(app: AppHandle) -> Result<(), String> {
-    // Simulate backend initialization
-    // Real tasks (data dir creation, keyring init) will be added in Tasks 6-7
-    sleep(Duration::from_millis(500)).await;
+    // Create data directory structure on first launch
+    let data_dir = ensure_data_dir()?;
+    println!("Data directory initialized at: {:?}", data_dir);
 
     set_complete(
         app.clone(),
@@ -68,7 +97,7 @@ pub fn run() {
             spawn(setup_backend(app.handle().clone()));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet, set_complete])
+        .invoke_handler(tauri::generate_handler![greet, set_complete, get_data_dir])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
