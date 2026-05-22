@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+src-tauri/target/
+
+# WebView2 runtime (binary, not in version control)
+src-tauri/webview2-runtime/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# TypeScript
+*.tsbuildinfo
+
+# Rust
+**/*.rs.bk
+
+# Local data (user-specific)
+.kingdee-kb/
+
+# Planning artifacts (not code)
+.planning/
+SPEC.md
+task-summary-*.md
