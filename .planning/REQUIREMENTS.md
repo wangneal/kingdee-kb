@@ -143,10 +143,23 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INFR-11 | Phase 3 | Pending |
 
 **Coverage:**
-- v1 requirements: 34 total
-- Mapped to phases: 34
+- v1 requirements: 35 total
+- Mapped to phases: 35
 - Unmapped: 0 ✓
+
+**Phase → Requirements mapping (summary):**
+
+| Phase | Count | Requirements |
+|-------|-------|--------------|
+| Phase 1 — 脚手架与基础设施 | 4 | INFR-01, INFR-03, INFR-07, INFR-08 |
+| Phase 2 — 嵌入与向量存储 | 2 | SRCH-01, INFR-06 |
+| Phase 3 — 入库流水线 | 7 | KNOW-01~05, INFR-10, INFR-11 |
+| Phase 4 — BM25 全文检索 | 1 | SRCH-02 |
+| Phase 5 — 混合检索引擎 | 2 | SRCH-03, SRCH-08 |
+| Phase 6 — LLM 集成 | 4 | AIQA-02, AIQA-03, AIQA-05, AIQA-06 |
+| Phase 7 — 知识管理与检索前端 | 9 | KNOW-06~10, SRCH-04~07 |
+| Phase 8 — AI 对话与设置前端 | 6 | AIQA-01, AIQA-04, INFR-02, INFR-04, INFR-05, INFR-09 |
 
 ---
 *Requirements defined: 2026-05-23*
-*Last updated: 2026-05-23 after initial definition*
+*Last updated: 2026-05-23 after roadmap creation*
