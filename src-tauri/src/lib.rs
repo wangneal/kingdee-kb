@@ -10,6 +10,7 @@ mod services;
 use app_state::AppState;
 use services::vector_index::SearchResult;
 use services::metadata::KnowledgeStats;
+use services::ingestion::{IngestionResult, ingest_text as ingest_text_fn, ingest_file as ingest_file_fn, ingest_directory as ingest_directory_fn};
 
 const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
 
@@ -186,6 +187,64 @@ async fn get_knowledge_stats(
     meta.get_stats()
 }
 
+// ─── Phase 3: Ingestion Pipeline Commands ───
+
+/// Ingest plain text (from paste or textarea)
+#[tauri::command]
+async fn ingest_text(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    text: String,
+    title: String,
+    project: String,
+) -> Result<IngestionResult, String> {
+    ingest_text_fn(
+        &text,
+        &title,
+        &project,
+        &state.embedding,
+        &state.vector_index,
+        &state.metadata,
+        Some(&app),
+    )
+}
+
+/// Ingest a single file
+#[tauri::command]
+async fn ingest_file(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    file_path: String,
+    project: String,
+) -> Result<IngestionResult, String> {
+    ingest_file_fn(
+        PathBuf::from(&file_path).as_path(),
+        &project,
+        &state.embedding,
+        &state.vector_index,
+        &state.metadata,
+        Some(&app),
+    )
+}
+
+/// Ingest all supported files in a directory
+#[tauri::command]
+async fn ingest_directory(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    dir_path: String,
+    project: String,
+) -> Result<Vec<IngestionResult>, String> {
+    ingest_directory_fn(
+        PathBuf::from(&dir_path).as_path(),
+        &project,
+        &state.embedding,
+        &state.vector_index,
+        &state.metadata,
+        Some(&app),
+    )
+}
+
 /// Perform backend initialization tasks
 async fn setup_backend(app: AppHandle) -> Result<(), String> {
     let data_dir = ensure_data_dir()?;
@@ -234,6 +293,10 @@ pub fn run() {
             load_index,
             get_index_stats,
             get_knowledge_stats,
+            // Phase 3 commands
+            ingest_text,
+            ingest_file,
+            ingest_directory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
