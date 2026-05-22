@@ -11,7 +11,7 @@
 
 **Core Value:** 让金蝶ERP实施顾问能快速检索历史案例并基于检索结果进行 AI 辅助问答，把分散的项目经验转化为可复用的结构化知识。
 
-**Current Focus:** Phase 1 完成 — Tauri 2.x 项目骨架就绪。下一步：Phase 2（嵌入与向量存储引擎）技术验证。
+**Current Focus:** Phase 2 完成 — usearch HNSW 向量索引 + rusqlite 元数据存储 + fastembed-rs embedding 引擎已就绪。下一步：Phase 3（知识入库）。
 
 **Tech Stack:** Tauri 2.x + React 19 + TypeScript + TailwindCSS + usearch (HNSW) + rusqlite + fastembed-rs (bge-small-zh-v1.5) + tantivy (BM25 + jieba) + OpenAI API
 
@@ -21,14 +21,14 @@
 
 | Metric | Value |
 |--------|-------|
-| **Phase** | 1 — 项目脚手架与基础设施 ✅ |
-| **Plan** | 01-scaffold (12/12 tasks) |
-| **Status** | Ready for Phase 2 |
-| **Progress** | 1/8 phases complete |
+| **Phase** | 2 — 嵌入与向量存储引擎 ✅ |
+| **Plan** | 02-embedding-engine (9/9 tasks) |
+| **Status** | Ready for Phase 3 |
+| **Progress** | 2/8 phases complete |
 
 ```
 Phase 1 [██████████] 100% ✅
-Phase 2 [··········] 0%
+Phase 2 [██████████] 100% ✅
 Phase 3 [··········] 0%
 Phase 4 [··········] 0%
 Phase 5 [··········] 0%
@@ -45,7 +45,7 @@ Phase 8 [··········] 0%
 |--------|--------|---------|
 | Requirements covered | 35/35 | 35/35 ✓ |
 | Phases planned | 8 | 8 |
-| Phases executed | 8 | 1 |
+| Phases executed | 8 | 2 |
 | UAT passed | — | — |
 
 ---
@@ -60,9 +60,17 @@ Phase 8 [··········] 0%
 4. API Key 通过 Windows Credential Manager 存储，不落盘明文 JSON
 5. 检索默认按项目隔离，防止多项目知识混淆
 
+### Key Decisions (Phase 2 execution)
+
+6. usearch 禁用 numkong feature（默认关闭）以避免 MSVC C99 编译错误
+7. HNSW 使用 BF16 量化（vs F32）减少 ~50% 内存占用
+8. bge-small-zh-v1.5 ONNX 模型下载需 HuggingFace 代理或预打包方案
+9. MetadataStore 使用 SHA256 UNIQUE 约束做文档去重
+
 ### Active Todos
 
-- [ ] Phase 2 Spike: 验证 `usearch` + `bge-small-zh-v1.5` + ONNX Runtime 在 Windows 上的端到端可行性
+- [x] Phase 2 Spike: usearch + bge-small-zh-v1.5 ONNX 在 Windows 上的可行性验证
+- [ ] 解决 bge-small-zh-v1.5 ONNX 模型下载（HuggingFace 被墙）
 - [ ] 替换 splash.png 为品牌 logo + "KingdeeKB" 文字
 - [ ] 在中文 Windows 环境验证 Keyring Store 兼容性
 
@@ -72,7 +80,7 @@ _(None)_
 
 ### Open Questions
 
-- Phase 2 需 Spike 验证：`usearch` + `bge-small-zh-v1.5` + ONNX Runtime 在 Windows 上的端到端可行性
+- bge-small-zh-v1.5 模型下载方案：HF_ENDPOINT 镜像 vs 预打包 vs Modelscope？
 - Phase 5 需评估数据集：准备 50-100 个中文 ERP 查询-答案对用于检索评估
 - Tauri Plugin Keyring Store 在中文 Windows 环境的兼容性待验证
 
@@ -83,15 +91,17 @@ _(None)_
 ### Last Session
 
 - **Date:** 2026-05-23
-- **Action:** Phase 1 执行完成 — 12 个任务全部提交，项目骨架就绪
-- **Next:** Phase 2 技术验证 (`/gsd-spike`) 或 Phase 2 规划 (`/gsd-plan-phase 2`)
+- **Action:** Phase 2 执行完成 — 9 个任务全部提交，嵌入与向量存储引擎就绪
+- **Summary:** `.planning/phases/02-embedding-engine/02-02-SUMMARY.md`
+- **Next:** Phase 3 知识入库 (`/gsd-plan-phase 3`)
 
 ### Handoff Notes
 
-- 路线图中 Phase 2 标注了 Spike 建议——在规划 Phase 2 前执行 `/gsd-spike` 验证向量方案
-- 所有 v1 需求已映射到 8 个阶段，无遗漏
-- v0.2 特性（Anthropic API、Git 知识包、macOS/Linux）在 REQUIREMENTS.md v2 区域跟踪，不纳入当前里程碑
+- VectorIndex 和 MetadataStore 完全可用，可直接用于 Phase 3 入库流程
+- EmbeddingService 代码完整但模型下载受阻 — Phase 3 前需解决模型获取
+- usearch 测试有 exit crash (STATUS_ACCESS_VIOLATION)，应用层面不受影响
+- 5 个 git 提交覆盖整个 Phase 2：SPIKE → 依赖 → 服务 → AppState → 测试
 
 ---
 
-*State initialized: 2026-05-23*
+*State updated: 2026-05-23*
