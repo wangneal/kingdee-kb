@@ -33,4 +33,6 @@ keyring = "3"
 # Phase 2: Embedding & Vector Store
 fastembed = { version = "5", features = ["ort-download-binaries-native-tls"] }
 usearch = { version = "2", default-features = false }
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
 
