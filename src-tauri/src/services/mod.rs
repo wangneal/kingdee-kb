@@ -1,3 +1,4 @@
+pub mod bm25_service;
 pub mod chunker;
 pub mod embedding;
 pub mod ingestion;

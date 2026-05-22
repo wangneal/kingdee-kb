@@ -8,6 +8,7 @@ mod app_state;
 mod services;
 
 use app_state::AppState;
+use services::bm25_service::BM25SearchResult;
 use services::vector_index::SearchResult;
 use services::metadata::KnowledgeStats;
 use services::ingestion::{IngestionResult, ingest_text as ingest_text_fn, ingest_file as ingest_file_fn, ingest_directory as ingest_directory_fn};
@@ -245,6 +246,20 @@ async fn ingest_directory(
     )
 }
 
+// ─── Phase 4: BM25 Full-Text Search Commands ───
+
+/// Search chunks by keyword using BM25 (jieba tokenization + tantivy scoring)
+#[tauri::command]
+async fn bm25_search(
+    state: State<'_, AppState>,
+    query: String,
+    project_id: Option<String>,
+    top_k: Option<u32>,
+) -> Result<Vec<BM25SearchResult>, String> {
+    let bm25 = state.bm25.lock().map_err(|e| e.to_string())?;
+    bm25.search(&query, project_id.as_deref(), top_k.unwrap_or(10))
+}
+
 /// Perform backend initialization tasks
 async fn setup_backend(app: AppHandle) -> Result<(), String> {
     let data_dir = ensure_data_dir()?;
@@ -297,6 +312,8 @@ pub fn run() {
             ingest_text,
             ingest_file,
             ingest_directory,
+            // Phase 4 commands
+            bm25_search,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

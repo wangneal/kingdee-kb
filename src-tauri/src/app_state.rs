@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use crate::services::embedding::{EmbeddingService, ModelManager};
 use crate::services::vector_index::VectorIndex;
 use crate::services::metadata::MetadataStore;
+use crate::services::bm25_service::BM25Service;
 
 /// Global application state shared across all Tauri commands
 pub struct AppState {
@@ -18,6 +19,8 @@ pub struct AppState {
     pub vector_index: Arc<Mutex<VectorIndex>>,
     /// SQLite metadata store for chunk↔vector mapping
     pub metadata: Arc<Mutex<MetadataStore>>,
+    /// BM25 full-text search service (tantivy + jieba)
+    pub bm25: Arc<Mutex<BM25Service>>,
 }
 
 impl AppState {
@@ -45,11 +48,16 @@ impl AppState {
         // Initialize MetadataStore (create if not exists)
         let metadata = MetadataStore::new(db_path)?;
 
+        // Initialize BM25Service (tantivy + jieba full-text index)
+        let bm25_index_dir = data_dir.join("bm25_index");
+        let bm25 = BM25Service::new(bm25_index_dir)?;
+
         Ok(Self {
             model_manager: Arc::new(Mutex::new(model_manager)),
             embedding: Arc::new(Mutex::new(embedding)),
             vector_index: Arc::new(Mutex::new(vector_index)),
             metadata: Arc::new(Mutex::new(metadata)),
+            bm25: Arc::new(Mutex::new(bm25)),
         })
     }
 }
