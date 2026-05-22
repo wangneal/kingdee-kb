@@ -9,7 +9,7 @@
 
 ## Phases
 
-- [ ] **Phase 1: 项目脚手架与基础设施** — Tauri 2.x 脚手架、Splash Screen、OS Keyring、本地存储目录
+- [x] **Phase 1: 项目脚手架与基础设施** ✅ — Tauri 2.x 脚手架、Splash Screen、OS Keyring、本地存储目录
 - [ ] **Phase 2: 嵌入与向量存储引擎** — bge-small-zh-v1.5 embedding + usearch HNSW 索引 + rusqlite 元数据
 - [ ] **Phase 3: 入库流水线** — 粘贴/拖拽/文件夹导入、递归分块、标签提取、SHA256 去重
 - [ ] **Phase 4: BM25 全文检索** — tantivy + jieba 中文分词关键词检索
@@ -191,7 +191,7 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. 项目脚手架与基础设施 | 0/1 | Not started | — |
+| 1. 项目脚手架与基础设施 | 1/1 | Completed ✅ | 2026-05-23 |
 | 2. 嵌入与向量存储引擎 | 0/1 | Not started | — |
 | 3. 入库流水线 | 0/1 | Not started | — |
 | 4. BM25 全文检索 | 0/1 | Not started | — |

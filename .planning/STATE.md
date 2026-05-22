@@ -11,7 +11,7 @@
 
 **Core Value:** 让金蝶ERP实施顾问能快速检索历史案例并基于检索结果进行 AI 辅助问答，把分散的项目经验转化为可复用的结构化知识。
 
-**Current Focus:** 路线图已创建，8 个阶段覆盖 35 条 v1 需求。下一步：Phase 1（项目脚手架与基础设施）规划。
+**Current Focus:** Phase 1 完成 — Tauri 2.x 项目骨架就绪。下一步：Phase 2（嵌入与向量存储引擎）技术验证。
 
 **Tech Stack:** Tauri 2.x + React 19 + TypeScript + TailwindCSS + usearch (HNSW) + rusqlite + fastembed-rs (bge-small-zh-v1.5) + tantivy (BM25 + jieba) + OpenAI API
 
@@ -21,13 +21,13 @@
 
 | Metric | Value |
 |--------|-------|
-| **Phase** | 0 — 路线图创建完成 |
-| **Plan** | — |
-| **Status** | Ready to plan Phase 1 |
-| **Progress** | 0/8 phases complete |
+| **Phase** | 1 — 项目脚手架与基础设施 ✅ |
+| **Plan** | 01-scaffold (12/12 tasks) |
+| **Status** | Ready for Phase 2 |
+| **Progress** | 1/8 phases complete |
 
 ```
-Phase 1 [··········] 0%
+Phase 1 [██████████] 100% ✅
 Phase 2 [··········] 0%
 Phase 3 [··········] 0%
 Phase 4 [··········] 0%
@@ -45,7 +45,7 @@ Phase 8 [··········] 0%
 |--------|--------|---------|
 | Requirements covered | 35/35 | 35/35 ✓ |
 | Phases planned | 8 | 8 |
-| Phases executed | 8 | 0 |
+| Phases executed | 8 | 1 |
 | UAT passed | — | — |
 
 ---
@@ -62,7 +62,9 @@ Phase 8 [··········] 0%
 
 ### Active Todos
 
-_(None yet — will populate during phase execution)_
+- [ ] Phase 2 Spike: 验证 `usearch` + `bge-small-zh-v1.5` + ONNX Runtime 在 Windows 上的端到端可行性
+- [ ] 替换 splash.png 为品牌 logo + "KingdeeKB" 文字
+- [ ] 在中文 Windows 环境验证 Keyring Store 兼容性
 
 ### Blockers
 
@@ -81,8 +83,8 @@ _(None)_
 ### Last Session
 
 - **Date:** 2026-05-23
-- **Action:** 完成项目初始化、规范定义、需求定义、技术研究、路线图创建
-- **Next:** Phase 1 规划 (`/gsd-plan-phase 1`)
+- **Action:** Phase 1 执行完成 — 12 个任务全部提交，项目骨架就绪
+- **Next:** Phase 2 技术验证 (`/gsd-spike`) 或 Phase 2 规划 (`/gsd-plan-phase 2`)
 
 ### Handoff Notes
 
