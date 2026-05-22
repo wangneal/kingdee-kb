@@ -4,6 +4,8 @@ use std::sync::Mutex;
 use tauri::async_runtime::spawn;
 use tauri::{AppHandle, Manager, State};
 
+const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
+
 /// Tracks completion of setup tasks before closing splashscreen
 struct SetupState {
     frontend_task: bool,
@@ -41,6 +43,40 @@ fn ensure_data_dir() -> Result<PathBuf, String> {
 fn get_data_dir() -> Result<String, String> {
     let data_dir = ensure_data_dir()?;
     Ok(data_dir.to_string_lossy().to_string())
+}
+
+/// Store an API key in the OS credential store
+#[tauri::command]
+fn set_api_key(service: String, key: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &service)
+        .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+    entry
+        .set_password(&key)
+        .map_err(|e| format!("Failed to store API key: {}", e))?;
+    Ok(())
+}
+
+/// Retrieve an API key from the OS credential store
+#[tauri::command]
+fn get_api_key(service: String) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &service)
+        .map_err(|e| format!("Failed to access keyring: {}", e))?;
+    match entry.get_password() {
+        Ok(password) => Ok(Some(password)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("Failed to retrieve API key: {}", e)),
+    }
+}
+
+/// Delete an API key from the OS credential store
+#[tauri::command]
+fn delete_api_key(service: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &service)
+        .map_err(|e| format!("Failed to access keyring: {}", e))?;
+    entry
+        .delete_credential()
+        .map_err(|e| format!("Failed to delete API key: {}", e))?;
+    Ok(())
 }
 
 /// Called by the frontend when React has mounted and is ready
@@ -88,6 +124,7 @@ async fn setup_backend(app: AppHandle) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_keyring_store::init())
         .manage(Mutex::new(SetupState {
             frontend_task: false,
             backend_task: false,
@@ -97,7 +134,14 @@ pub fn run() {
             spawn(setup_backend(app.handle().clone()));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet, set_complete, get_data_dir])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            set_complete,
+            get_data_dir,
+            set_api_key,
+            get_api_key,
+            delete_api_key
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
