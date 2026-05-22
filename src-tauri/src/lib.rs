@@ -9,6 +9,7 @@ mod services;
 
 use app_state::AppState;
 use services::bm25_service::BM25SearchResult;
+use services::hybrid_search::HybridSearchResult;
 use services::vector_index::SearchResult;
 use services::metadata::KnowledgeStats;
 use services::ingestion::{IngestionResult, ingest_text as ingest_text_fn, ingest_file as ingest_file_fn, ingest_directory as ingest_directory_fn};
@@ -260,6 +261,25 @@ async fn bm25_search(
     bm25.search(&query, project_id.as_deref(), top_k.unwrap_or(10))
 }
 
+/// Hybrid search: vector + BM25 via RRFR fusion (k=60, final top_k=5)
+#[tauri::command]
+async fn hybrid_search(
+    state: State<'_, AppState>,
+    query: String,
+    project_id: Option<String>,
+    top_k: Option<usize>,
+) -> Result<Vec<HybridSearchResult>, String> {
+    services::hybrid_search::hybrid_search(
+        &query,
+        project_id.as_deref(),
+        top_k.unwrap_or(5),
+        &state.embedding,
+        &state.vector_index,
+        &state.bm25,
+        &state.metadata,
+    )
+}
+
 /// Perform backend initialization tasks
 async fn setup_backend(app: AppHandle) -> Result<(), String> {
     let data_dir = ensure_data_dir()?;
@@ -314,6 +334,8 @@ pub fn run() {
             ingest_directory,
             // Phase 4 commands
             bm25_search,
+            // Phase 5 commands
+            hybrid_search,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

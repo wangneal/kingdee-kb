@@ -1,6 +1,7 @@
 pub mod bm25_service;
 pub mod chunker;
 pub mod embedding;
+pub mod hybrid_search;
 pub mod ingestion;
 pub mod ingestion_helpers;
 pub mod metadata;
