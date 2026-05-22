@@ -36,7 +36,6 @@ npm-debug.log*
 # Local data (user-specific)
 .kingdee-kb/
 
-# Planning artifacts (not code)
-.planning/
+# Planning docs are tracked per config.json (commit_docs: true)
 SPEC.md
 task-summary-*.md
