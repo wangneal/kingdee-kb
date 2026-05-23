@@ -2,7 +2,9 @@ use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
 
-use crate::services::research_outline::{Edition, FlatQuestion, ResearchOutline};
+use crate::services::research_outline::{
+    parse_doc_file, parse_module_info, parse_outline_text, Edition, FlatQuestion, ResearchOutline,
+};
 
 pub struct ResearchIndexer {
     conn: Mutex<Connection>,
@@ -177,6 +179,82 @@ impl ResearchIndexer {
     }
 }
 
+pub struct ImportResult {
+    pub imported: i32,
+    pub skipped: i32,
+    pub total_questions: i64,
+    pub errors: Vec<String>,
+}
+
+impl ResearchIndexer {
+    pub fn import_directory(&self, dir: &Path, edition: Edition) -> Result<ImportResult, String> {
+        let mut result = ImportResult {
+            imported: 0,
+            skipped: 0,
+            total_questions: 0,
+            errors: Vec::new(),
+        };
+
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .map_err(|e| format!("Failed to read directory {:?}: {}", dir, e))?
+            .filter_map(|e| e.ok())
+            .collect();
+
+        entries.sort_by_key(|e| e.file_name());
+
+        for entry in &entries {
+            let path = entry.path();
+
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext != "doc" && ext != "docx" {
+                continue;
+            }
+
+            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if filename.starts_with('~') {
+                continue;
+            }
+
+            let (module_code, module_name, cloud_type) = match parse_module_info(filename) {
+                Some(info) => info,
+                None => {
+                    result.skipped += 1;
+                    continue;
+                }
+            };
+
+            let text = match parse_doc_file(&path) {
+                Ok(t) => t,
+                Err(e) => {
+                    result.errors.push(format!("Failed to parse {}: {}", filename, e));
+                    continue;
+                }
+            };
+
+            let outline = parse_outline_text(
+                &text,
+                edition.clone(),
+                &module_code,
+                &module_name,
+                &cloud_type,
+                filename,
+            );
+
+            match self.insert_outline(&outline) {
+                Ok(_) => {
+                    result.imported += 1;
+                    result.total_questions += outline.flatten().len() as i64;
+                }
+                Err(e) => {
+                    result.errors.push(format!("Failed to insert {}: {}", filename, e));
+                }
+            }
+        }
+
+        Ok(result)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +339,24 @@ mod tests {
 
         let outlines = indexer.list_outlines(&Edition::Flagship).unwrap();
         assert_eq!(outlines.len(), 0);
+    }
+
+    #[test]
+    fn test_import_enterprise_directory() {
+        let dir = Path::new(r"E:\工作资料\项目资料\企业版调研提纲\企业版");
+        if !dir.exists() {
+            eprintln!("Skipping test_import_enterprise_directory: directory not found at {:?}", dir);
+            return;
+        }
+        let indexer = new_indexer();
+        let result = indexer.import_directory(dir, Edition::Enterprise).unwrap();
+        eprintln!(
+            "Import result: imported={}, skipped={}, total_questions={}, errors={:?}",
+            result.imported, result.skipped, result.total_questions, result.errors
+        );
+        assert!(result.imported > 0, "Expected at least 1 imported file, got {}", result.imported);
+        assert!(result.total_questions > 0, "Expected total_questions > 0, got {}", result.total_questions);
+        let total_in_db = indexer.question_count(&Edition::Enterprise).unwrap();
+        assert_eq!(total_in_db, result.total_questions);
     }
 }

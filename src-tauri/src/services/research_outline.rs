@@ -21,8 +21,8 @@ impl Edition {
             "enterprise" => Some(Edition::Enterprise),
             "flagship" => Some(Edition::Flagship),
             _ => None,
-        }
     }
+}
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +129,12 @@ pub fn parse_module_info(filename: &str) -> Option<(String, String, String)> {
     ))
 }
 
+fn clean_line(line: &str) -> String {
+    line.chars()
+        .filter(|&c| c != '\u{7}' && (c.is_ascii_graphic() || c.is_whitespace() || !c.is_ascii()))
+        .collect()
+}
+
 pub fn parse_outline_text(
     text: &str,
     edition: Edition,
@@ -137,26 +143,89 @@ pub fn parse_outline_text(
     cloud_type: &str,
     filename: &str,
 ) -> ResearchOutline {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<String> = normalized.lines().map(clean_line).collect();
+
+    let section_re = Regex::new(r"^\d+\s+(.+)").unwrap();
+    let cat_re = Regex::new(r"^\d+\.\d+\s+(.+)").unwrap();
+    let q_re = Regex::new(r"^(\d+\.\d+\.\d+)\s+(.+)").unwrap();
+
     let mut sections: Vec<Section> = Vec::new();
-    for line in text.lines() {
+    let mut raw_questions: Vec<(String, String, String)> = Vec::new();
+    let mut labels: Vec<String> = Vec::new();
+
+    for line in &lines {
         let trimmed = line.trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() || trimmed.len() < 2 {
             continue;
         }
-        if let Some(title) = try_parse_section_header(trimmed) {
-            sections.push(Section { name: title, categories: Vec::new() });
-        } else if let Some(cat_name) = try_parse_category_header(trimmed) {
-            if let Some(section) = sections.last_mut() {
-                section.categories.push(Category { name: cat_name, questions: Vec::new() });
+        if let Some(caps) = section_re.captures(trimmed) {
+            sections.push(Section { name: caps.get(1).unwrap().as_str().trim().to_string(), categories: Vec::new() });
+        } else if let Some(caps) = cat_re.captures(trimmed) {
+            if let Some(s) = sections.last_mut() {
+                s.categories.push(Category { name: caps.get(1).unwrap().as_str().trim().to_string(), questions: Vec::new() });
+            } else {
+                sections.push(Section { name: String::new(), categories: vec![Category { name: caps.get(1).unwrap().as_str().trim().to_string(), questions: Vec::new() }] });
             }
-        } else if let Some(question) = try_parse_question(trimmed) {
-            if let Some(section) = sections.last_mut() {
-                if let Some(category) = section.categories.last_mut() {
-                    category.questions.push(question);
+        } else if let Some(caps) = q_re.captures(trimmed) {
+            let full_prefix = caps.get(1).unwrap().as_str().to_string();
+            let q_text = caps.get(2).unwrap().as_str().trim().to_string();
+            let section_part = full_prefix.split('.').next().unwrap_or("1").to_string();
+            let cat_part: String = full_prefix.rsplit('.').skip(1).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(".");
+            raw_questions.push((section_part, cat_part, q_text));
+        } else {
+            labels.push(trimmed.to_string());
+        }
+    }
+
+    if sections.is_empty() && !raw_questions.is_empty() {
+        let mut unique_cats: Vec<String> = Vec::new();
+        for (_, ref cp, _) in &raw_questions {
+            if !unique_cats.contains(cp) {
+                unique_cats.push(cp.clone());
+            }
+        }
+
+        let mut label_iter = labels.into_iter();
+        let first_label = label_iter.next().filter(|l| l.len() > 2);
+        if first_label.is_some() {
+            sections.push(Section { name: first_label.unwrap(), categories: Vec::new() });
+        } else {
+            sections.push(Section { name: String::new(), categories: Vec::new() });
+        }
+
+        for cp in &unique_cats {
+            let cat_name = label_iter.next().unwrap_or_else(|| {
+                let parts: Vec<&str> = cp.split('.').collect();
+                if parts.len() >= 2 { format!("类别{}", parts[1]) } else { String::new() }
+            });
+            sections[0].categories.push(Category { name: cat_name, questions: Vec::new() });
+        }
+
+        for (_, cat_part, q_text) in &raw_questions {
+            let cat_idx = unique_cats.iter().position(|c| c == cat_part);
+            if let Some(ci) = cat_idx {
+                if sections[0].categories.len() > ci {
+                    sections[0].categories[ci].questions.push(q_text.clone());
+                }
+            }
+        }
+    } else {
+        let mut cat_counters: Vec<usize> = vec![0; sections.len()];
+        for (sec_part, cat_part, q_text) in &raw_questions {
+            let sec_idx = sec_part.parse::<usize>().unwrap_or(1).saturating_sub(1);
+            if sec_idx < sections.len() {
+                let cat_num_in_sec: usize = cat_part.rsplit('.').next()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(1).saturating_sub(1);
+                if cat_num_in_sec < sections[sec_idx].categories.len() {
+                    sections[sec_idx].categories[cat_num_in_sec].questions.push(q_text.clone());
+                    cat_counters[sec_idx] = cat_num_in_sec + 1;
                 }
             }
         }
     }
+
     ResearchOutline {
         edition,
         module_code: module_code.to_string(),
