@@ -133,11 +133,14 @@ pub fn ingest_text(
             let idx = vector_index.lock().map_err(|e| format!("Lock error: {}", e))?;
             let meta = metadata.lock().map_err(|e| format!("Lock error: {}", e))?;
 
+            // Get starting vector_key from metadata (globally unique, never collides)
+            let start_key = meta.next_vector_key().unwrap_or(0);
+
             for (i, (chunk, embedding)) in chunk_batch.iter().zip(embeddings.iter()).enumerate() {
-                let vector_key = (batch_idx * batch_size + i) as u64;
+                let vector_key = start_key + i as i64;
 
                 // Add to vector index
-                idx.add(vector_key, embedding)?;
+                idx.add(vector_key as u64, embedding)?;
 
                 // Extract tags
                 let tags = extract_tags(
@@ -147,7 +150,7 @@ pub fn ingest_text(
 
                 // Insert chunk metadata
                 meta.insert_chunk(
-                    vector_key as i64,
+                    vector_key,
                     doc_id,
                     &chunk.content,
                     chunk.metadata.section_path.as_deref(),

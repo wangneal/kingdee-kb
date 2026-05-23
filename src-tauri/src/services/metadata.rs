@@ -179,6 +179,20 @@ impl MetadataStore {
 
     // ─── Chunk operations ───
 
+    /// Get the next globally-unique vector key.
+    /// Uses MAX(vector_key) + 1 so keys never collide across ingestions.
+    pub fn next_vector_key(&self) -> Result<i64, String> {
+        let max_key: i64 = self
+            .db
+            .query_row(
+                "SELECT COALESCE(MAX(vector_key), 0) FROM chunks",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("Failed to query max vector_key: {}", e))?;
+        Ok(max_key + 1)
+    }
+
     /// Insert a chunk linked to a document and vector key
     pub fn insert_chunk(
         &self,

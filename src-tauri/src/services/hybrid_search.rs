@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use crate::services::bm25_service::BM25Service;
 use crate::services::embedding::EmbeddingService;
@@ -185,6 +186,24 @@ pub fn hybrid_search(
     let bm25_map: HashMap<i64, &ResolvedChunk> =
         bm25_resolved.iter().map(|r| (r.chunk_id, r)).collect();
 
+    // ── Step 6: Build initial results (up to top_k × 2 for MMR headroom) ──
+    let mut results = build_results(&fused, &vector_map, &bm25_map, &metadata, top_k * 2);
+
+    // ── Step 7: MMR diversity re-ranking (inspired by OpenClaw) ──
+    // Ensure diversity by limiting same-title entries (same document → excess removed)
+    results = diversify_by_title(results, top_k);
+
+    Ok(results)
+}
+
+/// Build `HybridSearchResult` vec from fused scores up to `max_count`.
+fn build_results(
+    fused: &[(i64, f32)],
+    vector_map: &HashMap<i64, &ResolvedChunk>,
+    bm25_map: &HashMap<i64, &ResolvedChunk>,
+    metadata: &Mutex<MetadataStore>,
+    max_count: usize,
+) -> Vec<HybridSearchResult> {
     // For BM25-only results missing document_id, resolve via metadata
     let needs_doc_resolve: Vec<i64> = fused
         .iter()
@@ -193,18 +212,23 @@ pub fn hybrid_search(
         .collect();
 
     let doc_id_map: HashMap<i64, i64> = if !needs_doc_resolve.is_empty() {
-        let meta = metadata.lock().map_err(|e| e.to_string())?;
-        let chunks = meta.get_chunks_by_vector_keys(&needs_doc_resolve)?;
-        chunks.into_iter().map(|c| (c.id, c.document_id)).collect()
+        if let Ok(meta) = metadata.lock() {
+            if let Ok(chunks) = meta.get_chunks_by_vector_keys(&needs_doc_resolve) {
+                chunks.into_iter().map(|c| (c.id, c.document_id)).collect()
+            } else {
+                HashMap::new()
+            }
+        } else {
+            HashMap::new()
+        }
     } else {
         HashMap::new()
     };
 
-    // ── Step 6: Build final results ──
-    let mut results = Vec::with_capacity(top_k);
+    let mut results = Vec::with_capacity(max_count);
 
-    for (chunk_id, score) in &fused {
-        if results.len() >= top_k {
+    for (chunk_id, score) in fused {
+        if results.len() >= max_count {
             break;
         }
 
@@ -244,5 +268,62 @@ pub fn hybrid_search(
         }
     }
 
-    Ok(results)
+    results
+}
+
+/// Enforce result diversity: at most 2 results per document title.
+///
+/// OpenClaw-inspired MMR-lite: prevents the search from returning chunks
+/// all from the same document, ensuring broader coverage across the KB.
+fn diversify_by_title(
+    results: Vec<HybridSearchResult>,
+    top_k: usize,
+) -> Vec<HybridSearchResult> {
+    let mut per_title: std::collections::HashMap<String, Vec<HybridSearchResult>> =
+        std::collections::HashMap::new();
+    for r in results {
+        per_title.entry(r.title.clone()).or_default().push(r);
+    }
+
+    // Sort each title group by score descending, then interleave
+    for list in per_title.values_mut() {
+        list.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    let mut diversified = Vec::with_capacity(top_k);
+    let max_from_title = 2;
+
+    for round in 0..max_from_title {
+        let mut remaining_titles: Vec<String> = per_title.keys().cloned().collect();
+        remaining_titles.sort();
+        for title in &remaining_titles {
+            if diversified.len() >= top_k {
+                return diversified;
+            }
+            if let Some(list) = per_title.get_mut(title) {
+                if round < list.len() {
+                    diversified.push(list[round].clone());
+                }
+            }
+        }
+    }
+
+    // Fill remaining slots with any leftover results
+    for title in per_title.keys().cloned().collect::<Vec<_>>() {
+        if diversified.len() >= top_k {
+            break;
+        }
+        if let Some(list) = per_title.get(&title) {
+            for r in list.iter() {
+                if !diversified.iter().any(|d| d.chunk_id == r.chunk_id) {
+                    diversified.push(r.clone());
+                    if diversified.len() >= top_k {
+                        return diversified;
+                    }
+                }
+            }
+        }
+    }
+
+    diversified
 }

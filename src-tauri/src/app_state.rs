@@ -3,6 +3,7 @@
 //! Holds all Phase 2+ services (embedding, vector index, metadata store, BM25, LLM)
 //! in Arc<Mutex<>> for thread-safe access from Tauri commands.
 
+use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 use crate::services::embedding::{EmbeddingService, ModelManager};
 use crate::services::vector_index::VectorIndex;
@@ -27,6 +28,8 @@ pub struct AppState {
     pub llm: LLMService,
     /// Product store for generated document management
     pub products: Arc<Mutex<ProductStore>>,
+    /// Download progress for embedding model (0–100). Updated by background thread.
+    pub download_progress: Arc<AtomicU32>,
 }
 
 impl AppState {
@@ -70,6 +73,7 @@ impl AppState {
             bm25: Arc::new(Mutex::new(bm25)),
             llm: LLMService::new(data_dir),
             products: Arc::new(Mutex::new(products)),
+            download_progress: Arc::new(AtomicU32::new(0)),
         })
     }
 
@@ -99,6 +103,7 @@ impl AppState {
             bm25: Arc::new(Mutex::new(bm25)),
             llm: LLMService::new(data_dir),
             products: Arc::new(Mutex::new(products)),
+            download_progress: Arc::new(AtomicU32::new(0)),
         }
     }
 }

@@ -64,7 +64,7 @@ export interface KnowledgeStats {
 // ── LLM / RAG Types ────────────────────────────────────────────────────────
 
 export interface LLMConfig {
-  provider: 'openai' | 'anthropic';
+  provider: 'openai' | 'anthropic' | 'local';
   api_key: string;
   base_url: string;
   model: string;
@@ -80,6 +80,7 @@ export interface ChatMessage {
 export interface StreamChunk {
   content: string;
   done: boolean;
+  thinking?: string;
 }
 
 export interface RAGSource {
@@ -171,6 +172,11 @@ export async function getModelStatus(): Promise<boolean> {
   return invoke("get_model_status");
 }
 
+/** Get embedding model download progress (0–100) */
+export async function getDownloadProgress(): Promise<number> {
+  return invoke("get_download_progress");
+}
+
 // ── LLM / RAG command wrappers ───────────────────────────────────────────────
 
 export async function setLLMConfig(config: LLMConfig): Promise<void> {
@@ -215,6 +221,55 @@ export async function ragQueryStream(
 
 export async function countTokens(text: string): Promise<number> {
   return invoke("count_tokens", { text });
+}
+
+// ── Real-time streaming chat (EventSource pattern, like EchoBird) ────────────
+
+/**
+ * Start a streaming chat session.
+ *
+ * The backend spawns a background task and emits `chat_chunk` Tauri events.
+ * Frontend should call `listenChatEvents()` before this to receive chunks.
+ */
+export async function startChatStream(
+  query: string,
+  projectId?: string,
+  conversationHistory?: ChatMessage[]
+): Promise<void> {
+  return invoke("start_chat_stream", {
+    query,
+    projectId: projectId ?? null,
+    conversationHistory: conversationHistory ?? null,
+  });
+}
+
+/** A single event from the chat stream */
+export interface ChatStreamEvent {
+  type: "text_delta" | "done" | "error" | "sources" | "thinking";
+  content?: string;
+  message?: string;
+  sources?: RAGSource[];
+}
+
+/**
+ * Listen for `chat_chunk` events from the backend streaming chat.
+ * Returns an unlisten function to clean up.
+ */
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+
+export function listenChatEvents(
+  handler: (event: ChatStreamEvent) => void
+): Promise<UnlistenFn> {
+  return listen<ChatStreamEvent>("chat_chunk", (e) => handler(e.payload));
+}
+
+// ── Chat Memory ───────────────────────────────────────────────────────────
+
+/** Save chat conversation to memory: archive + extract → ingest into KB. */
+export async function saveChatMemory(
+  conversation: ChatMessage[]
+): Promise<void> {
+  return invoke("save_chat_memory", { conversation });
 }
 
 // ── Phase 9/10/11/12/13: Template & Wizard Types ────────────────────────────

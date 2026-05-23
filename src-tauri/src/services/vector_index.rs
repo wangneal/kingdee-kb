@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use usearch::{new_index, Index, IndexOptions, MetricKind, ScalarKind};
 
 /// Default HNSW parameters for bge-small-zh-v1.5 (512-dim)
-const DEFAULT_DIMENSIONS: usize = 512;
 const DEFAULT_CONNECTIVITY: usize = 16;
 const DEFAULT_EXPANSION_ADD: usize = 200;
 const DEFAULT_EXPANSION_SEARCH: usize = 64;
@@ -37,18 +36,25 @@ pub struct IndexStats {
 pub struct VectorIndex {
     index: Index,
     index_path: PathBuf,
+    dimensions: usize,
 }
 
 impl VectorIndex {
     /// Create a new empty index, persisting to the given directory
+    /// `dimensions` should match the embedding model output (512 for BGE, 384 for MiniLM).
     pub fn new(index_dir: PathBuf) -> Result<Self, String> {
+        Self::with_dimensions(index_dir, 512)
+    }
+
+    /// Create a new empty index with explicit dimensions
+    pub fn with_dimensions(index_dir: PathBuf, dimensions: usize) -> Result<Self, String> {
         std::fs::create_dir_all(&index_dir)
             .map_err(|e| format!("Failed to create index directory: {}", e))?;
 
         let index_path = index_dir.join("vectors.usearch");
 
         let options = IndexOptions {
-            dimensions: DEFAULT_DIMENSIONS,
+            dimensions,
             metric: MetricKind::Cos,
             quantization: ScalarKind::BF16,
             connectivity: DEFAULT_CONNECTIVITY,
@@ -59,17 +65,23 @@ impl VectorIndex {
 
         let index = new_index(&options).map_err(|e| format!("Failed to create index: {}", e))?;
 
-        Ok(Self { index, index_path })
+        Ok(Self { index, index_path, dimensions })
     }
 
     /// Load an existing index from disk
+    /// `dimensions` must match the index that was saved.
     pub fn load(index_path: PathBuf) -> Result<Self, String> {
+        Self::load_with_dimensions(index_path, 512)
+    }
+
+    /// Load an existing index from disk with explicit dimensions
+    pub fn load_with_dimensions(index_path: PathBuf, dimensions: usize) -> Result<Self, String> {
         if !index_path.exists() {
             return Err(format!("Index file not found: {:?}", index_path));
         }
 
         let options = IndexOptions {
-            dimensions: DEFAULT_DIMENSIONS,
+            dimensions,
             metric: MetricKind::Cos,
             quantization: ScalarKind::BF16,
             connectivity: DEFAULT_CONNECTIVITY,
@@ -88,7 +100,7 @@ impl VectorIndex {
             .load(path_str)
             .map_err(|e| format!("Failed to load index from {:?}: {}", index_path, e))?;
 
-        Ok(Self { index, index_path })
+        Ok(Self { index, index_path, dimensions })
     }
 
     /// Add a single vector with the given key
@@ -182,7 +194,7 @@ impl VectorIndex {
     pub fn stats(&self) -> IndexStats {
         IndexStats {
             vector_count: self.len(),
-            dimensions: DEFAULT_DIMENSIONS,
+            dimensions: self.dimensions,
             index_path: self.index_path.to_string_lossy().to_string(),
         }
     }

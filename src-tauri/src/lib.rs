@@ -2,7 +2,8 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, State};
 
 mod app_state;
@@ -27,11 +28,13 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 
 use app_state::AppState;
 use services::bm25_service::BM25SearchResult;
+use services::embedding::start_download_progress_polling;
 use services::hybrid_search::HybridSearchResult;
 use services::vector_index::SearchResult;
 use services::metadata::{ChunkMeta, DocumentMeta, KnowledgeStats};
 use services::ingestion::{IngestionResult, ingest_text as ingest_text_fn, ingest_file as ingest_file_fn, ingest_directory as ingest_directory_fn};
-use services::llm_service::{ChatMessage, LLMConfig, RAGResponse, StreamChunk};
+use services::llm_service::{ChatMessage, LLMConfig, RAGResponse, RAGSource, StreamChunk};
+use services::memory;
 use services::doc_generator::{GeneratedDoc, GenerateDocRequest};
 use services::product_store::ProductMeta;
 use services::smart_completion::{SmartFillRequest, SmartFillResult};
@@ -154,20 +157,51 @@ async fn get_model_status(
 async fn init_model(
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
+    // Start progress polling so the frontend can show a download progress bar
+    let download_progress = state.download_progress.clone();
+    download_progress.store(0, Ordering::Relaxed);
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_clone = stop.clone();
+    start_download_progress_polling(
+        &fastembed::EmbeddingModel::BGESmallZHV15,
+        download_progress.clone(),
+        stop,
+    );
+
     // Step 1: Initialize model in ModelManager (may download from HuggingFace)
-    let model = {
+    let result = {
         let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
-        mm.init()?;
-        mm.take_model().ok_or("Model initialized but no model returned")?
-    }; // drop mm lock
+        mm.init()
+    };
 
-    // Step 2: Inject into EmbeddingService
-    {
-        let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
-        emb.set_model(model);
-    } // drop emb lock
+    // Signal the polling thread to stop
+    stop_clone.store(true, Ordering::Relaxed);
 
-    Ok(true)
+    match result {
+        Ok(()) => {
+            download_progress.store(100, Ordering::Relaxed);
+            let model = {
+                let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
+                mm.take_model().ok_or("Model initialized but no model returned")?
+            };
+            // Inject into EmbeddingService
+            let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
+            emb.set_model(model);
+            Ok(true)
+        }
+        Err(e) => {
+            download_progress.store(0, Ordering::Relaxed);
+            Err(e)
+        }
+    }
+}
+
+/// Get the current download progress of the embedding model (0–100).
+#[tauri::command]
+async fn get_download_progress(
+    state: State<'_, AppState>,
+) -> Result<u32, String> {
+    Ok(state.download_progress.load(Ordering::Relaxed))
 }
 
 /// Embed a single text — returns a 512-dim vector
@@ -463,6 +497,168 @@ async fn rag_query_stream(
         .await
 }
 
+/// Start a real-time streaming chat session via Tauri events.
+///
+/// Spawns a background task that emits `chat_chunk` Tauri events:
+/// - `{"type": "text_delta", "content": "..."}` — text chunk
+/// - `{"type": "sources", "sources": [...]}` — RAG source references
+/// - `{"type": "done"}` — stream complete
+/// - `{"type": "error", "message": "..."}` — error occurred
+///
+/// Returns immediately; the frontend should listen for `chat_chunk` events.
+#[tauri::command]
+async fn start_chat_stream(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    query: String,
+    project_id: Option<String>,
+    conversation_history: Option<Vec<ChatMessage>>,
+) -> Result<(), String> {
+    let history = conversation_history.unwrap_or_default();
+
+    // Clone state for background task
+    let embedding = state.embedding.clone();
+    let vector_index = state.vector_index.clone();
+    let bm25 = state.bm25.clone();
+    let metadata = state.metadata.clone();
+    let llm = state.llm.clone();
+    let pid = project_id.clone();
+    let q = query.clone();
+
+    // Step 1: Run hybrid_search upfront to capture sources for the UI
+    let search_results = services::hybrid_search::hybrid_search(
+        &q,
+        pid.as_deref(),
+        5,
+        &*embedding,
+        &*vector_index,
+        &*bm25,
+        &*metadata,
+    )?;
+
+    let sources: Vec<RAGSource> = search_results
+        .iter()
+        .map(|r| RAGSource {
+            title: r.title.clone(),
+            section_path: r.section_path.clone(),
+            content_snippet: services::llm_service::truncate_to_tokens(&r.content, 100),
+            score: r.score,
+        })
+        .collect();
+
+    // Step 2: Check LLM config — fallback immediately if not configured
+    if !llm.is_configured() {
+        let answer = llm.fallback_response(&search_results);
+        let content: String = answer.iter().map(|c| c.content.as_str()).collect();
+        let sources_clone = sources.clone();
+        tokio::spawn(async move {
+            use tauri::Emitter;
+            if !content.is_empty() {
+                let _ = app.emit(
+                    "chat_chunk",
+                    serde_json::json!({"type": "text_delta", "content": content}),
+                );
+            }
+            if !sources_clone.is_empty() {
+                let _ = app.emit(
+                    "chat_chunk",
+                    serde_json::json!({"type": "sources", "sources": sources_clone}),
+                );
+            }
+            let _ = app.emit("chat_chunk", serde_json::json!({"type": "done"}));
+        });
+        return Ok(());
+    }
+
+    // Step 3: Channel for streaming chunks from background task
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<StreamChunk>(64);
+
+    // Task A: Run RAG pipeline (with pre-computed search_results), stream to channel
+    let llm_clone = llm.clone();
+    tokio::spawn(async move {
+        let _ = llm_clone
+            .rag_query_to_sender(
+                &q,
+                pid.as_deref(),
+                history,
+                &*embedding,
+                &*vector_index,
+                &*bm25,
+                &*metadata,
+                tx,
+                Some(search_results), // pass pre-computed results
+            )
+            .await;
+    });
+
+    // Task B: Forward chunks from channel + sources to Tauri events
+    tokio::spawn(async move {
+        use tauri::Emitter;
+        while let Some(chunk) = rx.recv().await {
+            if chunk.done {
+                break;
+            }
+            if let Some(thinking) = &chunk.thinking {
+                if !thinking.is_empty() {
+                    let _ = app.emit(
+                        "chat_chunk",
+                        serde_json::json!({"type": "thinking", "content": thinking}),
+                    );
+                }
+            }
+            if !chunk.content.is_empty() {
+                let _ = app.emit(
+                    "chat_chunk",
+                    serde_json::json!({"type": "text_delta", "content": chunk.content}),
+                );
+            }
+        }
+        // After streaming completes, emit sources
+        if !sources.is_empty() {
+            let _ = app.emit(
+                "chat_chunk",
+                serde_json::json!({"type": "sources", "sources": sources}),
+            );
+        }
+        let _ = app.emit("chat_chunk", serde_json::json!({"type": "done"}));
+    });
+
+    Ok(())
+}
+
+/// Save chat memory: archive conversation + LLM extraction → ingest into KB.
+///
+/// Runs in background — returns immediately. Called after each chat stream completes.
+#[tauri::command]
+async fn save_chat_memory(
+    state: State<'_, AppState>,
+    conversation: Vec<ChatMessage>,
+) -> Result<(), String> {
+    let data_dir = dirs::home_dir()
+        .ok_or("Cannot find home directory")?
+        .join(".kingdee-kb");
+
+    // Clone state for background task
+    let llm = state.llm.clone();
+    let embedding = state.embedding.clone();
+    let vector_index = state.vector_index.clone();
+    let metadata = state.metadata.clone();
+
+    tokio::spawn(async move {
+        memory::save_chat_memory(
+            &conversation,
+            &data_dir,
+            &llm,
+            &embedding,
+            &vector_index,
+            &metadata,
+        )
+        .await;
+    });
+
+    Ok(())
+}
+
 /// Count tokens in text (utility for frontend)
 #[tauri::command]
 async fn count_tokens(text: String) -> Result<u32, String> {
@@ -530,6 +726,13 @@ async fn get_template_schema(
     write_sidecar: Option<bool>,
 ) -> Result<TemplateSchema, String> {
     let path = PathBuf::from(&file_path);
+
+    // Step 1: Check for pre-existing sidecar YAML
+    if let Some(schema) = services::template_schema::load_schema_sidecar(&path)? {
+        return Ok(schema);
+    }
+
+    // Step 2: No sidecar — extract fields from the template file
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -558,7 +761,7 @@ async fn get_template_schema(
         _ => return Err(format!("Unsupported template format: .{}", ext)),
     };
 
-    // Optionally write sidecar YAML file
+    // Optionally write sidecar YAML file for future fast loading
     if write_sidecar.unwrap_or(false) {
         services::template_schema::write_schema_sidecar(&path, &schema)?;
     }
@@ -904,6 +1107,7 @@ pub fn run() {
             // Phase 2: Embedding & Vector Store
             get_model_status,
             init_model,
+            get_download_progress,
             embed_text,
             embed_batch,
             search_similar,
@@ -929,6 +1133,8 @@ pub fn run() {
             test_llm_connection,
             rag_query,
             rag_query_stream,
+            start_chat_stream,
+            save_chat_memory,
             count_tokens,
             // Phase 9: Template Engine
             scan_templates,

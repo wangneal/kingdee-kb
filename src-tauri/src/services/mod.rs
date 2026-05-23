@@ -8,6 +8,7 @@ pub mod hybrid_search;
 pub mod ingestion;
 pub mod ingestion_helpers;
 pub mod llm_service;
+pub mod memory;
 pub mod metadata;
 pub mod product_store;
 pub mod smart_completion;
