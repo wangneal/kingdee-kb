@@ -8,6 +8,7 @@ pub mod ingestion;
 pub mod ingestion_helpers;
 pub mod llm_service;
 pub mod metadata;
+pub mod smart_completion;
 pub mod template_docx;
 pub mod template_scanner;
 pub mod template_schema;
