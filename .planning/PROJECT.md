@@ -2,11 +2,22 @@
 
 ## What This Is
 
-KingdeeKB 是一款面向金蝶ERP实施顾问的**本地知识管理工具**，基于 RAG（检索增强生成）技术。顾问可以将分散的项目经验（.md/.txt 文档）沉淀为可检索的本地知识库，遇到新需求时通过混合检索（向量+关键词）快速找到历史相似案例，并结合 AI 生成参考回答。完全开源（MIT License），所有数据本地存储。
+KingdeeKB 是一款面向金蝶ERP实施顾问的**本地知识管理工具**，基于 RAG（检索增强生成）技术。v0.1 实现了知识库检索与 AI 问答，v0.2 新增基于金蝶实施方法论 V10.0 模板的**标准化文档智能生成**能力。完全开源（MIT License），所有数据本地存储。
 
 ## Core Value
 
-让金蝶ERP实施顾问能**快速检索历史案例并基于检索结果进行 AI 辅助问答**，把分散的项目经验转化为可复用的结构化知识。
+让金蝶ERP实施顾问能**快速检索历史案例、基于检索结果 AI 问答、并根据模板自动生成标准化交付物**，把分散的项目经验转化为可复用的结构化知识和符合方法论标准的产物。
+
+## Current Milestone: v0.2 智能文档生成
+
+**Goal:** 基于金蝶实施方法论 V10.0 的 85 个交付物模板，通过 LLM + 用户输入 + 知识库检索，自动生成标准化产物（调研报告、业务蓝图、PCR、上线单、验收单等）。
+
+**Target features:**
+- 模板解析引擎：解析 .docx/.xlsx 模板的字段、章节结构
+- 文档生成核心：LLM 填充模板，信息追问缺失字段
+- 智能补全：从知识库检索相关历史内容辅助填充
+- 产物管理：产物浏览、导出、历史记录
+- 向导式生成 UI：分步引导用户输入并输出产物
 
 ## Requirements
 
@@ -85,4 +96,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-23 after initialization*
+*Last updated: 2026-05-23 — v0.1 complete, v0.2 milestone started*
