@@ -8,6 +8,7 @@ import Import from "./pages/Import";
 import Chat from "./pages/Chat";
 import Templates from "./pages/Templates";
 import Wizard from "./pages/Wizard";
+import Products from "./pages/Products";
 
 function App() {
   return (
@@ -20,6 +21,7 @@ function App() {
         <Route path="import" element={<Import />} />
         <Route path="templates" element={<Templates />} />
         <Route path="wizard/:templateId" element={<Wizard />} />
+        <Route path="products" element={<Products />} />
         <Route path="settings" element={<Settings />} />
       </Route>
     </Routes>

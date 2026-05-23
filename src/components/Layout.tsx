@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { BookOpen, Search, Upload, Settings, LayoutDashboard, MessageSquare, FileEdit } from "lucide-react";
+import { BookOpen, Search, Upload, Settings, LayoutDashboard, MessageSquare, FileEdit, Package } from "lucide-react";
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "概览" },
@@ -7,6 +7,7 @@ const navItems = [
   { to: "/search", icon: Search, label: "检索" },
   { to: "/chat", icon: MessageSquare, label: "AI 对话" },
   { to: "/templates", icon: FileEdit, label: "文档生成" },
+  { to: "/products", icon: Package, label: "产物管理" },
   { to: "/import", icon: Upload, label: "导入" },
   { to: "/settings", icon: Settings, label: "设置" },
 ];

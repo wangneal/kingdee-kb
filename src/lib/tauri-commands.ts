@@ -355,3 +355,7 @@ export async function listProducts(project?: string): Promise<ProductMeta[]> {
 export async function exportProduct(id: number, targetDir: string): Promise<string> {
   return invoke("export_product", { id, targetDir });
 }
+
+export async function deleteProduct(id: number): Promise<void> {
+  return invoke("delete_product", { id });
+}
