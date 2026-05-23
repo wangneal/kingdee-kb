@@ -1,13 +1,29 @@
 #![allow(dead_code)]
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tauri::async_runtime::spawn;
 use tauri::{AppHandle, Manager, State};
 
 mod app_state;
 mod services;
+
+/// Recursively copy a directory and all its contents
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| format!("Failed to create dir {}: {}", dst.display(), e))?;
+    for entry in fs::read_dir(src).map_err(|e| format!("Failed to read dir {}: {}", src.display(), e))? {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path)
+                .map_err(|e| format!("Failed to copy {} to {}: {}", src_path.display(), dst_path.display(), e))?;
+        }
+    }
+    Ok(())
+}
 
 use app_state::AppState;
 use services::bm25_service::BM25SearchResult;
@@ -112,6 +128,7 @@ async fn set_complete(
         }
         if let Some(main_window) = app.get_webview_window("main") {
             let _ = main_window.show();
+            let _ = main_window.set_focus();
         }
     }
 
@@ -740,11 +757,51 @@ async fn setup_backend(app: AppHandle) -> Result<(), String> {
             println!("Phase 2 services initialized (embedding, vector index, metadata)");
         }
         Err(e) => {
-            // Log the error but don't block the app from starting
             eprintln!("WARNING: Phase 2 services failed to initialize: {}", e);
             eprintln!("The app will start in limited mode (no embedding/search/LLM).");
-            // Manage a minimal AppState so Tauri commands don't crash
             app.manage(AppState::minimal(&data_dir));
+        }
+    }
+
+    // Ensure template directory exists and sync built-in templates if empty
+    let template_dir = data_dir.join("templates");
+    if !template_dir.exists() {
+        std::fs::create_dir_all(&template_dir)
+            .map_err(|e| format!("Failed to create templates directory: {}", e))?;
+        println!("Created templates directory at: {:?}", template_dir);
+    }
+
+    // If templates dir is empty, copy built-in templates from the app bundle
+    if std::fs::read_dir(&template_dir)
+        .map_err(|e| format!("Failed to read templates directory: {}", e))?
+        .next()
+        .is_none()
+    {
+        // Try the exe directory first (for production builds)
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                let resource_dir = exe_dir.join("实施方法论V10.0交付物模板");
+                if resource_dir.exists() {
+                    match copy_dir_recursive(&resource_dir, &template_dir) {
+                        Ok(_) => println!("Copied built-in templates to {:?}", template_dir),
+                        Err(e) => eprintln!("Warning: Failed to copy built-in templates: {}", e),
+                    }
+                }
+            }
+        }
+        // Also try the project root during development
+        let dev_template_dir = std::path::PathBuf::from("../实施方法论V10.0交付物模板");
+        if template_dir
+            .read_dir()
+            .map_err(|e| format!("Failed to read templates directory: {}", e))?
+            .next()
+            .is_none()
+            && dev_template_dir.exists()
+        {
+            match copy_dir_recursive(&dev_template_dir, &template_dir) {
+                Ok(_) => println!("Copied dev templates to {:?}", template_dir),
+                Err(e) => eprintln!("Warning: Failed to copy dev templates: {}", e),
+            }
         }
     }
 
@@ -792,26 +849,31 @@ fn get_deliverable_recipe(template_id: String) -> Result<DeliverableRecipe, Stri
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_keyring_store::init())
-        .plugin(tauri_plugin_dialog::init())
-        .manage(Mutex::new(SetupState {
-            frontend_task: false,
-            backend_task: false,
-        }))
         .setup(|app| {
-            spawn(setup_backend(app.handle().clone()));
+            // Initialize setup state tracking
+            app.manage(Mutex::new(SetupState {
+                frontend_task: false,
+                backend_task: false,
+            }));
+
+            // Spawn backend initialization task
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = setup_backend(app_handle).await {
+                    eprintln!("Backend setup error: {}", e);
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            // Phase 1 commands
             greet,
-            set_complete,
             get_data_dir,
             set_api_key,
             get_api_key,
             delete_api_key,
-            // Phase 2 commands
+            set_complete,
+            // Phase 2: Embedding & Vector Store
             get_model_status,
             init_model,
             embed_text,
@@ -820,41 +882,40 @@ pub fn run() {
             load_index,
             get_index_stats,
             get_knowledge_stats,
-            // Phase 3 commands
+            // Phase 3: Ingestion Pipeline
             ingest_text,
             ingest_file,
             ingest_directory,
-            // Document management
+            // Document Management
             list_documents,
             get_document_chunks,
             delete_document,
             get_stats,
-            // Phase 4 commands
+            // Phase 4: BM25 Search
             bm25_search,
-            // Phase 5 commands
             hybrid_search,
-            // Phase 6 commands
+            // Phase 6: LLM Integration
             set_llm_config,
             get_llm_config,
             is_llm_configured,
             rag_query,
             rag_query_stream,
             count_tokens,
-            // Phase 9 commands
+            // Phase 9: Template Engine
             scan_templates,
             extract_template_fields,
             get_template_schema,
             generate_templates_index,
-            // Phase 10 commands
+            // Phase 10: Document Generation
             fill_template,
             generate_doc,
-            // Phase 12 commands
+            // Phase 12: Product Management
             list_products,
             get_product,
             delete_product,
             export_product,
             regenerate_product,
-            // Phase 11 commands
+            // Phase 11: Smart Completion
             smart_fill,
             probe_missing_fields,
             get_deliverable_recipe,

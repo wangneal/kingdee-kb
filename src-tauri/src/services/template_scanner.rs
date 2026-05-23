@@ -52,7 +52,10 @@ pub struct TemplateInfo {
 /// - Organizes by 8 phases based on directory name
 pub fn scan_templates(root_dir: &Path) -> Result<Vec<TemplateInfo>, String> {
     if !root_dir.exists() {
-        return Err(format!("Template directory not found: {}", root_dir.display()));
+        // Auto-create the templates directory so the app can start cleanly
+        std::fs::create_dir_all(root_dir)
+            .map_err(|e| format!("Failed to create template directory {}: {}", root_dir.display(), e))?;
+        return Ok(Vec::new());
     }
 
     let mut templates = Vec::new();

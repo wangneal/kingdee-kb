@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.neal.kingdee-kb",
   "build": {
-    "beforeDevCommand": "",
+    "beforeDevCommand": "npm run dev",
       "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
@@ -37,8 +37,7 @@
     ],
     "windows": {
       "webviewInstallMode": {
-        "type": "fixedRuntime",
-        "path": "./webview2-runtime"
+        "type": "downloadBootstrapper"
       },
       "wix": {
         "language": "zh-CN"
