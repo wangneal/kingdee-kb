@@ -3,6 +3,7 @@ pub mod chunker;
 pub mod deliverable_recipes;
 pub mod doc_generator;
 pub mod docx_filler;
+pub mod edition_config;
 pub mod embedding;
 pub mod hybrid_search;
 pub mod ingestion;
