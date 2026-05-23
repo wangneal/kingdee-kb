@@ -47,3 +47,10 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 tiktoken-rs = "0.6"
 futures-util = "0.3"
 
+# Phase 9: Template Parsing Engine
+walkdir = "2"
+zip = "2"
+quick-xml = "0.36"
+umya-spreadsheet = "2"
+serde_yaml = "0.9"
+

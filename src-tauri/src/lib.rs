@@ -14,6 +14,9 @@ use services::vector_index::SearchResult;
 use services::metadata::{ChunkMeta, DocumentMeta, KnowledgeStats};
 use services::ingestion::{IngestionResult, ingest_text as ingest_text_fn, ingest_file as ingest_file_fn, ingest_directory as ingest_directory_fn};
 use services::llm_service::{ChatMessage, LLMConfig, RAGResponse, StreamChunk};
+use services::template_docx::FieldInfo;
+use services::template_scanner::TemplateInfo;
+use services::template_schema::TemplateSchema;
 
 const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
 
@@ -415,6 +418,120 @@ async fn count_tokens(text: String) -> Result<u32, String> {
     Ok(services::llm_service::count_tokens(&text))
 }
 
+// ─── Phase 9: Template Parsing Engine Commands ───
+
+/// Scan the template directory and return all templates sorted by phase.
+///
+/// Templates are loaded from 实施方法论V10.0交付物模板/ relative to the data directory.
+#[tauri::command]
+async fn scan_templates(template_dir: Option<String>) -> Result<Vec<TemplateInfo>, String> {
+    let root = match template_dir {
+        Some(dir) => PathBuf::from(dir),
+        None => {
+            let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+            home.join(".kingdee-kb").join("templates")
+        }
+    };
+    services::template_scanner::scan_templates(&root)
+}
+
+/// Extract field placeholders from a .docx or .xlsx template file.
+///
+/// Returns a list of `{field_name}` placeholders with their metadata.
+#[tauri::command]
+async fn extract_template_fields(file_path: String) -> Result<Vec<FieldInfo>, String> {
+    let path = PathBuf::from(&file_path);
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    match ext.as_str() {
+        "docx" => services::template_docx::extract_docx_fields(&path),
+        "xlsx" => {
+            let xlsx_fields = services::template_xlsx::extract_xlsx_fields(&path)?;
+            // Convert XlsxFieldInfo to FieldInfo for unified frontend API
+            Ok(xlsx_fields
+                .into_iter()
+                .map(|f| FieldInfo {
+                    name: f.name,
+                    field_type: f.field_type,
+                    context: f.cell_refs.join(", "),
+                    count: f.count,
+                })
+                .collect())
+        }
+        _ => Err(format!("Unsupported template format: .{}", ext)),
+    }
+}
+
+/// Generate a YAML schema for a template (docx or xlsx).
+///
+/// Parses the template, extracts fields, and returns the schema as a YAML string.
+/// If `write_sidecar` is true, also writes a `.schema.yaml` file next to the template.
+#[tauri::command]
+async fn get_template_schema(
+    template_id: String,
+    template_name: String,
+    file_path: String,
+    phase: String,
+    write_sidecar: Option<bool>,
+) -> Result<TemplateSchema, String> {
+    let path = PathBuf::from(&file_path);
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let schema = match ext.as_str() {
+        "docx" => {
+            let fields = services::template_docx::extract_docx_fields(&path)?;
+            services::template_schema::generate_schema_from_docx(
+                &template_id,
+                &template_name,
+                &phase,
+                &fields,
+            )
+        }
+        "xlsx" => {
+            let fields = services::template_xlsx::extract_xlsx_fields(&path)?;
+            services::template_schema::generate_schema_from_xlsx(
+                &template_id,
+                &template_name,
+                &phase,
+                &fields,
+            )
+        }
+        _ => return Err(format!("Unsupported template format: .{}", ext)),
+    };
+
+    // Optionally write sidecar YAML file
+    if write_sidecar.unwrap_or(false) {
+        services::template_schema::write_schema_sidecar(&path, &schema)?;
+    }
+
+    Ok(schema)
+}
+
+/// Generate templates.json index file listing all templates with categories.
+///
+/// Scans the template directory, builds a structured index grouped by phase,
+/// writes it to `templates.json` in the template directory, and returns the JSON.
+#[tauri::command]
+async fn generate_templates_index(template_dir: Option<String>) -> Result<String, String> {
+    let root = match template_dir {
+        Some(dir) => PathBuf::from(dir),
+        None => {
+            let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+            home.join(".kingdee-kb").join("templates")
+        }
+    };
+    let output_path = root.join("templates.json");
+    services::template_scanner::write_templates_json(&root, &output_path)
+}
+
 /// Perform backend initialization tasks
 async fn setup_backend(app: AppHandle) -> Result<(), String> {
     let data_dir = ensure_data_dir()?;
@@ -484,6 +601,11 @@ pub fn run() {
             rag_query,
             rag_query_stream,
             count_tokens,
+            // Phase 9 commands
+            scan_templates,
+            extract_template_fields,
+            get_template_schema,
+            generate_templates_index,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
