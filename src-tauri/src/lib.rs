@@ -11,7 +11,7 @@ use app_state::AppState;
 use services::bm25_service::BM25SearchResult;
 use services::hybrid_search::HybridSearchResult;
 use services::vector_index::SearchResult;
-use services::metadata::KnowledgeStats;
+use services::metadata::{ChunkMeta, DocumentMeta, KnowledgeStats};
 use services::ingestion::{IngestionResult, ingest_text as ingest_text_fn, ingest_file as ingest_file_fn, ingest_directory as ingest_directory_fn};
 use services::llm_service::{ChatMessage, LLMConfig, RAGResponse, StreamChunk};
 
@@ -248,6 +248,47 @@ async fn ingest_directory(
     )
 }
 
+// ─── Document Management Commands ───
+
+/// List all documents, optionally filtered by project
+#[tauri::command]
+async fn list_documents(
+    state: State<'_, AppState>,
+    project: Option<String>,
+) -> Result<Vec<DocumentMeta>, String> {
+    let meta = state.metadata.lock().map_err(|e| e.to_string())?;
+    meta.get_documents(project.as_deref())
+}
+
+/// Get all chunks for a specific document
+#[tauri::command]
+async fn get_document_chunks(
+    state: State<'_, AppState>,
+    document_id: i64,
+) -> Result<Vec<ChunkMeta>, String> {
+    let meta = state.metadata.lock().map_err(|e| e.to_string())?;
+    meta.get_chunks_by_document(document_id)
+}
+
+/// Delete a document and all its associated chunks
+#[tauri::command]
+async fn delete_document(
+    state: State<'_, AppState>,
+    document_id: i64,
+) -> Result<(), String> {
+    let meta = state.metadata.lock().map_err(|e| e.to_string())?;
+    meta.delete_document(document_id)
+}
+
+/// Get knowledge base statistics (alias for get_knowledge_stats)
+#[tauri::command]
+async fn get_stats(
+    state: State<'_, AppState>,
+) -> Result<KnowledgeStats, String> {
+    let meta = state.metadata.lock().map_err(|e| e.to_string())?;
+    meta.get_stats()
+}
+
 // ─── Phase 4: BM25 Full-Text Search Commands ───
 
 /// Search chunks by keyword using BM25 (jieba tokenization + tantivy scoring)
@@ -427,6 +468,11 @@ pub fn run() {
             ingest_text,
             ingest_file,
             ingest_directory,
+            // Document management
+            list_documents,
+            get_document_chunks,
+            delete_document,
+            get_stats,
             // Phase 4 commands
             bm25_search,
             // Phase 5 commands

@@ -106,41 +106,41 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| KNOW-01 | Phase 3 | Pending |
-| KNOW-02 | Phase 3 | Pending |
-| KNOW-03 | Phase 3 | Pending |
-| KNOW-04 | Phase 3 | Pending |
-| KNOW-05 | Phase 3 | Pending |
+| KNOW-01 | Phase 3 | Completed |
+| KNOW-02 | Phase 3 | Completed |
+| KNOW-03 | Phase 3 | Completed |
+| KNOW-04 | Phase 3 | Completed |
+| KNOW-05 | Phase 3 | Completed |
 | KNOW-06 | Phase 7 | Pending |
 | KNOW-07 | Phase 7 | Pending |
 | KNOW-08 | Phase 7 | Pending |
 | KNOW-09 | Phase 7 | Pending |
 | KNOW-10 | Phase 7 | Pending |
-| SRCH-01 | Phase 2 | Pending |
-| SRCH-02 | Phase 4 | Pending |
-| SRCH-03 | Phase 5 | Pending |
+| SRCH-01 | Phase 2 | Completed |
+| SRCH-02 | Phase 4 | Completed |
+| SRCH-03 | Phase 5 | Completed |
 | SRCH-04 | Phase 7 | Pending |
 | SRCH-05 | Phase 7 | Pending |
 | SRCH-06 | Phase 7 | Pending |
 | SRCH-07 | Phase 7 | Pending |
-| SRCH-08 | Phase 5 | Pending |
+| SRCH-08 | Phase 5 | Completed |
 | AIQA-01 | Phase 8 | Pending |
 | AIQA-02 | Phase 6 | Pending |
 | AIQA-03 | Phase 6 | Pending |
 | AIQA-04 | Phase 8 | Pending |
 | AIQA-05 | Phase 6 | Pending |
 | AIQA-06 | Phase 6 | Pending |
-| INFR-01 | Phase 1 | Pending |
+| INFR-01 | Phase 1 | Completed |
 | INFR-02 | Phase 8 | Pending |
-| INFR-03 | Phase 1 | Pending |
+| INFR-03 | Phase 1 | Completed |
 | INFR-04 | Phase 8 | Pending |
 | INFR-05 | Phase 8 | Pending |
-| INFR-06 | Phase 2 | Pending |
-| INFR-07 | Phase 1 | Pending |
-| INFR-08 | Phase 1 | Pending |
+| INFR-06 | Phase 2 | Completed |
+| INFR-07 | Phase 1 | Completed |
+| INFR-08 | Phase 1 | Completed |
 | INFR-09 | Phase 8 | Pending |
-| INFR-10 | Phase 3 | Pending |
-| INFR-11 | Phase 3 | Pending |
+| INFR-10 | Phase 3 | Completed |
+| INFR-11 | Phase 3 | Completed |
 
 **Coverage:**
 - v1 requirements: 35 total
@@ -162,4 +162,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-05-23*
-*Last updated: 2026-05-23 after roadmap creation*
+*Last updated: 2026-05-23 — Phase 1-5 requirements marked Completed*

@@ -29,11 +29,12 @@ export default function Import() {
   // Text import state
   const [textTitle, setTextTitle] = useState("");
   const [textContent, setTextContent] = useState("");
-  const [textTags, setTextTags] = useState("");
+  const [textProject, setTextProject] = useState("default");
   const [textFeedback, setTextFeedback] = useState<ImportFeedback | null>(null);
 
   // File/folder import state
   const [fileFeedback, setFileFeedback] = useState<ImportFeedback | null>(null);
+  const [fileProject, setFileProject] = useState("default");
   const [isDragging, setIsDragging] = useState(false);
 
   // Handle text import
@@ -41,11 +42,7 @@ export default function Import() {
     if (!textContent.trim() || !textTitle.trim()) return;
     setTextFeedback({ status: "loading", message: "正在导入文本…" });
     try {
-      const tags = textTags
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean);
-      const result = await ingestText(textContent, textTitle, tags);
+      const result = await ingestText(textContent, textTitle, textProject || "default");
       setTextFeedback({
         status: "success",
         message: `导入成功：${result.title}，共 ${result.chunk_count} 个片段`,
@@ -53,14 +50,13 @@ export default function Import() {
       });
       setTextContent("");
       setTextTitle("");
-      setTextTags("");
     } catch (e) {
       setTextFeedback({
         status: "error",
         message: `导入失败：${e}`,
       });
     }
-  }, [textContent, textTitle, textTags]);
+  }, [textContent, textTitle, textProject]);
 
   // Handle file import via dialog
   const handleFileImport = useCallback(async () => {
@@ -86,7 +82,7 @@ export default function Import() {
       });
       const results: IngestionResult[] = [];
       for (const path of paths) {
-        const result = await ingestFile(path);
+        const result = await ingestFile(path, fileProject || "default");
         results.push(result);
       }
       setFileFeedback({
@@ -117,7 +113,7 @@ export default function Import() {
         status: "loading",
         message: `正在导入文件夹：${selected}…`,
       });
-      const results = await ingestDirectory(selected);
+      const results = await ingestDirectory(selected, fileProject || "default");
       setFileFeedback({
         status: "success",
         message: `成功导入 ${results.length} 个文件`,
@@ -195,9 +191,9 @@ export default function Import() {
           />
           <input
             type="text"
-            placeholder="标签（用逗号分隔，如：金蝶,苍穹,API）"
-            value={textTags}
-            onChange={(e) => setTextTags(e.target.value)}
+            placeholder="项目名称（如：星达铜业、default）"
+            value={textProject}
+            onChange={(e) => setTextProject(e.target.value)}
             className="w-full rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
           />
           <textarea
@@ -295,6 +291,15 @@ export default function Import() {
         </button>
 
         {/* File picker buttons */}
+        <div className="flex items-center gap-3 mb-3">
+          <input
+            type="text"
+            placeholder="项目名称（默认：default）"
+            value={fileProject}
+            onChange={(e) => setFileProject(e.target.value)}
+            className="w-48 rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+          />
+        </div>
         <div className="flex gap-3">
           <button
             type="button"

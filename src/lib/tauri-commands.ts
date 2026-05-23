@@ -3,24 +3,24 @@ import { invoke } from "@tauri-apps/api/core";
 // ── Types matching Rust structs ──────────────────────────────────────────────
 
 export interface HybridSearchResult {
-  chunk_id: string;
+  chunk_id: number;
   title: string;
   content: string;
   score: number;
   source: string;
-  document_id: string;
+  document_id: number;
   section_path?: string;
   project: string;
 }
 
 export interface BM25SearchResult {
-  chunk_id: string;
+  chunk_id: number;
   score: number;
   content: string;
 }
 
 export interface IngestionResult {
-  document_id: string;
+  document_id: number;
   title: string;
   sha256: string;
   chunk_count: number;
@@ -36,7 +36,7 @@ export interface IngestionProgress {
 }
 
 export interface DocumentMeta {
-  id: string;
+  id: number;
   title: string;
   source_path?: string;
   sha256?: string;
@@ -45,9 +45,9 @@ export interface DocumentMeta {
 }
 
 export interface ChunkMeta {
-  id: string;
+  id: number;
   vector_key: number;
-  document_id: string;
+  document_id: number;
   content: string;
   section_path?: string;
   tags?: string;
@@ -98,51 +98,57 @@ export interface RAGResponse {
 
 export async function hybridSearch(
   query: string,
-  project?: string,
-  limit?: number
+  projectId?: string,
+  topK?: number
 ): Promise<HybridSearchResult[]> {
   return invoke("hybrid_search", {
-    request: {
-      query,
-      project: project ?? null,
-      limit: limit ?? 20,
-    },
+    query,
+    projectId: projectId ?? null,
+    topK: topK ?? 5,
   });
 }
 
 export async function bm25Search(
   query: string,
-  limit?: number
+  projectId?: string,
+  topK?: number
 ): Promise<BM25SearchResult[]> {
   return invoke("bm25_search", {
     query,
-    limit: limit ?? 20,
+    projectId: projectId ?? null,
+    topK: topK ?? 10,
   });
 }
 
 export async function ingestText(
   text: string,
   title: string,
-  tags: string[]
+  project: string
 ): Promise<IngestionResult> {
-  return invoke("ingest_text", {
-    request: { text, title, tags },
-  });
+  return invoke("ingest_text", { text, title, project });
 }
 
-export async function ingestFile(path: string): Promise<IngestionResult> {
-  return invoke("ingest_file", { path });
+export async function ingestFile(
+  filePath: string,
+  project: string
+): Promise<IngestionResult> {
+  return invoke("ingest_file", { filePath, project });
 }
 
-export async function ingestDirectory(path: string): Promise<IngestionResult[]> {
-  return invoke("ingest_directory", { path });
+export async function ingestDirectory(
+  dirPath: string,
+  project: string
+): Promise<IngestionResult[]> {
+  return invoke("ingest_directory", { dirPath, project });
 }
 
-export async function listDocuments(): Promise<DocumentMeta[]> {
-  return invoke("list_documents");
+export async function listDocuments(
+  project?: string
+): Promise<DocumentMeta[]> {
+  return invoke("list_documents", { project: project ?? null });
 }
 
-export async function getDocumentChunks(documentId: string): Promise<ChunkMeta[]> {
+export async function getDocumentChunks(documentId: number): Promise<ChunkMeta[]> {
   return invoke("get_document_chunks", { documentId });
 }
 
@@ -150,7 +156,7 @@ export async function getStats(): Promise<KnowledgeStats> {
   return invoke("get_stats");
 }
 
-export async function deleteDocument(documentId: string): Promise<void> {
+export async function deleteDocument(documentId: number): Promise<void> {
   return invoke("delete_document", { documentId });
 }
 

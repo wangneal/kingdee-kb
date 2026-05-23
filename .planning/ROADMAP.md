@@ -193,10 +193,10 @@
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. 项目脚手架与基础设施 | 1/1 | Completed ✅ | 2026-05-23 |
-| 2. 嵌入与向量存储引擎 | 0/1 | Not started | — |
-| 3. 入库流水线 | 0/1 | Not started | — |
-| 4. BM25 全文检索 | 0/1 | Not started | — |
-| 5. 混合检索引擎 | 0/1 | Not started | — |
+| 2. 嵌入与向量存储引擎 | 1/1 | Completed ✅ | 2026-05-23 |
+| 3. 入库流水线 | 1/1 | Completed ✅ | 2026-05-23 |
+| 4. BM25 全文检索 | 0/1 | Completed ✅ | 2026-05-23 |
+| 5. 混合检索引擎 | 0/1 | Completed ✅ | 2026-05-23 |
 | 6. LLM 集成与 AI 问答 | 0/1 | Not started | — |
 | 7. 知识管理与检索前端 | 0/1 | Not started | — |
 | 8. AI 对话与设置前端 | 0/1 | Not started | — |

@@ -11,7 +11,7 @@
 
 **Core Value:** 让金蝶ERP实施顾问能快速检索历史案例并基于检索结果进行 AI 辅助问答，把分散的项目经验转化为可复用的结构化知识。
 
-**Current Focus:** Phase 2 完成 — usearch HNSW 向量索引 + rusqlite 元数据存储 + fastembed-rs embedding 引擎已就绪。下一步：Phase 3（知识入库）。
+**Current Focus:** Phase 5 完成 — 混合检索引擎（RRFR 融合向量+BM25）已就绪。下一步：Phase 6（LLM 集成与 AI 问答）。
 
 **Tech Stack:** Tauri 2.x + React 19 + TypeScript + TailwindCSS + usearch (HNSW) + rusqlite + fastembed-rs (bge-small-zh-v1.5) + tantivy (BM25 + jieba) + OpenAI API
 
@@ -21,17 +21,17 @@
 
 | Metric | Value |
 |--------|-------|
-| **Phase** | 2 — 嵌入与向量存储引擎 ✅ |
-| **Plan** | 02-embedding-engine (9/9 tasks) |
-| **Status** | Ready for Phase 3 |
-| **Progress** | 2/8 phases complete |
+| **Phase** | 5 — 混合检索引擎 ✅ |
+| **Plan** | 05-hybrid-search (completed) |
+| **Status** | Ready for Phase 6 |
+| **Progress** | 5/8 phases complete |
 
 ```
 Phase 1 [██████████] 100% ✅
 Phase 2 [██████████] 100% ✅
-Phase 3 [··········] 0%
-Phase 4 [··········] 0%
-Phase 5 [··········] 0%
+Phase 3 [██████████] 100% ✅
+Phase 4 [██████████] 100% ✅
+Phase 5 [██████████] 100% ✅
 Phase 6 [··········] 0%
 Phase 7 [··········] 0%
 Phase 8 [··········] 0%
@@ -45,7 +45,7 @@ Phase 8 [··········] 0%
 |--------|--------|---------|
 | Requirements covered | 35/35 | 35/35 ✓ |
 | Phases planned | 8 | 8 |
-| Phases executed | 8 | 2 |
+| Phases executed | 8 | 5 |
 | UAT passed | — | — |
 
 ---
@@ -97,10 +97,9 @@ _(None)_
 
 ### Handoff Notes
 
-- VectorIndex 和 MetadataStore 完全可用，可直接用于 Phase 3 入库流程
-- EmbeddingService 代码完整但模型下载受阻 — Phase 3 前需解决模型获取
-- usearch 测试有 exit crash (STATUS_ACCESS_VIOLATION)，应用层面不受影响
-- 5 个 git 提交覆盖整个 Phase 2：SPIKE → 依赖 → 服务 → AppState → 测试
+- Phase 1-5 全部完成，后端基础设施就绪
+- Phase 3 入库流程已验证，Phase 4 BM25 + Phase 5 混合检索已就绪
+- 下一步进入 LLM 集成（Phase 6），需要 OpenAI API Key 配置
 
 ---
 
