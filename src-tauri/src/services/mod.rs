@@ -12,6 +12,7 @@ pub mod llm_service;
 pub mod memory;
 pub mod metadata;
 pub mod product_store;
+pub mod research_indexer;
 pub mod research_outline;
 pub mod smart_completion;
 pub mod template_docx;
