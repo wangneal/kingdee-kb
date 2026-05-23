@@ -15,6 +15,9 @@ use services::metadata::{ChunkMeta, DocumentMeta, KnowledgeStats};
 use services::ingestion::{IngestionResult, ingest_text as ingest_text_fn, ingest_file as ingest_file_fn, ingest_directory as ingest_directory_fn};
 use services::llm_service::{ChatMessage, LLMConfig, RAGResponse, StreamChunk};
 use services::doc_generator::{GeneratedDoc, GenerateDocRequest};
+use services::product_store::ProductMeta;
+use services::smart_completion::{SmartFillRequest, SmartFillResult};
+use services::deliverable_recipes::DeliverableRecipe;
 use services::template_docx::FieldInfo;
 use services::template_scanner::TemplateInfo;
 use services::template_schema::TemplateSchema;
@@ -37,7 +40,7 @@ fn ensure_data_dir() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
     let data_dir = home.join(".kingdee-kb");
 
-    let subdirs = ["knowledge", "index", "models", "bm25_index"];
+    let subdirs = ["knowledge", "index", "models", "bm25_index", "products"];
     for subdir in subdirs {
         fs::create_dir_all(data_dir.join(subdir))
             .map_err(|e| format!("Failed to create {}: {}", subdir, e))?;
@@ -564,6 +567,165 @@ async fn generate_doc(
     services::doc_generator::generate_document(request, &state.llm).await
 }
 
+// ─── Phase 12: Product Management Commands ───
+
+/// List products, optionally filtered by project.
+#[tauri::command]
+async fn list_products(
+    state: State<'_, AppState>,
+    project: Option<String>,
+) -> Result<Vec<ProductMeta>, String> {
+    let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+    store.list(project.as_deref())
+}
+
+/// Get a single product by ID.
+#[tauri::command]
+async fn get_product(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<ProductMeta, String> {
+    let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+    store
+        .get(id)?
+        .ok_or_else(|| format!("Product not found: {}", id))
+}
+
+/// Delete a product and all its versions.
+#[tauri::command]
+async fn delete_product(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+    store.delete(id)
+}
+
+/// Export a product's output file to a target directory.
+/// Returns the exported file path.
+#[tauri::command]
+async fn export_product(
+    state: State<'_, AppState>,
+    id: i64,
+    target_dir: String,
+) -> Result<String, String> {
+    let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+    store.export_product(id, &target_dir)
+}
+
+/// Regenerate a product with updated field values.
+///
+/// Re-runs document generation using the latest version's template info
+/// but with the provided updated fields. Creates a new version.
+#[tauri::command]
+async fn regenerate_product(
+    state: State<'_, AppState>,
+    id: i64,
+    updated_fields: std::collections::HashMap<String, String>,
+) -> Result<ProductMeta, String> {
+    use services::doc_generator::GenerateDocRequest;
+    use std::path::PathBuf;
+
+    // Extract all needed data from store in a block, then drop the lock
+    let (product_output_path, original_input, latest_input_data) = {
+        let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+
+        // Get existing product
+        let product = store
+            .get(id)?
+            .ok_or_else(|| format!("Product not found: {}", id))?;
+
+        // Get latest version to find the original template path
+        let latest = store
+            .get_latest_version(id)?
+            .ok_or_else(|| format!("No versions found for product: {}", id))?;
+
+        let original_input: serde_json::Value =
+            serde_json::from_str(&latest.input_data)
+                .unwrap_or_else(|_| serde_json::json!({}));
+
+        (product.output_path.clone(), original_input, latest.input_data.clone())
+    }; // store is dropped here
+
+    let template_path = original_input
+        .get("template_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Original input missing template_path".to_string())?
+        .to_string();
+
+    let schema_fields = original_input
+        .get("schema_fields")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+
+    let project_name = original_input
+        .get("project_name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let context = original_input
+        .get("context")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Generate new output path (using std::time instead of chrono)
+    let timestamp = {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        format!("{}", now)
+    };
+    let output_dir = PathBuf::from(&product_output_path)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let stem = PathBuf::from(&product_output_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output")
+        .to_string();
+    let ext = PathBuf::from(&product_output_path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("docx")
+        .to_string();
+    let new_output_path = output_dir
+        .join(format!("{}_v{}.{}", stem, timestamp, ext))
+        .to_string_lossy()
+        .to_string();
+
+    // Build generation request
+    let request = GenerateDocRequest {
+        template_path,
+        output_path: new_output_path.clone(),
+        fields: updated_fields.clone(),
+        schema_fields,
+        project_name,
+        context,
+    };
+
+    // Generate the document (no mutex held here)
+    let result = services::doc_generator::generate_document(request, &state.llm).await?;
+
+    // Save new version and update product
+    let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+    let input_json = serde_json::to_string(&serde_json::json!({
+        "template_path": original_input.get("template_path"),
+        "fields": updated_fields,
+        "schema_fields": original_input.get("schema_fields"),
+        "project_name": original_input.get("project_name"),
+        "context": original_input.get("context"),
+    }))
+    .unwrap_or_else(|_| "{}".to_string());
+
+    store.add_version(id, &input_json, &result.output_path)?;
+
+    // Return updated product
+    store
+        .get(id)?
+        .ok_or_else(|| format!("Product not found after regeneration: {}", id))
+}
+
 /// Perform backend initialization tasks
 async fn setup_backend(app: AppHandle) -> Result<(), String> {
     let data_dir = ensure_data_dir()?;
@@ -580,6 +742,39 @@ async fn setup_backend(app: AppHandle) -> Result<(), String> {
         "backend".to_string(),
     )
     .await
+}
+
+// ─── Phase 11: Smart Completion Commands ───
+
+/// Smart fill: KB-assisted field filling using hybrid_search + LLM
+#[tauri::command]
+async fn smart_fill(state: State<'_, AppState>, request: SmartFillRequest) -> Result<SmartFillResult, String> {
+    services::smart_completion::smart_fill(
+        request,
+        &state.llm,
+        &state.embedding,
+        &state.vector_index,
+        &state.bm25,
+        &state.metadata,
+    )
+    .await
+}
+
+/// Probe missing fields: returns detailed diagnostic info for unfilled required fields
+#[tauri::command]
+async fn probe_missing_fields(
+    state: State<'_, AppState>,
+    request: GenerateDocRequest,
+) -> Result<GeneratedDoc, String> {
+    // Generate the document to get the latest missing fields detail
+    services::doc_generator::generate_document(request, &state.llm).await
+}
+
+/// Get deliverable recipe by template_id
+#[tauri::command]
+fn get_deliverable_recipe(template_id: String) -> Result<DeliverableRecipe, String> {
+    services::deliverable_recipes::get_recipe_by_template_id(&template_id)
+        .ok_or_else(|| format!("No recipe found for template_id: {}", template_id))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -641,6 +836,16 @@ pub fn run() {
             // Phase 10 commands
             fill_template,
             generate_doc,
+            // Phase 12 commands
+            list_products,
+            get_product,
+            delete_product,
+            export_product,
+            regenerate_product,
+            // Phase 11 commands
+            smart_fill,
+            probe_missing_fields,
+            get_deliverable_recipe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
