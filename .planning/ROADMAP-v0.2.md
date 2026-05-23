@@ -1,121 +1,128 @@
-# Roadmap: KingdeeKB v0.2 — 智能文档生成
+# Roadmap: KingdeeKB v0.2 — 智能调研与文档生成
 
-**Milestone:** v0.2 — 基于实施方法论模板的标准化文档生成
-**Granularity:** Coarse（6 阶段）
-**Created:** 2026-05-23
-**Requirements:** 28 v0.2 requirements → 100% mapped
+**Milestone:** v0.2 — 智能调研与文档生成（合并 v0.2 文档生成 + v0.3 调研助手）
+**Granularity:** Fine（7 阶段）
+**Created:** 2026-05-24
+**Requirements:** TBD
 
 ---
 
 ## Phases
 
-- [ ] **Phase 9: 模板解析引擎** — 解析 .docx/.xlsx 模板字段 + YAML sidecar 元数据
-- [ ] **Phase 10: 文档生成核心** — LLM JSON 填充 + docx-template + umya-spreadsheet 渲染
-- [ ] **Phase 11: 智能补全** — 知识库检索辅助填充 + 信息追问
-- [ ] **Phase 12: 产物管理后端** — 产物存储/历史/导出
-- [ ] **Phase 13: 向导式生成前端** — 模板选择 + 分步填写 + 补全建议 UI
-- [ ] **Phase 14: 产物管理前端 + 打磨** — 产物预览/编辑/导出界面
+- [ ] **Phase 9: 源文档解析引擎** — 解析85个交付物模板(.docx/.xlsx) + 25份调研提纲(.doc)，Edition Profile 框架
+- [ ] **Phase 10: 文档生成核心** — LLM 填充 + 模板渲染 + 调研报告/纪要自动生成
+- [ ] **Phase 11: 问题推荐 + 智能补全引擎** — 语义匹配 + 问题推荐 + 知识库辅助填充
+- [ ] **Phase 12: Whisper 语音识别** — 本地麦克风 + 实时转写
+- [ ] **Phase 13: 调研记录 + 产物管理后端** — Session 管理 + 产物存储/历史/导出
+- [ ] **Phase 14: 统一前端** — 提示板 + 向导生成 + 腾讯会议侧边栏
+- [ ] **Phase 15: 集成测试 + 打磨**
 
 ---
 
 ## Phase Details
 
-### Phase 9: 模板解析引擎
+### Phase 9: 源文档解析引擎
 
-**Goal**: 解析 85 个实施方法论模板，提取字段占位符，建立 YAML sidecar 元数据。
+**Goal:** 统一解析所有源文档——85 个交付物模板 + 25 份调研提纲（企业版）
 
-**Requirements**: TMPL-01~05
+**Tasks:**
+- DOCX/XLSX 模板解析器（占位符提取 + YAML 元数据）
+- DOC 调研提纲解析器（章节/分类/问题提取）
+- Edition Profile 框架（企业版/旗舰版）
+- 调研提纲入库 SQLite + 向量+BM25 索引
+- 调研问题 embedding 生成
 
-**Success Criteria**:
-1. 能扫描模板目录，按 8 阶段分类展示
-2. 解析 .docx 模板中 `{field_name}` 占位符
-3. 解析 .xlsx 模板中单元格占位符
-4. YAML sidecar 定义字段类型/必填/fill_strategy
-5. 用户可上传自定义模板
-
-**Depends on**: —（v0.1 基础设施已就绪）
+**Depends on:** v0.1 基础设施（usearch/embeddings/tantivy/rusqlite）
 
 ---
 
 ### Phase 10: 文档生成核心
 
-**Goal**: LLM 填充 + 模板渲染，输出 .docx/.xlsx 产物。
+**Goal:** LLM 填充模板 → 标准化 .docx/.xlsx 输出
 
-**Requirements**: DGEN-01~07
+**Tasks:**
+- LLM 模板填充引擎
+- DOCX/XLSX 渲染
+- 调研报告生成（调研记录 → 模板填充）
+- 调研纪要生成
 
-**Success Criteria**:
-1. 用户选择模板后进入向导式流程
-2. LLM 根据用户输入生成 JSON 字段值
-3. docx-template 渲染 .docx，umya-spreadsheet 渲染 .xlsx
-4. 缺失必填字段时提示用户
-5. 产物保留模板样式
-
-**Depends on**: Phase 9
+**Depends on:** Phase 9
 
 ---
 
-### Phase 11: 智能补全
+### Phase 11: 问题推荐 + 智能补全引擎
 
-**Goal**: 知识库检索辅助 + 信息追问。
+**Goal:** 语义匹配、问题推荐、知识库辅助填充
 
-**Requirements**: DGEN-05, DLVR-01~07
+**Tasks:**
+- 问题检索内核（向量+BM25+RRFR 融合）
+- Edition filter
+- 上下文累积匹配
+- 知识库智能补全
+- 信息追问
 
-**Success Criteria**:
-1. 自动从 v0.1 知识库检索相关历史内容
-2. 检索内容作为 LLM 上下文提升填充质量
-3. 用户可手动选择知识库条目辅助填充
-4. 7 种关键产物端到端可用
-
-**Depends on**: Phase 9, v0.1 knowledge base
-
----
-
-### Phase 12: 产物管理后端
-
-**Goal**: 产物持久化存储、历史管理、导出。
-
-**Requirements**: PROD-01~04
-
-**Success Criteria**:
-1. 产物按项目/时间存储到 ~/.kingdee-kb/products/
-2. 产物历史列表 API
-3. 产物重新生成（修改输入后重新填充）
-4. 产物导出到指定目录
-
-**Depends on**: Phase 10
+**Depends on:** Phase 9
 
 ---
 
-### Phase 13: 向导式生成前端
+### Phase 12: Whisper 语音识别
 
-**Goal**: 模板选择 + 分步填写 + 智能补全 UI。
+**Goal:** 本地麦克风 → Whisper 实时转写 → 问题推荐引擎
 
-**Requirements**: FUI-01~04
+**Tasks:**
+- whisper-rs 集成（tiny ~75MB / small ~500MB）
+- 桌面麦克风捕获
+- 流式转写 pipeline
+- 中文后处理（标点恢复、短句合并）
 
-**Success Criteria**:
-1. 模板选择界面（按 8 阶段分类卡片）
-2. 向导式填写流程（步骤指示器）
-3. LLM 字段自动填充 + 用户确认
-4. 知识库补全建议展示
-5. 产物预览界面
-
-**Depends on**: Phase 10, Phase 11
+**Depends on:** 独立，可与 Phase 11 并行
 
 ---
 
-### Phase 14: 产物管理前端 + 打磨
+### Phase 13: 调研记录 + 产物管理后端
 
-**Goal**: 产物历史管理界面 + 最终打磨。
+**Goal:** 调研会话管理和产物持久化存储
 
-**Requirements**: FUI-05, PROD-01~04 (frontend)
+**Tasks:**
+- ResearchSession CRUD
+- Q&A 记录
+- 调研记录导出（CSV/Markdown）
+- 产物历史/重新生成/导出
 
-**Success Criteria**:
-1. 产物历史列表（按时间/项目筛选）
-2. 产物预览与编辑
-3. 产物导出按钮
-4. 整体 UX 打磨
+**Depends on:** Phase 10
 
-**Depends on**: Phase 12, Phase 13
+---
+
+### Phase 14: 统一前端
+
+**Goal:** 调研模式 + 文档生成模式 + 腾讯会议侧边栏
+
+**调研模式：**
+- 模块导航 + 问题推荐卡片 + 答案录入
+- 录音控制 + 版本切换 + 会话管理
+
+**文档生成模式：**
+- 模板选择 + 向导填写 + LLM 填充
+- 产物预览/编辑/导出
+
+**腾讯会议侧边栏：**
+- H5 Web Extension，手动输入 → 问题推荐
+
+**Depends on:** Phase 10, Phase 11, Phase 12, Phase 13
+
+---
+
+### Phase 15: 集成测试 + 打磨
+
+**Tasks:**
+- 端到端：录音→转写→推荐→记录→报告生成
+- 端到端：模板选择→填写→生成→导出
+- 25 份提纲全量验证
+- Whisper 延迟 benchmark
+- Edition 切换 + 腾讯会议兼容性
+- UX 打磨
+
+**Depends on:** 全部阶段
 
 ---
 
@@ -129,3 +136,25 @@
 | 12 | Not started | — |
 | 13 | Not started | — |
 | 14 | Not started | — |
+| 15 | Not started | — |
+
+---
+
+## Dependency Graph
+
+```
+Phase 9 (源文档解析)
+  ├─ Phase 10 (文档生成) ── Phase 13 (产物管理)
+  ├─ Phase 11 (推荐引擎) ──┐
+  │    └─ Phase 12 (Whisper)┤
+  └─────────────────────────┘
+           ├─ Phase 14 (统一前端)
+           └─ Phase 15 (集成测试)
+```
+
+Phase 11 与 Phase 12 可并行。
+Phase 12 与 Phase 13 可并行。
+
+---
+
+*Roadmap updated: 2026-05-24 — 合并 v0.2 (文档生成) + v0.3 (调研助手)*
