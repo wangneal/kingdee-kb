@@ -15,6 +15,20 @@ use super::llm_service::LLMService;
 use super::template_schema::SchemaField;
 use super::xlsx_filler;
 
+/// Information about a missing required field after document generation.
+///
+/// Provides diagnostic detail for the frontend to display to the user,
+/// explaining why a field was not filled and what it represents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissingField {
+    /// Field name (matches `{field_name}` placeholder)
+    pub name: String,
+    /// Human-readable description of what this field is for
+    pub description: String,
+    /// Reason why the field was not filled
+    pub reason: String,
+}
+
 /// Result of document generation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneratedDoc {
@@ -26,8 +40,11 @@ pub struct GeneratedDoc {
     pub user_fields: Vec<String>,
     /// Fields that were filled by LLM
     pub ai_fields: Vec<String>,
-    /// Required fields that were not filled (warnings)
+    /// Required fields that were not filled (warnings) — simple names for backward compat
     pub missing_fields: Vec<String>,
+    /// Detailed missing field information with reasons (new in Phase 11)
+    #[serde(default)]
+    pub missing_fields_detail: Vec<MissingField>,
 }
 
 /// Request to generate a document from a template
@@ -126,12 +143,33 @@ pub async fn generate_document(
         }
     }
 
-    // Check required fields
+    // Check required fields — build detailed missing field info
     let mut missing_fields: Vec<String> = Vec::new();
+    let mut missing_fields_detail: Vec<MissingField> = Vec::new();
     if let Some(ref schema_fields) = request.schema_fields {
         for field in schema_fields {
             if field.required && !all_fields.contains_key(&field.name) {
                 missing_fields.push(field.name.clone());
+
+                // Determine reason based on fill_strategy
+                let reason = match field.fill_strategy.as_str() {
+                    "ai" | "llm" => "LLM 生成失败或返回空值".to_string(),
+                    "kb" => "知识库中未找到相关信息".to_string(),
+                    "user" => "用户未填写".to_string(),
+                    "default" => "未配置默认值".to_string(),
+                    _ => "未知原因".to_string(),
+                };
+
+                let description = field
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| format!("字段 {}", field.name));
+
+                missing_fields_detail.push(MissingField {
+                    name: field.name.clone(),
+                    description,
+                    reason,
+                });
             }
         }
     }
@@ -149,6 +187,7 @@ pub async fn generate_document(
         user_fields,
         ai_fields,
         missing_fields,
+        missing_fields_detail,
     })
 }
 
@@ -188,6 +227,7 @@ pub fn fill_template(
         user_fields,
         ai_fields: Vec::new(),
         missing_fields: Vec::new(),
+        missing_fields_detail: Vec::new(),
     })
 }
 
