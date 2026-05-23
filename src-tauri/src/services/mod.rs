@@ -1,5 +1,6 @@
 pub mod bm25_service;
 pub mod chunker;
+pub mod deliverable_recipes;
 pub mod doc_generator;
 pub mod docx_filler;
 pub mod embedding;
@@ -8,6 +9,7 @@ pub mod ingestion;
 pub mod ingestion_helpers;
 pub mod llm_service;
 pub mod metadata;
+pub mod product_store;
 pub mod smart_completion;
 pub mod template_docx;
 pub mod template_scanner;
