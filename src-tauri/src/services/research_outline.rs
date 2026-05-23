@@ -1,3 +1,4 @@
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -81,6 +82,107 @@ impl ResearchOutline {
         }
         result
     }
+}
+
+pub fn parse_doc_file(filepath: &std::path::Path) -> Result<String, String> {
+    let path_str = filepath.to_str().ok_or("Invalid file path: non-UTF-8 characters")?;
+    let escaped = path_str.replace('\'', "''");
+    let script = format!(
+        concat!(
+            "$word = New-Object -ComObject Word.Application; ",
+            "$word.Visible = $false; ",
+            "$doc = $word.Documents.Open('{path}'); ",
+            "$content = $doc.Content.Text; ",
+            "$doc.Close(); ",
+            "$word.Quit(); ",
+            "[System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null; ",
+            "[System.GC]::Collect(); ",
+            "[System.GC]::WaitForPendingFinalizers(); ",
+            "Write-Output $content",
+        ),
+        path = escaped
+    );
+    let output = std::process::Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-Command")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("Failed to execute PowerShell: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("PowerShell error: {}", stderr));
+    }
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    if text.trim().is_empty() {
+        return Err("No content read from DOC file".to_string());
+    }
+    Ok(text)
+}
+
+pub fn parse_module_info(filename: &str) -> Option<(String, String, String)> {
+    let re = Regex::new(r"^(\w+)_调研提纲_(.+?)_(.+?)_V\d+\.\d+\.docx?$").ok()?;
+    let caps = re.captures(filename)?;
+    Some((
+        caps.get(1)?.as_str().to_string(),
+        caps.get(2)?.as_str().to_string(),
+        caps.get(3)?.as_str().to_string(),
+    ))
+}
+
+pub fn parse_outline_text(
+    text: &str,
+    edition: Edition,
+    module_code: &str,
+    module_name: &str,
+    cloud_type: &str,
+    filename: &str,
+) -> ResearchOutline {
+    let mut sections: Vec<Section> = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(title) = try_parse_section_header(trimmed) {
+            sections.push(Section { name: title, categories: Vec::new() });
+        } else if let Some(cat_name) = try_parse_category_header(trimmed) {
+            if let Some(section) = sections.last_mut() {
+                section.categories.push(Category { name: cat_name, questions: Vec::new() });
+            }
+        } else if let Some(question) = try_parse_question(trimmed) {
+            if let Some(section) = sections.last_mut() {
+                if let Some(category) = section.categories.last_mut() {
+                    category.questions.push(question);
+                }
+            }
+        }
+    }
+    ResearchOutline {
+        edition,
+        module_code: module_code.to_string(),
+        module_name: module_name.to_string(),
+        cloud_type: cloud_type.to_string(),
+        doc_file: filename.to_string(),
+        sections,
+    }
+}
+
+fn try_parse_section_header(line: &str) -> Option<String> {
+    let re = Regex::new(r"^\d+\s+(.+)").ok()?;
+    let caps = re.captures(line)?;
+    Some(caps.get(1)?.as_str().trim().to_string())
+}
+
+fn try_parse_category_header(line: &str) -> Option<String> {
+    let re = Regex::new(r"^\d+\.\d+\s+(.+)").ok()?;
+    let caps = re.captures(line)?;
+    Some(caps.get(1)?.as_str().trim().to_string())
+}
+
+fn try_parse_question(line: &str) -> Option<String> {
+    let re = Regex::new(r"^\d+\.\d+\.\d+\s+(.+)").ok()?;
+    let caps = re.captures(line)?;
+    Some(caps.get(1)?.as_str().trim().to_string())
 }
 
 #[cfg(test)]
@@ -219,5 +321,215 @@ mod tests {
         assert_eq!(deserialized.module_code, outline.module_code);
         assert_eq!(deserialized.sections.len(), outline.sections.len());
         assert_eq!(deserialized.flatten().len(), outline.flatten().len());
+    }
+
+    #[test]
+    fn test_try_parse_section_header() {
+        assert_eq!(try_parse_section_header("1 业务概况"), Some("业务概况".to_string()));
+        assert_eq!(try_parse_section_header("2 技术架构"), Some("技术架构".to_string()));
+        assert_eq!(try_parse_section_header("10 安全"), Some("安全".to_string()));
+        assert_eq!(try_parse_section_header("  1  带空格的章节"), None);
+        assert_eq!(try_parse_section_header("1.1 分类"), None);
+        assert_eq!(try_parse_section_header("无序文本"), None);
+        assert_eq!(try_parse_section_header(""), None);
+    }
+
+    #[test]
+    fn test_try_parse_category_header() {
+        assert_eq!(try_parse_category_header("1.1 组织人员"), Some("组织人员".to_string()));
+        assert_eq!(try_parse_category_header("2.3 数据存储"), Some("数据存储".to_string()));
+        assert_eq!(try_parse_category_header("10.20 安全策略"), Some("安全策略".to_string()));
+        assert_eq!(try_parse_category_header("1 章节"), None);
+        assert_eq!(try_parse_category_header("1.1.1 问题"), None);
+        assert_eq!(try_parse_category_header(""), None);
+    }
+
+    #[test]
+    fn test_try_parse_question() {
+        assert_eq!(
+            try_parse_question("1.1.1 公司目前财务组织架构？"),
+            Some("公司目前财务组织架构？".to_string())
+        );
+        assert_eq!(
+            try_parse_question("2.3.1 使用什么数据库？"),
+            Some("使用什么数据库？".to_string())
+        );
+        assert_eq!(
+            try_parse_question("10.20.5 安全策略如何审计"),
+            Some("安全策略如何审计".to_string())
+        );
+        assert_eq!(try_parse_question("1 章节"), None);
+        assert_eq!(try_parse_question("1.1 分类"), None);
+        assert_eq!(try_parse_question(""), None);
+    }
+
+    #[test]
+    fn test_parse_module_info() {
+        let result = parse_module_info("ECW2107_调研提纲_总账_财务_V1.0.doc");
+        assert_eq!(result, Some(("ECW2107".to_string(), "总账".to_string(), "财务".to_string())));
+    }
+
+    #[test]
+    fn test_parse_module_info_with_long_version() {
+        let result = parse_module_info("BOS123_调研提纲_基础平台_公有云_V10.20.doc");
+        assert_eq!(result, Some(("BOS123".to_string(), "基础平台".to_string(), "公有云".to_string())));
+    }
+
+    #[test]
+    fn test_parse_module_info_invalid() {
+        assert_eq!(parse_module_info("random_file.txt"), None);
+        assert_eq!(parse_module_info(""), None);
+        assert_eq!(parse_module_info("ECW2107_no_match.doc"), None);
+    }
+
+    #[test]
+    fn test_parse_outline_text_basic() {
+        let text = "1 业务概况\n\
+                    1.1 组织人员\n\
+                    1.1.1 公司目前财务组织架构？\n\
+                    1.1.2 财务人员数量及分工？\n\
+                    1.2 信息系统\n\
+                    1.2.1 目前使用什么财务系统？\n\
+                    2 技术架构\n\
+                    2.1 数据存储\n\
+                    2.1.1 使用什么数据库？\n";
+        let outline = parse_outline_text(
+            text,
+            Edition::Enterprise,
+            "ECW2107",
+            "总账",
+            "财务",
+            "test.doc",
+        );
+        assert_eq!(outline.edition, Edition::Enterprise);
+        assert_eq!(outline.module_code, "ECW2107");
+        assert_eq!(outline.module_name, "总账");
+        assert_eq!(outline.cloud_type, "财务");
+        assert_eq!(outline.doc_file, "test.doc");
+        assert_eq!(outline.sections.len(), 2);
+        assert_eq!(outline.sections[0].name, "业务概况");
+        assert_eq!(outline.sections[0].categories.len(), 2);
+        assert_eq!(outline.sections[0].categories[0].name, "组织人员");
+        assert_eq!(outline.sections[0].categories[0].questions.len(), 2);
+        assert_eq!(
+            outline.sections[0].categories[0].questions[0],
+            "公司目前财务组织架构？"
+        );
+        assert_eq!(
+            outline.sections[0].categories[1].questions[0],
+            "目前使用什么财务系统？"
+        );
+        assert_eq!(outline.sections[1].name, "技术架构");
+        assert_eq!(outline.sections[1].categories[0].name, "数据存储");
+
+        let flat = outline.flatten();
+        assert_eq!(flat.len(), 4);
+        assert_eq!(flat[0].section, "业务概况");
+        assert_eq!(flat[0].category, "组织人员");
+        assert_eq!(flat[0].question_text, "公司目前财务组织架构？");
+        assert_eq!(flat[0].order, 0);
+        assert_eq!(flat[2].section, "业务概况");
+        assert_eq!(flat[2].category, "信息系统");
+        assert_eq!(flat[2].question_text, "目前使用什么财务系统？");
+        assert_eq!(flat[2].order, 2);
+        assert_eq!(flat[3].section, "技术架构");
+        assert_eq!(flat[3].category, "数据存储");
+        assert_eq!(flat[3].question_text, "使用什么数据库？");
+        assert_eq!(flat[3].order, 3);
+    }
+
+    #[test]
+    fn test_parse_outline_text_skips_unmatched_lines() {
+        let text = "这是一段前言\n\
+                    1 正式章节\n\
+                    一些描述文字\n\
+                    1.1 分类\n\
+                    1.1.1 问题内容\n\
+                    结尾备注\n";
+        let outline = parse_outline_text(text, Edition::Flagship, "M", "N", "C", "f.doc");
+        assert_eq!(outline.sections.len(), 1);
+        assert_eq!(outline.sections[0].categories.len(), 1);
+        assert_eq!(outline.sections[0].categories[0].questions.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_outline_text_empty() {
+        let outline = parse_outline_text("", Edition::Enterprise, "M", "N", "C", "f.doc");
+        assert!(outline.sections.is_empty());
+        assert!(outline.flatten().is_empty());
+    }
+
+    #[test]
+    fn test_parse_outline_text_no_question_category() {
+        let text = "1 章节\n1.1 分类\n没有编号的文本\n1.1.1 问题\n";
+        let outline = parse_outline_text(text, Edition::Enterprise, "M", "N", "C", "f.doc");
+        assert_eq!(outline.sections.len(), 1);
+        assert_eq!(outline.sections[0].categories.len(), 1);
+        assert_eq!(outline.sections[0].categories[0].questions.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_doc_file_real() {
+        let candidate_paths = [
+            r"E:\工作资料\项目资料\企业版调研提纲\企业版",
+        ];
+        let dir = std::path::Path::new(candidate_paths[0]);
+        if !dir.exists() {
+            eprintln!("Skipping test_parse_doc_file_real: directory not found at {:?}", dir);
+            return;
+        }
+        let entries: Vec<_> = match std::fs::read_dir(dir) {
+            Ok(e) => e.filter_map(|e| e.ok()).collect(),
+            Err(_) => return,
+        };
+        let doc_files: Vec<_> = entries
+            .iter()
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "doc" || ext == "docx")
+                    .unwrap_or(false)
+            })
+            .collect();
+        if doc_files.is_empty() {
+            eprintln!("Skipping test_parse_doc_file_real: no doc files found");
+            return;
+        }
+        for entry in doc_files.iter().take(3) {
+            let path = entry.path();
+            let result = parse_doc_file(&path);
+            assert!(result.is_ok(), "Failed to parse {:?}: {:?}", path, result);
+            let text = result.unwrap();
+            assert!(!text.trim().is_empty(), "Empty content from {:?}", path);
+            let filename = path.file_name().unwrap().to_str().unwrap_or("");
+            let info = parse_module_info(filename);
+            assert!(info.is_some(), "Cannot parse module info from filename: {}", filename);
+            let (code, mod_name, cloud) = info.unwrap();
+            let outline = parse_outline_text(
+                &text,
+                Edition::Enterprise,
+                &code,
+                &mod_name,
+                &cloud,
+                filename,
+            );
+            eprintln!(
+                "Sections: {}",
+                outline.sections.len()
+            );
+            let flat = outline.flatten();
+            eprintln!(
+                "OK: {} → {} sections, {} questions",
+                filename,
+                outline.sections.len(),
+                flat.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_doc_file_nonexistent() {
+        let result = parse_doc_file(std::path::Path::new(r"C:\nonexistent_file_12345.doc"));
+        assert!(result.is_err());
     }
 }
