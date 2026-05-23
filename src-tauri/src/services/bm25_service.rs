@@ -234,7 +234,7 @@ impl BM25Service {
         section_path: Option<&str>,
         project: &str,
     ) -> Result<(), String> {
-        let mut writer = self.writer.lock().map_err(|e| e.to_string())?;
+        let writer = self.writer.lock().map_err(|e| e.to_string())?;
 
         let mut doc = TantivyDocument::new();
         doc.add_i64(self.field_chunk_id, chunk_id);
@@ -257,8 +257,7 @@ impl BM25Service {
         &self,
         chunks: &[(i64, String, String, Option<String>, String)],
     ) -> Result<(), String> {
-        let mut writer = self.writer.lock().map_err(|e| e.to_string())?;
-
+        let writer = self.writer.lock().map_err(|e| e.to_string())?;
         for (chunk_id, title, content, section_path, project) in chunks {
             let mut doc = TantivyDocument::new();
             doc.add_i64(self.field_chunk_id, *chunk_id);
@@ -279,24 +278,21 @@ impl BM25Service {
 
     /// Remove a chunk from the index by its chunk_id
     pub fn remove_chunk(&self, chunk_id: i64) -> Result<(), String> {
-        let mut writer = self.writer.lock().map_err(|e| e.to_string())?;
-        let term = tantivy::Term::from_field_i64(self.field_chunk_id, chunk_id);
+        let writer = self.writer.lock().map_err(|e| e.to_string())?;        let term = tantivy::Term::from_field_i64(self.field_chunk_id, chunk_id);
         writer.delete_term(term);
         Ok(())
     }
 
     /// Remove all chunks for a project
     pub fn remove_project(&self, project: &str) -> Result<(), String> {
-        let mut writer = self.writer.lock().map_err(|e| e.to_string())?;
-        let term = tantivy::Term::from_field_text(self.field_project, project);
+        let writer = self.writer.lock().map_err(|e| e.to_string())?;        let term = tantivy::Term::from_field_text(self.field_project, project);
         writer.delete_term(term);
         Ok(())
     }
 
     /// Commit pending changes and reload the reader
     pub fn commit(&self) -> Result<(), String> {
-        let mut writer = self.writer.lock().map_err(|e| e.to_string())?;
-        writer
+        let mut writer = self.writer.lock().map_err(|e| e.to_string())?;        writer
             .commit()
             .map_err(|e| format!("Failed to commit BM25 index: {}", e))?;
         drop(writer);
@@ -399,7 +395,6 @@ impl BM25Service {
         chunks: &[(i64, String, String, Option<String>, String)],
     ) -> Result<(), String> {
         let mut writer = self.writer.lock().map_err(|e| e.to_string())?;
-
         // Clear all existing documents
         writer
             .delete_all_documents()

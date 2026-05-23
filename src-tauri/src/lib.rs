@@ -627,7 +627,7 @@ async fn regenerate_product(
     use std::path::PathBuf;
 
     // Extract all needed data from store in a block, then drop the lock
-    let (product_output_path, original_input, latest_input_data) = {
+    let (product_output_path, original_input, _latest_input_data) = {
         let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
 
         // Get existing product
