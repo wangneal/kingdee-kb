@@ -130,7 +130,7 @@ pub fn ingest_text(
 
         // Store vectors and metadata
         {
-            let idx = vector_index.lock().map_err(|e| format!("Lock error: {}", e))?;
+            let mut idx = vector_index.lock().map_err(|e| format!("Lock error: {}", e))?;
             let meta = metadata.lock().map_err(|e| format!("Lock error: {}", e))?;
 
             // Get starting vector_key from metadata (globally unique, never collides)

@@ -25,6 +25,7 @@ import {
   testLLMConnection,
   initModel,
   getModelStatus,
+  getDownloadProgress,
   type LLMConfig,
   type KnowledgeStats,
 } from "../lib/tauri-commands";
@@ -38,7 +39,19 @@ const PROVIDER_DEFAULTS: Record<string, { base_url: string; model: string }> = {
     base_url: "https://api.anthropic.com/v1",
     model: "claude-3-5-sonnet-20241022",
   },
+  local: {
+    base_url: "http://localhost:11434/v1",
+    model: "qwen2.5:7b",
+  },
 };
+
+/** Local model presets — popular Chinese-friendly models & servers */
+const LOCAL_PRESETS: { label: string; base_url: string; model: string }[] = [
+  { label: "Ollama + Qwen2.5 7B", base_url: "http://localhost:11434/v1", model: "qwen2.5:7b" },
+  { label: "Ollama + DeepSeek-R1 7B", base_url: "http://localhost:11434/v1", model: "deepseek-r1:7b" },
+  { label: "Ollama + Yi 34B", base_url: "http://localhost:11434/v1", model: "yi:34b" },
+  { label: "llama.cpp server", base_url: "http://localhost:8080/v1", model: "qwen2.5-7b-q4" },
+];
 
 const DEFAULT_CONFIG: LLMConfig = {
   provider: "openai",
@@ -51,6 +64,7 @@ const DEFAULT_CONFIG: LLMConfig = {
 
 export default function Settings() {
   const [config, setConfig] = useState<LLMConfig>(DEFAULT_CONFIG);
+  const [showLocalPresets, setShowLocalPresets] = useState(false);
   const [stats, setStats] = useState<KnowledgeStats | null>(null);
   const [configured, setConfigured] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -64,6 +78,7 @@ export default function Settings() {
   const [showApiKey, setShowApiKey] = useState(false);
   const [modelReady, setModelReady] = useState(false);
   const [initializing, setInitializing] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
   const [initResult, setInitResult] = useState<{
     ok: boolean;
     msg: string;
@@ -138,9 +153,23 @@ export default function Settings() {
 
   const handleInitModel = useCallback(async () => {
     setInitializing(true);
+    setDownloadProgress(0);
     setInitResult(null);
+
+    // Start polling progress every 600ms
+    const pollInterval = setInterval(async () => {
+      try {
+        const pct = await getDownloadProgress();
+        setDownloadProgress(pct);
+      } catch {
+        // ignore polling errors
+      }
+    }, 600);
+
     try {
       const ok = await initModel();
+      clearInterval(pollInterval);
+      setDownloadProgress(100);
       setModelReady(ok);
       setInitResult({
         ok,
@@ -148,6 +177,8 @@ export default function Settings() {
       });
       setTimeout(() => setInitResult(null), 5000);
     } catch (err) {
+      clearInterval(pollInterval);
+      setDownloadProgress(0);
       setInitResult({
         ok: false,
         msg: `初始化失败：${err instanceof Error ? err.message : String(err)}`,
@@ -213,8 +244,52 @@ export default function Settings() {
             >
               <option value="openai">OpenAI（Chat Completions）</option>
               <option value="anthropic">Anthropic（Messages）</option>
+              <option value="local">本地模型（Ollama / llama.cpp）</option>
             </select>
           </FieldRow>
+
+          {/* Local model presets */}
+          {config.provider === "local" && (
+            <FieldRow
+              icon={<Cpu className="h-4 w-4" />}
+              label="本地模型预设"
+              hint="一键配置常见中文模型"
+            >
+              <div className="space-y-1">
+                <button
+                  type="button"
+                  onClick={() => setShowLocalPresets((v) => !v)}
+                  className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-600 text-left hover:bg-neutral-50 transition-colors"
+                >
+                  {showLocalPresets ? "收起" : "选择预设..."}
+                </button>
+                {showLocalPresets && (
+                  <div className="rounded-lg border border-neutral-200 bg-white shadow-sm">
+                    {LOCAL_PRESETS.map((preset) => (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        onClick={() => {
+                          setConfig((c) => ({
+                            ...c,
+                            base_url: preset.base_url,
+                            model: preset.model,
+                          }));
+                          setShowLocalPresets(false);
+                        }}
+                        className="block w-full px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-50 first:rounded-t-lg last:rounded-b-lg transition-colors"
+                      >
+                        {preset.label}
+                        <span className="ml-2 text-xs text-neutral-400">
+                          {preset.model}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </FieldRow>
+          )}
 
           {/* API Key */}
           <FieldRow
@@ -423,8 +498,27 @@ export default function Settings() {
           <p className="mb-3 text-sm text-neutral-500">
             {modelReady
               ? "模型已加载，知识库导入和语义搜索功能可用。"
-              : "模型尚未初始化。首次初始化需要从 HuggingFace 下载模型文件（约 30MB）。"}
+              : initializing
+                ? `正在下载模型（${downloadProgress}%）... 首次下载约 90MB，请耐心等待`
+                : "模型尚未初始化。首次初始化需要从 HuggingFace 下载模型文件（约 90MB）。"}
           </p>
+
+          {/* Progress bar during download */}
+          {initializing && (
+            <div className="mb-3">
+              <div className="h-2 w-full overflow-hidden rounded-full bg-neutral-100">
+                <div
+                  className="h-full rounded-full bg-[#1A6BD8] transition-all duration-300 ease-out"
+                  style={{ width: `${Math.max(downloadProgress, 2)}%` }}
+                />
+              </div>
+              <p className="mt-1 text-xs text-neutral-400">
+                {downloadProgress < 100
+                  ? `${downloadProgress}%`
+                  : "加载中..."}
+              </p>
+            </div>
+          )}
 
           <div className="flex items-center gap-3">
             <button
@@ -456,7 +550,7 @@ export default function Settings() {
             )}
           </div>
 
-          {!modelReady && (
+          {!modelReady && !initializing && (
             <div className="mt-3 flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
               <AlertTriangle className="h-3.5 w-3.5" />
               未初始化时，AI 对话将无法使用知识库语义搜索，仅使用关键词匹配和 LLM 自身能力

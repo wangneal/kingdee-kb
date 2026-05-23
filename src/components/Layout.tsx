@@ -22,7 +22,7 @@ export default function Layout() {
           <div className="h-7 w-7 rounded-lg bg-[#1A6BD8] flex items-center justify-center">
             <BookOpen className="h-4 w-4 text-white" />
           </div>
-          <span className="text-sm font-semibold text-neutral-800">KingdeeKB</span>
+          <span className="text-sm font-semibold text-neutral-800">实施顾问AI助手</span>
         </div>
 
         {/* Navigation */}

@@ -108,12 +108,12 @@ export default function Home() {
   }
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
+    <div className="p-6 w-full">
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-neutral-800">概览</h1>
         <p className="mt-1 text-sm text-neutral-500">
-          KingdeeKB — 金蝶ERP实施顾问本地知识管理工具
+          实施顾问AI助手 — 金蝶ERP实施顾问本地知识管理工具
         </p>
       </div>
 

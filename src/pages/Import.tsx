@@ -171,7 +171,7 @@ export default function Import() {
   };
 
   return (
-    <div className="mx-auto max-w-3xl p-6">
+    <div className="mx-auto max-w-5xl p-6">
       <h1 className="text-lg font-semibold text-neutral-800 mb-6">导入知识</h1>
 
       {/* Text Import Section */}

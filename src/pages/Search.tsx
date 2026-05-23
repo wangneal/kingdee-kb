@@ -62,7 +62,7 @@ export default function Search() {
   }, [results, tagFilter]);
 
   return (
-    <div className="mx-auto max-w-3xl p-6">
+    <div className="mx-auto max-w-6xl p-6">
       <h1 className="text-lg font-semibold text-neutral-800 mb-4">知识检索</h1>
 
       {/* Search form */}

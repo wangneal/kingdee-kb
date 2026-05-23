@@ -368,7 +368,7 @@ function ProductPreview({
   getStatusBadge: (s: string) => React.ReactNode;
 }) {
   return (
-    <div className="mx-auto max-w-3xl p-6">
+    <div className="mx-auto max-w-full px-6 py-6">
       {/* Product header */}
       <div className="rounded-lg border border-neutral-200 bg-white p-6">
         <div className="flex items-start gap-4">

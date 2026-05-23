@@ -189,7 +189,7 @@ export default function Browse() {
             </div>
           </div>
         ) : (
-          <div className="mx-auto max-w-3xl p-6">
+          <div className="mx-auto max-w-6xl p-6">
             {/* Document header */}
             <div className="mb-6">
               <h1 className="text-lg font-semibold text-neutral-800">

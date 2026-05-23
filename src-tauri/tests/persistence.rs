@@ -48,6 +48,11 @@ fn init_index(path: &PathBuf) -> Index {
     if path.exists() {
         index.load(path.to_str().unwrap()).expect("Failed to load index");
     }
+    // Must reserve before add() or usearch crashes with Access Violation 0xc0000005:
+    // add() dereferences contexts_[config.thread] which is null until reserve() allocates it.
+    if index.capacity() == 0 {
+        index.reserve(1024).expect("Failed to reserve index capacity");
+    }
     index
 }
 

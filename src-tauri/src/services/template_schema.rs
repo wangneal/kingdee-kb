@@ -2,12 +2,39 @@
 //!
 //! Auto-generates a minimal YAML sidecar schema for each template,
 //! with all fields defaulting to `fill_strategy: "user"` and `required: true`.
+//! Also supports loading pre-existing `.schema.yaml` sidecar files.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use super::template_docx::FieldInfo as DocxField;
 use super::template_xlsx::XlsxFieldInfo;
+
+/// Load a pre-existing schema from a `.schema.yaml` sidecar file.
+///
+/// The sidecar is named `{template_filename}.schema.yaml` (e.g.,
+/// `01风险跟踪记录表.xlsx.schema.yaml`), NOT replacing the original extension.
+/// Returns `Ok(Some(schema))` if the sidecar exists and is valid,
+/// `Ok(None)` if no sidecar exists, `Err` if the sidecar is corrupted.
+pub fn load_schema_sidecar(template_path: &Path) -> Result<Option<TemplateSchema>, String> {
+    let sidecar_path = sidecar_path_for(template_path);
+    if !sidecar_path.exists() {
+        return Ok(None);
+    }
+    let yaml = std::fs::read_to_string(&sidecar_path)
+        .map_err(|e| format!("Failed to read sidecar {}: {}", sidecar_path.display(), e))?;
+    // Strip UTF-8 BOM if present
+    let yaml = yaml.trim_start_matches('\u{feff}');
+    let schema: TemplateSchema = serde_yaml::from_str(&yaml)
+        .map_err(|e| format!("Failed to parse sidecar {}: {}", sidecar_path.display(), e))?;
+    Ok(Some(schema))
+}
+
+/// Build sidecar path: `{template_path}.schema.yaml` (appends, not replaces extension).
+fn sidecar_path_for(template_path: &Path) -> std::path::PathBuf {
+    let name = format!("{}.schema.yaml", template_path.to_string_lossy());
+    std::path::PathBuf::from(&name)
+}
 
 /// YAML schema structure for a template
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,7 +152,7 @@ pub fn schema_to_yaml(schema: &TemplateSchema) -> Result<String, String> {
 ///
 /// Creates `{template_path}.schema.yaml` alongside the template file.
 pub fn write_schema_sidecar(template_path: &Path, schema: &TemplateSchema) -> Result<(), String> {
-    let sidecar_path = template_path.with_extension("schema.yaml");
+    let sidecar_path = sidecar_path_for(template_path);
     let yaml = schema_to_yaml(schema)?;
     std::fs::write(&sidecar_path, yaml)
         .map_err(|e| format!("Failed to write schema {}: {}", sidecar_path.display(), e))?;

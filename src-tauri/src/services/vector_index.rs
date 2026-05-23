@@ -3,6 +3,13 @@
 //! Wraps usearch Index for create/insert/search/save/load operations.
 //! Uses 512-dim vectors with cosine distance, BF16 quantization.
 //! Index persisted to `~/.kingdee-kb/index/vectors.usearch`.
+//!
+//! ## Safety: Auto-reserve before add()
+//!
+//! usearch C++ `add()` accesses `contexts_[config.thread]` which is only
+//! allocated by `try_reserve()`. Calling `add()` on an un-reserved index
+//! causes Access Violation 0xc0000005 (null pointer + offset). We prevent
+//! this by auto-reserving `MIN_RESERVE_CAPACITY` before the first `add()`.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -12,6 +19,13 @@ use usearch::{new_index, Index, IndexOptions, MetricKind, ScalarKind};
 const DEFAULT_CONNECTIVITY: usize = 16;
 const DEFAULT_EXPANSION_ADD: usize = 200;
 const DEFAULT_EXPANSION_SEARCH: usize = 64;
+
+/// Minimum reserve capacity to ensure usearch `contexts_` buffer is allocated.
+///
+/// usearch `add()` crashes (Access Violation 0xc0000005) if `contexts_` is
+/// null — which happens when `reserve()` has never been called. We auto-reserve
+/// this minimum capacity before the first `add()` to prevent the crash.
+const MIN_RESERVE_CAPACITY: usize = 1024;
 
 /// A search result from the vector index
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +51,9 @@ pub struct VectorIndex {
     index: Index,
     index_path: PathBuf,
     dimensions: usize,
+    /// Track whether contexts_ has been allocated (reserve called or index loaded with data).
+    /// Prevents redundant reserve calls and the Access Violation crash.
+    reserved: bool,
 }
 
 impl VectorIndex {
@@ -65,7 +82,12 @@ impl VectorIndex {
 
         let index = new_index(&options).map_err(|e| format!("Failed to create index: {}", e))?;
 
-        Ok(Self { index, index_path, dimensions })
+        Ok(Self {
+            index,
+            index_path,
+            dimensions,
+            reserved: false,
+        })
     }
 
     /// Load an existing index from disk
@@ -100,18 +122,48 @@ impl VectorIndex {
             .load(path_str)
             .map_err(|e| format!("Failed to load index from {:?}: {}", index_path, e))?;
 
-        Ok(Self { index, index_path, dimensions })
+        // A loaded index with existing vectors already has contexts_ allocated
+        let reserved = index.capacity() > 0 || index.size() > 0;
+
+        Ok(Self {
+            index,
+            index_path: index_path.to_path_buf(),
+            dimensions,
+            reserved,
+        })
+    }
+
+    /// Ensure the usearch `contexts_` buffer is allocated before `add()`/`search()`.
+    ///
+    /// Auto-reserves `MIN_RESERVE_CAPACITY` if no reserve has been performed yet.
+    /// This prevents the Access Violation 0xc0000005 crash that occurs when
+    /// `add()` dereferences a null `contexts_` pointer.
+    fn ensure_reserved(&mut self) -> Result<(), String> {
+        if !self.reserved {
+            let current_cap = self.index.capacity();
+            let capacity = if current_cap > 0 {
+                current_cap
+            } else {
+                MIN_RESERVE_CAPACITY
+            };
+            self.index
+                .reserve(capacity)
+                .map_err(|e| format!("Failed to auto-reserve {}: {}", capacity, e))?;
+            self.reserved = true;
+        }
+        Ok(())
     }
 
     /// Add a single vector with the given key
-    pub fn add(&self, key: u64, vector: &[f32]) -> Result<(), String> {
+    pub fn add(&mut self, key: u64, vector: &[f32]) -> Result<(), String> {
+        self.ensure_reserved()?;
         self.index
             .add(key, vector)
             .map_err(|e| format!("Failed to add vector {}: {}", key, e))
     }
 
     /// Add multiple vectors in batch
-    pub fn add_batch(&self, keys: &[u64], vectors: &[Vec<f32>]) -> Result<(), String> {
+    pub fn add_batch(&mut self, keys: &[u64], vectors: &[Vec<f32>]) -> Result<(), String> {
         if keys.len() != vectors.len() {
             return Err(format!(
                 "keys.len() ({}) != vectors.len() ({})",
@@ -120,8 +172,12 @@ impl VectorIndex {
             ));
         }
 
+        self.ensure_reserved()?;
+
         for (key, vector) in keys.iter().zip(vectors.iter()) {
-            self.add(*key, vector)?;
+            self.index
+                .add(*key, vector)
+                .map_err(|e| format!("Failed to add vector {}: {}", key, e))?;
         }
 
         Ok(())
@@ -148,11 +204,12 @@ impl VectorIndex {
         Ok(search_results)
     }
 
-    /// Remove a vector by key (marks as removed in usearch)
-    pub fn remove(&self, key: u64) -> Result<(), String> {
+    /// Remove a vector by key from the index.
+    ///
+    /// Returns the number of vectors removed (0 if key not found, 1 if found).
+    pub fn remove(&self, key: u64) -> Result<usize, String> {
         self.index
             .remove(key)
-            .map(|_| ())
             .map_err(|e| format!("Failed to remove key {}: {}", key, e))
     }
 
@@ -184,10 +241,12 @@ impl VectorIndex {
     }
 
     /// Reserve capacity for expected number of vectors
-    pub fn reserve(&self, capacity: usize) -> Result<(), String> {
+    pub fn reserve(&mut self, capacity: usize) -> Result<(), String> {
         self.index
             .reserve(capacity)
-            .map_err(|e| format!("Failed to reserve {}: {}", capacity, e))
+            .map_err(|e| format!("Failed to reserve {}: {}", capacity, e))?;
+        self.reserved = true;
+        Ok(())
     }
 
     /// Get index statistics
@@ -223,7 +282,7 @@ mod tests {
     #[test]
     fn test_vector_index_crud() {
         let tmp = tempfile::tempdir().unwrap();
-        let index = VectorIndex::new(tmp.path().to_path_buf()).unwrap();
+        let mut index = VectorIndex::new(tmp.path().to_path_buf()).unwrap();
 
         assert_eq!(index.len(), 0);
         assert!(index.is_empty());
@@ -240,8 +299,9 @@ mod tests {
         assert!(results[0].similarity > 0.99);
 
         // Remove
-        index.remove(1).unwrap();
-        assert_eq!(index.len(), 1); // usearch marks as removed, size stays
+        let removed = index.remove(1).unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(index.len(), 0); // remove() decrements size
 
         // Save and reload
         index.save().unwrap();
@@ -249,13 +309,13 @@ mod tests {
         assert!(index_path.exists());
 
         let loaded = VectorIndex::load(index_path).unwrap();
-        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.len(), 0); // vector was removed before save
     }
 
     #[test]
     fn test_vector_index_batch() {
         let tmp = tempfile::tempdir().unwrap();
-        let index = VectorIndex::new(tmp.path().to_path_buf()).unwrap();
+        let mut index = VectorIndex::new(tmp.path().to_path_buf()).unwrap();
 
         let vectors: Vec<Vec<f32>> = (0..10).map(|i| random_vector(512, i)).collect();
         let keys: Vec<u64> = (0..10).collect();
@@ -265,5 +325,19 @@ mod tests {
         let results = index.search(&vectors[0], 5).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].key, 0); // self should be first
+    }
+
+    #[test]
+    fn test_add_without_explicit_reserve_does_not_crash() {
+        // This test verifies the core fix: calling add() on a fresh index
+        // (without explicit reserve) should NOT cause Access Violation 0xc0000005.
+        // Previously, usearch add() would dereference null contexts_ pointer.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut index = VectorIndex::new(tmp.path().to_path_buf()).unwrap();
+
+        // No explicit reserve() call — auto-reserve should kick in
+        let v = random_vector(512, 1);
+        index.add(1, &v).unwrap(); // Should NOT crash
+        assert_eq!(index.len(), 1);
     }
 }
