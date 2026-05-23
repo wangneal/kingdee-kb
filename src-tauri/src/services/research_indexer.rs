@@ -2,9 +2,12 @@ use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
 
+use crate::services::bm25_service::BM25Service;
+use crate::services::embedding::{EmbeddingService, ModelManager};
 use crate::services::research_outline::{
     parse_doc_file, parse_module_info, parse_outline_text, Edition, FlatQuestion, ResearchOutline,
 };
+use crate::services::vector_index::VectorIndex;
 
 pub struct ResearchIndexer {
     conn: Mutex<Connection>,
@@ -253,6 +256,90 @@ impl ResearchIndexer {
 
         Ok(result)
     }
+}
+
+/// Build a vector index for all questions of the given edition.
+/// Uses the embedding model from `~/.kingdee-kb/models/` to generate
+/// vector representations, then stores them in a usearch HNSW index.
+/// Returns the number of questions indexed.
+pub fn build_vector_index(
+    db_path: &Path,
+    edition: &Edition,
+    index_path: &Path,
+) -> Result<usize, String> {
+    let indexer = ResearchIndexer::new(db_path)?;
+    let questions = indexer.get_questions_by_edition(edition)?;
+    let count = questions.len();
+    if count == 0 {
+        return Ok(0);
+    }
+
+    let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
+    let models_dir = home.join(".kingdee-kb").join("models");
+    let mut model_mgr = ModelManager::new(models_dir);
+    model_mgr.init()?;
+    let model = model_mgr
+        .take_model()
+        .ok_or("Failed to get embedding model")?;
+    let mut emb_service = EmbeddingService::new(model);
+    let dim = emb_service.dimension();
+
+    let mut vec_index = VectorIndex::with_dimensions(index_path.to_path_buf(), dim)?;
+
+    let text_strings: Vec<String> = questions
+        .iter()
+        .map(|q| {
+            format!(
+                "{} {} {} {}",
+                q.module_name, q.section, q.category, q.question_text
+            )
+        })
+        .collect();
+    let text_refs: Vec<&str> = text_strings.iter().map(|s| s.as_str()).collect();
+    let embeddings = emb_service.embed_batch(&text_refs)?;
+
+    let keys: Vec<u64> = (0..embeddings.len()).map(|i| i as u64).collect();
+    vec_index.add_batch(&keys, &embeddings)?;
+    vec_index.save()?;
+
+    Ok(count)
+}
+
+/// Build a BM25 full-text index for all questions of the given edition.
+/// Creates a tantivy index with jieba Chinese tokenization at the
+/// specified path. Returns the number of questions indexed.
+pub fn build_bm25_index(
+    db_path: &Path,
+    edition: &Edition,
+    bm25_index_path: &Path,
+) -> Result<usize, String> {
+    let indexer = ResearchIndexer::new(db_path)?;
+    let questions = indexer.get_questions_by_edition(edition)?;
+    let count = questions.len();
+    if count == 0 {
+        return Ok(0);
+    }
+
+    let chunks: Vec<(i64, String, String, Option<String>, String)> = questions
+        .iter()
+        .enumerate()
+        .map(|(i, q)| {
+            let id = i as i64;
+            let title = q.module_name.clone();
+            let content = format!(
+                "{} {} {} {}",
+                q.module_name, q.section, q.category, q.question_text
+            );
+            let section_path = Some(format!("{}/{}", q.section, q.category));
+            let project = edition.as_str().to_string();
+            (id, title, content, section_path, project)
+        })
+        .collect();
+
+    let bm25 = BM25Service::new(bm25_index_path.to_path_buf())?;
+    bm25.rebuild(&chunks)?;
+
+    Ok(count)
 }
 
 #[cfg(test)]
