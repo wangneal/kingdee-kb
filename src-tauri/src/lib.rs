@@ -14,6 +14,7 @@ use services::vector_index::SearchResult;
 use services::metadata::{ChunkMeta, DocumentMeta, KnowledgeStats};
 use services::ingestion::{IngestionResult, ingest_text as ingest_text_fn, ingest_file as ingest_file_fn, ingest_directory as ingest_directory_fn};
 use services::llm_service::{ChatMessage, LLMConfig, RAGResponse, StreamChunk};
+use services::doc_generator::{GeneratedDoc, GenerateDocRequest};
 use services::template_docx::FieldInfo;
 use services::template_scanner::TemplateInfo;
 use services::template_schema::TemplateSchema;
@@ -532,6 +533,37 @@ async fn generate_templates_index(template_dir: Option<String>) -> Result<String
     services::template_scanner::write_templates_json(&root, &output_path)
 }
 
+// ─── Phase 10: Document Generation Commands ───
+
+/// Fill a template with field values (no LLM, simple replacement).
+///
+/// Directly replaces `{field_name}` placeholders in a .docx or .xlsx template
+/// with the provided values. Returns the output path and field count.
+#[tauri::command]
+async fn fill_template(
+    template_path: String,
+    fields: std::collections::HashMap<String, String>,
+    output_path: String,
+) -> Result<GeneratedDoc, String> {
+    services::doc_generator::fill_template(
+        std::path::Path::new(&template_path),
+        &fields,
+        std::path::Path::new(&output_path),
+    )
+}
+
+/// Generate a document by filling a template with optional LLM field generation.
+///
+/// Full pipeline: routes to docx/xlsx filler, calls LLM for `ai`/`llm` strategy
+/// fields if schema provided, validates required fields, returns metadata.
+#[tauri::command]
+async fn generate_doc(
+    state: State<'_, AppState>,
+    request: GenerateDocRequest,
+) -> Result<GeneratedDoc, String> {
+    services::doc_generator::generate_document(request, &state.llm).await
+}
+
 /// Perform backend initialization tasks
 async fn setup_backend(app: AppHandle) -> Result<(), String> {
     let data_dir = ensure_data_dir()?;
@@ -606,6 +638,9 @@ pub fn run() {
             extract_template_fields,
             get_template_schema,
             generate_templates_index,
+            // Phase 10 commands
+            fill_template,
+            generate_doc,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

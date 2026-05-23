@@ -1,5 +1,7 @@
 pub mod bm25_service;
 pub mod chunker;
+pub mod doc_generator;
+pub mod docx_filler;
 pub mod embedding;
 pub mod hybrid_search;
 pub mod ingestion;
@@ -12,3 +14,4 @@ pub mod template_schema;
 pub mod template_xlsx;
 pub mod text_cleaner;
 pub mod vector_index;
+pub mod xlsx_filler;

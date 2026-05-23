@@ -471,6 +471,77 @@ impl LLMService {
         })
     }
 
+    /// Simple chat completion (non-streaming, no RAG context).
+    ///
+    /// Sends messages directly to the LLM API and returns the response text.
+    /// Used for field generation and other non-RAG tasks.
+    pub async fn chat_completion(
+        &self,
+        messages: &[ChatMessage],
+        config: &LLMConfig,
+    ) -> Result<String, String> {
+        if config.api_key.is_empty() {
+            return Err("LLM API key not configured".to_string());
+        }
+
+        let url = format!(
+            "{}/chat/completions",
+            config.base_url.trim_end_matches('/')
+        );
+
+        let api_messages: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role,
+                    "content": m.content
+                })
+            })
+            .collect();
+
+        let body = serde_json::json!({
+            "model": config.model,
+            "messages": api_messages,
+            "temperature": config.temperature,
+            "stream": false
+        });
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", config.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("LLM request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable>".to_string());
+            return Err(format!("LLM API error ({}): {}", status, body_text));
+        }
+
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse LLM response: {}", e))?;
+
+        let content = json["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+
+        if content.is_empty() {
+            return Err("LLM returned empty response".to_string());
+        }
+
+        Ok(content)
+    }
+
     /// Generate a fallback response when LLM is unavailable.
     fn fallback_response(&self, results: &[HybridSearchResult]) -> Vec<StreamChunk> {
         let answer = format!(
