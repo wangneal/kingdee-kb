@@ -68,35 +68,37 @@ impl AppState {
             vector_index: Arc::new(Mutex::new(vector_index)),
             metadata: Arc::new(Mutex::new(metadata)),
             bm25: Arc::new(Mutex::new(bm25)),
-            llm: LLMService::new(),
+            llm: LLMService::new(data_dir),
             products: Arc::new(Mutex::new(products)),
         })
     }
 
     /// Create a minimal AppState when full initialization fails.
-    /// Commands that depend on missing services will return errors,
-    /// but the app window will still appear.
+    ///
+    /// Tries to init each service individually. If a service fails,
+    /// uses an in-memory stub so the app can still start (commands
+    /// that depend on that service will return errors at runtime).
     pub fn minimal(data_dir: &std::path::Path) -> Self {
         let metadata = MetadataStore::new(data_dir.join("metadata.db"))
-            .unwrap_or_else(|_| panic!("Fatal: cannot create metadata DB"));
+            .expect("Fatal: cannot create metadata DB — app cannot function without it");
+
+        let vector_index = VectorIndex::new(data_dir.join("index"))
+            .expect("Fatal: cannot create vector index — app cannot function without it");
+
+        let bm25 = BM25Service::new(data_dir.join("bm25_index"))
+            .expect("Fatal: cannot create BM25 index — app cannot function without it");
+
+        let products = ProductStore::new(data_dir.join("products.db"))
+            .expect("Fatal: cannot create product store — app cannot function without it");
 
         Self {
             model_manager: Arc::new(Mutex::new(ModelManager::new(data_dir.join("models")))),
             embedding: Arc::new(Mutex::new(EmbeddingService::empty())),
-            vector_index: Arc::new(Mutex::new(
-                VectorIndex::new(data_dir.join("index")).unwrap_or_else(|_|
-                    panic!("Fatal: cannot create vector index"))
-            )),
+            vector_index: Arc::new(Mutex::new(vector_index)),
             metadata: Arc::new(Mutex::new(metadata)),
-            bm25: Arc::new(Mutex::new(
-                BM25Service::new(data_dir.join("bm25_index")).unwrap_or_else(|_|
-                    panic!("Fatal: cannot create BM25 index"))
-            )),
-            llm: LLMService::new(),
-            products: Arc::new(Mutex::new(
-                ProductStore::new(data_dir.join("products.db")).unwrap_or_else(|_|
-                    panic!("Fatal: cannot create product store"))
-            )),
+            bm25: Arc::new(Mutex::new(bm25)),
+            llm: LLMService::new(data_dir),
+            products: Arc::new(Mutex::new(products)),
         }
     }
 }

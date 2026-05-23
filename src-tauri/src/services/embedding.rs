@@ -11,6 +11,14 @@
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use std::path::PathBuf;
 
+/// HuggingFace mirror list, ordered by likely speed in China.
+/// `hf-hub` (used internally by fastembed) reads the `HF_ENDPOINT` env var
+/// to determine which mirror to download from.
+const HF_MIRRORS: &[Option<&str>] = &[
+    Some("https://hf-mirror.com"),           // Official HF Chinese mirror
+    None,                                      // Default (huggingface.co)
+];
+
 /// Manages the embedding model lifecycle (download, init, status)
 pub struct ModelManager {
     model_dir: PathBuf,
@@ -28,26 +36,30 @@ impl ModelManager {
         }
     }
 
-    /// Initialize the embedding model (downloads on first use)
+    /// Initialize the embedding model (downloads on first use).
+    ///
+    /// Tries multiple HuggingFace mirrors in sequence. If the model is already
+    /// cached in `~/.cache/huggingface/hub/`, this completes instantly regardless
+    /// of mirror availability.
     pub fn init(&mut self) -> Result<(), String> {
         if self.is_ready {
             return Ok(());
         }
 
-        // Ensure model directory exists
         std::fs::create_dir_all(&self.model_dir)
             .map_err(|e| format!("Failed to create model directory: {}", e))?;
 
-        // Try to initialize with bge-small-zh-v1.5
-        // Falls back to all-MiniLM-L6-v2 if BGE model unavailable
-        let model = Self::try_init_model(EmbeddingModel::BGESmallZHV15)
+        // Try bge-small-zh-v1.5 (Chinese-optimized) first, fall back to all-MiniLM-L6-v2
+        let model = Self::try_init_with_mirrors(EmbeddingModel::BGESmallZHV15)
             .or_else(|_| {
                 eprintln!("[ModelManager] BGE model unavailable, trying default model...");
-                Self::try_init_model(EmbeddingModel::AllMiniLML6V2)
+                Self::try_init_with_mirrors(EmbeddingModel::AllMiniLML6V2)
             })
             .map_err(|e| format!(
                 "Failed to initialize any embedding model: {}\n\
-                 Hint: Set HF_ENDPOINT=https://hf-mirror.com or pre-download model files.",
+                 Hint: The first download may take a few minutes. \
+                 Try setting HF_ENDPOINT=https://hf-mirror.com in your environment, \
+                 or pre-download model files to ~/.cache/huggingface/.",
                 e
             ))?;
 
@@ -57,12 +69,97 @@ impl ModelManager {
         Ok(())
     }
 
-    fn try_init_model(model: EmbeddingModel) -> Result<TextEmbedding, String> {
-        let model_name = format!("{:?}", model);
-        TextEmbedding::try_new(
-            InitOptions::new(model).with_show_download_progress(true),
+    /// Try to initialize a model by attempting each mirror in `HF_MIRRORS`.
+    ///
+    /// Saves and restores the original `HF_ENDPOINT` env var around each attempt.
+    /// If the model is already cached, all mirrors succeed instantly.
+    fn try_init_with_mirrors(model: EmbeddingModel) -> Result<TextEmbedding, String> {
+        // Save the original HF_ENDPOINT so we can restore it
+        let original_hf_endpoint = std::env::var("HF_ENDPOINT").ok();
+        let mut last_err = String::new();
+
+        for (i, mirror) in HF_MIRRORS.iter().enumerate() {
+            // Set HF_ENDPOINT for this mirror
+            match mirror {
+                Some(url) => {
+                    eprintln!("[ModelManager] Trying mirror {}: {}", i + 1, url);
+                    std::env::set_var("HF_ENDPOINT", url);
+                }
+                None => {
+                    eprintln!("[ModelManager] Trying mirror {}: default (huggingface.co)", i + 1);
+                    // Restore original or clear to use default
+                    match &original_hf_endpoint {
+                        Some(val) => std::env::set_var("HF_ENDPOINT", val),
+                        None => std::env::remove_var("HF_ENDPOINT"),
+                    }
+                }
+            }
+
+            match TextEmbedding::try_new(
+                InitOptions::new(model.clone()).with_show_download_progress(true),
+            ) {
+                Ok(text_emb) => {
+                    // Restore original HF_ENDPOINT
+                    Self::restore_hf_endpoint(&original_hf_endpoint);
+                    return Ok(text_emb);
+                }
+                Err(e) => {
+                    let label = mirror.unwrap_or("default (huggingface.co)");
+                    last_err = format!("{} failed: {}", label, e);
+                    eprintln!("[ModelManager] Mirror {}: {} failed: {}", i + 1, label, e);
+
+                    // Clear any partial cache from this mirror before trying the next
+                    // This prevents a corrupt partial download from blocking the next mirror
+                    if let Some(cache_dir) = Self::hf_cache_dir_for(&model) {
+                        let _ = std::fs::remove_dir_all(&cache_dir);
+                    }
+
+                    continue;
+                }
+            }
+        }
+
+        // Restore original HF_ENDPOINT on failure too
+        Self::restore_hf_endpoint(&original_hf_endpoint);
+
+        Err(format!(
+            "All {} mirror(s) failed for model {:?}. Last error: {}",
+            HF_MIRRORS.len(),
+            model,
+            last_err
+        ))
+    }
+
+    /// Restore the original `HF_ENDPOINT` environment variable if it was set.
+    fn restore_hf_endpoint(original: &Option<String>) {
+        match original {
+            Some(val) => std::env::set_var("HF_ENDPOINT", val),
+            None => std::env::remove_var("HF_ENDPOINT"),
+        }
+    }
+
+    /// Get the HuggingFace cache directory for a given model.
+    /// Returns `~/.cache/huggingface/hub/models--{org}--{name}/`.
+    fn hf_cache_dir_for(model: &EmbeddingModel) -> Option<PathBuf> {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE")) // Windows
+            .ok()?;
+        // Convert EmbeddingModel to HF repo ID
+        // e.g., "BGESmallZHV15" → "models--BAAI--bge-small-zh-v1.5"
+        // We map known model names to their HF repo IDs
+        let repo_id = match model {
+            EmbeddingModel::BGESmallZHV15 => "BAAI/bge-small-zh-v1.5",
+            EmbeddingModel::AllMiniLML6V2 => "sentence-transformers/all-MiniLM-L6-v2",
+            _ => return None,
+        };
+        let cache_key = format!("models--{}", repo_id.replace('/', "--"));
+        Some(
+            PathBuf::from(home)
+                .join(".cache")
+                .join("huggingface")
+                .join("hub")
+                .join(cache_key),
         )
-        .map_err(|e| format!("Failed to init {}: {}", model_name, e))
     }
 
     /// Initialize from local model files (bypasses HuggingFace download)
@@ -92,6 +189,13 @@ impl ModelManager {
     /// Get a mutable reference to the underlying model
     pub fn model_mut(&mut self) -> Option<&mut TextEmbedding> {
         self.model.as_mut()
+    }
+
+    /// Take ownership of the model, leaving ModelManager without direct access.
+    /// Used to transfer the model to EmbeddingService after initialization.
+    /// `is_ready` remains true because initialization was already completed.
+    pub fn take_model(&mut self) -> Option<TextEmbedding> {
+        self.model.take()
     }
 }
 
@@ -160,6 +264,12 @@ impl EmbeddingService {
     /// Check if the service is ready
     pub fn is_ready(&self) -> bool {
         self.model.is_some()
+    }
+
+    /// Inject an initialized model into this service.
+    /// Called by `init_model` command after ModelManager downloads the model.
+    pub fn set_model(&mut self, model: TextEmbedding) {
+        self.model = Some(model);
     }
 
     /// Get the embedding dimension

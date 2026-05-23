@@ -137,23 +137,37 @@ async fn set_complete(
 
 // ─── Phase 2: Embedding & Vector Store Commands ───
 
-/// Get the current model status (ready / not ready)
+/// Get the current model status (ready / not ready).
+/// Checks EmbeddingService which holds the actual model instance.
 #[tauri::command]
 async fn get_model_status(
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
-    let mm = state.model_manager.lock().map_err(|e| e.to_string())?;
-    Ok(mm.is_ready())
+    let emb = state.embedding.lock().map_err(|e| e.to_string())?;
+    Ok(emb.is_ready())
 }
 
-/// Initialize the embedding model (downloads on first call)
+/// Initialize the embedding model (downloads on first call).
+/// After initialization, transfers the model to EmbeddingService
+/// so that RAG queries can use vector search.
 #[tauri::command]
 async fn init_model(
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
-    let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
-    mm.init()?;
-    Ok(mm.is_ready())
+    // Step 1: Initialize model in ModelManager (may download from HuggingFace)
+    let model = {
+        let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
+        mm.init()?;
+        mm.take_model().ok_or("Model initialized but no model returned")?
+    }; // drop mm lock
+
+    // Step 2: Inject into EmbeddingService
+    {
+        let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
+        emb.set_model(model);
+    } // drop emb lock
+
+    Ok(true)
 }
 
 /// Embed a single text — returns a 512-dim vector
@@ -365,13 +379,16 @@ async fn get_llm_config(
     state: State<'_, AppState>,
 ) -> Result<LLMConfig, String> {
     let mut config = state.llm.get_config()?;
-    // Mask the API key for security
-    if config.api_key.len() > 8 {
+    // Mask the API key for security — show first 3 and last 3 chars only for long keys
+    let key_len = config.api_key.len();
+    if key_len > 10 {
         config.api_key = format!(
             "{}...{}",
-            &config.api_key[..4],
-            &config.api_key[config.api_key.len() - 4..]
+            &config.api_key[..3],
+            &config.api_key[key_len - 3..]
         );
+    } else if key_len > 0 {
+        config.api_key = "****".to_string();
     }
     Ok(config)
 }
@@ -382,6 +399,17 @@ async fn is_llm_configured(
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
     Ok(state.llm.is_configured())
+}
+
+/// Test LLM API connectivity without requiring embedding model.
+///
+/// Sends a minimal request to verify the API key and endpoint are valid.
+/// Returns a success message or a descriptive error.
+#[tauri::command]
+async fn test_llm_connection(
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    state.llm.test_connection().await
 }
 
 /// RAG query: hybrid search → context assembly → LLM streaming completion.
@@ -898,6 +926,7 @@ pub fn run() {
             set_llm_config,
             get_llm_config,
             is_llm_configured,
+            test_llm_connection,
             rag_query,
             rag_query_stream,
             count_tokens,

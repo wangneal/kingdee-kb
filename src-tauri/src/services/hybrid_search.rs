@@ -102,52 +102,59 @@ pub fn hybrid_search(
     bm25: &std::sync::Mutex<BM25Service>,
     metadata: &std::sync::Mutex<MetadataStore>,
 ) -> Result<Vec<HybridSearchResult>, String> {
-    // ── Step 1: Embed query ──
-    let query_vec = {
-        let mut emb = embedding.lock().map_err(|e| e.to_string())?;
-        emb.embed_text(query)?
-    }; // drop emb lock
-
-    // ── Step 2: Vector search ──
-    let vector_raw = {
-        let index = vector_index.lock().map_err(|e| e.to_string())?;
-        index.search(&query_vec, TOP_N)?
-    }; // drop index lock
-
-    // ── Step 3: Resolve vector results to full metadata ──
+    // ── Step 1: Embed query (graceful degradation if model not initialized) ──
     let vector_resolved: Vec<ResolvedChunk> = {
-        let meta = metadata.lock().map_err(|e| e.to_string())?;
-        let vector_keys: Vec<i64> = vector_raw.iter().map(|r| r.key as i64).collect();
-        let chunks = meta.get_chunks_by_vector_keys(&vector_keys)?;
+        let emb = embedding.lock().map_err(|e| e.to_string())?;
+        if emb.is_ready() {
+            // Embedding available → full hybrid search
+            drop(emb); // release lock before mutable borrow
+            let query_vec = {
+                let mut emb_mut = embedding.lock().map_err(|e| e.to_string())?;
+                emb_mut.embed_text(query)?
+            }; // drop emb_mut lock
 
-        chunks
-            .into_iter()
-            .filter_map(|c| {
-                let (title, project) = meta
-                    .get_document(c.document_id)
-                    .ok()
-                    .flatten()
-                    .map(|d| (d.title, d.project))
-                    .unwrap_or_else(|| (String::new(), "default".to_string()));
+            // Vector search
+            let vector_raw = {
+                let index = vector_index.lock().map_err(|e| e.to_string())?;
+                index.search(&query_vec, TOP_N)?
+            }; // drop index lock
 
-                // Apply project filter early for vector results
-                if let Some(pid) = project_id {
-                    if project != pid {
-                        return None;
+            // Resolve vector results to full metadata
+            let meta = metadata.lock().map_err(|e| e.to_string())?;
+            let vector_keys: Vec<i64> = vector_raw.iter().map(|r| r.key as i64).collect();
+            let chunks = meta.get_chunks_by_vector_keys(&vector_keys)?;
+
+            chunks
+                .into_iter()
+                .filter_map(|c| {
+                    let (title, project) = meta
+                        .get_document(c.document_id)
+                        .ok()
+                        .flatten()
+                        .map(|d| (d.title, d.project))
+                        .unwrap_or_else(|| (String::new(), "default".to_string()));
+
+                    if let Some(pid) = project_id {
+                        if project != pid {
+                            return None;
+                        }
                     }
-                }
 
-                Some(ResolvedChunk {
-                    chunk_id: c.id,
-                    title,
-                    content: c.content,
-                    document_id: c.document_id,
-                    section_path: c.section_path,
-                    project,
+                    Some(ResolvedChunk {
+                        chunk_id: c.id,
+                        title,
+                        content: c.content,
+                        document_id: c.document_id,
+                        section_path: c.section_path,
+                        project,
+                    })
                 })
-            })
-            .collect()
-    }; // drop meta lock
+                .collect()
+        } else {
+            // Embedding not initialized → skip vector search, BM25 only
+            Vec::new()
+        }
+    }; // drop all locks
 
     // ── Step 4: BM25 search ──
     // BM25SearchResult already contains title, content, section_path, project

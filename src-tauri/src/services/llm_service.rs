@@ -1,4 +1,8 @@
-//! LLM Service — OpenAI-compatible Chat Completions client with SSE streaming
+//! LLM Service — Multi-protocol LLM client with SSE streaming
+//!
+//! Supports OpenAI (Chat Completions) and Anthropic (Messages) protocols.
+//! The user selects a provider in settings; the backend uses that provider's
+//! native protocol directly — no protocol conversion needed.
 //!
 //! Provides the full RAG pipeline:
 //!   embed query → hybrid search → context assembly → LLM completion (SSE)
@@ -7,6 +11,7 @@
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::services::bm25_service::BM25Service;
@@ -33,21 +38,43 @@ const DEFAULT_MAX_CONTEXT_TOKENS: u32 = 4096;
 const RESPONSE_TOKENS: u32 = 1024;
 
 /// Default OpenAI base URL
-const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
+const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
-/// Default model
-const DEFAULT_MODEL: &str = "gpt-4o";
+/// Default OpenAI model
+const DEFAULT_OPENAI_MODEL: &str = "gpt-4o";
+
+/// Default Anthropic base URL
+const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
+
+/// Default Anthropic model
+const DEFAULT_ANTHROPIC_MODEL: &str = "claude-3-5-sonnet-20241022";
+
+/// Anthropic API version header
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+// ─── Provider ───
+
+/// LLM provider type — determines which API protocol to use
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum LLMProvider {
+    #[serde(rename = "openai")]
+    OpenAI,
+    #[serde(rename = "anthropic")]
+    Anthropic,
+}
 
 // ─── Configuration ───
 
-/// LLM provider configuration (OpenAI-compatible API)
+/// LLM provider configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLMConfig {
+    /// Which provider to use (determines API protocol)
+    pub provider: LLMProvider,
     /// API key for authentication
     pub api_key: String,
-    /// Base URL (default: https://api.openai.com/v1)
+    /// Base URL (default varies by provider)
     pub base_url: String,
-    /// Model name (default: gpt-4o)
+    /// Model name (default varies by provider)
     pub model: String,
     /// Max context window in tokens (default: 4096)
     pub max_tokens: u32,
@@ -58,9 +85,10 @@ pub struct LLMConfig {
 impl Default for LLMConfig {
     fn default() -> Self {
         Self {
+            provider: LLMProvider::OpenAI,
             api_key: String::new(),
-            base_url: DEFAULT_BASE_URL.to_string(),
-            model: DEFAULT_MODEL.to_string(),
+            base_url: DEFAULT_OPENAI_BASE_URL.to_string(),
+            model: DEFAULT_OPENAI_MODEL.to_string(),
             max_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
             temperature: 0.3,
         }
@@ -181,10 +209,19 @@ pub fn assemble_context(results: &[HybridSearchResult], max_tokens: u32) -> Stri
 }
 
 /// Build the user prompt with context and query.
+///
+/// When context is empty (no search results / embedding unavailable),
+/// falls back to pure conversational mode without referencing the knowledge base.
 fn build_user_prompt(context: &str, query: &str) -> String {
-    format!(
-        "知识库检索到的相关内容：\n{context}\n\n用户问题：{query}\n\n请根据以上知识库内容回答。"
-    )
+    if context.trim().is_empty() {
+        // Pure LLM chat — no knowledge base context available
+        format!("用户问题：{query}\n\n请直接回答用户的问题。")
+    } else {
+        // RAG mode — knowledge base context available
+        format!(
+            "知识库检索到的相关内容：\n{context}\n\n用户问题：{query}\n\n请根据以上知识库内容回答。"
+        )
+    }
 }
 
 // ─── LLM Service ───
@@ -193,23 +230,45 @@ fn build_user_prompt(context: &str, query: &str) -> String {
 pub struct LLMService {
     /// Current API configuration
     config: Arc<Mutex<LLMConfig>>,
+    /// Path to persist config JSON (e.g. ~/.kingdee-kb/config.json)
+    config_path: PathBuf,
     /// HTTP client (reusable for connection pooling)
     client: reqwest::Client,
 }
 
 impl LLMService {
-    /// Create a new LLM service with default config.
-    pub fn new() -> Self {
+    /// Create a new LLM service, loading persisted config if available.
+    pub fn new(data_dir: &std::path::Path) -> Self {
+        let config_path = data_dir.join("config.json");
+        let config = Self::load_config(&config_path).unwrap_or_default();
         Self {
-            config: Arc::new(Mutex::new(LLMConfig::default())),
+            config: Arc::new(Mutex::new(config)),
+            config_path,
             client: reqwest::Client::new(),
         }
     }
 
-    /// Update the LLM configuration.
+    /// Load config from JSON file, returning default on any failure.
+    fn load_config(path: &std::path::Path) -> Result<LLMConfig, String> {
+        let data = std::fs::read_to_string(path)
+            .map_err(|e| format!("Read config failed: {}", e))?;
+        serde_json::from_str(&data)
+            .map_err(|e| format!("Parse config failed: {}", e))
+    }
+
+    /// Persist current config to JSON file.
+    fn save_config(config: &LLMConfig, path: &std::path::Path) -> Result<(), String> {
+        let data = serde_json::to_string_pretty(config)
+            .map_err(|e| format!("Serialize config failed: {}", e))?;
+        std::fs::write(path, data)
+            .map_err(|e| format!("Write config failed: {}", e))
+    }
+
+    /// Update the LLM configuration and persist to disk.
     pub fn set_config(&self, config: LLMConfig) -> Result<(), String> {
         let mut cfg = self.config.lock().map_err(|e| e.to_string())?;
         *cfg = config;
+        Self::save_config(&*cfg, &self.config_path)?;
         Ok(())
     }
 
@@ -231,6 +290,8 @@ impl LLMService {
     ///
     /// Returns an async stream of `StreamChunk`s. If LLM is unavailable,
     /// falls back to returning search results as a single chunk.
+    ///
+    /// Branches by provider: OpenAI uses /chat/completions, Anthropic uses /messages.
     pub async fn rag_query(
         &self,
         query: &str,
@@ -257,51 +318,68 @@ impl LLMService {
             return Ok(self.fallback_response(&search_results));
         }
 
-        // Step 3: Assemble context (reserve tokens for system prompt + response)
-        // Use block scope to ensure MutexGuard is dropped before any .await
-        let (api_key, base_url, model, temperature, max_ctx) = {
-            let config = self.config.lock().map_err(|e| e.to_string())?;
-            (
-                config.api_key.clone(),
-                config.base_url.clone(),
-                config.model.clone(),
-                config.temperature,
-                config.max_tokens,
-            )
-        }; // config MutexGuard dropped here
+        // Step 3: Read config in a block scope to drop MutexGuard before .await
+        let config = {
+            let cfg = self.config.lock().map_err(|e| e.to_string())?;
+            cfg.clone()
+        };
 
-        // Token budget: total - system_prompt - response_reserve - user_prompt_overhead
+        // Step 4: Assemble context
         let system_tokens = count_tokens(SYSTEM_PROMPT);
-        let budget = max_ctx.saturating_sub(system_tokens + RESPONSE_TOKENS + 200);
+        let budget = config.max_tokens.saturating_sub(system_tokens + RESPONSE_TOKENS + 200);
         let context = assemble_context(&search_results, budget);
-
-        // Step 4: Build messages
         let user_prompt = build_user_prompt(&context, query);
-        let mut messages = vec![serde_json::json!({
-            "role": "system",
-            "content": SYSTEM_PROMPT
-        })];
 
+        // Step 5: Build messages array (common for both providers)
+        let mut messages: Vec<ChatMessage> = Vec::new();
         // Include conversation history
         for msg in &conversation_history {
-            messages.push(serde_json::json!({
+            messages.push(ChatMessage {
+                role: msg.role.clone(),
+                content: msg.content.clone(),
+            });
+        }
+        messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: user_prompt,
+        });
+
+        // Step 6: Branch by provider
+        match config.provider {
+            LLMProvider::OpenAI => {
+                self.rag_query_openai(&config, SYSTEM_PROMPT, &messages).await
+            }
+            LLMProvider::Anthropic => {
+                self.rag_query_anthropic(&config, SYSTEM_PROMPT, &messages).await
+            }
+        }
+    }
+
+    /// OpenAI streaming RAG query — POST /chat/completions with OpenAI SSE format
+    async fn rag_query_openai(
+        &self,
+        config: &LLMConfig,
+        system_prompt: &str,
+        messages: &[ChatMessage],
+    ) -> Result<Vec<StreamChunk>, String> {
+        let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+
+        // Build messages array with system prompt as first message
+        let mut api_messages = vec![serde_json::json!({
+            "role": "system",
+            "content": system_prompt
+        })];
+        for msg in messages {
+            api_messages.push(serde_json::json!({
                 "role": msg.role,
                 "content": msg.content
             }));
         }
 
-        messages.push(serde_json::json!({
-            "role": "user",
-            "content": user_prompt
-        }));
-
-        // Step 5: Call LLM API with streaming
-        let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-
         let body = serde_json::json!({
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
+            "model": config.model,
+            "messages": api_messages,
+            "temperature": config.temperature,
             "max_tokens": RESPONSE_TOKENS,
             "stream": true
         });
@@ -309,12 +387,12 @@ impl LLMService {
         let response = self
             .client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Authorization", format!("Bearer {}", config.api_key))
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
             .await
-            .map_err(|e| format!("LLM request failed: {}", e))?;
+            .map_err(|e| format!("OpenAI request failed: {}", e))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -322,23 +400,83 @@ impl LLMService {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<unreadable>".to_string());
-            return Err(format!(
-                "LLM API error ({}): {}",
-                status, body_text
-            ));
+            return Err(format!("OpenAI API error ({}): {}", status, body_text));
         }
 
-        // Step 6: Parse SSE stream
+        // Parse OpenAI SSE stream
+        self.parse_openai_stream(response).await
+    }
+
+    /// Anthropic streaming RAG query — POST /messages with Anthropic SSE format
+    async fn rag_query_anthropic(
+        &self,
+        config: &LLMConfig,
+        system_prompt: &str,
+        messages: &[ChatMessage],
+    ) -> Result<Vec<StreamChunk>, String> {
+        let url = format!("{}/messages", config.base_url.trim_end_matches('/'));
+
+        // Anthropic: system prompt is a top-level field, NOT in messages array
+        // Filter out any system messages from the messages array
+        let api_messages: Vec<serde_json::Value> = messages
+            .iter()
+            .filter(|m| m.role != "system")
+            .map(|m| serde_json::json!({
+                "role": m.role,
+                "content": m.content
+            }))
+            .collect();
+
+        let body = serde_json::json!({
+            "model": config.model,
+            "max_tokens": RESPONSE_TOKENS,
+            "temperature": config.temperature,
+            "system": system_prompt,
+            "messages": api_messages,
+            "stream": true
+        });
+
+        let response = self
+            .client
+            .post(&url)
+            .header("x-api-key", &config.api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("anthropic-dangerous-direct-browser-access", "true")
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("Anthropic request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable>".to_string());
+            return Err(format!("Anthropic API error ({}): {}", status, body_text));
+        }
+
+        // Parse Anthropic SSE stream
+        self.parse_anthropic_stream(response).await
+    }
+
+    /// Parse OpenAI SSE stream → Vec<StreamChunk>
+    ///
+    /// OpenAI format: `data: {"choices":[{"delta":{"content":"..."}}]}`
+    /// End marker: `data: [DONE]` or `finish_reason: "stop"`
+    async fn parse_openai_stream(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<Vec<StreamChunk>, String> {
         let mut chunks = Vec::new();
         let mut byte_stream = response.bytes_stream();
-
         let mut buffer = String::new();
 
         while let Some(item) = byte_stream.next().await {
             let bytes = item.map_err(|e| format!("Stream read error: {}", e))?;
             buffer.push_str(&String::from_utf8_lossy(&bytes));
 
-            // Process complete SSE lines
             while let Some(line_end) = buffer.find('\n') {
                 let line = buffer[..line_end].trim().to_string();
                 buffer = buffer[line_end + 1..].to_string();
@@ -351,32 +489,20 @@ impl LLMService {
                     let data = data.trim();
 
                     if data == "[DONE]" {
-                        chunks.push(StreamChunk {
-                            content: String::new(),
-                            done: true,
-                        });
+                        chunks.push(StreamChunk { content: String::new(), done: true });
                         return Ok(chunks);
                     }
 
-                    // Parse the JSON chunk
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
                         if let Some(choices) = parsed["choices"].as_array() {
                             if let Some(choice) = choices.first() {
                                 if let Some(delta) = choice.get("delta") {
                                     if let Some(content) = delta["content"].as_str() {
-                                        chunks.push(StreamChunk {
-                                            content: content.to_string(),
-                                            done: false,
-                                        });
+                                        chunks.push(StreamChunk { content: content.to_string(), done: false });
                                     }
                                 }
-
-                                // Check for finish_reason
                                 if choice["finish_reason"] == "stop" {
-                                    chunks.push(StreamChunk {
-                                        content: String::new(),
-                                        done: true,
-                                    });
+                                    chunks.push(StreamChunk { content: String::new(), done: true });
                                     return Ok(chunks);
                                 }
                             }
@@ -386,14 +512,91 @@ impl LLMService {
             }
         }
 
-        // If we get here without [DONE], add a final done chunk
         if chunks.last().map(|c| c.done) != Some(true) {
-            chunks.push(StreamChunk {
-                content: String::new(),
-                done: true,
-            });
+            chunks.push(StreamChunk { content: String::new(), done: true });
+        }
+        Ok(chunks)
+    }
+
+    /// Parse Anthropic SSE stream → Vec<StreamChunk>
+    ///
+    /// Anthropic format: `event: content_block_delta` / `data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}`
+    /// End marker: `event: message_stop`
+    async fn parse_anthropic_stream(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<Vec<StreamChunk>, String> {
+        let mut chunks = Vec::new();
+        let mut byte_stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut current_event_type = String::new();
+
+        while let Some(item) = byte_stream.next().await {
+            let bytes = item.map_err(|e| format!("Stream read error: {}", e))?;
+            buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+            while let Some(line_end) = buffer.find('\n') {
+                let line = buffer[..line_end].trim().to_string();
+                buffer = buffer[line_end + 1..].to_string();
+
+                if line.is_empty() {
+                    // Empty line = end of an SSE event block
+                    continue;
+                }
+
+                // Anthropic SSE uses "event:" lines to specify event type
+                if let Some(event_type) = line.strip_prefix("event: ") {
+                    current_event_type = event_type.trim().to_string();
+                    continue;
+                }
+
+                if line.starts_with(':') {
+                    continue; // comment line
+                }
+
+                if let Some(data) = line.strip_prefix("data: ") {
+                    let data = data.trim();
+
+                    // Check for message_stop event (stream end)
+                    if current_event_type == "message_stop" {
+                        chunks.push(StreamChunk { content: String::new(), done: true });
+                        return Ok(chunks);
+                    }
+
+                    // Parse content_block_delta for text content
+                    if current_event_type == "content_block_delta" {
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                            if parsed["type"] == "content_block_delta" {
+                                if let Some(delta) = parsed.get("delta") {
+                                    if delta["type"] == "text_delta" {
+                                        if let Some(text) = delta["text"].as_str() {
+                                            chunks.push(StreamChunk { content: text.to_string(), done: false });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Also handle error events
+                    if current_event_type == "error" {
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                            let error_msg = parsed["error"]["message"]
+                                .as_str()
+                                .unwrap_or("Unknown Anthropic stream error");
+                            return Err(format!("Anthropic stream error: {}", error_msg));
+                        }
+                    }
+
+                    current_event_type.clear();
+                }
+            }
         }
 
+        // If stream ended without message_stop
+        if chunks.last().map(|c| c.done) != Some(true) {
+            chunks.push(StreamChunk { content: String::new(), done: true });
+        }
         Ok(chunks)
     }
 
@@ -475,6 +678,8 @@ impl LLMService {
     ///
     /// Sends messages directly to the LLM API and returns the response text.
     /// Used for field generation and other non-RAG tasks.
+    ///
+    /// Branches by provider: OpenAI uses /chat/completions, Anthropic uses /messages.
     pub async fn chat_completion(
         &self,
         messages: &[ChatMessage],
@@ -484,10 +689,19 @@ impl LLMService {
             return Err("LLM API key not configured".to_string());
         }
 
-        let url = format!(
-            "{}/chat/completions",
-            config.base_url.trim_end_matches('/')
-        );
+        match config.provider {
+            LLMProvider::OpenAI => self.chat_completion_openai(messages, config).await,
+            LLMProvider::Anthropic => self.chat_completion_anthropic(messages, config).await,
+        }
+    }
+
+    /// OpenAI non-streaming chat completion — POST /chat/completions
+    async fn chat_completion_openai(
+        &self,
+        messages: &[ChatMessage],
+        config: &LLMConfig,
+    ) -> Result<String, String> {
+        let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
 
         let api_messages: Vec<serde_json::Value> = messages
             .iter()
@@ -514,7 +728,7 @@ impl LLMService {
             .json(&body)
             .send()
             .await
-            .map_err(|e| format!("LLM request failed: {}", e))?;
+            .map_err(|e| format!("OpenAI request failed: {}", e))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -522,13 +736,13 @@ impl LLMService {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<unreadable>".to_string());
-            return Err(format!("LLM API error ({}): {}", status, body_text));
+            return Err(format!("OpenAI API error ({}): {}", status, body_text));
         }
 
         let json: serde_json::Value = response
             .json()
             .await
-            .map_err(|e| format!("Failed to parse LLM response: {}", e))?;
+            .map_err(|e| format!("Failed to parse OpenAI response: {}", e))?;
 
         let content = json["choices"][0]["message"]["content"]
             .as_str()
@@ -536,10 +750,172 @@ impl LLMService {
             .to_string();
 
         if content.is_empty() {
-            return Err("LLM returned empty response".to_string());
+            return Err("OpenAI returned empty response".to_string());
         }
 
         Ok(content)
+    }
+
+    /// Anthropic non-streaming chat completion — POST /messages
+    ///
+    /// Anthropic requires `system` as a top-level field, not in messages.
+    /// Response format: `{"content":[{"type":"text","text":"..."}]}`
+    async fn chat_completion_anthropic(
+        &self,
+        messages: &[ChatMessage],
+        config: &LLMConfig,
+    ) -> Result<String, String> {
+        let url = format!("{}/messages", config.base_url.trim_end_matches('/'));
+
+        // Extract system prompt from messages (if any) and filter it out
+        let system_prompt: String = messages
+            .iter()
+            .filter(|m| m.role == "system")
+            .map(|m| m.content.as_str())
+            .collect::<Vec<&str>>()
+            .join("\n");
+
+        let api_messages: Vec<serde_json::Value> = messages
+            .iter()
+            .filter(|m| m.role != "system")
+            .map(|m| serde_json::json!({
+                "role": m.role,
+                "content": m.content
+            }))
+            .collect();
+
+        let mut body = serde_json::json!({
+            "model": config.model,
+            "max_tokens": RESPONSE_TOKENS,
+            "temperature": config.temperature,
+            "messages": api_messages
+        });
+
+        // Anthropic: system is a top-level field, required even if empty
+        if !system_prompt.is_empty() {
+            body["system"] = serde_json::json!(system_prompt);
+        }
+
+        let response = self
+            .client
+            .post(&url)
+            .header("x-api-key", &config.api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("anthropic-dangerous-direct-browser-access", "true")
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("Anthropic request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable>".to_string());
+            return Err(format!("Anthropic API error ({}): {}", status, body_text));
+        }
+
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse Anthropic response: {}", e))?;
+
+        // Anthropic response: content[0].text
+        let content = json["content"]
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|block| block.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if content.is_empty() {
+            return Err("Anthropic returned empty response".to_string());
+        }
+
+        Ok(content)
+    }
+
+    /// Test LLM API connectivity without requiring embedding or RAG pipeline.
+    ///
+    /// Sends a minimal chat completion request (max_tokens: 5) to verify
+    /// that the API key and endpoint are valid. Returns Ok with a success
+    /// message or Err with a descriptive error.
+    pub async fn test_connection(&self) -> Result<String, String> {
+        let config = {
+            let cfg = self.config.lock().map_err(|e| e.to_string())?;
+            if cfg.api_key.is_empty() {
+                return Err("API Key 未配置".to_string());
+            }
+            cfg.clone()
+        };
+
+        match config.provider {
+            LLMProvider::OpenAI => {
+                let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+                let body = serde_json::json!({
+                    "model": config.model,
+                    "messages": [{"role": "user", "content": "Hi"}],
+                    "max_tokens": 5,
+                    "temperature": 0.0
+                });
+
+                let response = self
+                    .client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", config.api_key))
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| format!("连接失败：{}", e))?;
+
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let body_text = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "<unreadable>".to_string());
+                    return Err(format!("API 返回错误 ({})：{}", status, body_text));
+                }
+
+                Ok(format!("连接成功（openai / {}）", config.model))
+            }
+            LLMProvider::Anthropic => {
+                let url = format!("{}/messages", config.base_url.trim_end_matches('/'));
+                let body = serde_json::json!({
+                    "model": config.model,
+                    "max_tokens": 5,
+                    "temperature": 0.0,
+                    "messages": [{"role": "user", "content": "Hi"}]
+                });
+
+                let response = self
+                    .client
+                    .post(&url)
+                    .header("x-api-key", &config.api_key)
+                    .header("anthropic-version", ANTHROPIC_VERSION)
+                    .header("anthropic-dangerous-direct-browser-access", "true")
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| format!("连接失败：{}", e))?;
+
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let body_text = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "<unreadable>".to_string());
+                    return Err(format!("API 返回错误 ({})：{}", status, body_text));
+                }
+
+                Ok(format!("连接成功（anthropic / {}）", config.model))
+            }
+        }
     }
 
     /// Generate a fallback response when LLM is unavailable.
@@ -577,11 +953,5 @@ impl LLMService {
             ));
         }
         output
-    }
-}
-
-impl Default for LLMService {
-    fn default() -> Self {
-        Self::new()
     }
 }

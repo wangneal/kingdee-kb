@@ -64,11 +64,12 @@ export interface KnowledgeStats {
 // ── LLM / RAG Types ────────────────────────────────────────────────────────
 
 export interface LLMConfig {
+  provider: 'openai' | 'anthropic';
   api_key: string;
   base_url: string;
   model: string;
-  max_tokens: number;
   temperature: number;
+  max_tokens: number;
 }
 
 export interface ChatMessage {
@@ -160,6 +161,16 @@ export async function deleteDocument(documentId: number): Promise<void> {
   return invoke("delete_document", { documentId });
 }
 
+// ── Embedding model commands ──────────────────────────────────────────────────
+
+export async function initModel(): Promise<boolean> {
+  return invoke("init_model");
+}
+
+export async function getModelStatus(): Promise<boolean> {
+  return invoke("get_model_status");
+}
+
 // ── LLM / RAG command wrappers ───────────────────────────────────────────────
 
 export async function setLLMConfig(config: LLMConfig): Promise<void> {
@@ -172,6 +183,10 @@ export async function getLLMConfig(): Promise<LLMConfig> {
 
 export async function isLLMConfigured(): Promise<boolean> {
   return invoke("is_llm_configured");
+}
+
+export async function testLLMConnection(): Promise<string> {
+  return invoke("test_llm_connection");
 }
 
 export async function ragQuery(
