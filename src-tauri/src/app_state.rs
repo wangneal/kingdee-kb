@@ -5,12 +5,15 @@
 
 use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
+use crate::services::edition_config::EditionConfig;
 use crate::services::embedding::{EmbeddingService, ModelManager};
-use crate::services::vector_index::VectorIndex;
+use crate::services::llm_service::LLMService;
+use crate::services::bm25_service::BM25Service;
 use crate::services::metadata::MetadataStore;
 use crate::services::product_store::ProductStore;
-use crate::services::bm25_service::BM25Service;
-use crate::services::llm_service::LLMService;
+use crate::services::research_indexer::ResearchIndexer;
+use crate::services::vector_index::VectorIndex;
+use rusqlite::Connection;
 
 /// Global application state shared across all Tauri commands
 pub struct AppState {
@@ -30,6 +33,10 @@ pub struct AppState {
     pub products: Arc<Mutex<ProductStore>>,
     /// Download progress for embedding model (0–100). Updated by background thread.
     pub download_progress: Arc<AtomicU32>,
+    /// Edition configuration (enterprise / flagship)
+    pub edition_config: EditionConfig,
+    /// Research outline indexer
+    pub research_indexer: ResearchIndexer,
 }
 
 impl AppState {
@@ -55,7 +62,7 @@ impl AppState {
         };
 
         // Initialize MetadataStore (create if not exists)
-        let metadata = MetadataStore::new(db_path)?;
+        let metadata = MetadataStore::new(db_path.clone())?;
 
         // Initialize BM25Service (tantivy + jieba full-text index)
         let bm25_index_dir = data_dir.join("bm25_index");
@@ -64,6 +71,22 @@ impl AppState {
         // Initialize ProductStore (create if not exists)
         let products_db_path = data_dir.join("products.db");
         let products = ProductStore::new(products_db_path)?;
+
+        // Initialize EditionConfig (shares metadata.db for app_config table)
+        let edition_config = {
+            let conn = Connection::open(&db_path)
+                .map_err(|e| format!("Failed to open DB for EditionConfig: {}", e))?;
+            let config = EditionConfig::new(conn);
+            config.init_table()?;
+            config
+        };
+
+        // Initialize ResearchIndexer
+        let research_indexer = {
+            let indexer = ResearchIndexer::new(&db_path)?;
+            indexer.init_tables()?;
+            indexer
+        };
 
         Ok(Self {
             model_manager: Arc::new(Mutex::new(model_manager)),
@@ -74,6 +97,8 @@ impl AppState {
             llm: LLMService::new(data_dir),
             products: Arc::new(Mutex::new(products)),
             download_progress: Arc::new(AtomicU32::new(0)),
+            edition_config,
+            research_indexer,
         })
     }
 
@@ -95,6 +120,23 @@ impl AppState {
         let products = ProductStore::new(data_dir.join("products.db"))
             .expect("Fatal: cannot create product store — app cannot function without it");
 
+        let db_path = data_dir.join("metadata.db");
+
+        let edition_config = {
+            let conn = Connection::open(&db_path)
+                .expect("Fatal: cannot open DB for EditionConfig");
+            let config = EditionConfig::new(conn);
+            config.init_table().expect("Fatal: cannot init config table");
+            config
+        };
+
+        let research_indexer = {
+            let indexer = ResearchIndexer::new(&db_path)
+                .expect("Fatal: cannot create ResearchIndexer");
+            indexer.init_tables().expect("Fatal: cannot init research tables");
+            indexer
+        };
+
         Self {
             model_manager: Arc::new(Mutex::new(ModelManager::new(data_dir.join("models")))),
             embedding: Arc::new(Mutex::new(EmbeddingService::empty())),
@@ -104,6 +146,8 @@ impl AppState {
             llm: LLMService::new(data_dir),
             products: Arc::new(Mutex::new(products)),
             download_progress: Arc::new(AtomicU32::new(0)),
+            edition_config,
+            research_indexer,
         }
     }
 }

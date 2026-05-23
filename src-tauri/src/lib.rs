@@ -28,20 +28,21 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 
 use app_state::AppState;
 use services::bm25_service::BM25SearchResult;
+use services::deliverable_recipes::DeliverableRecipe;
+use services::doc_generator::{GeneratedDoc, GenerateDocRequest};
 use services::embedding::start_download_progress_polling;
 use services::hybrid_search::HybridSearchResult;
-use services::vector_index::SearchResult;
-use services::metadata::{ChunkMeta, DocumentMeta, KnowledgeStats};
 use services::ingestion::{IngestionResult, ingest_text as ingest_text_fn, ingest_file as ingest_file_fn, ingest_directory as ingest_directory_fn};
 use services::llm_service::{ChatMessage, LLMConfig, RAGResponse, RAGSource, StreamChunk};
 use services::memory;
-use services::doc_generator::{GeneratedDoc, GenerateDocRequest};
+use services::metadata::{ChunkMeta, DocumentMeta, KnowledgeStats};
 use services::product_store::ProductMeta;
+use services::research_outline::Edition;
 use services::smart_completion::{SmartFillRequest, SmartFillResult};
-use services::deliverable_recipes::DeliverableRecipe;
 use services::template_docx::FieldInfo;
 use services::template_scanner::TemplateInfo;
 use services::template_schema::TemplateSchema;
+use services::vector_index::SearchResult;
 
 const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
 
@@ -1077,6 +1078,49 @@ fn get_deliverable_recipe(template_id: String) -> Result<DeliverableRecipe, Stri
         .ok_or_else(|| format!("No recipe found for template_id: {}", template_id))
 }
 
+// ─── Phase 9: Tauri Commands Registration ───
+
+/// Get the current research edition ("enterprise" or "flagship")
+#[tauri::command]
+fn get_current_edition(state: State<'_, AppState>) -> Result<String, String> {
+    let edition = state.edition_config.current();
+    Ok(edition.as_str().to_string())
+}
+
+/// Switch the research edition
+#[tauri::command]
+fn set_edition(state: State<'_, AppState>, edition: String) -> Result<(), String> {
+    let edition = Edition::from_str(&edition)
+        .ok_or_else(|| format!("Invalid edition: {}", edition))?;
+    state.edition_config.set(&edition)
+}
+
+/// List all imported research modules for the current edition
+#[tauri::command]
+fn list_research_modules(state: State<'_, AppState>) -> Result<Vec<(i64, String, String)>, String> {
+    let edition = state.edition_config.current();
+    state.research_indexer.list_outlines(&edition)
+}
+
+/// Batch import research outlines from a directory
+#[tauri::command]
+fn import_research_outlines(state: State<'_, AppState>, dir: String) -> Result<String, String> {
+    let edition = state.edition_config.current();
+    let result = state.research_indexer.import_directory(std::path::Path::new(&dir), edition)?;
+    let mut summary = format!(
+        "导入成功: {} 个模块, {} 个问题\n跳过: {} 个文件",
+        result.imported, result.total_questions, result.skipped
+    );
+    if !result.errors.is_empty() {
+        let error_list: Vec<&str> = result.errors.iter().take(3).map(|s| s.as_str()).collect();
+        summary.push_str(&format!("\n错误 (前{}个): {}", error_list.len(), error_list.join("; ")));
+    }
+    if result.imported == 0 && !result.errors.is_empty() {
+        return Err(format!("导入失败: {}", result.errors.join("; ")));
+    }
+    Ok(summary)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1154,6 +1198,11 @@ pub fn run() {
             smart_fill,
             probe_missing_fields,
             get_deliverable_recipe,
+            // Phase 9: Research Edition Commands
+            get_current_edition,
+            set_edition,
+            list_research_modules,
+            import_research_outlines,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
