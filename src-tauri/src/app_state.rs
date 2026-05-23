@@ -72,4 +72,31 @@ impl AppState {
             products: Arc::new(Mutex::new(products)),
         })
     }
+
+    /// Create a minimal AppState when full initialization fails.
+    /// Commands that depend on missing services will return errors,
+    /// but the app window will still appear.
+    pub fn minimal(data_dir: &std::path::Path) -> Self {
+        let metadata = MetadataStore::new(data_dir.join("metadata.db"))
+            .unwrap_or_else(|_| panic!("Fatal: cannot create metadata DB"));
+
+        Self {
+            model_manager: Arc::new(Mutex::new(ModelManager::new(data_dir.join("models")))),
+            embedding: Arc::new(Mutex::new(EmbeddingService::empty())),
+            vector_index: Arc::new(Mutex::new(
+                VectorIndex::new(data_dir.join("index")).unwrap_or_else(|_|
+                    panic!("Fatal: cannot create vector index"))
+            )),
+            metadata: Arc::new(Mutex::new(metadata)),
+            bm25: Arc::new(Mutex::new(
+                BM25Service::new(data_dir.join("bm25_index")).unwrap_or_else(|_|
+                    panic!("Fatal: cannot create BM25 index"))
+            )),
+            llm: LLMService::new(),
+            products: Arc::new(Mutex::new(
+                ProductStore::new(data_dir.join("products.db")).unwrap_or_else(|_|
+                    panic!("Fatal: cannot create product store"))
+            )),
+        }
+    }
 }

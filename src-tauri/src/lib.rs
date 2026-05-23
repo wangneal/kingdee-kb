@@ -731,10 +731,20 @@ async fn setup_backend(app: AppHandle) -> Result<(), String> {
     let data_dir = ensure_data_dir()?;
     println!("Data directory initialized at: {:?}", data_dir);
 
-    // Initialize Phase 2 services
-    let app_state = AppState::new(&data_dir)?;
-    app.manage(app_state);
-    println!("Phase 2 services initialized (embedding, vector index, metadata)");
+    // Initialize Phase 2 services (may fail if model download blocked)
+    match AppState::new(&data_dir) {
+        Ok(app_state) => {
+            app.manage(app_state);
+            println!("Phase 2 services initialized (embedding, vector index, metadata)");
+        }
+        Err(e) => {
+            // Log the error but don't block the app from starting
+            eprintln!("WARNING: Phase 2 services failed to initialize: {}", e);
+            eprintln!("The app will start in limited mode (no embedding/search/LLM).");
+            // Manage a minimal AppState so Tauri commands don't crash
+            app.manage(AppState::minimal(&data_dir));
+        }
+    }
 
     set_complete(
         app.clone(),
