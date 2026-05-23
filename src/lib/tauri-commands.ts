@@ -201,3 +201,157 @@ export async function ragQueryStream(
 export async function countTokens(text: string): Promise<number> {
   return invoke("count_tokens", { text });
 }
+
+// ── Phase 9/10/11/12/13: Template & Wizard Types ────────────────────────────
+
+export interface TemplateInfo {
+  id: string;
+  name: string;
+  filename: string;
+  phase: string;
+  phase_index: number;
+  format: string;
+  file_path: string;
+  relative_path: string;
+  file_size: number;
+}
+
+export interface FieldInfo {
+  name: string;
+  field_type: string;
+  context: string;
+  count: number;
+}
+
+export interface SchemaField {
+  name: string;
+  type: string;
+  fill_strategy: string;
+  required: boolean;
+  default?: string;
+  description?: string;
+  cell_refs?: string[];
+}
+
+export interface TemplateSchema {
+  template: {
+    id: string;
+    name: string;
+    format: string;
+    phase: string;
+  };
+  fields: SchemaField[];
+}
+
+export interface SmartFillRequest {
+  template_id: string;
+  user_input: string;
+  manual_fields: Record<string, string>;
+  schema_fields: SchemaField[];
+  project_name?: string;
+}
+
+export interface KBSource {
+  title: string;
+  section_path?: string;
+  content_snippet: string;
+  score: number;
+}
+
+export interface SmartFillResult {
+  filled_fields: Record<string, string>;
+  ai_fields: string[];
+  missing_fields: string[];
+  kb_sources: KBSource[];
+}
+
+export interface GenerateDocRequest {
+  template_path: string;
+  output_path: string;
+  fields: Record<string, string>;
+  schema_fields?: SchemaField[];
+  project_name?: string;
+  context?: string;
+}
+
+export interface MissingField {
+  name: string;
+  description: string;
+  reason: string;
+}
+
+export interface GeneratedDoc {
+  output_path: string;
+  fields_filled: number;
+  user_fields: string[];
+  ai_fields: string[];
+  missing_fields: string[];
+  missing_fields_detail: MissingField[];
+}
+
+export interface DeliverableRecipe {
+  name: string;
+  template_id: string;
+  phase: string;
+  description: string;
+  field_overrides: Record<string, { strategy: string; hint?: string }>;
+  system_prompt: string;
+}
+
+export interface ProductMeta {
+  id: number;
+  template_id: string;
+  template_name: string;
+  project: string;
+  status: string;
+  output_path: string;
+  field_count: number;
+  llm_fields_count: number;
+  created_at: string;
+}
+
+// ── Phase 9+ command wrappers ────────────────────────────────────────────────
+
+export async function scanTemplates(templateDir?: string): Promise<TemplateInfo[]> {
+  return invoke("scan_templates", { templateDir: templateDir ?? null });
+}
+
+export async function extractTemplateFields(filePath: string): Promise<FieldInfo[]> {
+  return invoke("extract_template_fields", { filePath });
+}
+
+export async function getTemplateSchema(
+  templateId: string,
+  templateName: string,
+  filePath: string,
+  phase: string,
+  writeSidecar?: boolean
+): Promise<TemplateSchema> {
+  return invoke("get_template_schema", {
+    templateId,
+    templateName,
+    filePath,
+    phase,
+    writeSidecar: writeSidecar ?? false,
+  });
+}
+
+export async function smartFill(request: SmartFillRequest): Promise<SmartFillResult> {
+  return invoke("smart_fill", { request });
+}
+
+export async function generateDoc(request: GenerateDocRequest): Promise<GeneratedDoc> {
+  return invoke("generate_doc", { request });
+}
+
+export async function getDeliverableRecipe(templateId: string): Promise<DeliverableRecipe> {
+  return invoke("get_deliverable_recipe", { templateId });
+}
+
+export async function listProducts(project?: string): Promise<ProductMeta[]> {
+  return invoke("list_products", { project: project ?? null });
+}
+
+export async function exportProduct(id: number, targetDir: string): Promise<string> {
+  return invoke("export_product", { id, targetDir });
+}

@@ -6,6 +6,8 @@ import Browse from "./pages/Browse";
 import Search from "./pages/Search";
 import Import from "./pages/Import";
 import Chat from "./pages/Chat";
+import Templates from "./pages/Templates";
+import Wizard from "./pages/Wizard";
 
 function App() {
   return (
@@ -16,6 +18,8 @@ function App() {
         <Route path="search" element={<Search />} />
         <Route path="chat" element={<Chat />} />
         <Route path="import" element={<Import />} />
+        <Route path="templates" element={<Templates />} />
+        <Route path="wizard/:templateId" element={<Wizard />} />
         <Route path="settings" element={<Settings />} />
       </Route>
     </Routes>
