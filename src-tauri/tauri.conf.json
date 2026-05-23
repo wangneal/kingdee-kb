@@ -18,18 +18,7 @@
         "height": 700,
         "minWidth": 800,
         "minHeight": 600,
-        "center": true,
-        "visible": false
-      },
-      {
-        "label": "splashscreen",
-        "title": "KingdeeKB",
-        "url": "/splashscreen.html",
-        "width": 500,
-        "height": 375,
-        "center": true,
-        "resizable": false,
-        "decorations": false
+        "center": true
       }
     ],
     "security": {
