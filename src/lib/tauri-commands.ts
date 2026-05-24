@@ -696,3 +696,37 @@ export async function addSensitiveKeyword(keyword: string): Promise<void> {
 export async function listSensitiveKeywords(): Promise<string[]> {
   return invoke("list_sensitive_keywords");
 }
+
+// ── ReAct Agent ──────────────────────────────────────────────────────────
+
+export type ReActEvent =
+  | { type: "thinking"; content: string }
+  | { type: "tool_call"; name: string; args: string }
+  | { type: "tool_result"; name: string; result: string }
+  | { type: "text_delta"; content: string }
+  | { type: "error"; message: string }
+  | { type: "done" };
+
+export async function reactChat(
+  message: string,
+  systemExtra?: string,
+): Promise<void> {
+  return invoke("react_chat", {
+    message,
+    systemExtra: systemExtra ?? "",
+  });
+}
+
+/**
+ * Listen for ReAct agent events.
+ * Returns an unsubscribe function.
+ */
+export async function listenReActEvents(
+  handler: (event: ReActEvent) => void,
+): Promise<() => void> {
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<ReActEvent>("react-event", (event) => {
+    handler(event.payload);
+  });
+  return unlisten;
+}

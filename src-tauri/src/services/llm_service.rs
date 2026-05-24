@@ -842,16 +842,23 @@ impl LLMService {
         }
 
         match config.provider {
-            LLMProvider::OpenAI | LLMProvider::Local => self.chat_completion_openai(messages, config).await,
+            LLMProvider::OpenAI | LLMProvider::Local => {
+                let result = self.chat_completion_openai_with_tools(messages, config, &[], true).await?;
+                Ok(result)
+            }
             LLMProvider::Anthropic => self.chat_completion_anthropic(messages, config).await,
         }
     }
 
-    /// OpenAI non-streaming chat completion — POST /chat/completions
-    async fn chat_completion_openai(
+    /// Chat completion with OpenAI-style function calling support.
+    /// Returns the raw content string (strips tool_calls).
+    /// If `tools` is non-empty, sends with `tool_choice: "auto"`.
+    async fn chat_completion_openai_with_tools(
         &self,
         messages: &[ChatMessage],
         config: &LLMConfig,
+        tools: &[serde_json::Value],
+        _stream: bool,
     ) -> Result<String, String> {
         let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
 
@@ -865,12 +872,16 @@ impl LLMService {
             })
             .collect();
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": config.model,
             "messages": api_messages,
             "temperature": config.temperature,
             "stream": false
         });
+        if !tools.is_empty() {
+            body["tools"] = serde_json::json!(tools);
+            body["tool_choice"] = serde_json::json!("auto");
+        }
 
         let response = self
             .client

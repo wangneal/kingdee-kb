@@ -14,9 +14,11 @@ use crate::services::llm_service::LLMService;
 use crate::services::bm25_service::BM25Service;
 use crate::services::metadata::MetadataStore;
 use crate::services::product_store::ProductStore;
+use crate::services::react_agent::ReActAgent;
 use crate::services::research_indexer::ResearchIndexer;
 use crate::services::research_session::ResearchSessionStore;
 use crate::services::risk_control::RiskControlStore;
+use crate::services::tool_registry::{ToolRegistry, SearchKnowledgeTool, GenerateDocTool, CheckScopeCreepTool, AnalyzeFitGapTool, GetProjectHealthTool, GenerateDefenseScriptTool, ExtractBlueprintTool, RecommendQuestionsTool};
 use crate::services::vector_index::VectorIndex;
 use std::path::PathBuf;
 use rusqlite::Connection;
@@ -51,6 +53,8 @@ pub struct AppState {
     pub risk_control_store: RiskControlStore,
     /// Data desensitizer（本地敏感信息过滤）
     pub desensitizer: Desensitizer,
+    /// ReAct Agent（推理引擎）
+    pub react_agent: ReActAgent,
     /// Whisper voice transcription service (lazy model load)
     pub whisper_service: Arc<Mutex<WhisperService>>,
     /// Audio capture (microphone recording)
@@ -114,6 +118,19 @@ impl AppState {
 
         let desensitizer = Desensitizer::new();
 
+        // Initialize ReAct Agent
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(SearchKnowledgeTool));
+        registry.register(Box::new(GenerateDocTool));
+        registry.register(Box::new(CheckScopeCreepTool));
+        registry.register(Box::new(AnalyzeFitGapTool));
+        registry.register(Box::new(GetProjectHealthTool));
+        registry.register(Box::new(GenerateDefenseScriptTool));
+        registry.register(Box::new(ExtractBlueprintTool));
+        registry.register(Box::new(RecommendQuestionsTool));
+        let tool_registry = Arc::new(registry);
+        let react_agent = ReActAgent::new(tool_registry);
+
         let whisper_service = WhisperService::new();
         let audio_capture = AudioCapture::new(data_dir);
 
@@ -134,6 +151,7 @@ impl AppState {
             desensitizer,
             whisper_service: Arc::new(Mutex::new(whisper_service)),
             audio_capture: Arc::new(Mutex::new(audio_capture)),
+            react_agent,
         })
     }
 
@@ -180,6 +198,19 @@ impl AppState {
 
         let desensitizer = Desensitizer::new();
 
+        // Initialize ReAct Agent (minimal)
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(SearchKnowledgeTool));
+        registry.register(Box::new(GenerateDocTool));
+        registry.register(Box::new(CheckScopeCreepTool));
+        registry.register(Box::new(AnalyzeFitGapTool));
+        registry.register(Box::new(GetProjectHealthTool));
+        registry.register(Box::new(GenerateDefenseScriptTool));
+        registry.register(Box::new(ExtractBlueprintTool));
+        registry.register(Box::new(RecommendQuestionsTool));
+        let tool_registry = Arc::new(registry);
+        let react_agent = ReActAgent::new(tool_registry);
+
         let whisper_service = WhisperService::new();
         let audio_capture = AudioCapture::new(data_dir);
 
@@ -198,6 +229,7 @@ impl AppState {
             research_session_store,
             risk_control_store,
             desensitizer,
+            react_agent,
             whisper_service: Arc::new(Mutex::new(whisper_service)),
             audio_capture: Arc::new(Mutex::new(audio_capture)),
         }

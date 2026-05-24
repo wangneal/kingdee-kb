@@ -1643,6 +1643,44 @@ async fn analyze_fit_gap(
     state.llm.chat_completion(&messages, &config).await
 }
 
+// --- ReAct Chat ---
+
+#[tauri::command]
+async fn react_chat(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+    message: String,
+    system_extra: String,
+) -> Result<(), String> {
+    use services::react_agent::ReActEvent;
+    use tauri::Emitter;
+    use tokio::sync::mpsc;
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<ReActEvent>();
+
+    // Clone what we need before spawning
+    let msg = message.clone();
+    let extra = system_extra.clone();
+
+    // Spawn the ReAct loop in its own scope
+    let agent_ref = &state.react_agent;
+    let llm_ref = &state.llm;
+    agent_ref.run(llm_ref, &msg, &extra, &[], tx).await;
+
+    // Forward events to frontend via Tauri event system
+    while let Some(event) = rx.recv().await {
+        let payload = serde_json::to_value(&event).unwrap_or_default();
+        if app_handle.emit("react-event", payload).is_err() {
+            break;
+        }
+        if matches!(event, ReActEvent::Done | ReActEvent::Error { .. }) {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -1764,6 +1802,7 @@ pub fn run() {
             list_sensitive_keywords,
             extract_blueprint,
             analyze_fit_gap,
+            react_chat,
         ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
