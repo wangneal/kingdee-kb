@@ -429,3 +429,270 @@ export async function exportProduct(id: number, targetDir: string): Promise<stri
 export async function deleteProduct(id: number): Promise<void> {
   return invoke("delete_product", { id });
 }
+
+// ── Phase 13: Research Session Management ─────────────────────────────────
+
+export interface ResearchSession {
+  id: number;
+  title: string;
+  edition: string;
+  module_code: string;
+  interviewee: string;
+  session_date: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface QARecord {
+  id: number;
+  session_id: number;
+  question_id: number | null;
+  question_text: string;
+  answer_text: string;
+  notes: string;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface SessionDetail {
+  session: ResearchSession;
+  records: QARecord[];
+}
+
+export async function createResearchSession(
+  title: string,
+  edition: string,
+  moduleCode: string,
+  interviewee: string,
+  sessionDate: string,
+): Promise<number> {
+  return invoke("create_research_session", {
+    title,
+    edition,
+    moduleCode,
+    interviewee,
+    sessionDate,
+  });
+}
+
+export async function listResearchSessions(): Promise<ResearchSession[]> {
+  return invoke("list_research_sessions");
+}
+
+export async function getResearchSession(sessionId: number): Promise<SessionDetail | null> {
+  return invoke("get_research_session", { sessionId });
+}
+
+export async function updateResearchSession(
+  sessionId: number,
+  title: string,
+  interviewee: string,
+  sessionDate: string,
+  status: string,
+): Promise<void> {
+  return invoke("update_research_session", { sessionId, title, interviewee, sessionDate, status });
+}
+
+export async function deleteResearchSession(sessionId: number): Promise<void> {
+  return invoke("delete_research_session", { sessionId });
+}
+
+export async function addQARecord(
+  sessionId: number,
+  questionId: number | null,
+  questionText: string,
+  answerText: string,
+  notes: string,
+  sortOrder: number,
+): Promise<number> {
+  return invoke("add_qa_record", {
+    sessionId,
+    questionId: questionId ?? null,
+    questionText,
+    answerText,
+    notes,
+    sortOrder,
+  });
+}
+
+export async function updateQARecord(
+  recordId: number,
+  answerText: string,
+  notes: string,
+): Promise<void> {
+  return invoke("update_qa_record", { recordId, answerText, notes });
+}
+
+export async function deleteQARecord(recordId: number): Promise<void> {
+  return invoke("delete_qa_record", { recordId });
+}
+
+export async function getSessionRecords(sessionId: number): Promise<QARecord[]> {
+  return invoke("get_session_records", { sessionId });
+}
+
+export async function exportSessionCsv(sessionId: number): Promise<string> {
+  return invoke("export_session_csv", { sessionId });
+}
+
+export async function exportSessionMarkdown(sessionId: number): Promise<string> {
+  return invoke("export_session_markdown", { sessionId });
+}
+
+export async function reorderQARecords(sessionId: number, recordIds: number[]): Promise<void> {
+  return invoke("reorder_qa_records", { sessionId, recordIds });
+}
+
+// ── Phase 12: Whisper Voice Recognition ───────────────────────────────────
+
+export interface TranscriptionResult {
+  text: string;
+  segments: TranscriptionSegment[];
+  confidence: number;
+  processing_time_ms: number;
+}
+
+export interface TranscriptionSegment {
+  start_ms: number;
+  end_ms: number;
+  text: string;
+}
+
+export interface WhisperStatus {
+  model_loaded: boolean;
+  model_size: string;
+  language: string;
+}
+
+export async function loadWhisperModel(modelSize: string): Promise<void> {
+  return invoke("load_whisper_model", { modelSize });
+}
+
+export async function getWhisperStatus(): Promise<WhisperStatus> {
+  return invoke("get_whisper_status");
+}
+
+export async function startWhisperRecording(): Promise<void> {
+  return invoke("start_whisper_recording");
+}
+
+export async function stopWhisperRecording(): Promise<TranscriptionResult> {
+  return invoke("stop_whisper_recording");
+}
+
+// ── P1: 双轨风险把控舱 ──────────────────────────────────────────────────
+
+export interface ContractScopeItem {
+  id: number;
+  category: string;
+  description: string;
+  is_in_scope: boolean;
+  detail: string;
+  created_at: string;
+}
+
+export interface ScopeCreepResult {
+  risk_level: string;
+  risk_label: string;
+  explanation: string;
+  matched_items: string[];
+  suggestion: string;
+}
+
+export interface HealthDimension {
+  name: string;
+  score: number;
+  weight: number;
+  detail: string;
+}
+
+export interface ProjectHealthScore {
+  overall_score: number;
+  risk_level: string;
+  dimensions: HealthDimension[];
+  trend: string;
+  alert_count: number;
+}
+
+export interface DefenseScriptRequest {
+  scenario: string;
+  context: string;
+  tone: string;
+}
+
+export interface ScriptItem {
+  phase: string;
+  content: string;
+  tip: string;
+}
+
+export interface DefenseScriptResult {
+  scenario_label: string;
+  scripts: ScriptItem[];
+}
+
+export async function addScopeItem(
+  category: string,
+  description: string,
+  isInScope: boolean,
+  detail: string,
+): Promise<number> {
+  return invoke("add_scope_item", { category, description, isInScope, detail });
+}
+
+export async function listScopeItems(): Promise<ContractScopeItem[]> {
+  return invoke("list_scope_items");
+}
+
+export async function deleteScopeItem(itemId: number): Promise<void> {
+  return invoke("delete_scope_item", { itemId });
+}
+
+export async function checkScopeCreep(requirement: string): Promise<ScopeCreepResult> {
+  return invoke("check_scope_creep", { requirement });
+}
+
+export async function recordHealthMetric(
+  indicatorType: string,
+  value: number,
+  notes: string,
+): Promise<number> {
+  return invoke("record_health_metric", { indicatorType, value, notes });
+}
+
+export async function getProjectHealth(): Promise<ProjectHealthScore> {
+  return invoke("get_project_health");
+}
+
+export async function generateRiskReport(context: string): Promise<string> {
+  return invoke("generate_risk_report", { context });
+}
+
+export async function generateDefenseScript(
+  request: DefenseScriptRequest,
+): Promise<DefenseScriptResult> {
+  return invoke("generate_defense_script", { request });
+}
+
+// ── P2: 蓝图提炼 / Fit-Gap / 脱敏 ──────────────────────────────────────
+
+export async function extractBlueprint(researchContext: string): Promise<string> {
+  return invoke("extract_blueprint", { researchContext });
+}
+
+export async function analyzeFitGap(requirements: string): Promise<string> {
+  return invoke("analyze_fit_gap", { requirements });
+}
+
+export async function desensitizeText(text: string): Promise<{ safe_text: string; mapping: Record<string, string> }> {
+  return invoke("desensitize_text", { text });
+}
+
+export async function addSensitiveKeyword(keyword: string): Promise<void> {
+  return invoke("add_sensitive_keyword", { keyword });
+}
+
+export async function listSensitiveKeywords(): Promise<string[]> {
+  return invoke("list_sensitive_keywords");
+}

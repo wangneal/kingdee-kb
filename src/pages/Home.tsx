@@ -11,6 +11,8 @@ import {
   Calendar,
   ArrowRight,
   Loader2,
+  ClipboardList,
+  ShieldAlert,
 } from "lucide-react";
 import {
   getStats,
@@ -95,6 +97,20 @@ export default function Home() {
       description: "基于知识库的智能问答",
       path: "/chat",
       color: "bg-amber-600",
+    },
+    {
+      icon: ClipboardList,
+      label: "调研助手",
+      description: "语音转录 + 会话管理 + 蓝图导出",
+      path: "/research",
+      color: "bg-cyan-600",
+    },
+    {
+      icon: ShieldAlert,
+      label: "风险把控",
+      description: "范围预警 + 项目健康 + 防身话术",
+      path: "/risk",
+      color: "bg-red-600",
     },
   ];
 

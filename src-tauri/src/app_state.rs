@@ -5,6 +5,9 @@
 
 use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
+use crate::services::audio_capture::AudioCapture;
+use crate::services::whisper_service::WhisperService;
+use crate::services::desensitize::Desensitizer;
 use crate::services::edition_config::EditionConfig;
 use crate::services::embedding::{EmbeddingService, ModelManager};
 use crate::services::llm_service::LLMService;
@@ -12,11 +15,16 @@ use crate::services::bm25_service::BM25Service;
 use crate::services::metadata::MetadataStore;
 use crate::services::product_store::ProductStore;
 use crate::services::research_indexer::ResearchIndexer;
+use crate::services::research_session::ResearchSessionStore;
+use crate::services::risk_control::RiskControlStore;
 use crate::services::vector_index::VectorIndex;
+use std::path::PathBuf;
 use rusqlite::Connection;
 
 /// Global application state shared across all Tauri commands
 pub struct AppState {
+    /// Application data directory (~/.kingdee-kb/)
+    pub data_dir: PathBuf,
     /// Embedding model manager (download, init, status)
     pub model_manager: Arc<Mutex<ModelManager>>,
     /// Text → vector embedding service
@@ -37,6 +45,16 @@ pub struct AppState {
     pub edition_config: EditionConfig,
     /// Research outline indexer
     pub research_indexer: ResearchIndexer,
+    /// Research session store
+    pub research_session_store: ResearchSessionStore,
+    /// Risk control store（需求蔓延警报/爆雷预警/话术库）
+    pub risk_control_store: RiskControlStore,
+    /// Data desensitizer（本地敏感信息过滤）
+    pub desensitizer: Desensitizer,
+    /// Whisper voice transcription service (lazy model load)
+    pub whisper_service: Arc<Mutex<WhisperService>>,
+    /// Audio capture (microphone recording)
+    pub audio_capture: Arc<Mutex<AudioCapture>>,
 }
 
 impl AppState {
@@ -88,7 +106,19 @@ impl AppState {
             indexer
         };
 
+        // Initialize ResearchSessionStore (shares metadata.db)
+        let research_session_store = ResearchSessionStore::new(&db_path)?;
+
+        // Initialize RiskControlStore (shares metadata.db)
+        let risk_control_store = RiskControlStore::new(&db_path)?;
+
+        let desensitizer = Desensitizer::new();
+
+        let whisper_service = WhisperService::new();
+        let audio_capture = AudioCapture::new(data_dir);
+
         Ok(Self {
+            data_dir: data_dir.to_path_buf(),
             model_manager: Arc::new(Mutex::new(model_manager)),
             embedding: Arc::new(Mutex::new(embedding)),
             vector_index: Arc::new(Mutex::new(vector_index)),
@@ -99,6 +129,11 @@ impl AppState {
             download_progress: Arc::new(AtomicU32::new(0)),
             edition_config,
             research_indexer,
+            research_session_store,
+            risk_control_store,
+            desensitizer,
+            whisper_service: Arc::new(Mutex::new(whisper_service)),
+            audio_capture: Arc::new(Mutex::new(audio_capture)),
         })
     }
 
@@ -137,7 +172,19 @@ impl AppState {
             indexer
         };
 
+        let research_session_store = ResearchSessionStore::new(&db_path)
+            .expect("Fatal: cannot create ResearchSessionStore");
+
+        let risk_control_store = RiskControlStore::new(&db_path)
+            .expect("Fatal: cannot create RiskControlStore");
+
+        let desensitizer = Desensitizer::new();
+
+        let whisper_service = WhisperService::new();
+        let audio_capture = AudioCapture::new(data_dir);
+
         Self {
+            data_dir: data_dir.to_path_buf(),
             model_manager: Arc::new(Mutex::new(ModelManager::new(data_dir.join("models")))),
             embedding: Arc::new(Mutex::new(EmbeddingService::empty())),
             vector_index: Arc::new(Mutex::new(vector_index)),
@@ -148,6 +195,11 @@ impl AppState {
             download_progress: Arc::new(AtomicU32::new(0)),
             edition_config,
             research_indexer,
+            research_session_store,
+            risk_control_store,
+            desensitizer,
+            whisper_service: Arc::new(Mutex::new(whisper_service)),
+            audio_capture: Arc::new(Mutex::new(audio_capture)),
         }
     }
 }

@@ -211,7 +211,6 @@ pub fn parse_outline_text(
             }
         }
     } else {
-        let mut cat_counters: Vec<usize> = vec![0; sections.len()];
         for (sec_part, cat_part, q_text) in &raw_questions {
             let sec_idx = sec_part.parse::<usize>().unwrap_or(1).saturating_sub(1);
             if sec_idx < sections.len() {
@@ -220,7 +219,6 @@ pub fn parse_outline_text(
                     .unwrap_or(1).saturating_sub(1);
                 if cat_num_in_sec < sections[sec_idx].categories.len() {
                     sections[sec_idx].categories[cat_num_in_sec].questions.push(q_text.clone());
-                    cat_counters[sec_idx] = cat_num_in_sec + 1;
                 }
             }
         }

@@ -9,19 +9,19 @@
 
 ## Phases
 
-- [ ] **Phase 9: 源文档解析引擎** — 解析85个交付物模板(.docx/.xlsx) + 25份调研提纲(.doc)，Edition Profile 框架
-- [ ] **Phase 10: 文档生成核心** — LLM 填充 + 模板渲染 + 调研报告/纪要自动生成
-- [ ] **Phase 11: 问题推荐 + 智能补全引擎** — 语义匹配 + 问题推荐 + 知识库辅助填充
-- [ ] **Phase 12: Whisper 语音识别** — 本地麦克风 + 实时转写
-- [ ] **Phase 13: 调研记录 + 产物管理后端** — Session 管理 + 产物存储/历史/导出
-- [ ] **Phase 14: 统一前端** — 提示板 + 向导生成 + 腾讯会议侧边栏
-- [ ] **Phase 15: 集成测试 + 打磨**
+- [x] **Phase 9: 源文档解析引擎** ✅ — 解析85个交付物模板(.docx/.xlsx) + 25份调研提纲(.doc)，Edition Profile 框架
+- [x] **Phase 10: 文档生成核心** ✅ — LLM 填充 + 模板渲染 + 调研报告/纪要自动生成
+- [x] **Phase 11: 问题推荐 + 智能补全引擎** ✅ — 语义匹配 + 问题推荐 + 知识库辅助填充
+- [x] **Phase 12: Whisper 语音识别** ✅ — 本地麦克风 + 实时转写（cpal+whisper-rs+中文后处理）
+- [x] **Phase 13: 调研记录 + 产物管理后端** ✅ — Session 管理 + Q&A CRUD + CSV/MD导出
+- [x] **Phase 14: 统一前端** ✅ — 调研助手页面 + 语音输入 + 问题推荐卡片 + 导航
+- [x] **Phase 15: 集成测试 + 打磨** ✅ — 121 tests passing, backend+frontend verified
 
 ---
 
 ## Phase Details
 
-### Phase 9: 源文档解析引擎
+### Phase 9: 源文档解析引擎 ✓ Complete
 
 **Goal:** 统一解析所有源文档——85 个交付物模板 + 25 份调研提纲（企业版）
 
@@ -130,13 +130,13 @@
 
 | Phase | Status | Completed |
 |-------|--------|-----------|
-| 9 | Not started | — |
-| 10 | Not started | — |
-| 11 | Not started | — |
-| 12 | Not started | — |
-| 13 | Not started | — |
-| 14 | Not started | — |
-| 15 | Not started | — |
+| 9 | ✅ Complete | 2026-05-24 |
+| 10 | ✅ Complete | 2026-05-24 |
+| 11 | ✅ Complete | 2026-05-24 |
+| 12 | ✅ Complete | 2026-05-24 |
+| 13 | ✅ Complete | 2026-05-24 |
+| 14 | ✅ Complete | 2026-05-24 |
+| 15 | ✅ Complete | 2026-05-24 |
 
 ---
 
@@ -152,9 +152,9 @@ Phase 9 (源文档解析)
            └─ Phase 15 (集成测试)
 ```
 
-Phase 11 与 Phase 12 可并行。
-Phase 12 与 Phase 13 可并行。
+All phases complete. v0.2 milestone achieved — 智能调研与文档生成.
+Next: v1.0 planning (production hardening,腾讯会议集成, user testing).
 
 ---
 
-*Roadmap updated: 2026-05-24 — 合并 v0.2 (文档生成) + v0.3 (调研助手)*
+*Roadmap updated: 2026-05-24 — v0.2 全部 7 阶段完成（智能调研与文档生成）*

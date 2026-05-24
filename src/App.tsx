@@ -9,6 +9,8 @@ import Chat from "./pages/Chat";
 import Templates from "./pages/Templates";
 import Wizard from "./pages/Wizard";
 import Products from "./pages/Products";
+import ResearchAssistant from "./pages/ResearchAssistant";
+import RiskControl from "./pages/RiskControl";
 
 function App() {
   return (
@@ -18,6 +20,8 @@ function App() {
         <Route path="browse" element={<Browse />} />
         <Route path="search" element={<Search />} />
         <Route path="chat" element={<Chat />} />
+        <Route path="research" element={<ResearchAssistant />} />
+        <Route path="risk" element={<RiskControl />} />
         <Route path="import" element={<Import />} />
         <Route path="templates" element={<Templates />} />
         <Route path="wizard/:templateId" element={<Wizard />} />

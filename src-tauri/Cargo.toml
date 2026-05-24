@@ -56,3 +56,8 @@ quick-xml = "0.36"
 umya-spreadsheet = "2"
 serde_yaml = "0.9"
 
+# Phase 12: Whisper Voice Recognition
+whisper-rs = { version = "0.16", features = [] }
+cpal = "0.15"
+hound = "3"
+

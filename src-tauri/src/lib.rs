@@ -29,7 +29,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 use app_state::AppState;
 use services::bm25_service::BM25SearchResult;
 use services::deliverable_recipes::DeliverableRecipe;
-use services::doc_generator::{GeneratedDoc, GenerateDocRequest};
+use services::doc_generator::{GeneratedDoc, GenerateDocRequest, RecipeDocRequest, RecipeDocResult};
 use services::embedding::start_download_progress_polling;
 use services::hybrid_search::HybridSearchResult;
 use services::ingestion::{IngestionResult, ingest_text as ingest_text_fn, ingest_file as ingest_file_fn, ingest_directory as ingest_directory_fn};
@@ -39,10 +39,16 @@ use services::metadata::{ChunkMeta, DocumentMeta, KnowledgeStats};
 use services::product_store::ProductMeta;
 use services::research_outline::Edition;
 use services::smart_completion::{SmartFillRequest, SmartFillResult};
+use services::question_recommend::{RecommendRequest, RecommendedQuestion, FollowUpRequest, FollowUpResult};
+use services::research_session::{ResearchSession, QARecord, SessionDetail};
+use services::risk_control::{ContractScopeItem, ScopeCreepResult, ProjectHealthScore, DefenseScriptRequest, DefenseScriptResult};
+use services::desensitize::DesensitizeResult;
 use services::template_docx::FieldInfo;
 use services::template_scanner::TemplateInfo;
 use services::template_schema::TemplateSchema;
 use services::vector_index::SearchResult;
+use services::whisper_service::{TranscriptionResult, WhisperStatus};
+use services::model_downloader;
 
 const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
 
@@ -818,6 +824,130 @@ async fn generate_doc(
     services::doc_generator::generate_document(request, &state.llm).await
 }
 
+/// Generate a document using a deliverable recipe (recipe-aware generation).
+///
+/// Full pipeline: recipe lookup → field overrides → KB search for kb-strategy fields
+/// → LLM generation with recipe-specific system_prompt → template fill → product save.
+#[tauri::command]
+async fn generate_recipe_doc_cmd(
+    state: State<'_, AppState>,
+    request: RecipeDocRequest,
+) -> Result<RecipeDocResult, String> {
+    // Capture request data for product store before moving request
+    let recipe_id = request.recipe_id.clone();
+    let project = request.project_name.clone().unwrap_or_default();
+    let user_field_count = request.fields.len() as i64;
+    let schema_fields_json: String = serde_json::to_string(&request.schema_fields)
+        .unwrap_or_else(|_| "[]".to_string());
+
+    let result = services::doc_generator::generate_recipe_doc(
+        request,
+        &state.llm,
+        &state.embedding,
+        &state.vector_index,
+        &state.bm25,
+        &state.metadata,
+    )
+    .await?;
+
+    // Save product to product store for regeneration support
+    let input_json = serde_json::to_string(&serde_json::json!({
+        "recipe_id": recipe_id,
+        "schema_fields": schema_fields_json,
+        "project_name": project,
+    }))
+    .unwrap_or_else(|_| "{}".to_string());
+
+    {
+        let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+        let _ = store.create(
+            &recipe_id,
+            &result.recipe_name,
+            &project,
+            &result.doc.output_path,
+            user_field_count,
+            result.doc.ai_fields.len() as i64,
+            &input_json,
+        );
+    }
+
+    Ok(result)
+}
+
+/// Convenience command: generate a document from research notes.
+///
+/// Wraps `generate_recipe_doc` with `context = Some(research_notes)`.
+/// Typically used with recipe_id = "investigation_report".
+#[tauri::command]
+async fn generate_from_research(
+    state: State<'_, AppState>,
+    recipe_id: String,
+    template_path: String,
+    output_path: String,
+    fields: std::collections::HashMap<String, String>,
+    schema_fields: Option<Vec<services::template_schema::SchemaField>>,
+    project_name: Option<String>,
+    research_notes: String,
+    project_id: Option<String>,
+) -> Result<RecipeDocResult, String> {
+    let request = RecipeDocRequest {
+        recipe_id,
+        template_path,
+        output_path,
+        fields,
+        schema_fields: schema_fields.unwrap_or_default(),
+        project_name,
+        context: Some(research_notes),
+        project_id,
+    };
+    services::doc_generator::generate_recipe_doc(
+        request,
+        &state.llm,
+        &state.embedding,
+        &state.vector_index,
+        &state.bm25,
+        &state.metadata,
+    )
+    .await
+}
+
+/// Convenience command: generate a document from meeting transcript.
+///
+/// Wraps `generate_recipe_doc` with `context = Some(meeting_transcript)`.
+/// Typically used with recipe_id = "meeting_minutes".
+#[tauri::command]
+async fn generate_from_meeting(
+    state: State<'_, AppState>,
+    recipe_id: String,
+    template_path: String,
+    output_path: String,
+    fields: std::collections::HashMap<String, String>,
+    schema_fields: Option<Vec<services::template_schema::SchemaField>>,
+    project_name: Option<String>,
+    meeting_transcript: String,
+    project_id: Option<String>,
+) -> Result<RecipeDocResult, String> {
+    let request = RecipeDocRequest {
+        recipe_id,
+        template_path,
+        output_path,
+        fields,
+        schema_fields: schema_fields.unwrap_or_default(),
+        project_name,
+        context: Some(meeting_transcript),
+        project_id,
+    };
+    services::doc_generator::generate_recipe_doc(
+        request,
+        &state.llm,
+        &state.embedding,
+        &state.vector_index,
+        &state.bm25,
+        &state.metadata,
+    )
+    .await
+}
+
 // ─── Phase 12: Product Management Commands ───
 
 /// List products, optionally filtered by project.
@@ -1121,7 +1251,398 @@ fn import_research_outlines(state: State<'_, AppState>, dir: String) -> Result<S
     Ok(summary)
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
+// ─── Phase 11: Question Recommendation Commands ───
+
+/// Recommend relevant research questions based on the current conversation topic.
+///
+/// Uses hybrid_search + edition filtering + answered-question exclusion.
+/// Falls back to DB-only recommendations on KB search failure.
+#[tauri::command]
+fn recommend_questions(
+    state: State<'_, AppState>,
+    request: RecommendRequest,
+) -> Result<Vec<RecommendedQuestion>, String> {
+    let edition = state.edition_config.current();
+    services::question_recommend::recommend_questions(
+        &request,
+        &state.research_indexer,
+        &edition,
+        &state.embedding,
+        &state.vector_index,
+        &state.bm25,
+        &state.metadata,
+    )
+}
+
+/// Generate follow-up questions based on already-answered Q&A pairs.
+///
+/// Searches KB for relevant context, then calls LLM to suggest 3-5 follow-up questions.
+/// Graceful degradation: returns empty list on LLM or KB failure.
+#[tauri::command]
+async fn generate_followup_questions(
+    state: State<'_, AppState>,
+    request: FollowUpRequest,
+) -> Result<FollowUpResult, String> {
+    services::question_recommend::generate_followup_questions(
+        &request,
+        &state.llm,
+        &state.embedding,
+        &state.vector_index,
+        &state.bm25,
+        &state.metadata,
+    )
+    .await
+}
+
+/// Smart fill a research question answer using KB context + LLM.
+///
+/// Finds the matching question, searches KB for relevant context,
+/// then calls LLM to generate an answer draft.
+#[tauri::command]
+async fn smart_fill_for_question(
+    state: State<'_, AppState>,
+    question_text: String,
+    project_name: Option<String>,
+) -> Result<SmartFillResult, String> {
+    let edition = state.edition_config.current();
+    services::question_recommend::smart_fill_for_question(
+        &question_text,
+        &edition,
+        project_name.as_deref(),
+        &state.research_indexer,
+        &state.llm,
+        &state.embedding,
+        &state.vector_index,
+        &state.bm25,
+        &state.metadata,
+    )
+    .await
+}
+
+// ─── Phase 12: Whisper Voice Recognition Commands ───
+
+/// Load a Whisper model for voice transcription.
+///
+/// Downloads model from HuggingFace if not cached locally.
+/// Supported sizes: "tiny" (~75MB), "base" (~142MB), "small" (~466MB).
+#[tauri::command]
+async fn load_whisper_model(
+    state: State<'_, AppState>,
+    model_size: String,
+) -> Result<(), String> {
+    // Use state.data_dir (initialized in AppState::new() or ensure_data_dir())
+    let data_dir = &state.data_dir;
+    let _model_path = model_downloader::ensure_model(data_dir, &model_size)?;
+
+    // Load model into WhisperService
+    let mut whisper = state.whisper_service.lock().map_err(|e| e.to_string())?;
+    whisper.load_model(data_dir, &model_size)?;
+
+    Ok(())
+}
+
+/// Get Whisper service status (model loaded, current model size, language).
+#[tauri::command]
+fn get_whisper_status(state: State<'_, AppState>) -> Result<WhisperStatus, String> {
+    let whisper = state.whisper_service.lock().map_err(|e| e.to_string())?;
+    Ok(whisper.status())
+}
+
+/// Start microphone recording.
+///
+/// Captures 16kHz mono PCM audio. Call `stop_whisper_recording` to
+/// stop and get the transcription.
+#[tauri::command]
+fn start_whisper_recording(state: State<'_, AppState>) -> Result<(), String> {
+    let capture = state.audio_capture.lock().map_err(|e| e.to_string())?;
+    capture.start_recording()
+}
+
+/// Stop recording and transcribe the captured audio.
+///
+/// Pipeline: stop mic → PCM data → Whisper transcription →
+/// Chinese post-processing → return result.
+#[tauri::command]
+async fn stop_whisper_recording(state: State<'_, AppState>) -> Result<TranscriptionResult, String> {
+    // Step 1: Stop recording and get PCM data
+    let pcm_data = {
+        let capture = state.audio_capture.lock().map_err(|e| e.to_string())?;
+        capture.stop_recording()?
+    };
+
+    if pcm_data.is_empty() {
+        return Err("No audio data captured. Microphone may not be working.".to_string());
+    }
+
+    // Step 2: VAD — detect speech segments
+    let speech_segments = services::audio_capture::AudioCapture::detect_speech_segments(
+        &pcm_data, 16000, 500, 0.01,
+    );
+
+    // If no speech detected, return empty result
+    if speech_segments.is_empty() {
+        return Ok(TranscriptionResult {
+            text: String::new(),
+            segments: vec![],
+            confidence: 0.0,
+            processing_time_ms: 0,
+        });
+    }
+
+    // Step 3: Concatenate speech segments into one buffer for Whisper
+    let speech_pcm: Vec<f32> = speech_segments.iter()
+        .flat_map(|(start, end)| pcm_data[*start..*end].to_vec())
+        .collect();
+
+    // Step 4: Transcribe via Whisper (offload to blocking thread since WhisperContext is not async)
+    let whisper_result = {
+        let whisper = state.whisper_service.lock().map_err(|e| e.to_string())?;
+        if !whisper.is_model_loaded() {
+            return Err("Whisper model not loaded. Call load_whisper_model first.".to_string());
+        }
+        // Whisper transcribe is sync and CPU-heavy
+        whisper.transcribe(&speech_pcm)?
+    };
+
+    // Step 5: Chinese post-processing
+    let processed_text = services::chinese_postprocess::postprocess_chinese(&whisper_result.text);
+
+    Ok(TranscriptionResult {
+        text: processed_text,
+        segments: whisper_result.segments,
+        confidence: whisper_result.confidence,
+        processing_time_ms: whisper_result.processing_time_ms,
+    })
+}
+// ─── Phase 13: Research Session Management ───
+
+#[tauri::command]
+fn create_research_session(
+    state: State<'_, AppState>,
+    title: String,
+    edition: String,
+    module_code: String,
+    interviewee: String,
+    session_date: String,
+) -> Result<i64, String> {
+    state.research_session_store
+        .create_session(&title, &edition, &module_code, &interviewee, &session_date)
+}
+
+#[tauri::command]
+fn list_research_sessions(state: State<'_, AppState>) -> Result<Vec<ResearchSession>, String> {
+    state.research_session_store.list_sessions()
+}
+
+#[tauri::command]
+fn get_research_session(state: State<'_, AppState>, session_id: i64) -> Result<Option<SessionDetail>, String> {
+    state.research_session_store.get_session_detail(session_id)
+}
+
+#[tauri::command]
+fn update_research_session(
+    state: State<'_, AppState>,
+    session_id: i64,
+    title: String,
+    interviewee: String,
+    session_date: String,
+    status: String,
+) -> Result<(), String> {
+    state.research_session_store
+        .update_session(session_id, &title, &interviewee, &session_date, &status)
+}
+
+#[tauri::command]
+fn delete_research_session(state: State<'_, AppState>, session_id: i64) -> Result<(), String> {
+    state.research_session_store.delete_session(session_id)
+}
+
+#[tauri::command]
+fn add_qa_record(
+    state: State<'_, AppState>,
+    session_id: i64,
+    question_id: Option<i64>,
+    question_text: String,
+    answer_text: String,
+    notes: String,
+    sort_order: i32,
+) -> Result<i64, String> {
+    state.research_session_store
+        .add_record(session_id, question_id, &question_text, &answer_text, &notes, sort_order)
+}
+
+#[tauri::command]
+fn update_qa_record(
+    state: State<'_, AppState>,
+    record_id: i64,
+    answer_text: String,
+    notes: String,
+) -> Result<(), String> {
+    state.research_session_store.update_record(record_id, &answer_text, &notes)
+}
+
+#[tauri::command]
+fn delete_qa_record(state: State<'_, AppState>, record_id: i64) -> Result<(), String> {
+    state.research_session_store.delete_record(record_id)
+}
+
+#[tauri::command]
+fn get_session_records(state: State<'_, AppState>, session_id: i64) -> Result<Vec<QARecord>, String> {
+    state.research_session_store.get_records(session_id)
+}
+
+#[tauri::command]
+fn export_session_csv(state: State<'_, AppState>, session_id: i64) -> Result<String, String> {
+    state.research_session_store.export_csv(session_id)
+}
+
+#[tauri::command]
+fn export_session_markdown(state: State<'_, AppState>, session_id: i64) -> Result<String, String> {
+    state.research_session_store.export_markdown(session_id)
+}
+
+#[tauri::command]
+fn reorder_qa_records(
+    state: State<'_, AppState>,
+    session_id: i64,
+    record_ids: Vec<i64>,
+) -> Result<(), String> {
+    state.research_session_store.reorder_records(session_id, &record_ids)
+}
+
+// ─── P1: 双轨风险把控舱 ───
+
+#[tauri::command]
+fn add_scope_item(
+    state: State<'_, AppState>,
+    category: String,
+    description: String,
+    is_in_scope: bool,
+    detail: String,
+) -> Result<i64, String> {
+    state.risk_control_store.add_scope_item(&category, &description, is_in_scope, &detail)
+}
+
+#[tauri::command]
+fn list_scope_items(state: State<'_, AppState>) -> Result<Vec<ContractScopeItem>, String> {
+    state.risk_control_store.list_scope_items()
+}
+
+#[tauri::command]
+fn delete_scope_item(state: State<'_, AppState>, item_id: i64) -> Result<(), String> {
+    state.risk_control_store.delete_scope_item(item_id)
+}
+
+#[tauri::command]
+async fn check_scope_creep(
+    state: State<'_, AppState>,
+    requirement: String,
+) -> Result<ScopeCreepResult, String> {
+    state.risk_control_store.check_scope_creep(&state.llm, &requirement).await
+}
+
+#[tauri::command]
+fn record_health_metric(
+    state: State<'_, AppState>,
+    indicator_type: String,
+    value: f64,
+    notes: String,
+) -> Result<i64, String> {
+    state.risk_control_store.record_health_metric(&indicator_type, value, &notes)
+}
+
+#[tauri::command]
+fn get_project_health(state: State<'_, AppState>) -> Result<ProjectHealthScore, String> {
+    state.risk_control_store.calculate_health_score()
+}
+
+#[tauri::command]
+async fn generate_risk_report(
+    state: State<'_, AppState>,
+    context: String,
+) -> Result<String, String> {
+    state.risk_control_store.generate_risk_report(&state.llm, &context).await
+}
+
+#[tauri::command]
+async fn generate_defense_script(
+    state: State<'_, AppState>,
+    request: DefenseScriptRequest,
+) -> Result<DefenseScriptResult, String> {
+    state.risk_control_store.generate_defense_script(&state.llm, &request).await
+}
+
+// --- P2.1: Local Desensitization ---
+
+#[tauri::command]
+fn desensitize_text(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<services::desensitize::DesensitizeResult, String> {
+    let result = state.desensitizer.desensitize(&text);
+    Ok(services::desensitize::DesensitizeResult {
+        safe_text: result.safe_text,
+        mapping: result.mapping,
+    })
+}
+
+#[tauri::command]
+fn add_sensitive_keyword(state: State<'_, AppState>, keyword: String) -> Result<(), String> {
+    state.desensitizer.add_keyword(&keyword);
+    Ok(())
+}
+
+#[tauri::command]
+fn list_sensitive_keywords(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    Ok(state.desensitizer.get_keywords())
+}
+
+// --- P2.2: Blueprint Extraction ---
+
+const BLUEPRINT_SYSTEM_PROMPT: &str = "\
+你是一个金蝶ERP业务架构师。根据调研记录提炼业务蓝图。\n\
+按四段结构：\n\
+1.【现有流程 As-Is】具体流程步骤和角色\n\
+2.【系统标准流程 To-Be】含系统路径\n\
+3.【差异配置点】配置路径: 配置值\n\
+4.【对应单据类型】单据名称（编码规则）\n\
+禁止空话，不确定写[待确认]";
+
+#[tauri::command]
+async fn extract_blueprint(
+    state: State<'_, AppState>,
+    research_context: String,
+) -> Result<String, String> {
+    use services::llm_service::ChatMessage;
+    let messages = vec![
+        ChatMessage { role: "system".to_string(), content: BLUEPRINT_SYSTEM_PROMPT.to_string() },
+        ChatMessage { role: "user".to_string(), content: research_context },
+    ];
+    let config = state.llm.get_config()?;
+    state.llm.chat_completion(&messages, &config).await
+}
+
+// --- P2.3: Fit-Gap Analysis ---
+
+const FITGAP_SYSTEM_PROMPT: &str = "\
+你是一个ERP差异分析专家。分析以下需求，每项判断Fit/Gap。\n\
+严格Markdown表格：|序号|需求|分类|Fit/Gap|理由|建议方案|\n\
+理由必须具体到模块功能，建议必须可执行。";
+
+#[tauri::command]
+async fn analyze_fit_gap(
+    state: State<'_, AppState>,
+    requirements: String,
+) -> Result<String, String> {
+    use services::llm_service::ChatMessage;
+    let messages = vec![
+        ChatMessage { role: "system".to_string(), content: FITGAP_SYSTEM_PROMPT.to_string() },
+        ChatMessage { role: "user".to_string(), content: requirements },
+    ];
+    let config = state.llm.get_config()?;
+    state.llm.chat_completion(&messages, &config).await
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -1188,6 +1709,9 @@ pub fn run() {
             // Phase 10: Document Generation
             fill_template,
             generate_doc,
+            generate_recipe_doc_cmd,
+            generate_from_research,
+            generate_from_meeting,
             // Phase 12: Product Management
             list_products,
             get_product,
@@ -1198,12 +1722,49 @@ pub fn run() {
             smart_fill,
             probe_missing_fields,
             get_deliverable_recipe,
+            // Phase 11: Question Recommendation
+            recommend_questions,
+            generate_followup_questions,
+            smart_fill_for_question,
+            // Phase 12: Whisper Voice Recognition
+            load_whisper_model,
+            get_whisper_status,
+            start_whisper_recording,
+            stop_whisper_recording,
             // Phase 9: Research Edition Commands
             get_current_edition,
             set_edition,
             list_research_modules,
             import_research_outlines,
+            // Phase 13: Research Session Management
+            create_research_session,
+            list_research_sessions,
+            get_research_session,
+            update_research_session,
+            delete_research_session,
+            add_qa_record,
+            update_qa_record,
+            delete_qa_record,
+            get_session_records,
+            export_session_csv,
+            export_session_markdown,
+            reorder_qa_records,
+            // P1: 双轨风险把控舱
+            add_scope_item,
+            list_scope_items,
+            delete_scope_item,
+            check_scope_creep,
+            record_health_metric,
+            get_project_health,
+            generate_risk_report,
+            generate_defense_script,
+            // P2: 蓝图提炼/Fit-Gap/脱敏
+            desensitize_text,
+            add_sensitive_keyword,
+            list_sensitive_keywords,
+            extract_blueprint,
+            analyze_fit_gap,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+    .run(tauri::generate_context!())
+    .expect("error while running tauri application");
 }

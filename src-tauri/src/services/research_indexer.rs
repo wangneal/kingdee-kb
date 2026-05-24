@@ -180,6 +180,70 @@ impl ResearchIndexer {
         )
         .map_err(|e| format!("Failed to count questions: {}", e))
     }
+
+    /// Get questions by edition, excluding specific IDs, with a limit.
+    ///
+    /// Used by question recommendation to filter out already-answered questions
+    /// at the database query level, avoiding unnecessary data transfer.
+    pub fn get_questions_by_edition_excluding(
+        &self,
+        edition: &Edition,
+        exclude_ids: &[i64],
+        limit: usize,
+    ) -> Result<Vec<(i64, FlatQuestion)>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+        // Build dynamic SQL with NOT IN clause
+        let exclude_clause = if exclude_ids.is_empty() {
+            String::new()
+        } else {
+            let ids: Vec<String> = exclude_ids.iter().map(|id| id.to_string()).collect();
+            format!(" AND id NOT IN ({})", ids.join(","))
+        };
+
+        let sql = format!(
+            "SELECT id, edition, module_code, module_name, cloud_type, section, category, question_text, question_order
+             FROM research_questions
+             WHERE edition = ?1{}
+             ORDER BY question_order
+             LIMIT ?2",
+            exclude_clause
+        );
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare statement: {}", e))?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![edition.as_str(), limit as i64], |row| {
+                let id: i64 = row.get(0)?;
+                let edition_str: String = row.get(1)?;
+                let edition = Edition::from_str(&edition_str)
+                    .ok_or_else(|| {
+                        rusqlite::Error::InvalidParameterName(
+                            format!("invalid edition value in database: {}", edition_str)
+                        )
+                    })?;
+                let fq = FlatQuestion {
+                    edition,
+                    module_code: row.get(2)?,
+                    module_name: row.get(3)?,
+                    cloud_type: row.get(4)?,
+                    section: row.get(5)?,
+                    category: row.get(6)?,
+                    question_text: row.get(7)?,
+                    order: row.get(8)?,
+                };
+                Ok((id, fq))
+            })
+            .map_err(|e| format!("Failed to query questions: {}", e))?;
+
+        let mut questions = Vec::new();
+        for row in rows {
+            questions.push(row.map_err(|e| format!("Failed to read row: {}", e))?);
+        }
+        Ok(questions)
+    }
 }
 
 pub struct ImportResult {

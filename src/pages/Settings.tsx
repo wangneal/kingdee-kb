@@ -16,6 +16,7 @@ import {
   ArrowLeftRight,
   Eye,
   EyeOff,
+  Plus,
 } from "lucide-react";
 import {
   getLLMConfig,
@@ -28,6 +29,8 @@ import {
   getDownloadProgress,
   type LLMConfig,
   type KnowledgeStats,
+  addSensitiveKeyword,
+  listSensitiveKeywords,
 } from "../lib/tauri-commands";
 
 const PROVIDER_DEFAULTS: Record<string, { base_url: string; model: string }> = {
@@ -83,6 +86,8 @@ export default function Settings() {
     ok: boolean;
     msg: string;
   } | null>(null);
+  const [keywordInput, setKeywordInput] = useState("");
+  const [keywords, setKeywords] = useState<string[]>([]);
 
   // Load existing config, stats, and model status
   useEffect(() => {
@@ -107,6 +112,7 @@ export default function Settings() {
       setModelReady(modelStatus);
       setLoading(false);
     });
+    listSensitiveKeywords().then(setKeywords).catch(() => {});
   }, []);
 
   const handleSave = useCallback(async () => {
@@ -602,6 +608,60 @@ export default function Settings() {
             </div>
           ) : (
             <p className="text-sm text-neutral-400">无法加载统计数据</p>
+          )}
+        </div>
+      </section>
+
+      {/* Desensitization Config Card */}
+      <section className="mt-6 rounded-xl border border-neutral-200 bg-white">
+        <div className="border-b border-neutral-100 px-5 py-3">
+          <h2 className="text-sm font-semibold text-neutral-700">
+            数据脱敏配置
+          </h2>
+          <p className="mt-0.5 text-xs text-neutral-400">
+            管理敏感词库，发送给 LLM 前自动过滤
+          </p>
+        </div>
+        <div className="p-5">
+          <p className="mb-3 text-xs text-neutral-500">
+            当前内置规则：身份证号、手机号、邮箱、金额、银行卡号。
+            可添加自定义敏感词（如企业高管姓名、内部项目代号）。
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={keywordInput}
+              onChange={(e) => setKeywordInput(e.target.value)}
+              placeholder="输入敏感词..."
+              className="flex-1 rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-amber-500"
+            />
+            <button
+              type="button"
+              onClick={async () => {
+                if (!keywordInput.trim()) return;
+                try {
+                  await addSensitiveKeyword(keywordInput.trim());
+                  setKeywordInput("");
+                  const kw = await listSensitiveKeywords();
+                  setKeywords(kw);
+                } catch (e) { alert(String(e)); }
+              }}
+              className="flex items-center gap-1 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700"
+            >
+              <Plus className="h-3.5 w-3.5" /> 添加
+            </button>
+          </div>
+          {keywords.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {keywords.map((kw) => (
+                <span key={kw} className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-xs text-amber-700">
+                  {kw}
+                  <button type="button" onClick={async () => {
+                    /* delete not exposed via API yet, will implement later */
+                  }} className="text-amber-400 hover:text-red-500">&times;</button>
+                </span>
+              ))}
+            </div>
           )}
         </div>
       </section>

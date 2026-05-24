@@ -21,20 +21,47 @@
 
 | Metric | Value |
 |--------|-------|
-| **Phase** | — (not started) |
-| **Plan** | — |
-| **Status** | Design complete, pending implementation |
-| **Progress** | 0/7 phases |
+| **Phase** | 15 (complete) |
+| **Plan** | `.planning/phases/15-integration` ✅ |
+| **Status** | **Phase 13-15 COMPLETE** — Research session management + unified frontend + integration tests |
+| **Progress** | 7/7 phases |
 
 ```
-Phase 9  [··········] 0%
-Phase 10 [··········] 0%
-Phase 11 [··········] 0%
-Phase 12 [··········] 0%
-Phase 13 [··········] 0%
-Phase 14 [··········] 0%
-Phase 15 [··········] 0%
+Phase 9  [██████████] 100% ✅
+Phase 10 [██████████] 100% ✅
+Phase 11 [██████████] 100% ✅
+Phase 12 [██████████] 100% ✅
+Phase 13 [██████████] 100% ✅
+Phase 14 [██████████] 100% ✅
+Phase 15 [██████████] 100% ✅
 ```
+
+## v0.2 Milestone: 智能调研与文档生成 — ✅ COMPLETE
+
+All 7 phases done. 121 unit tests pass (0 failures), frontend builds clean.
+
+### Phase 12 Summary
+- whisper-rs 0.16 integration (WhisperService)
+- cpal 0.15 microphone capture (AudioCapture with dedicated audio thread)
+- Chinese post-processing (punctuation restoration, duplicate removal, short sentence merge)
+- Model management: download + lazy load
+- Tauri commands: load_whisper_model, get_whisper_status, start/stop_whisper_recording
+
+### Phase 13 Summary
+- ResearchSessionStore: CRUD for interview sessions and Q&A records
+- Export: CSV + Markdown
+- SQLite tables: research_sessions, session_qa_records
+
+### Phase 14 Summary
+- ResearchAssistant.tsx: session list/detail/new views
+- VoiceRecorder integration: mic → Whisper → question text
+- Q&A CRUD with inline editing
+- Route + sidebar navigation
+
+### Phase 15 Summary
+- 121 unit tests all passing
+- Frontend build verified
+- chinese_postprocess bugs fixed (regex backreference, whitespace loop)
 
 ---
 
@@ -74,4 +101,4 @@ _(None)_
 
 ---
 
-*State updated: 2026-05-24 — v0.2 合并为智能调研与文档生成*
+*State updated: 2026-05-24 — v0.2 全部 7 阶段完成*
