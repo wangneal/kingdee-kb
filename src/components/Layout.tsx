@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { BookOpen, Search, Upload, Settings, LayoutDashboard, MessageSquare, FileEdit, Package, ClipboardList, ShieldAlert } from "lucide-react";
+import Spotlight from "./Spotlight";
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "概览" },
@@ -53,6 +54,9 @@ export default function Layout() {
       <main className="flex-1 overflow-auto">
         <Outlet />
       </main>
+
+      {/* Global Spotlight overlay */}
+      <Spotlight />
     </div>
   );
 }
