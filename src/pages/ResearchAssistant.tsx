@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   ClipboardList,
   Plus,
@@ -14,6 +14,7 @@ import {
   MessageSquare,
   Send,
   AlertCircle,
+  Brain,
 } from "lucide-react";
 import {
   type ResearchSession,
@@ -32,6 +33,8 @@ import {
   startWhisperRecording,
   stopWhisperRecording,
   getWhisperStatus,
+  reactChat,
+  listenReActEvents,
   type WhisperStatus,
 } from "../lib/tauri-commands";
 
@@ -263,10 +266,42 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
   const [newAnswer, setNewAnswer] = useState("");
   const [editingRecord, setEditingRecord] = useState<number | null>(null);
   const [editAnswer, setEditAnswer] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const aiAnswerRef = useRef("");
 
   useEffect(() => {
     getWhisperStatus().then(setWhisperStatus).catch(() => {});
   }, []);
+
+  // Subscribe to ReAct events for AI assist
+  useEffect(() => {
+    const unlisten = listenReActEvents((event) => {
+      if (event.type === "text_delta") {
+        aiAnswerRef.current += event.content;
+        setNewAnswer(aiAnswerRef.current);
+      }
+      if (event.type === "done") {
+        setAiLoading(false);
+      }
+      if (event.type === "error") {
+        setAiLoading(false);
+      }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
+
+  const handleAIAssist = async () => {
+    if (!newQuestion.trim() || aiLoading) return;
+    setAiLoading(true);
+    aiAnswerRef.current = "";
+    setNewAnswer("");
+    const context = `当前调研：${session.title}（${session.edition}/${session.module_code}）\n已有记录：${records.map((r) => `Q: ${r.question_text}`).join("\n")}`;
+    try {
+      await reactChat(`请回答以下调研问题，基于知识库中的金蝶ERP实施经验：\n\n问题：${newQuestion}\n\n背景：${context}`, `你是一个金蝶ERP实施顾问，正在辅助一个调研访谈。请基于知识库给出专业的回答。回答要具体、可操作，包含系统配置路径或单据类型。不确定的写[待确认]。`);
+    } catch (err) {
+      setAiLoading(false);
+    }
+  };
 
   const handleStartRecording = async () => {
     if (!whisperStatus?.model_loaded) {
@@ -506,6 +541,19 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
             >
               <Send className="h-3.5 w-3.5" />
               添加记录
+            </button>
+            <button
+              type="button"
+              onClick={handleAIAssist}
+              disabled={!newQuestion.trim() || aiLoading}
+              className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors"
+            >
+              {aiLoading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Brain className="h-3.5 w-3.5" />
+              )}
+              {aiLoading ? "搜索知识库..." : "AI 辅助"}
             </button>
           </div>
         </div>

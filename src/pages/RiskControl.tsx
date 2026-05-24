@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Shield, AlertTriangle, BookOpen, Plus, Trash2, Send, Loader2, AlertCircle, CheckCircle, ShieldAlert } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Shield, AlertTriangle, BookOpen, Plus, Trash2, Send, Loader2, AlertCircle, CheckCircle, ShieldAlert, Brain } from "lucide-react";
 import {
   type ContractScopeItem,
   type ScopeCreepResult,
@@ -12,6 +12,8 @@ import {
   getProjectHealth,
   generateDefenseScript,
   analyzeFitGap,
+  reactChat,
+  listenReActEvents,
 } from "../lib/tauri-commands";
 
 type Tab = "scope" | "health" | "scripts";
@@ -146,6 +148,9 @@ function ScopeTab() {
 function HealthTab() {
   const [health, setHealth] = useState<ProjectHealthScore | null>(null);
   const [loading, setLoading] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiReport, setAiReport] = useState("");
+  const aiReportRef = useRef("");
   const [fitGapInput, setFitGapInput] = useState("");
   const [fitGapResult, setFitGapResult] = useState("");
   const [fitGapLoading, setFitGapLoading] = useState(false);
