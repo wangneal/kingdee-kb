@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kingdee KB - 调研助手</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; color: #333; }
+.header { background: #1A6BD8; color: #fff; padding: 12px 16px; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.header svg { width: 18px; height: 18px; fill: currentColor; }
+.container { padding: 12px; }
+.input-area { background: #fff; border-radius: 8px; border: 1px solid #e0e0e0; padding: 12px; margin-bottom: 12px; }
+.input-area textarea { width: 100%; border: none; outline: none; resize: none; font-size: 13px; line-height: 1.5; min-height: 60px; font-family: inherit; color: #333; }
+.input-area textarea::placeholder { color: #999; }
+.actions { display: flex; gap: 8px; margin-top: 8px; }
+.btn-primary { flex: 1; background: #1A6BD8; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-size: 12px; font-weight: 500; cursor: pointer; }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary:hover:not(:disabled) { background: #1558B0; }
+.btn-secondary { background: #fff; color: #666; border: 1px solid #e0e0e0; border-radius: 6px; padding: 8px 12px; font-size: 12px; cursor: pointer; }
+.result { background: #fff; border-radius: 8px; border: 1px solid #e0e0e0; padding: 12px; font-size: 12px; line-height: 1.6; display: none; }
+.result.visible { display: block; }
+.result .label { font-weight: 600; color: #1A6BD8; margin-bottom: 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+.result .content { color: #555; white-space: pre-wrap; }
+.loading { display: none; align-items: center; gap: 6px; color: #999; font-size: 12px; margin-top: 8px; }
+.loading.visible { display: flex; }
+.spinner { width: 14px; height: 14px; border: 2px solid #e0e0e0; border-top-color: #1A6BD8; border-radius: 50%; animation: spin 0.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.status { font-size: 11px; color: #999; margin-top: 8px; text-align: center; }
+.quick-questions { margin-top: 12px; }
+.quick-questions .title { font-size: 11px; color: #999; margin-bottom: 6px; }
+.quick-questions .chip { display: inline-block; background: #e8f0fe; color: #1A6BD8; padding: 4px 10px; border-radius: 12px; font-size: 11px; margin: 2px; cursor: pointer; }
+.quick-questions .chip:hover { background: #d0e2f7; }
+</style>
+</head>
+<body>
+<div class="header">
+  <svg viewBox="0 0 24 24"><path d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h10v2H4v-2z"/></svg>
+  Kingdee KB
+</div>
+<div class="container">
+  <div class="input-area">
+    <textarea id="questionInput" placeholder="输入实施相关问题..."></textarea>
+    <div class="actions">
+      <button class="btn-primary" id="sendBtn" onclick="sendQuestion()">提问</button>
+      <button class="btn-secondary" onclick="clearAll()">清空</button>
+    </div>
+    <div class="loading" id="loading">
+      <div class="spinner"></div>
+      <span>AI 思考中...</span>
+    </div>
+  </div>
+
+  <div class="result" id="result">
+    <div class="label">回答</div>
+    <div class="content" id="resultContent"></div>
+  </div>
+
+  <div class="quick-questions">
+    <div class="title">快速提问</div>
+    <span class="chip" onclick="quickQuestion('这个模块的标准配置方案是什么？')">标准配置方案</span>
+    <span class="chip" onclick="quickQuestion('常见的实施风险有哪些？')">实施风险</span>
+    <span class="chip" onclick="quickQuestion('客户常见痛点是什么？')">客户痛点</span>
+    <span class="chip" onclick="quickQuestion('需要准备哪些期初数据？')">期初数据</span>
+  </div>
+
+  <div class="status" id="status">Alt+Space 打开桌面端</div>
+</div>
+
+<script>
+// localStorage bridge communication with desktop app
+const LS_KEY_QUESTION = 'kb_sidebar_question';
+const LS_KEY_ANSWER = 'kb_sidebar_answer';
+
+function sendQuestion() {
+  const q = document.getElementById('questionInput').value.trim();
+  if (!q) return;
+  
+  document.getElementById('sendBtn').disabled = true;
+  document.getElementById('loading').classList.add('visible');
+  document.getElementById('result').classList.remove('visible');
+  document.getElementById('status').textContent = '已发送，等待处理...';
+  
+  // Write question to localStorage for desktop app to pick up
+  localStorage.setItem(LS_KEY_QUESTION, JSON.stringify({
+    text: q,
+    timestamp: Date.now(),
+    id: 'sidebar_' + Date.now()
+  }));
+  
+  // Poll for answer
+  pollForAnswer();
+}
+
+function pollForAnswer() {
+  const checkId = setInterval(() => {
+    const raw = localStorage.getItem(LS_KEY_ANSWER);
+    if (raw) {
+      try {
+        const answer = JSON.parse(raw);
+        if (answer.id && answer.id.startsWith('sidebar_')) {
+          displayAnswer(answer.text || answer.content || '');
+          localStorage.removeItem(LS_KEY_ANSWER);
+          clearInterval(checkId);
+        }
+      } catch(e) {}
+    }
+    // Timeout after 60s
+  }, 500);
+  
+  setTimeout(() => {
+    clearInterval(checkId);
+    if (document.getElementById('loading').classList.contains('visible')) {
+      document.getElementById('loading').classList.remove('visible');
+      document.getElementById('sendBtn').disabled = false;
+      document.getElementById('status').textContent = '请求超时，请重试';
+    }
+  }, 60000);
+}
+
+function displayAnswer(text) {
+  document.getElementById('loading').classList.remove('visible');
+  document.getElementById('sendBtn').disabled = false;
+  document.getElementById('resultContent').textContent = text || '暂无回答';
+  document.getElementById('result').classList.add('visible');
+  document.getElementById('status').textContent = '完成';
+}
+
+function clearAll() {
+  document.getElementById('questionInput').value = '';
+  document.getElementById('result').classList.remove('visible');
+  document.getElementById('resultContent').textContent = '';
+  document.getElementById('loading').classList.remove('visible');
+  document.getElementById('sendBtn').disabled = false;
+  document.getElementById('status').textContent = '';
+  localStorage.removeItem(LS_KEY_QUESTION);
+  localStorage.removeItem(LS_KEY_ANSWER);
+}
+
+function quickQuestion(text) {
+  document.getElementById('questionInput').value = text;
+  sendQuestion();
+}
+
+// Keyboard shortcut
+document.getElementById('questionInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendQuestion();
+  }
+});
+</script>
+</body>
+</html>

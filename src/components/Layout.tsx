@@ -1,6 +1,11 @@
 import { NavLink, Outlet } from "react-router-dom";
+import { useEffect, useRef } from "react";
 import { BookOpen, Search, Upload, Settings, LayoutDashboard, MessageSquare, FileEdit, Package, ClipboardList, ShieldAlert } from "lucide-react";
 import Spotlight from "./Spotlight";
+import { reactChat, listenReActEvents } from "../lib/tauri-commands";
+
+const LS_KEY_QUESTION = "kb_sidebar_question";
+const LS_KEY_ANSWER = "kb_sidebar_answer";
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "概览" },
@@ -16,6 +21,46 @@ const navItems = [
 ];
 
 export default function Layout() {
+  const sideAnswerRef = useRef("");
+
+  // Sidebar localStorage bridge: poll for questions from Tencent Meeting sidebar
+  useEffect(() => {
+    const p = listenReActEvents((event) => {
+      if (event.type === "text_delta") {
+        sideAnswerRef.current += event.content;
+      }
+      if (event.type === "done") {
+        const answer = sideAnswerRef.current;
+        try {
+          const raw = localStorage.getItem(LS_KEY_QUESTION);
+          if (raw) {
+            const q = JSON.parse(raw);
+            localStorage.setItem(LS_KEY_ANSWER, JSON.stringify({ id: q.id, text: answer }));
+          }
+        } catch(e) {}
+        sideAnswerRef.current = "";
+      }
+    });
+
+    const interval = setInterval(() => {
+      try {
+        const raw = localStorage.getItem(LS_KEY_QUESTION);
+        if (!raw) return;
+        const q = JSON.parse(raw);
+        if (!q.text || !q.id) return;
+        // Process question
+        localStorage.removeItem(LS_KEY_QUESTION);
+        sideAnswerRef.current = "";
+        reactChat(q.text, "你是一个金蝶ERP实施顾问。请给出专业、简洁的回答。");
+      } catch(e) {}
+    }, 2000);
+
+    return () => {
+      p.then((fn) => fn());
+      clearInterval(interval);
+    };
+  }, []);
+
   return (
     <div className="flex h-screen bg-neutral-50">
       {/* Sidebar */}
