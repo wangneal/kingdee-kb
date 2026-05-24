@@ -163,6 +163,30 @@ function HealthTab() {
 
   useEffect(() => { refresh(); }, []);
 
+  // Listen for AI analysis results
+  useEffect(() => {
+    const p = listenReActEvents((event) => {
+      if (event.type === "text_delta") {
+        aiReportRef.current += event.content;
+        setAiReport(aiReportRef.current);
+      }
+      if (event.type === "done" || event.type === "error") {
+        setAiLoading(false);
+      }
+    });
+    return () => { p.then((fn) => fn()); };
+  }, []);
+
+  const handleAIAnalysis = async () => {
+    if (!health || aiLoading) return;
+    setAiLoading(true);
+    setAiReport("");
+    aiReportRef.current = "";
+    const ctx = "score:" + health.overall_score + " level:" + health.risk_level;
+    try { await reactChat("analyze:" + ctx, "ERP risk expert."); }
+    catch(e) { setAiLoading(false); }
+  };
+
   const colorClass = (level: string) =>
     level === "critical" ? "text-red-600" : level === "high" ? "text-orange-600" :
     level === "medium" ? "text-yellow-600" : "text-green-600";
@@ -215,6 +239,14 @@ function HealthTab() {
               </div>
             ))}
           </div>
+
+          <button type="button" onClick={handleAIAnalysis} disabled={aiLoading}
+            className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors">
+            {aiLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Brain className="h-3.5 w-3.5" />}
+            {aiLoading ? "分析中..." : "AI 风险分析"}
+          </button>
+          {aiReport && <div className="mt-2 rounded-lg border border-amber-100 bg-amber-50 p-3 text-xs leading-relaxed text-neutral-700 whitespace-pre-wrap">{aiReport}</div>}
+
           </div>
         ) : <p className="text-center text-sm text-neutral-400">加载失败</p>}
 
