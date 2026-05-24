@@ -700,33 +700,50 @@ export async function listSensitiveKeywords(): Promise<string[]> {
 // ── ReAct Agent ──────────────────────────────────────────────────────────
 
 export type ReActEvent =
-  | { type: "thinking"; content: string }
-  | { type: "tool_call"; name: string; args: string }
-  | { type: "tool_result"; name: string; result: string }
-  | { type: "text_delta"; content: string }
-  | { type: "error"; message: string }
-  | { type: "done" };
+  | { type: "thinking"; session_id: string; content: string }
+  | { type: "tool_call"; session_id: string; name: string; args: string }
+  | { type: "tool_result"; session_id: string; name: string; result: string }
+  | { type: "text_delta"; session_id: string; content: string }
+  | { type: "error"; session_id: string; message: string }
+  | { type: "done"; session_id: string };
+
+let reactSessionCounter = 0;
+function nextSessionId(): string {
+  return `session_${++reactSessionCounter}_${Date.now()}`;
+}
 
 export async function reactChat(
   message: string,
   systemExtra?: string,
-): Promise<void> {
-  return invoke("react_chat", {
+): Promise<string> {
+  const sessionId = nextSessionId();
+  await invoke("react_chat", {
     message,
     systemExtra: systemExtra ?? "",
+    sessionId,
   });
+  return sessionId;
 }
 
 /**
- * Listen for ReAct agent events.
+ * Listen for ReAct agent events, optionally filtered by session_id.
  * Returns an unsubscribe function.
  */
 export async function listenReActEvents(
   handler: (event: ReActEvent) => void,
+  sessionId?: string,
 ): Promise<() => void> {
   const { listen } = await import("@tauri-apps/api/event");
   const unlisten = await listen<ReActEvent>("react-event", (event) => {
+    if (sessionId && event.payload.session_id !== sessionId) return;
     handler(event.payload);
   });
   return unlisten;
+}
+
+// ── Utility — Export ───────────────────────────────────────────────────────
+
+/** Export content to a file with UTF-8 BOM encoding (uses PowerShell to avoid Chinese encoding issues) */
+export async function exportReport(content: string, filePath: string): Promise<string> {
+  return invoke("export_report", { content, filePath });
 }

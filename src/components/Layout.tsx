@@ -22,10 +22,12 @@ const navItems = [
 
 export default function Layout() {
   const sideAnswerRef = useRef("");
+  const sideSessionRef = useRef<string | null>(null);
 
   // Sidebar localStorage bridge: poll for questions from Tencent Meeting sidebar
   useEffect(() => {
     const p = listenReActEvents((event) => {
+      if (event.session_id !== sideSessionRef.current) return;
       if (event.type === "text_delta") {
         sideAnswerRef.current += event.content;
       }
@@ -37,8 +39,9 @@ export default function Layout() {
             const q = JSON.parse(raw);
             localStorage.setItem(LS_KEY_ANSWER, JSON.stringify({ id: q.id, text: answer }));
           }
-        } catch(e) {}
+        } catch(e) { /* localStorage unavailable */ }
         sideAnswerRef.current = "";
+        sideSessionRef.current = null;
       }
     });
 
@@ -48,11 +51,12 @@ export default function Layout() {
         if (!raw) return;
         const q = JSON.parse(raw);
         if (!q.text || !q.id) return;
-        // Process question
         localStorage.removeItem(LS_KEY_QUESTION);
         sideAnswerRef.current = "";
-        reactChat(q.text, "你是一个金蝶ERP实施顾问。请给出专业、简洁的回答。");
-      } catch(e) {}
+        reactChat(q.text, "你是一个金蝶ERP实施顾问。请给出专业、简洁的回答。").then(sid => {
+          sideSessionRef.current = sid;
+        });
+      } catch(e) { /* poll error */ }
     }, 2000);
 
     return () => {

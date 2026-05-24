@@ -61,6 +61,9 @@ whisper-rs = { version = "0.16", features = [] }
 cpal = "0.15"
 hound = "3"
 
+# Global Shortcut (OS-level Alt+Space)
+tauri-plugin-global-shortcut = "2"
+
 # ReAct Agent
 async-trait = "0.1"
 

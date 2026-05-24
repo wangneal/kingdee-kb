@@ -1651,6 +1651,7 @@ async fn react_chat(
     state: State<'_, AppState>,
     message: String,
     system_extra: String,
+    session_id: String,
 ) -> Result<(), String> {
     use services::react_agent::ReActEvent;
     use tauri::Emitter;
@@ -1658,27 +1659,72 @@ async fn react_chat(
 
     let (tx, mut rx) = mpsc::unbounded_channel::<ReActEvent>();
 
-    // Clone what we need before spawning
-    let msg = message.clone();
-    let extra = system_extra.clone();
+    let sid = session_id;
 
-    // Spawn the ReAct loop in its own scope
-    let agent_ref = &state.react_agent;
-    let llm_ref = &state.llm;
-    agent_ref.run(llm_ref, &msg, &extra, &[], tx).await;
+    // Run agent in a separate task — get state from AppHandle to avoid lifetime issues
+    let _ = state; // state not used directly (use ah.state() inside spawn for 'static lifetime)
+    let ah = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = ah.state::<AppState>();
+        state.react_agent.run(&state.llm, &message, &system_extra, &[], tx, &sid).await;
+    });
 
-    // Forward events to frontend via Tauri event system
+    // Forward events as they arrive (real-time streaming)
     while let Some(event) = rx.recv().await {
         let payload = serde_json::to_value(&event).unwrap_or_default();
         if app_handle.emit("react-event", payload).is_err() {
             break;
         }
-        if matches!(event, ReActEvent::Done | ReActEvent::Error { .. }) {
-            break;
+        match &event {
+            ReActEvent::Done { .. } | ReActEvent::Error { .. } => break,
+            _ => {}
         }
     }
 
     Ok(())
+}
+
+/// Write content to a file using PowerShell (UTF-8 BOM encoding)
+/// This avoids Chinese encoding issues on Windows by bypassing std::fs
+fn write_file_via_powershell(path: &Path, content: &str) -> Result<(), String> {
+    // Write to a temp file first via Rust (handles UTF-8 correctly)
+    let temp_path = path.with_extension("tmp");
+    std::fs::write(&temp_path, content)
+        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+
+    // Use PowerShell to copy with explicit UTF-8 BOM encoding
+    let ps_script = format!(
+        "$c = Get-Content -Path '{}' -Raw -Encoding UTF8; [System.IO.File]::WriteAllText('{}', $c, [System.Text.UTF8Encoding]::new($true))",
+        temp_path.to_string_lossy().replace("'", "''"),
+        path.to_string_lossy().replace("'", "''")
+    );
+
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
+        .output()
+        .map_err(|e| format!("PowerShell failed: {}", e))?;
+
+    // Clean up temp file
+    let _ = std::fs::remove_file(&temp_path);
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("PowerShell write error: {}", stderr));
+    }
+
+    Ok(())
+}
+
+/// Export arbitrary content to a file with UTF-8 BOM encoding
+/// Uses PowerShell to ensure Chinese text is not garbled
+#[tauri::command]
+async fn export_report(
+    content: String,
+    file_path: String,
+) -> Result<String, String> {
+    let path = PathBuf::from(&file_path);
+    write_file_via_powershell(&path, &content)?;
+    Ok(file_path)
 }
 
 pub fn run() {
@@ -1698,8 +1744,39 @@ pub fn run() {
                 }
             });
 
+// Register global shortcut: Alt+Space → toggle spotlight overlay
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
+                app.handle().plugin(
+                    tauri_plugin_global_shortcut::Builder::new()
+                        .with_shortcuts(["alt+space"])?
+                        .with_handler(|app, shortcut, event| {
+                            if event.state == ShortcutState::Pressed
+                                && shortcut.matches(Modifiers::ALT, Code::Space)
+                            {
+                                use tauri::Emitter;
+                                // Always emit toggle event to frontend
+                                let _ = app.emit("spotlight-toggle", ());
+                                // Ensure window is visible and focused
+                                if let Some(window) = app.get_webview_window("main") {
+                                    if window.is_minimized().unwrap_or(false) {
+                                        let _ = window.unminimize();
+                                    }
+                                    if !window.is_visible().unwrap_or(false) {
+                                        let _ = window.show();
+                                    }
+                                    let _ = window.set_focus();
+                                }
+                            }
+                        })
+                        .build(),
+                )?;
+            }
+
             Ok(())
         })
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             greet,
             get_data_dir,
@@ -1803,6 +1880,7 @@ pub fn run() {
             extract_blueprint,
             analyze_fit_gap,
             react_chat,
+            export_report,
         ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

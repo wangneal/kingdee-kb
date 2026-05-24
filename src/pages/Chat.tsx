@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+﻿import { useState, useCallback, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -67,7 +67,8 @@ export default function Chat() {
   });
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const unlistenRef = useRef<(() => void) | null>(null);
+  const currentSessionId = useRef<string | null>(null);
+  const unsubRef = useRef<(() => void) | null>(null);
 
   // Check LLM on mount
   useEffect(() => {
@@ -76,9 +77,10 @@ export default function Chat() {
       .catch(() => setLlmReady(false));
   }, []);
 
-  // Subscribe to ReAct events
+  // Subscribe to ReAct events (filtered by session)
   useEffect(() => {
     listenReActEvents((event) => {
+      if (event.session_id !== currentSessionId.current) return;
       switch (event.type) {
         case "thinking":
           setCurrentTrace((prev) => ({ ...prev, thinking: prev.thinking + event.content }));
@@ -135,11 +137,12 @@ export default function Chat() {
           setLoading(false);
           break;
       }
-    }).then((fn) => {
-      unlistenRef.current = fn;
+    }).then((unsub) => {
+      unsubRef.current = unsub;
     });
     return () => {
-      unlistenRef.current?.();
+      currentSessionId.current = null;
+      unsubRef.current?.();
     };
   }, []);
 
@@ -169,7 +172,8 @@ export default function Chat() {
     setCurrentTrace({ thinking: "", toolCalls: [] });
 
     try {
-      await reactChat(text);
+      const sid = await reactChat(text);
+      currentSessionId.current = sid;
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       setMessages((prev) =>

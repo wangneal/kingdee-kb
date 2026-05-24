@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from "react";
-import { Shield, AlertTriangle, BookOpen, Plus, Trash2, Send, Loader2, AlertCircle, CheckCircle, ShieldAlert, Brain } from "lucide-react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { Shield, AlertTriangle, BookOpen, Plus, Trash2, Send, Loader2, AlertCircle, CheckCircle, ShieldAlert, Brain, Download } from "lucide-react";
 import {
   type ContractScopeItem,
   type ScopeCreepResult,
@@ -14,9 +14,10 @@ import {
   analyzeFitGap,
   reactChat,
   listenReActEvents,
+  exportReport,
 } from "../lib/tauri-commands";
 
-type Tab = "scope" | "health" | "scripts";
+type Tab = "scope" | "health" | "scripts" | "analysis";
 
 export default function RiskControl() {
   const [tab, setTab] = useState<Tab>("scope");
@@ -24,6 +25,7 @@ export default function RiskControl() {
     { key: "scope", label: "需求蔓延警报", icon: AlertTriangle },
     { key: "health", label: "项目健康度", icon: Shield },
     { key: "scripts", label: "防身话术库", icon: BookOpen },
+    { key: "analysis", label: "AI 深度分析", icon: Brain },
   ];
 
   return (
@@ -45,6 +47,7 @@ export default function RiskControl() {
         {tab === "scope" && <ScopeTab />}
         {tab === "health" && <HealthTab />}
         {tab === "scripts" && <ScriptsTab />}
+        {tab === "analysis" && <AnalysisTab />}
       </div>
     </div>
   );
@@ -151,6 +154,7 @@ function HealthTab() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiReport, setAiReport] = useState("");
   const aiReportRef = useRef("");
+  const aiSessionRef = useRef<string | null>(null);
   const [fitGapInput, setFitGapInput] = useState("");
   const [fitGapResult, setFitGapResult] = useState("");
   const [fitGapLoading, setFitGapLoading] = useState(false);
@@ -163,15 +167,17 @@ function HealthTab() {
 
   useEffect(() => { refresh(); }, []);
 
-  // Listen for AI analysis results
+  // Listen for AI analysis results (filtered by session)
   useEffect(() => {
     const p = listenReActEvents((event) => {
+      if (event.session_id !== aiSessionRef.current) return;
       if (event.type === "text_delta") {
         aiReportRef.current += event.content;
         setAiReport(aiReportRef.current);
       }
       if (event.type === "done" || event.type === "error") {
         setAiLoading(false);
+        aiSessionRef.current = null;
       }
     });
     return () => { p.then((fn) => fn()); };
@@ -182,9 +188,12 @@ function HealthTab() {
     setAiLoading(true);
     setAiReport("");
     aiReportRef.current = "";
-    const ctx = "score:" + health.overall_score + " level:" + health.risk_level;
-    try { await reactChat("analyze:" + ctx, "ERP risk expert."); }
-    catch(e) { setAiLoading(false); }
+    const dims = health.dimensions.map(d => d.name + ":" + d.score.toFixed(0)).join(",");
+    const prompt = "项目健康分析 -- 评分:" + health.overall_score + " 等级:" + health.risk_level + " 维度:" + dims;
+    try {
+      const sid = await reactChat(prompt, "ERP风险专家。基于数据给出简要分析：1)主要风险 2)建议措施 3)沟通策略。");
+      aiSessionRef.current = sid;
+    } catch(e) { setAiLoading(false); }
   };
 
   const colorClass = (level: string) =>
@@ -245,7 +254,20 @@ function HealthTab() {
             {aiLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Brain className="h-3.5 w-3.5" />}
             {aiLoading ? "分析中..." : "AI 风险分析"}
           </button>
-          {aiReport && <div className="mt-2 rounded-lg border border-amber-100 bg-amber-50 p-3 text-xs leading-relaxed text-neutral-700 whitespace-pre-wrap">{aiReport}</div>}
+          {aiReport && (
+            <div className="mt-2 space-y-2">
+              <div className="rounded-lg border border-amber-100 bg-amber-50 p-3 text-xs leading-relaxed text-neutral-700 whitespace-pre-wrap">{aiReport}</div>
+              <button type="button" onClick={async () => {
+                try {
+                  const { save } = await import("@tauri-apps/plugin-dialog");
+                  const path = await save({ filters: [{ name: "Markdown", extensions: ["md"] }] });
+                  if (path) await exportReport(aiReport, path);
+                } catch(e) { alert("导出失败: " + String(e)); }
+              }} className="flex items-center gap-1 rounded bg-neutral-100 px-2 py-1 text-[10px] text-neutral-500 hover:bg-neutral-200">
+                <Download className="h-3 w-3" />导出报告
+              </button>
+            </div>
+          )}
 
           </div>
         ) : <p className="text-center text-sm text-neutral-400">加载失败</p>}
@@ -268,8 +290,21 @@ function HealthTab() {
           {fitGapLoading ? "分析中..." : "开始分析"}
         </button>
         {fitGapResult && (
-          <div className="mt-3 rounded-lg border border-neutral-100 bg-neutral-50 p-3">
-            <pre className="text-xs leading-relaxed text-neutral-700 whitespace-pre-wrap font-sans">{fitGapResult}</pre>
+          <div className="mt-3 space-y-2">
+            <div className="rounded-lg border border-neutral-100 bg-neutral-50 p-3">
+              <pre className="text-xs leading-relaxed text-neutral-700 whitespace-pre-wrap font-sans">{fitGapResult}</pre>
+            </div>
+            <div className="flex justify-end">
+              <button type="button" onClick={async () => {
+                try {
+                  const { save } = await import("@tauri-apps/plugin-dialog");
+                  const path = await save({ filters: [{ name: "Markdown", extensions: ["md"] }] });
+                  if (path) await exportReport(fitGapResult, path);
+                } catch(e) { alert("导出失败: " + String(e)); }
+              }} className="flex items-center gap-1 rounded bg-neutral-100 px-2 py-1 text-[10px] text-neutral-500 hover:bg-neutral-200">
+                <Download className="h-3 w-3" />导出分析
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -331,8 +366,159 @@ function ScriptsTab() {
               <p className="mt-1 text-[10px] italic text-amber-700">💡 {s.tip}</p>
             </div>
           ))}
+          {result && (
+            <div className="flex justify-end pt-1">
+              <button type="button" onClick={async () => {
+                const md = `# 防身话术\n\n## ${result.scenario_label}\n\n${result.scripts.map(s => `### ${s.phase}\n\n${s.content}\n\n> 💡 ${s.tip}\n`).join("\n")}`;
+                try {
+                  const { save } = await import("@tauri-apps/plugin-dialog");
+                  const path = await save({ filters: [{ name: "Markdown", extensions: ["md"] }] });
+                  if (path) await exportReport(md, path);
+                } catch(e) { alert("导出失败: " + String(e)); }
+              }} className="flex items-center gap-1 rounded bg-neutral-100 px-2 py-1 text-[10px] text-neutral-500 hover:bg-neutral-200">
+                <Download className="h-3 w-3" />导出话术
+              </button>
+            </div>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Analysis Tab: ReAct 深度分析对话 ──────────────────────────────────
+
+interface ChatMsg {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  loading?: boolean;
+}
+
+function AnalysisTab() {
+  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const msgRef = useRef("");
+  const sessionRef = useRef<string | null>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Listen for ReAct streaming events
+  useEffect(() => {
+    const p = listenReActEvents((event) => {
+      if (event.session_id !== sessionRef.current) return;
+      if (event.type === "text_delta") {
+        msgRef.current += event.content;
+        setMessages((prev) => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last && last.role === "assistant") {
+            next[next.length - 1] = { ...last, content: msgRef.current };
+          }
+          return next;
+        });
+      }
+      if (event.type === "done" || event.type === "error") {
+        setLoading(false);
+        setMessages((prev) => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last && last.role === "assistant") {
+            next[next.length - 1] = { ...last, loading: false };
+          }
+          return next;
+        });
+        sessionRef.current = null;
+      }
+    });
+    return () => { p.then((fn) => fn()); };
+  }, []);
+
+  // Auto-scroll
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const handleSend = useCallback(async () => {
+    const text = input.trim();
+    if (!text || loading) return;
+    setInput("");
+
+    const newMsg: ChatMsg = { id: `m${Date.now()}`, role: "user", content: text };
+    const placeholder: ChatMsg = { id: `m${Date.now() + 1}`, role: "assistant", content: "", loading: true };
+    setMessages((prev) => [...prev, newMsg, placeholder]);
+    msgRef.current = "";
+
+    setLoading(true);
+    try {
+      const sid = await reactChat(
+        text,
+        "你是在 KingdeeKB 双轨风险把控舱中的风控专家。分析以下问题时，你可以：\n" +
+        "1) 使用 search_knowledge 搜索知识库中的风险案例和最佳实践\n" +
+        "2) 使用 check_scope_creep 检查新需求是否超范围\n" +
+        "3) 使用 get_project_health 获取项目健康评分\n" +
+        "4) 使用 analyze_fit_gap 做差异分析\n" +
+        "5) 使用 generate_defense_script 生成应对话术\n" +
+        "给出专业、简洁、可执行的回答。"
+      );
+      sessionRef.current = sid;
+    } catch {
+      setLoading(false);
+      setMessages((prev) => {
+        const next = [...prev];
+        next[next.length - 1] = { ...next[next.length - 1], content: "分析失败，请重试", loading: false };
+        return next;
+      });
+    }
+  }, [input, loading]);
+
+  return (
+    <div className="mx-auto flex max-w-3xl flex-col" style={{ height: "calc(100vh - 12rem)" }}>
+      {/* Chat messages */}
+      <div className="flex-1 space-y-3 overflow-y-auto rounded-lg border border-neutral-200 bg-white p-4">
+        {messages.length === 0 && (
+          <div className="flex h-full items-center justify-center">
+            <div className="text-center">
+              <Brain className="mx-auto mb-2 h-8 w-8 text-amber-400" />
+              <p className="text-sm font-medium text-neutral-500">AI 深度风险分析</p>
+              <p className="mt-1 text-xs text-neutral-400">输入问题开始分析项目风险、范围蔓延、客户沟通策略等</p>
+            </div>
+          </div>
+        )}
+        {messages.map((msg) => (
+          <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div className={`max-w-[80%] rounded-lg px-3 py-2 text-xs leading-relaxed ${
+              msg.role === "user"
+                ? "bg-amber-600 text-white"
+                : "bg-neutral-100 text-neutral-700"
+            }`}>
+              {msg.loading && !msg.content ? (
+                <span className="flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" />分析中</span>
+              ) : (
+                <span className="whitespace-pre-wrap">{msg.content}</span>
+              )}
+            </div>
+          </div>
+        ))}
+        <div ref={chatEndRef} />
+      </div>
+
+      {/* Input */}
+      <div className="mt-3 flex gap-2">
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+          placeholder="输入风险分析问题..."
+          className="flex-1 rounded-lg border border-neutral-200 px-3 py-2 text-xs outline-none focus:border-amber-500"
+          disabled={loading}
+        />
+        <button type="button" onClick={handleSend} disabled={loading || !input.trim()}
+          className="flex items-center gap-1 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50">
+          {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+          发送
+        </button>
+      </div>
     </div>
   );
 }

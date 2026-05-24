@@ -10,23 +10,34 @@ export default function Spotlight() {
   const resultRef = useRef("");
   const inputRef = useRef<HTMLInputElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const spotSessionRef = useRef<string | null>(null);
 
-  // Listen for Alt+Space
+  // Listen for Alt+Space via Tauri global-shortcut event
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.altKey && e.code === "Space") {
-        e.preventDefault();
+    let unlisten: (() => void) | null = null;
+
+    (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      unlisten = await listen("spotlight-toggle", () => {
         setVisible((v) => !v);
         setInput("");
         setResult("");
         resultRef.current = "";
-      }
+      });
+    })();
+
+    // Also keep local Escape handler for closing
+    const escHandler = (e: KeyboardEvent) => {
       if (e.key === "Escape" && visible) {
         setVisible(false);
       }
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    window.addEventListener("keydown", escHandler);
+
+    return () => {
+      if (unlisten) unlisten();
+      window.removeEventListener("keydown", escHandler);
+    };
   }, [visible]);
 
   // Auto-focus input when visible
@@ -36,15 +47,17 @@ export default function Spotlight() {
     }
   }, [visible]);
 
-  // Listen for ReAct events
+  // Listen for ReAct events (filtered by session)
   useEffect(() => {
     const p = listenReActEvents((event) => {
+      if (event.session_id !== spotSessionRef.current) return;
       if (event.type === "text_delta") {
         resultRef.current += event.content;
         setResult(resultRef.current);
       }
       if (event.type === "done" || event.type === "error") {
         setLoading(false);
+        spotSessionRef.current = null;
       }
     });
     return () => { p.then((fn) => fn()); };
@@ -56,7 +69,10 @@ export default function Spotlight() {
     setLoading(true);
     setResult("");
     resultRef.current = "";
-    try { await reactChat(text); }
+    try {
+      const sid = await reactChat(text);
+      spotSessionRef.current = sid;
+    }
     catch { setLoading(false); }
   }, [input, loading]);
 

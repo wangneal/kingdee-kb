@@ -21,17 +21,17 @@ use crate::services::tool_registry::ToolRegistry;
 #[serde(tag = "type")]
 pub enum ReActEvent {
     #[serde(rename = "thinking")]
-    Thinking { content: String },
+    Thinking { session_id: String, content: String },
     #[serde(rename = "tool_call")]
-    ToolCall { name: String, args: String },
+    ToolCall { session_id: String, name: String, args: String },
     #[serde(rename = "tool_result")]
-    ToolResult { name: String, result: String },
+    ToolResult { session_id: String, name: String, result: String },
     #[serde(rename = "text_delta")]
-    TextDelta { content: String },
+    TextDelta { session_id: String, content: String },
     #[serde(rename = "error")]
-    Error { message: String },
+    Error { session_id: String, message: String },
     #[serde(rename = "done")]
-    Done,
+    Done { session_id: String },
 }
 
 /// LLM 返回的决策
@@ -69,7 +69,9 @@ impl ReActAgent {
         system_extra: &str,
         history: &[ChatMessage],
         sender: mpsc::UnboundedSender<ReActEvent>,
+        session_id: &str,
     ) {
+        let sid = session_id.to_string();
         let tool_descriptions = self.tools.get_tool_descriptions();
         let system_prompt = format!(
             "{}你是一个金蝶ERP实施顾问AI助手。你有权调用以下工具来帮助用户。\n\
@@ -110,12 +112,11 @@ impl ReActAgent {
             let config = match llm.get_config() {
                 Ok(c) => c,
                 Err(e) => {
-                    let _ = sender.send(ReActEvent::Error { message: e });
+                    let _ = sender.send(ReActEvent::Error { session_id: sid.clone(), message: e });
                     break;
                 }
             };
 
-            let openai_tools = self.tools.get_openai_tools();
             let response = llm
                 .chat_completion(&messages, &config)
                 .await;
@@ -123,21 +124,23 @@ impl ReActAgent {
             match response {
                 Ok(text) => {
                     let text: String = text;
-                    // Try to parse as JSON decision
                     if let Ok(decision) = serde_json::from_str::<ReActDecisionJson>(&text) {
                         match decision.type_field.as_str() {
                             "tool_call" => {
+                                let thought = decision.thought.clone().unwrap_or_default();
                                 let _ = sender.send(ReActEvent::Thinking {
-                                    content: decision.thought.clone().unwrap_or_default(),
+                                    session_id: sid.clone(),
+                                    content: thought,
                                 });
+                                let tool_name = decision.tool.clone().unwrap_or_default();
                                 let args_str = serde_json::to_string(&decision.args).unwrap_or_default();
                                 let _ = sender.send(ReActEvent::ToolCall {
-                                    name: decision.tool.clone().unwrap_or_default(),
-                                    args: args_str.clone(),
+                                    session_id: sid.clone(),
+                                    name: tool_name.clone(),
+                                    args: args_str,
                                 });
 
                                 // Execute tool
-                                let tool_name = decision.tool.unwrap_or_default();
                                 let tool_args = decision.args.unwrap_or_default();
                                 let result = self.tools.call_tool(&tool_name, tool_args).await;
                                 let result_str = if result.success {
@@ -146,50 +149,55 @@ impl ReActAgent {
                                     format!("错误: {}", result.error.unwrap_or_default())
                                 };
                                 let _ = sender.send(ReActEvent::ToolResult {
+                                    session_id: sid.clone(),
                                     name: tool_name.clone(),
                                     result: result_str.clone(),
                                 });
 
-                                // Feed result back to LLM
                                 messages.push(ChatMessage {
                                     role: "assistant".to_string(),
                                     content: format!("调用工具: {}\n结果: {}", tool_name, result_str),
                                 });
                             }
                             "answer" => {
+                                let thought = decision.thought.unwrap_or_default();
                                 let _ = sender.send(ReActEvent::Thinking {
-                                    content: decision.thought.unwrap_or_default(),
+                                    session_id: sid.clone(),
+                                    content: thought,
                                 });
                                 let content = decision.content.unwrap_or_default();
-                                for ch in content.chars() {
+                                // Send in 10-char chunks for performance
+                                let chars: Vec<char> = content.chars().collect();
+                                for chunk in chars.chunks(10) {
+                                    let s: String = chunk.iter().collect();
                                     let _ = sender.send(ReActEvent::TextDelta {
-                                        content: ch.to_string(),
+                                        session_id: sid.clone(),
+                                        content: s,
                                     });
                                 }
-                                let _ = sender.send(ReActEvent::Done);
+                                let _ = sender.send(ReActEvent::Done { session_id: sid.clone() });
                                 return;
                             }
                             _ => {
-                                // Unknown type, treat as answer
-                                let _ = sender.send(ReActEvent::TextDelta { content: text });
-                                let _ = sender.send(ReActEvent::Done);
+                                let _ = sender.send(ReActEvent::TextDelta { session_id: sid.clone(), content: text });
+                                let _ = sender.send(ReActEvent::Done { session_id: sid.clone() });
                                 return;
                             }
                         }
                     } else {
-                        // Not JSON — treat as plain answer
-                        let _ = sender.send(ReActEvent::TextDelta { content: text });
-                        let _ = sender.send(ReActEvent::Done);
+                        let _ = sender.send(ReActEvent::TextDelta { session_id: sid.clone(), content: text });
+                        let _ = sender.send(ReActEvent::Done { session_id: sid.clone() });
                         return;
                     }
                 }
                 Err(e) => {
-                    let _ = sender.send(ReActEvent::Error { message: e });
+                    let _ = sender.send(ReActEvent::Error { session_id: sid.clone(), message: e });
                     break;
                 }
             }
         }
         let _ = sender.send(ReActEvent::Error {
+            session_id: sid.clone(),
             message: "超出最大迭代次数，请简化问题或提供更详细的信息。".to_string(),
         });
     }
