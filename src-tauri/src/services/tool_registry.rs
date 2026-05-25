@@ -2,6 +2,9 @@
 //!
 //! 每个工具实现 Tool trait，注册到 ToolRegistry。
 //! Agent 通过名称查找并调用工具。
+//!
+//! ⚠️ DEPRECATED: 新开发请使用 `rig_tool.rs` 中的 rig `Tool` trait 实现。
+//! 此文件仅保留供旧 ReActAgent 兼容使用。
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

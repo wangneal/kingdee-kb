@@ -269,6 +269,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
   const [aiLoading, setAiLoading] = useState(false);
   const aiAnswerRef = useRef("");
   const aiSessionRef = useRef<string | null>(null);
+  const unsubRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     getWhisperStatus().then(setWhisperStatus).catch(() => {});
@@ -278,7 +279,9 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
   useEffect(() => {
     let cancelled = false;
     listenReActEvents((event) => {
-      if (event.session_id !== aiSessionRef.current) return;
+      // Support both snake_case and camelCase (Tauri v2 may convert)
+      const eventSessionId = event.session_id || (event as any).sessionId;
+      if (eventSessionId !== aiSessionRef.current) return;
       if (event.type === "text_delta") {
         aiAnswerRef.current += event.content;
         setNewAnswer(aiAnswerRef.current);
@@ -289,8 +292,12 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       }
     }).then((fn) => {
       if (cancelled) { fn(); return; }
+      unsubRef.current = fn;
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      unsubRef.current?.();
+    };
   }, []);
 
   const handleAIAssist = async () => {
@@ -300,8 +307,10 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
     setNewAnswer("");
     const context = `当前调研：${session.title}（${session.edition}/${session.module_code}）\n已有记录：${records.map((r) => `Q: ${r.question_text}`).join("\n")}`;
     try {
-      const sid = await reactChat(`请回答以下调研问题，基于知识库中的金蝶ERP实施经验：\n\n问题：${newQuestion}\n\n背景：${context}`, `你是一个金蝶ERP实施顾问，正在辅助一个调研访谈。请基于知识库给出专业的回答。回答要具体、可操作，包含系统配置路径或单据类型。不确定的写[待确认]。`);
+      // Generate session ID first before calling reactChat
+      const sid = `research_${Date.now()}`;
       aiSessionRef.current = sid;
+      await reactChat(`请回答以下调研问题，基于知识库中的金蝶ERP实施经验：\n\n问题：${newQuestion}\n\n背景：${context}`, `你是一个金蝶ERP实施顾问，正在辅助一个调研访谈。请基于知识库给出专业的回答。回答要具体、可操作，包含系统配置路径或单据类型。不确定的写[待确认]。`, sid);
     } catch (err) {
       setAiLoading(false);
     }

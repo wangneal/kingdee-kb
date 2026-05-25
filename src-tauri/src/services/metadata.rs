@@ -510,11 +510,11 @@ mod tests {
         store.insert_document("Project A doc", None, Some("hash1"), Some("project_a")).unwrap();
         store.insert_document("Project B doc", None, Some("hash2"), Some("project_b")).unwrap();
 
-        let docs_a = store.get_documents(Some("project_a")).unwrap();
+        let docs_a = store.list_documents(Some("project_a")).unwrap();
         assert_eq!(docs_a.len(), 1);
         assert_eq!(docs_a[0].project, "project_a");
 
-        let docs_all = store.get_documents(None).unwrap();
+        let docs_all = store.list_documents(None).unwrap();
         assert_eq!(docs_all.len(), 2);
     }
 }

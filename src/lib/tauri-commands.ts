@@ -729,14 +729,15 @@ function nextSessionId(): string {
 export async function reactChat(
   message: string,
   systemExtra?: string,
+  sessionId?: string,
 ): Promise<string> {
-  const sessionId = nextSessionId();
+  const sid = sessionId || nextSessionId();
   await invoke("react_chat", {
     message,
-    system_extra: systemExtra ?? "",
-    session_id: sessionId,
+    systemExtra: systemExtra ?? "",
+    sessionId: sid,
   });
-  return sessionId;
+  return sid;
 }
 
 /** Answer a pending clarification question (resolves the blocked question tool) */
@@ -760,7 +761,9 @@ export async function listenReActEvents(
 ): Promise<() => void> {
   const { listen } = await import("@tauri-apps/api/event");
   const unlisten = await listen<ReActEvent>("react-event", (event) => {
-    if (sessionId && event.payload.session_id !== sessionId) return;
+    // Check session_id in both snake_case and camelCase (Tauri v2 may convert)
+    const eventSessionId = event.payload.session_id || (event.payload as any).sessionId;
+    if (sessionId && eventSessionId !== sessionId) return;
     handler(event.payload);
   });
   return unlisten;

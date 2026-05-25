@@ -51,7 +51,9 @@ export default function Spotlight() {
   useEffect(() => {
     let cancelled = false;
     listenReActEvents((event) => {
-      if (event.session_id !== spotSessionRef.current) return;
+      // Support both snake_case and camelCase (Tauri v2 may convert)
+      const eventSessionId = event.session_id || (event as any).sessionId;
+      if (eventSessionId !== spotSessionRef.current) return;
       if (event.type === "text_delta") {
         resultRef.current += event.content;
         setResult(resultRef.current);
@@ -73,8 +75,10 @@ export default function Spotlight() {
     setResult("");
     resultRef.current = "";
     try {
-      const sid = await reactChat(text);
+      // Generate session ID first before calling reactChat
+      const sid = `spot_${Date.now()}`;
       spotSessionRef.current = sid;
+      await reactChat(text, undefined, sid);
     }
     catch { setLoading(false); }
   }, [input, loading]);

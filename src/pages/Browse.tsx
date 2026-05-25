@@ -146,11 +146,13 @@ export default function Browse() {
                 {expandedProjects.has(project) && (
                   <div className="ml-3">
                     {docs.map((doc) => (
-                      <button
-                        type="button"
+                      <div
                         key={doc.id}
+                        role="button"
+                        tabIndex={0}
                         onClick={() => setSelectedDoc(doc)}
-                        className={`group flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors ${
+                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setSelectedDoc(doc); }}
+                        className={`group flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors cursor-pointer ${
                           selectedDoc?.id === doc.id
                             ? "bg-[#1A6BD8]/10 text-[#1A6BD8]"
                             : "text-neutral-600 hover:bg-neutral-50"
@@ -169,7 +171,7 @@ export default function Browse() {
                         >
                           <Trash2 className="h-3 w-3" />
                         </button>
-                      </button>
+                      </div>
                     ))}
                   </div>
                 )}

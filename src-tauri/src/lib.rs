@@ -9,7 +9,7 @@ use tauri::{AppHandle, Manager, State};
 mod app_state;
 mod services;
 
-/// Recursively copy a directory and all its contents
+/// 递归复制目录及其所有内容
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     fs::create_dir_all(dst).map_err(|e| format!("Failed to create dir {}: {}", dst.display(), e))?;
     for entry in fs::read_dir(src).map_err(|e| format!("Failed to read dir {}: {}", src.display(), e))? {
@@ -51,7 +51,7 @@ use services::model_downloader;
 
 const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
 
-/// Tracks completion of setup tasks before closing splashscreen
+/// 跟踪启动任务完成状态，用于关闭启动画面
 struct SetupState {
     frontend_task: bool,
     backend_task: bool,
@@ -62,7 +62,7 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
-/// Ensure the ~/.kingdee-kb/ data directory structure exists
+/// 确保 ~/.kingdee-kb/ 数据目录结构存在
 fn ensure_data_dir() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
     let data_dir = home.join(".kingdee-kb");
@@ -76,14 +76,14 @@ fn ensure_data_dir() -> Result<PathBuf, String> {
     Ok(data_dir)
 }
 
-/// Get the data directory path (available to frontend)
+/// 获取数据目录路径（供前端使用）
 #[tauri::command]
 fn get_data_dir() -> Result<String, String> {
     let data_dir = ensure_data_dir()?;
     Ok(data_dir.to_string_lossy().to_string())
 }
 
-/// Store an API key in the OS credential store
+/// 存储 API 密钥到系统凭据存储
 #[tauri::command]
 fn set_api_key(service: String, key: String) -> Result<(), String> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, &service)
@@ -94,7 +94,7 @@ fn set_api_key(service: String, key: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Retrieve an API key from the OS credential store
+/// 从系统凭据存储获取 API 密钥
 #[tauri::command]
 fn get_api_key(service: String) -> Result<Option<String>, String> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, &service)
@@ -106,7 +106,7 @@ fn get_api_key(service: String) -> Result<Option<String>, String> {
     }
 }
 
-/// Delete an API key from the OS credential store
+/// 从系统凭据存储删除 API 密钥
 #[tauri::command]
 fn delete_api_key(service: String) -> Result<(), String> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, &service)
@@ -117,7 +117,7 @@ fn delete_api_key(service: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Called by the frontend when React has mounted and is ready
+/// 前端 React 挂载完成后的回调
 #[tauri::command]
 async fn set_complete(
     app: AppHandle,
@@ -144,10 +144,10 @@ async fn set_complete(
     Ok(())
 }
 
-// ─── Phase 2: Embedding & Vector Store Commands ───
+// ─── 阶段 2: 嵌入模型与向量存储命令 ───
 
-/// Get the current model status (ready / not ready).
-/// Checks EmbeddingService which holds the actual model instance.
+/// 获取当前模型状态（就绪/未就绪）。
+/// 检查持有实际模型实例的 EmbeddingService。
 #[tauri::command]
 async fn get_model_status(
     state: State<'_, AppState>,
@@ -156,14 +156,14 @@ async fn get_model_status(
     Ok(emb.is_ready())
 }
 
-/// Initialize the embedding model (downloads on first call).
-/// After initialization, transfers the model to EmbeddingService
-/// so that RAG queries can use vector search.
+/// 初始化嵌入模型（首次调用时下载）。
+/// 初始化后，将模型转移到 EmbeddingService，
+/// 以便 RAG 查询可以使用向量搜索。
 #[tauri::command]
 async fn init_model(
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
-    // Start progress polling so the frontend can show a download progress bar
+    // 启动进度轮询，以便前端显示下载进度条
     let download_progress = state.download_progress.clone();
     download_progress.store(0, Ordering::Relaxed);
     let stop = Arc::new(AtomicBool::new(false));
@@ -174,13 +174,13 @@ async fn init_model(
         stop,
     );
 
-    // Step 1: Initialize model in ModelManager (may download from HuggingFace)
+    // 步骤 1: 在 ModelManager 中初始化模型（可能从 HuggingFace 下载）
     let result = {
         let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
         mm.init()
     };
 
-    // Signal the polling thread to stop
+    // 通知轮询线程停止
     stop_clone.store(true, Ordering::Relaxed);
 
     match result {
@@ -190,7 +190,7 @@ async fn init_model(
                 let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
                 mm.take_model().ok_or("Model initialized but no model returned")?
             };
-            // Inject into EmbeddingService
+            // 注入到 EmbeddingService
             let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
             emb.set_model(model);
             Ok(true)
@@ -202,7 +202,7 @@ async fn init_model(
     }
 }
 
-/// Get the current download progress of the embedding model (0–100).
+/// 获取嵌入模型的下载进度（0–100）。
 #[tauri::command]
 async fn get_download_progress(
     state: State<'_, AppState>,
@@ -210,7 +210,7 @@ async fn get_download_progress(
     Ok(state.download_progress.load(Ordering::Relaxed))
 }
 
-/// Embed a single text — returns a 512-dim vector
+/// 嵌入单个文本 — 返回 512 维向量
 #[tauri::command]
 async fn embed_text(
     state: State<'_, AppState>,
@@ -220,7 +220,7 @@ async fn embed_text(
     emb.embed_text(&text)
 }
 
-/// Batch embed multiple texts
+/// 批量嵌入多个文本
 #[tauri::command]
 async fn embed_batch(
     state: State<'_, AppState>,
@@ -231,7 +231,7 @@ async fn embed_batch(
     emb.embed_batch(&refs)
 }
 
-/// Search for similar vectors in the HNSW index
+/// 在 HNSW 索引中搜索相似向量
 #[tauri::command]
 async fn search_similar(
     state: State<'_, AppState>,
@@ -242,7 +242,7 @@ async fn search_similar(
     index.search(&query, top_k as usize)
 }
 
-/// Load the vector index from disk
+/// 从磁盘加载向量索引
 #[tauri::command]
 async fn load_index(
     state: State<'_, AppState>,
@@ -251,7 +251,7 @@ async fn load_index(
     Ok(index.len())
 }
 
-/// Get vector index statistics
+/// 获取向量索引统计信息
 #[tauri::command]
 async fn get_index_stats(
     state: State<'_, AppState>,
@@ -261,7 +261,7 @@ async fn get_index_stats(
     serde_json::to_value(stats).map_err(|e| format!("Serialization error: {}", e))
 }
 
-/// Get knowledge base statistics (document and chunk counts)
+/// 获取知识库统计信息（文档和分块数量）
 #[tauri::command]
 async fn get_knowledge_stats(
     state: State<'_, AppState>,
@@ -270,9 +270,9 @@ async fn get_knowledge_stats(
     meta.get_stats()
 }
 
-// ─── Phase 3: Ingestion Pipeline Commands ───
+// ─── 阶段 3: 知识摄入管道命令 ───
 
-/// Ingest plain text (from paste or textarea)
+/// 摄入纯文本（来自粘贴或文本框）
 #[tauri::command]
 async fn ingest_text(
     state: State<'_, AppState>,
@@ -292,7 +292,7 @@ async fn ingest_text(
     )
 }
 
-/// Ingest a single file
+/// 摄入单个文件
 #[tauri::command]
 async fn ingest_file(
     state: State<'_, AppState>,
@@ -310,7 +310,7 @@ async fn ingest_file(
     )
 }
 
-/// Ingest all supported files in a directory
+/// 摄入目录中的所有支持文件
 #[tauri::command]
 async fn ingest_directory(
     state: State<'_, AppState>,
@@ -328,9 +328,9 @@ async fn ingest_directory(
     )
 }
 
-// ─── Document Management Commands ───
+// ─── 文档管理命令 ───
 
-/// List all documents, optionally filtered by project
+/// 列出所有文档，可按项目筛选
 #[tauri::command]
 async fn list_documents(
     state: State<'_, AppState>,
@@ -340,7 +340,7 @@ async fn list_documents(
     meta.list_documents(project.as_deref())
 }
 
-/// Get all chunks for a specific document
+/// 获取指定文档的所有分块
 #[tauri::command]
 async fn get_document_chunks(
     state: State<'_, AppState>,
@@ -350,7 +350,7 @@ async fn get_document_chunks(
     meta.get_chunks_by_document(document_id)
 }
 
-/// Delete a document and all its associated chunks
+/// 删除文档及其所有关联分块
 #[tauri::command]
 async fn delete_document(
     state: State<'_, AppState>,
@@ -360,7 +360,7 @@ async fn delete_document(
     meta.delete_document(document_id)
 }
 
-/// Get knowledge base statistics (alias for get_knowledge_stats)
+/// 获取知识库统计信息（get_knowledge_stats 的别名）
 #[tauri::command]
 async fn get_stats(
     state: State<'_, AppState>,
@@ -369,9 +369,9 @@ async fn get_stats(
     meta.get_stats()
 }
 
-// ─── Phase 4: BM25 Full-Text Search Commands ───
+// ─── 阶段 4: BM25 全文搜索命令 ───
 
-/// Search chunks by keyword using BM25 (jieba tokenization + tantivy scoring)
+/// 使用 BM25 按关键词搜索分块（jieba 分词 + tantivy 评分）
 #[tauri::command]
 async fn bm25_search(
     state: State<'_, AppState>,
@@ -383,7 +383,7 @@ async fn bm25_search(
     bm25.search(&query, project_id.as_deref(), top_k.unwrap_or(10))
 }
 
-/// Hybrid search: vector + BM25 via RRFR fusion (k=60, final top_k=5)
+/// 混合搜索：向量 + BM25 通过 RRFR 融合（k=60, final top_k=5）
 #[tauri::command]
 async fn hybrid_search(
     state: State<'_, AppState>,
@@ -402,9 +402,9 @@ async fn hybrid_search(
     )
 }
 
-// ─── Phase 6: LLM Integration & RAG Commands ───
+// ─── 阶段 6: LLM 集成与 RAG 命令 ───
 
-/// Configure the LLM provider (API key, base URL, model, etc.)
+/// 配置 LLM 提供商（API 密钥、基础 URL、模型等）
 #[tauri::command]
 async fn set_llm_config(
     state: State<'_, AppState>,
@@ -413,13 +413,13 @@ async fn set_llm_config(
     state.llm.set_config(config)
 }
 
-/// Get current LLM configuration (API key is masked)
+/// 获取当前 LLM 配置（API 密钥已脱敏）
 #[tauri::command]
 async fn get_llm_config(
     state: State<'_, AppState>,
 ) -> Result<LLMConfig, String> {
     let mut config = state.llm.get_config()?;
-    // Mask the API key for security — show first 3 and last 3 chars only for long keys
+    // 为安全起见脱敏 API 密钥 — 长密钥仅显示前 3 和后 3 个字符
     let key_len = config.api_key.len();
     if key_len > 10 {
         config.api_key = format!(
@@ -433,7 +433,7 @@ async fn get_llm_config(
     Ok(config)
 }
 
-/// Check if LLM is configured (has API key)
+/// 检查 LLM 是否已配置（有 API 密钥）
 #[tauri::command]
 async fn is_llm_configured(
     state: State<'_, AppState>,
@@ -441,10 +441,10 @@ async fn is_llm_configured(
     Ok(state.llm.is_configured())
 }
 
-/// Test LLM API connectivity without requiring embedding model.
+/// 测试 LLM API 连通性，无需嵌入模型。
 ///
-/// Sends a minimal request to verify the API key and endpoint are valid.
-/// Returns a success message or a descriptive error.
+/// 发送最小请求以验证 API 密钥和端点是否有效。
+/// 返回成功消息或描述性错误。
 #[tauri::command]
 async fn test_llm_connection(
     state: State<'_, AppState>,
@@ -452,10 +452,10 @@ async fn test_llm_connection(
     state.llm.test_connection().await
 }
 
-/// RAG query: hybrid search → context assembly → LLM streaming completion.
+/// RAG 查询：混合搜索 → 上下文组装 → LLM 流式补全。
 ///
-/// Returns the full response as a list of stream chunks.
-/// If LLM is unavailable, returns search results in fallback mode.
+/// 返回完整的流式分块列表响应。
+/// 如果 LLM 不可用，以回退模式返回搜索结果。
 #[tauri::command]
 async fn rag_query(
     state: State<'_, AppState>,
@@ -478,9 +478,9 @@ async fn rag_query(
         .await
 }
 
-/// RAG query with streaming: returns chunks incrementally.
+/// RAG 流式查询：增量返回分块。
 ///
-/// The frontend should listen for StreamChunk events.
+/// 前端应监听 StreamChunk 事件。
 #[tauri::command]
 async fn rag_query_stream(
     state: State<'_, AppState>,
@@ -503,15 +503,15 @@ async fn rag_query_stream(
         .await
 }
 
-/// Start a real-time streaming chat session via Tauri events.
+/// 通过 Tauri 事件启动实时流式聊天会话。
 ///
-/// Spawns a background task that emits `chat_chunk` Tauri events:
-/// - `{"type": "text_delta", "content": "..."}` — text chunk
-/// - `{"type": "sources", "sources": [...]}` — RAG source references
-/// - `{"type": "done"}` — stream complete
-/// - `{"type": "error", "message": "..."}` — error occurred
+/// 生成一个后台任务，发出 `chat_chunk` Tauri 事件：
+/// - `{"type": "text_delta", "content": "..."}` — 文本分块
+/// - `{"type": "sources", "sources": [...]}` — RAG 来源引用
+/// - `{"type": "done"}` — 流完成
+/// - `{"type": "error", "message": "..."}` — 发生错误
 ///
-/// Returns immediately; the frontend should listen for `chat_chunk` events.
+/// 立即返回；前端应监听 `chat_chunk` 事件。
 #[tauri::command]
 async fn start_chat_stream(
     app: AppHandle,
@@ -522,7 +522,7 @@ async fn start_chat_stream(
 ) -> Result<(), String> {
     let history = conversation_history.unwrap_or_default();
 
-    // Clone state for background task
+    // 为后台任务克隆状态
     let embedding = state.embedding.clone();
     let vector_index = state.vector_index.clone();
     let bm25 = state.bm25.clone();
@@ -531,7 +531,7 @@ async fn start_chat_stream(
     let pid = project_id.clone();
     let q = query.clone();
 
-    // Step 1: Run hybrid_search upfront to capture sources for the UI
+    // 步骤 1: 预先运行 hybrid_search 以捕获 UI 的来源
     let search_results = services::hybrid_search::hybrid_search(
         &q,
         pid.as_deref(),
@@ -552,7 +552,7 @@ async fn start_chat_stream(
         })
         .collect();
 
-    // Step 2: Check LLM config — fallback immediately if not configured
+    // 步骤 2: 检查 LLM 配置 — 如果未配置则立即回退
     if !llm.is_configured() {
         let answer = llm.fallback_response(&search_results);
         let content: String = answer.iter().map(|c| c.content.as_str()).collect();
@@ -576,10 +576,10 @@ async fn start_chat_stream(
         return Ok(());
     }
 
-    // Step 3: Channel for streaming chunks from background task
+    // 步骤 3: 用于从后台任务流式传输分块的通道
     let (tx, mut rx) = tokio::sync::mpsc::channel::<StreamChunk>(64);
 
-    // Task A: Run RAG pipeline (with pre-computed search_results), stream to channel
+    // 任务 A: 运行 RAG 管道（使用预计算的 search_results），流式传输到通道
     let llm_clone = llm.clone();
     tokio::spawn(async move {
         let _ = llm_clone
@@ -597,7 +597,7 @@ async fn start_chat_stream(
             .await;
     });
 
-    // Task B: Forward chunks from channel + sources to Tauri events
+    // 任务 B: 将通道中的分块 + 来源转发到 Tauri 事件
     tokio::spawn(async move {
         use tauri::Emitter;
         while let Some(chunk) = rx.recv().await {
@@ -619,7 +619,7 @@ async fn start_chat_stream(
                 );
             }
         }
-        // After streaming completes, emit sources
+        // 流式传输完成后，发出来源事件
         if !sources.is_empty() {
             let _ = app.emit(
                 "chat_chunk",
@@ -632,9 +632,9 @@ async fn start_chat_stream(
     Ok(())
 }
 
-/// Save chat memory: archive conversation + LLM extraction → ingest into KB.
+/// 保存聊天记忆：归档对话 + LLM 提取 → 摄入知识库。
 ///
-/// Runs in background — returns immediately. Called after each chat stream completes.
+/// 在后台运行 — 立即返回。在每次聊天流完成后调用。
 #[tauri::command]
 async fn save_chat_memory(
     state: State<'_, AppState>,
@@ -644,7 +644,7 @@ async fn save_chat_memory(
         .ok_or("Cannot find home directory")?
         .join(".kingdee-kb");
 
-    // Clone state for background task
+    // 为后台任务克隆状态
     let llm = state.llm.clone();
     let embedding = state.embedding.clone();
     let vector_index = state.vector_index.clone();
@@ -665,17 +665,17 @@ async fn save_chat_memory(
     Ok(())
 }
 
-/// Count tokens in text (utility for frontend)
+/// 统计文本中的 token 数量（前端工具函数）
 #[tauri::command]
 async fn count_tokens(text: String) -> Result<u32, String> {
     Ok(services::llm_service::count_tokens(&text))
 }
 
-// ─── Phase 9: Template Parsing Engine Commands ───
+// ─── 阶段 9: 模板解析引擎命令 ───
 
-/// Scan the template directory and return all templates sorted by phase.
+/// 扫描模板目录并返回按阶段排序的所有模板。
 ///
-/// Templates are loaded from 实施方法论V10.0交付物模板/ relative to the data directory.
+/// 模板从数据目录下的 templates/ 加载。
 #[tauri::command]
 async fn scan_templates(template_dir: Option<String>) -> Result<Vec<TemplateInfo>, String> {
     let root = match template_dir {
@@ -688,9 +688,9 @@ async fn scan_templates(template_dir: Option<String>) -> Result<Vec<TemplateInfo
     services::template_scanner::scan_templates(&root)
 }
 
-/// Extract field placeholders from a .docx or .xlsx template file.
+/// 从 .docx 或 .xlsx 模板文件中提取字段占位符。
 ///
-/// Returns a list of `{field_name}` placeholders with their metadata.
+/// 返回 `{field_name}` 占位符及其元数据列表。
 #[tauri::command]
 async fn extract_template_fields(file_path: String) -> Result<Vec<FieldInfo>, String> {
     let path = PathBuf::from(&file_path);
@@ -704,7 +704,7 @@ async fn extract_template_fields(file_path: String) -> Result<Vec<FieldInfo>, St
         "docx" => services::template_docx::extract_docx_fields(&path),
         "xlsx" => {
             let xlsx_fields = services::template_xlsx::extract_xlsx_fields(&path)?;
-            // Convert XlsxFieldInfo to FieldInfo for unified frontend API
+            // 将 XlsxFieldInfo 转换为 FieldInfo 以统一前端 API
             Ok(xlsx_fields
                 .into_iter()
                 .map(|f| FieldInfo {
@@ -792,12 +792,12 @@ async fn generate_templates_index(template_dir: Option<String>) -> Result<String
     services::template_scanner::write_templates_json(&root, &output_path)
 }
 
-// ─── Phase 10: Document Generation Commands ───
+// ─── 阶段 10: 文档生成命令 ───
 
-/// Fill a template with field values (no LLM, simple replacement).
+/// 使用字段值填充模板（无 LLM，简单替换）。
 ///
-/// Directly replaces `{field_name}` placeholders in a .docx or .xlsx template
-/// with the provided values. Returns the output path and field count.
+/// 直接替换 .docx 或 .xlsx 模板中的 `{field_name}` 占位符。
+/// 返回输出路径和字段数量。
 #[tauri::command]
 async fn fill_template(
     template_path: String,
@@ -811,10 +811,10 @@ async fn fill_template(
     )
 }
 
-/// Generate a document by filling a template with optional LLM field generation.
+/// 通过填充模板生成文档，可选 LLM 字段生成。
 ///
-/// Full pipeline: routes to docx/xlsx filler, calls LLM for `ai`/`llm` strategy
-/// fields if schema provided, validates required fields, returns metadata.
+/// 完整管道：路由到 docx/xlsx 填充器，为 `ai`/`llm` 策略字段调用 LLM（如果提供了 schema），
+/// 验证必填字段，返回元数据。
 #[tauri::command]
 async fn generate_doc(
     state: State<'_, AppState>,
@@ -823,16 +823,16 @@ async fn generate_doc(
     services::doc_generator::generate_document(request, &state.llm).await
 }
 
-/// Generate a document using a deliverable recipe (recipe-aware generation).
+/// 使用交付物配方生成文档（配方感知生成）。
 ///
-/// Full pipeline: recipe lookup → field overrides → KB search for kb-strategy fields
-/// → LLM generation with recipe-specific system_prompt → template fill → product save.
+/// 完整管道：配方查找 → 字段覆盖 → KB 搜索 kb-strategy 字段
+/// → 使用配方特定 system_prompt 的 LLM 生成 → 模板填充 → 产品保存。
 #[tauri::command]
 async fn generate_recipe_doc_cmd(
     state: State<'_, AppState>,
     request: RecipeDocRequest,
 ) -> Result<RecipeDocResult, String> {
-    // Capture request data for product store before moving request
+    // 在移动 request 之前捕获产品存储的请求数据
     let recipe_id = request.recipe_id.clone();
     let project = request.project_name.clone().unwrap_or_default();
     let user_field_count = request.fields.len() as i64;
@@ -849,7 +849,7 @@ async fn generate_recipe_doc_cmd(
     )
     .await?;
 
-    // Save product to product store for regeneration support
+    // 保存产品到产品存储以支持重新生成
     let input_json = serde_json::to_string(&serde_json::json!({
         "recipe_id": recipe_id,
         "schema_fields": schema_fields_json,
@@ -873,10 +873,10 @@ async fn generate_recipe_doc_cmd(
     Ok(result)
 }
 
-/// Convenience command: generate a document from research notes.
+/// 便捷命令：从调研笔记生成文档。
 ///
-/// Wraps `generate_recipe_doc` with `context = Some(research_notes)`.
-/// Typically used with recipe_id = "investigation_report".
+/// 包装 `generate_recipe_doc`，`context = Some(research_notes)`。
+/// 通常用于 recipe_id = "investigation_report"。
 #[tauri::command]
 async fn generate_from_research(
     state: State<'_, AppState>,
@@ -910,10 +910,10 @@ async fn generate_from_research(
     .await
 }
 
-/// Convenience command: generate a document from meeting transcript.
+/// 便捷命令：从会议记录生成文档。
 ///
-/// Wraps `generate_recipe_doc` with `context = Some(meeting_transcript)`.
-/// Typically used with recipe_id = "meeting_minutes".
+/// 包装 `generate_recipe_doc`，`context = Some(meeting_transcript)`。
+/// 通常用于 recipe_id = "meeting_minutes"。
 #[tauri::command]
 async fn generate_from_meeting(
     state: State<'_, AppState>,
@@ -947,9 +947,9 @@ async fn generate_from_meeting(
     .await
 }
 
-// ─── Phase 12: Product Management Commands ───
+// ─── 阶段 12: 产品管理命令 ───
 
-/// List products, optionally filtered by project.
+/// 列出产品，可按项目筛选。
 #[tauri::command]
 async fn list_products(
     state: State<'_, AppState>,
@@ -959,7 +959,7 @@ async fn list_products(
     store.list(project.as_deref(), None, None)
 }
 
-/// Get a single product by ID.
+/// 根据 ID 获取单个产品。
 #[tauri::command]
 async fn get_product(
     state: State<'_, AppState>,
@@ -971,7 +971,7 @@ async fn get_product(
         .ok_or_else(|| format!("Product not found: {}", id))
 }
 
-/// Delete a product and all its versions.
+/// 删除产品及其所有版本。
 #[tauri::command]
 async fn delete_product(
     state: State<'_, AppState>,
@@ -981,8 +981,8 @@ async fn delete_product(
     store.delete(id)
 }
 
-/// Export a product's output file to a target directory.
-/// Returns the exported file path.
+/// 将产品的输出文件导出到目标目录。
+/// 返回导出的文件路径。
 #[tauri::command]
 async fn export_product(
     state: State<'_, AppState>,
@@ -993,10 +993,10 @@ async fn export_product(
     store.export_product(id, &target_dir)
 }
 
-/// Regenerate a product with updated field values.
+/// 使用更新的字段值重新生成产品。
 ///
-/// Re-runs document generation using the latest version's template info
-/// but with the provided updated fields. Creates a new version.
+/// 使用最新版本的模板信息重新运行文档生成，
+/// 但使用提供的更新字段。创建新版本。
 #[tauri::command]
 async fn regenerate_product(
     state: State<'_, AppState>,
@@ -1006,16 +1006,16 @@ async fn regenerate_product(
     use services::doc_generator::GenerateDocRequest;
     use std::path::PathBuf;
 
-    // Extract all needed data from store in a block, then drop the lock
+    // 在块中从存储中提取所有需要的数据，然后释放锁
     let (product_output_path, original_input, _latest_input_data) = {
         let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
 
-        // Get existing product
+        // 获取现有产品
         let product = store
             .get(id)?
             .ok_or_else(|| format!("Product not found: {}", id))?;
 
-        // Get latest version to find the original template path
+        // 获取最新版本以找到原始模板路径
         let latest = store
             .get_latest_version(id)?
             .ok_or_else(|| format!("No versions found for product: {}", id))?;
@@ -1025,7 +1025,7 @@ async fn regenerate_product(
                 .unwrap_or_else(|_| serde_json::json!({}));
 
         (product.output_path.clone(), original_input, latest.input_data.clone())
-    }; // store is dropped here
+    }; // 存储在此释放
 
     let template_path = original_input
         .get("template_path")
@@ -1047,7 +1047,7 @@ async fn regenerate_product(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    // Generate new output path (using std::time instead of chrono)
+    // 生成新输出路径（使用 std::time 而不是 chrono）
     let timestamp = {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1074,7 +1074,7 @@ async fn regenerate_product(
         .to_string_lossy()
         .to_string();
 
-    // Build generation request
+    // 构建生成请求
     let request = GenerateDocRequest {
         template_path,
         output_path: new_output_path.clone(),
@@ -1084,10 +1084,10 @@ async fn regenerate_product(
         context,
     };
 
-    // Generate the document (no mutex held here)
+    // 生成文档（此处不持有 mutex）
     let result = services::doc_generator::generate_document(request, &state.llm).await?;
 
-    // Save new version and update product
+    // 保存新版本并更新产品
     let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
     let input_json = serde_json::to_string(&serde_json::json!({
         "template_path": original_input.get("template_path"),
@@ -1100,18 +1100,18 @@ async fn regenerate_product(
 
     store.add_version(id, &input_json, &result.output_path)?;
 
-    // Return updated product
+    // 返回更新后的产品
     store
         .get(id)?
         .ok_or_else(|| format!("Product not found after regeneration: {}", id))
 }
 
-/// Perform backend initialization tasks
+/// 执行后端初始化任务
 async fn setup_backend(app: AppHandle) -> Result<(), String> {
     let data_dir = ensure_data_dir()?;
     println!("Data directory initialized at: {:?}", data_dir);
 
-    // Initialize Phase 2 services (may fail if model download blocked)
+    // 初始化阶段 2 服务（如果模型下载被阻止可能会失败）
     match AppState::new(&data_dir) {
         Ok(app_state) => {
             app.manage(app_state);
@@ -1124,7 +1124,7 @@ async fn setup_backend(app: AppHandle) -> Result<(), String> {
         }
     }
 
-    // Ensure template directory exists and sync built-in templates if empty
+    // 确保模板目录存在，如果为空则同步内置模板
     let template_dir = data_dir.join("templates");
     if !template_dir.exists() {
         std::fs::create_dir_all(&template_dir)
@@ -1132,16 +1132,16 @@ async fn setup_backend(app: AppHandle) -> Result<(), String> {
         println!("Created templates directory at: {:?}", template_dir);
     }
 
-    // If templates dir is empty, copy built-in templates from the app bundle
+    // 如果模板目录为空，从应用包中复制内置模板
     if std::fs::read_dir(&template_dir)
         .map_err(|e| format!("Failed to read templates directory: {}", e))?
         .next()
         .is_none()
     {
-        // Try the exe directory first (for production builds)
+        // 首先尝试 exe 目录（用于生产构建）
         if let Ok(exe_path) = std::env::current_exe() {
             if let Some(exe_dir) = exe_path.parent() {
-                let resource_dir = exe_dir.join("实施方法论V10.0交付物模板");
+                let resource_dir = exe_dir.join("templates");
                 if resource_dir.exists() {
                     match copy_dir_recursive(&resource_dir, &template_dir) {
                         Ok(_) => println!("Copied built-in templates to {:?}", template_dir),
@@ -1150,8 +1150,8 @@ async fn setup_backend(app: AppHandle) -> Result<(), String> {
                 }
             }
         }
-        // Also try the project root during development
-        let dev_template_dir = std::path::PathBuf::from("../实施方法论V10.0交付物模板");
+        // 开发期间也尝试项目根目录
+        let dev_template_dir = std::path::PathBuf::from("../templates");
         if template_dir
             .read_dir()
             .map_err(|e| format!("Failed to read templates directory: {}", e))?
@@ -1174,9 +1174,9 @@ async fn setup_backend(app: AppHandle) -> Result<(), String> {
     .await
 }
 
-// ─── Phase 11: Smart Completion Commands ───
+// ─── 阶段 11: 智能补全命令 ───
 
-/// Smart fill: KB-assisted field filling using hybrid_search + LLM
+/// 智能填充：使用 hybrid_search + LLM 进行 KB 辅助字段填充
 #[tauri::command]
 async fn smart_fill(state: State<'_, AppState>, request: SmartFillRequest) -> Result<SmartFillResult, String> {
     services::smart_completion::smart_fill(
@@ -1190,33 +1190,33 @@ async fn smart_fill(state: State<'_, AppState>, request: SmartFillRequest) -> Re
     .await
 }
 
-/// Probe missing fields: returns detailed diagnostic info for unfilled required fields
+/// 探测缺失字段：返回未填必填字段的详细诊断信息
 #[tauri::command]
 async fn probe_missing_fields(
     state: State<'_, AppState>,
     request: GenerateDocRequest,
 ) -> Result<GeneratedDoc, String> {
-    // Generate the document to get the latest missing fields detail
+    // 生成文档以获取最新的缺失字段详情
     services::doc_generator::generate_document(request, &state.llm).await
 }
 
-/// Get deliverable recipe by template_id
+/// 根据 template_id 获取交付物配方
 #[tauri::command]
 fn get_deliverable_recipe(template_id: String) -> Result<DeliverableRecipe, String> {
     services::deliverable_recipes::get_recipe_by_template_id(&template_id)
         .ok_or_else(|| format!("No recipe found for template_id: {}", template_id))
 }
 
-// ─── Phase 9: Tauri Commands Registration ───
+// ─── 阶段 9: Tauri 命令注册 ───
 
-/// Get the current research edition ("enterprise" or "flagship")
+/// 获取当前研究版本（"enterprise" 或 "flagship"）
 #[tauri::command]
 fn get_current_edition(state: State<'_, AppState>) -> Result<String, String> {
     let edition = state.edition_config.current();
     Ok(edition.as_str().to_string())
 }
 
-/// Switch the research edition
+/// 切换研究版本
 #[tauri::command]
 fn set_edition(state: State<'_, AppState>, edition: String) -> Result<(), String> {
     let edition = Edition::from_str(&edition)
@@ -1224,14 +1224,14 @@ fn set_edition(state: State<'_, AppState>, edition: String) -> Result<(), String
     state.edition_config.set(&edition)
 }
 
-/// List all imported research modules for the current edition
+/// 列出当前版本的所有已导入研究模块
 #[tauri::command]
 fn list_research_modules(state: State<'_, AppState>) -> Result<Vec<(i64, String, String)>, String> {
     let edition = state.edition_config.current();
     state.research_indexer.list_outlines(&edition)
 }
 
-/// Batch import research outlines from a directory
+/// 从目录批量导入研究大纲
 #[tauri::command]
 fn import_research_outlines(state: State<'_, AppState>, dir: String) -> Result<String, String> {
     let edition = state.edition_config.current();
@@ -1250,12 +1250,12 @@ fn import_research_outlines(state: State<'_, AppState>, dir: String) -> Result<S
     Ok(summary)
 }
 
-// ─── Phase 11: Question Recommendation Commands ───
+// ─── 阶段 11: 问题推荐命令 ───
 
-/// Recommend relevant research questions based on the current conversation topic.
+/// 根据当前对话主题推荐相关研究问题。
 ///
-/// Uses hybrid_search + edition filtering + answered-question exclusion.
-/// Falls back to DB-only recommendations on KB search failure.
+/// 使用 hybrid_search + 版本筛选 + 已回答问题排除。
+/// KB 搜索失败时回退到仅 DB 推荐。
 #[tauri::command]
 fn recommend_questions(
     state: State<'_, AppState>,
@@ -1273,10 +1273,10 @@ fn recommend_questions(
     )
 }
 
-/// Generate follow-up questions based on already-answered Q&A pairs.
+/// 基于已回答的问答对生成后续问题。
 ///
-/// Searches KB for relevant context, then calls LLM to suggest 3-5 follow-up questions.
-/// Graceful degradation: returns empty list on LLM or KB failure.
+/// 搜索 KB 获取相关上下文，然后调用 LLM 建议 3-5 个后续问题。
+/// 优雅降级：LLM 或 KB 失败时返回空列表。
 #[tauri::command]
 async fn generate_followup_questions(
     state: State<'_, AppState>,
@@ -1293,10 +1293,10 @@ async fn generate_followup_questions(
     .await
 }
 
-/// Smart fill a research question answer using KB context + LLM.
+/// 使用 KB 上下文 + LLM 智能填充研究问题答案。
 ///
-/// Finds the matching question, searches KB for relevant context,
-/// then calls LLM to generate an answer draft.
+/// 查找匹配问题，搜索 KB 获取相关上下文，
+/// 然后调用 LLM 生成答案草稿。
 #[tauri::command]
 async fn smart_fill_for_question(
     state: State<'_, AppState>,
@@ -1318,52 +1318,52 @@ async fn smart_fill_for_question(
     .await
 }
 
-// ─── Phase 12: Whisper Voice Recognition Commands ───
+// ─── 阶段 12: Whisper 语音识别命令 ───
 
-/// Load a Whisper model for voice transcription.
+/// 加载 Whisper 模型用于语音转录。
 ///
-/// Downloads model from HuggingFace if not cached locally.
-/// Supported sizes: "tiny" (~75MB), "base" (~142MB), "small" (~466MB).
+/// 如果本地未缓存，从 HuggingFace 下载模型。
+/// 支持的大小："tiny"（~75MB）、"base"（~142MB）、"small"（~466MB）。
 #[tauri::command]
 async fn load_whisper_model(
     state: State<'_, AppState>,
     model_size: String,
 ) -> Result<(), String> {
-    // Use state.data_dir (initialized in AppState::new() or ensure_data_dir())
+    // 使用 state.data_dir（在 AppState::new() 或 ensure_data_dir() 中初始化）
     let data_dir = &state.data_dir;
     let _model_path = model_downloader::ensure_model(data_dir, &model_size)?;
 
-    // Load model into WhisperService
+    // 将模型加载到 WhisperService
     let mut whisper = state.whisper_service.lock().map_err(|e| e.to_string())?;
     whisper.load_model(data_dir, &model_size)?;
 
     Ok(())
 }
 
-/// Get Whisper service status (model loaded, current model size, language).
+/// 获取 Whisper 服务状态（模型已加载、当前模型大小、语言）。
 #[tauri::command]
 fn get_whisper_status(state: State<'_, AppState>) -> Result<WhisperStatus, String> {
     let whisper = state.whisper_service.lock().map_err(|e| e.to_string())?;
     Ok(whisper.status())
 }
 
-/// Start microphone recording.
+/// 开始麦克风录音。
 ///
-/// Captures 16kHz mono PCM audio. Call `stop_whisper_recording` to
-/// stop and get the transcription.
+/// 捕获 16kHz 单声道 PCM 音频。调用 `stop_whisper_recording`
+/// 停止并获取转录结果。
 #[tauri::command]
 fn start_whisper_recording(state: State<'_, AppState>) -> Result<(), String> {
     let capture = state.audio_capture.lock().map_err(|e| e.to_string())?;
     capture.start_recording()
 }
 
-/// Stop recording and transcribe the captured audio.
+/// 停止录音并转录音频。
 ///
-/// Pipeline: stop mic → PCM data → Whisper transcription →
-/// Chinese post-processing → return result.
+/// 管道：停止麦克风 → PCM 数据 → Whisper 转录 →
+/// 中文后处理 → 返回结果。
 #[tauri::command]
 async fn stop_whisper_recording(state: State<'_, AppState>) -> Result<TranscriptionResult, String> {
-    // Step 1: Stop recording and get PCM data
+    // 步骤 1: 停止录音并获取 PCM 数据
     let pcm_data = {
         let capture = state.audio_capture.lock().map_err(|e| e.to_string())?;
         capture.stop_recording()?
@@ -1373,12 +1373,12 @@ async fn stop_whisper_recording(state: State<'_, AppState>) -> Result<Transcript
         return Err("No audio data captured. Microphone may not be working.".to_string());
     }
 
-    // Step 2: VAD — detect speech segments
+    // 步骤 2: VAD — 检测语音段
     let speech_segments = services::audio_capture::AudioCapture::detect_speech_segments(
         &pcm_data, 16000, 500, 0.01,
     );
 
-    // If no speech detected, return empty result
+    // 如果未检测到语音，返回空结果
     if speech_segments.is_empty() {
         return Ok(TranscriptionResult {
             text: String::new(),
@@ -1388,22 +1388,22 @@ async fn stop_whisper_recording(state: State<'_, AppState>) -> Result<Transcript
         });
     }
 
-    // Step 3: Concatenate speech segments into one buffer for Whisper
+    // 步骤 3: 将语音段连接到一个缓冲区供 Whisper 使用
     let speech_pcm: Vec<f32> = speech_segments.iter()
         .flat_map(|(start, end)| pcm_data[*start..*end].to_vec())
         .collect();
 
-    // Step 4: Transcribe via Whisper (offload to blocking thread since WhisperContext is not async)
+    // 步骤 4: 通过 Whisper 转录（卸载到阻塞线程，因为 WhisperContext 不是 async）
     let whisper_result = {
         let whisper = state.whisper_service.lock().map_err(|e| e.to_string())?;
         if !whisper.is_model_loaded() {
             return Err("Whisper model not loaded. Call load_whisper_model first.".to_string());
         }
-        // Whisper transcribe is sync and CPU-heavy
+        // Whisper 转录是同步且 CPU 密集型的
         whisper.transcribe(&speech_pcm)?
     };
 
-    // Step 5: Chinese post-processing
+    // 步骤 5: 中文后处理
     let processed_text = services::chinese_postprocess::postprocess_chinese(&whisper_result.text);
 
     Ok(TranscriptionResult {
@@ -1413,7 +1413,7 @@ async fn stop_whisper_recording(state: State<'_, AppState>) -> Result<Transcript
         processing_time_ms: whisper_result.processing_time_ms,
     })
 }
-// ─── Phase 13: Research Session Management ───
+// ─── 阶段 13: 研究会话管理 ───
 
 #[tauri::command]
 fn create_research_session(
@@ -1571,7 +1571,7 @@ async fn generate_defense_script(
     state.risk_control_store.generate_defense_script(&state.llm, &request).await
 }
 
-// --- P2.1: Local Desensitization ---
+// --- P2.1: 本地脱敏 ---
 
 #[tauri::command]
 fn desensitize_text(
@@ -1601,7 +1601,7 @@ fn remove_sensitive_keyword(state: State<'_, AppState>, keyword: String) -> Resu
     Ok(state.desensitizer.remove_keyword(&keyword))
 }
 
-// --- P2.2: Blueprint Extraction ---
+// --- P2.2: 蓝图提炼 ---
 
 const BLUEPRINT_SYSTEM_PROMPT: &str = "\
 你是一个金蝶ERP业务架构师。根据调研记录提炼业务蓝图。\n\
@@ -1626,7 +1626,7 @@ async fn extract_blueprint(
     state.llm.chat_completion(&messages, &config).await
 }
 
-// --- P2.3: Fit-Gap Analysis ---
+// --- P2.3: Fit-Gap 分析 ---
 
 const FITGAP_SYSTEM_PROMPT: &str = "\
 你是一个ERP差异分析专家。分析以下需求，每项判断Fit/Gap。\n\
@@ -1647,7 +1647,7 @@ async fn analyze_fit_gap(
     state.llm.chat_completion(&messages, &config).await
 }
 
-// --- ReAct Chat ---
+// --- ReAct 对话 ---
 
 #[tauri::command]
 async fn react_chat(
@@ -1665,16 +1665,24 @@ async fn react_chat(
 
     let sid = session_id;
 
-    // Run agent in a separate task — get state from AppHandle to avoid lifetime issues
+    // 在单独的任务中运行 agent — 从 AppHandle 获取状态以避免生命周期问题
     let pending = state.pending_questions.clone();
-    let _ = state; // state not used directly (use ah.state() inside spawn for 'static lifetime)
     let ah = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         let state = ah.state::<AppState>();
-        state.react_agent.run(&state.llm, &message, &system_extra, &[], tx, &sid, pending).await;
+        services::rig_agent::RigAgent::run(
+            &state.llm,
+            &message,
+            &system_extra,
+            &[],
+            tx,
+            &sid,
+            pending,
+        )
+        .await;
     });
 
-    // Forward events as they arrive (real-time streaming)
+    // 转发到达的事件（实时流式传输）
     while let Some(event) = rx.recv().await {
         let payload = serde_json::to_value(&event).unwrap_or_default();
         if app_handle.emit("react-event", payload).is_err() {
@@ -1689,7 +1697,7 @@ async fn react_chat(
     Ok(())
 }
 
-/// Answer a pending question from the question tool (called by frontend after user picks/types answer)
+/// 回答问题工具的待处理问题（前端在用户选择/输入答案后调用）
 #[tauri::command]
 async fn answer_question(
     state: State<'_, AppState>,
@@ -1699,15 +1707,15 @@ async fn answer_question(
     services::question_tool::answer_question(&state.pending_questions, &question_id, &answer).await
 }
 
-/// Write content to a file using PowerShell (UTF-8 BOM encoding)
-/// This avoids Chinese encoding issues on Windows by bypassing std::fs
+/// 使用 PowerShell 将内容写入文件（UTF-8 BOM 编码）
+/// 通过绕过 std::fs 避免 Windows 上的中文编码问题
 fn write_file_via_powershell(path: &Path, content: &str) -> Result<(), String> {
-    // Write to a temp file first via Rust (handles UTF-8 correctly)
+    // 首先通过 Rust 写入临时文件（正确处理 UTF-8）
     let temp_path = path.with_extension("tmp");
     std::fs::write(&temp_path, content)
         .map_err(|e| format!("Failed to write temp file: {}", e))?;
 
-    // Use PowerShell to copy with explicit UTF-8 BOM encoding
+    // 使用 PowerShell 复制并显式指定 UTF-8 BOM 编码
     let ps_script = format!(
         "$c = Get-Content -Path '{}' -Raw -Encoding UTF8; [System.IO.File]::WriteAllText('{}', $c, [System.Text.UTF8Encoding]::new($true))",
         temp_path.to_string_lossy().replace("'", "''"),
@@ -1719,7 +1727,7 @@ fn write_file_via_powershell(path: &Path, content: &str) -> Result<(), String> {
         .output()
         .map_err(|e| format!("PowerShell failed: {}", e))?;
 
-    // Clean up temp file
+    // 清理临时文件
     let _ = std::fs::remove_file(&temp_path);
 
     if !output.status.success() {
@@ -1730,8 +1738,8 @@ fn write_file_via_powershell(path: &Path, content: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Export arbitrary content to a file with UTF-8 BOM encoding
-/// Uses PowerShell to ensure Chinese text is not garbled
+/// 将任意内容导出到文件（UTF-8 BOM 编码）
+/// 使用 PowerShell 确保中文文本不乱码
 #[tauri::command]
 async fn export_report(
     content: String,
@@ -1745,13 +1753,13 @@ async fn export_report(
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            // Initialize setup state tracking
+            // 初始化启动状态跟踪
             app.manage(Mutex::new(SetupState {
                 frontend_task: false,
                 backend_task: false,
             }));
 
-            // Spawn backend initialization task
+            // 生成后端初始化任务
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = setup_backend(app_handle).await {
@@ -1759,7 +1767,7 @@ pub fn run() {
                 }
             });
 
-// Register global shortcut: Alt+Space → toggle spotlight overlay
+// 注册全局快捷键：Alt+Space → 切换 spotlight 覆盖层
             #[cfg(desktop)]
             {
                 use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
@@ -1771,9 +1779,9 @@ pub fn run() {
                                 && shortcut.matches(Modifiers::ALT, Code::Space)
                             {
                                 use tauri::Emitter;
-                                // Always emit toggle event to frontend
+                                // 始终向前端发出切换事件
                                 let _ = app.emit("spotlight-toggle", ());
-                                // Ensure window is visible and focused
+                                // 确保窗口可见并获得焦点
                                 if let Some(window) = app.get_webview_window("main") {
                                     if window.is_minimized().unwrap_or(false) {
                                         let _ = window.unminimize();

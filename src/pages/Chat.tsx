@@ -13,6 +13,7 @@ import {
   reactChat,
   listenReActEvents,
   answerQuestion,
+  saveChatMemory,
   type ReActEvent,
   type ClarificationPayload,
 } from "../lib/tauri-commands";
@@ -88,7 +89,9 @@ export default function Chat() {
   useEffect(() => {
     let cancelled = false;
     listenReActEvents((event) => {
-      if (event.session_id !== currentSessionId.current) return;
+      // Check session_id in both snake_case and camelCase (Tauri v2 may convert)
+      const eventSessionId = event.session_id || (event as any).sessionId;
+      if (eventSessionId !== currentSessionId.current) return;
       switch (event.type) {
         case "thinking":
           setCurrentTrace((prev) => ({ ...prev, thinking: prev.thinking + event.content }));
@@ -145,17 +148,19 @@ export default function Chat() {
           setMessages((prev) => {
             const clarPayload = event.payload;
             const last = prev[prev.length - 1];
-            const clarMsg = { content: clarPayload.prompt, clarification: clarPayload } as DisplayMessage;
+            const clarMsg: DisplayMessage = {
+              id: nextId(),
+              role: "assistant",
+              content: clarPayload.prompt,
+              clarification: clarPayload,
+            };
             if (last && last.role === "assistant" && last.streaming) {
               return [
                 ...prev.slice(0, -1),
                 { ...last, streaming: false, ...clarMsg },
               ];
             }
-            return [
-              ...prev,
-              { id: nextId(), role: "assistant", ...clarMsg },
-            ];
+            return [...prev, clarMsg];
           });
           setCurrentTrace({ thinking: "", toolCalls: [] });
           setLoading(false);
@@ -209,8 +214,11 @@ export default function Chat() {
     setCurrentTrace({ thinking: "", toolCalls: [] });
 
     try {
-      const sid = await reactChat(text);
+      // Generate session ID first and set it before calling reactChat
+      // because events may arrive before reactChat returns
+      const sid = nextId();
       currentSessionId.current = sid;
+      await reactChat(text, undefined, sid);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       setMessages((prev) =>

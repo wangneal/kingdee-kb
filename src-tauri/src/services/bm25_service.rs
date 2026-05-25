@@ -1,9 +1,9 @@
-//! BM25 full-text search service using tantivy + jieba-rs
+//! BM25 全文搜索服务，使用 tantivy + jieba-rs
 //!
-//! Provides Chinese-aware full-text search via tantivy's BM25 scoring
-//! with jieba `cut_for_search` tokenization.
+//! 通过 tantivy 的 BM25 评分和 jieba `cut_for_search` 分词，
+//! 提供中文感知的全文搜索。
 //!
-//! Index persisted to `~/.kingdee-kb/bm25_index/`.
+//! 索引持久化到 `~/.kingdee-kb/bm25_index/`。
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ use jieba_rs::Jieba;
 
 // ─── Jieba Tokenizer for tantivy ───
 
-/// Tokenizer that uses jieba `cut_for_search` for Chinese text segmentation
+/// 使用 jieba `cut_for_search` 进行中文文本分词的分词器
 pub struct JiebaTokenizer {
     jieba: Arc<Jieba>,
 }
@@ -38,7 +38,7 @@ impl Clone for JiebaTokenizer {
     }
 }
 
-/// Token stream from jieba cut_for_search
+/// jieba cut_for_search 的 token 流
 pub struct JiebaTokenStream {
     token: tantivy::tokenizer::Token,
     tokens: Vec<(usize, usize, String)>, // (byte_offset_from, byte_offset_to, text)
@@ -98,7 +98,7 @@ impl tantivy::tokenizer::Tokenizer for JiebaTokenizer {
 
 // ─── BM25 Search Result ───
 
-/// A result from BM25 search
+/// BM25 搜索结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BM25SearchResult {
     /// Chunk ID from the metadata store
@@ -117,7 +117,7 @@ pub struct BM25SearchResult {
 
 // ─── BM25 Service ───
 
-/// BM25 full-text search service backed by tantivy with jieba tokenization
+/// 基于 tantivy 和 jieba 分词的 BM25 全文搜索服务
 pub struct BM25Service {
     index: Index,
     reader: IndexReader,

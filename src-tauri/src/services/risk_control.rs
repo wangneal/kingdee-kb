@@ -447,7 +447,7 @@ mod tests {
         assert!(id > 0);
         store.add_scope_item("FI", "银企直连", false, "合同排除项清单第5条").unwrap();
 
-        let items = store.list_scope_items().unwrap();
+        let items = store.list_scope_items(None, None).unwrap();
         assert_eq!(items.len(), 2);
         assert!(items[0].is_in_scope);
         assert!(!items[1].is_in_scope);
@@ -469,7 +469,7 @@ mod tests {
         let store = new_store();
         let id = store.add_scope_item("MM", "采购模块", true, "").unwrap();
         store.delete_scope_item(id).unwrap();
-        assert_eq!(store.list_scope_items().unwrap().len(), 0);
+        assert_eq!(store.list_scope_items(None, None).unwrap().len(), 0);
     }
 
     #[test]

@@ -30,7 +30,9 @@ export default function Layout() {
     let unsub: (() => void) | null = null;
 
     listenReActEvents((event) => {
-      if (event.session_id !== sideSessionRef.current) return;
+      // Support both snake_case and camelCase (Tauri v2 may convert)
+      const eventSessionId = event.session_id || (event as any).sessionId;
+      if (eventSessionId !== sideSessionRef.current) return;
       if (event.type === "text_delta") {
         sideAnswerRef.current += event.content;
       }
@@ -59,9 +61,10 @@ export default function Layout() {
         if (!q.text || !q.id) return;
         localStorage.removeItem(LS_KEY_QUESTION);
         sideAnswerRef.current = "";
-        reactChat(q.text, "你是一个金蝶ERP实施顾问。请给出专业、简洁的回答。").then(sid => {
-          sideSessionRef.current = sid;
-        });
+        // Generate session ID first before calling reactChat
+        const sid = `layout_${Date.now()}`;
+        sideSessionRef.current = sid;
+        reactChat(q.text, "你是一个金蝶ERP实施顾问。请给出专业、简洁的回答。", sid);
       } catch(e) { /* poll error */ }
     }, 2000);
 

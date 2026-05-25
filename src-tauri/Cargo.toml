@@ -48,6 +48,7 @@ reqwest-eventsource = "0.6"
 ureq = "3"
 tiktoken-rs = "0.6"
 futures-util = "0.3"
+bytes = "1"
 
 # Phase 9: Template Parsing Engine
 walkdir = "2"
@@ -67,3 +68,7 @@ tauri-plugin-global-shortcut = "2"
 # ReAct Agent
 async-trait = "0.1"
 
+# rig AI framework
+rig-core = "0.35"
+thiserror = "2"
+futures = "0.3.32"

@@ -1,6 +1,6 @@
 //! Template directory scanner
 //!
-//! Scans 实施方法论V10.0交付物模板/ directory and builds a registry
+//! 扫描 templates/ 目录并构建注册表
 //! of all templates organized by the 8 implementation phases.
 
 use serde::{Deserialize, Serialize};

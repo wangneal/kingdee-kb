@@ -1,10 +1,10 @@
-//! Docx template filler
+//! Docx 模板填充器
 //!
-//! Takes a .docx template and a HashMap of field values, replaces `{field_name}`
-//! placeholders with actual values, and saves the result as a new .docx file.
+//! 接收 .docx 模板和字段值的 HashMap，将 `{field_name}`
+//! 占位符替换为实际值，并将结果保存为新的 .docx 文件。
 //!
-//! Handles Word's split-run problem by merging adjacent runs within each paragraph
-//! before performing replacements.
+//! 通过在每个段落中合并相邻的 run 来处理 Word 的 split-run 问题，
+//! 然后执行替换。
 
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -17,12 +17,12 @@ use std::path::Path;
 use zip::read::ZipArchive;
 use zip::write::{SimpleFileOptions, ZipWriter};
 
-/// Fill a .docx template with field values.
+/// 使用字段值填充 .docx 模板。
 ///
-/// Opens the template, replaces all `{field_name}` placeholders with corresponding
-/// values from `fields`, and saves the result to `output_path`.
+/// 打开模板，将所有 `{field_name}` 占位符替换为
+/// `fields` 中的对应值，并将结果保存到 `output_path`。
 ///
-/// Returns the number of field replacements made.
+/// 返回字段替换次数。
 pub fn fill_docx(
     template_path: &Path,
     fields: &HashMap<String, String>,
@@ -83,10 +83,10 @@ pub fn fill_docx(
     Ok(total_replaced)
 }
 
-/// Process document.xml, replacing field placeholders within paragraphs.
+/// 处理 document.xml，替换段落中的字段占位符。
 ///
-/// Strategy: buffer raw XML bytes per paragraph, then process the paragraph
-/// string to merge runs and replace fields.
+/// 策略：每个段落缓冲原始 XML 字节，然后处理段落
+/// 字符串以合并 run 并替换字段。
 fn process_document_xml(
     xml: &str,
     fields: &HashMap<String, String>,
@@ -174,13 +174,13 @@ fn process_document_xml(
     Ok((xml_str, total_replaced))
 }
 
-/// Process a paragraph XML string, merging split runs and replacing field placeholders.
+/// 处理段落 XML 字符串，合并 split run 并替换字段占位符。
 ///
-/// Handles Word's split-run problem by:
-/// 1. Collecting all `<w:t>` text content from runs
-/// 2. Merging into a single string
-/// 3. Replacing `{field_name}` patterns with values
-/// 4. Writing merged text back to the first `<w:t>`, clearing subsequent ones
+/// 通过以下方式处理 Word 的 split-run 问题：
+/// 1. 收集所有 `<w:t>` 文本内容
+/// 2. 合并为单个字符串
+/// 3. 将 `{field_name}` 模式替换为值
+/// 4. 将合并后的文本写回第一个 `<w:t>`，清空后续的
 ///
 /// Returns the processed paragraph XML and the number of replacements made.
 fn process_paragraph_str(

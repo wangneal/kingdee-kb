@@ -1,5 +1,8 @@
 //! ReAct 推理引擎 — 思考→行动→观察→循环
 //!
+//! ⚠️ DEPRECATED: 新开发请使用 `rig_agent::RigAgent`。
+//! 此文件仅保留 ReActEvent 枚举类型（前端 SSE 事件格式不变）和旧 ReActAgent 兼容。
+//!
 //! Agent 流程:
 //! 1. 组装 System Prompt（角色 + 工具描述 + 规则）
 //! 2. LLM 返回决策（工具调用 或 最终回答）

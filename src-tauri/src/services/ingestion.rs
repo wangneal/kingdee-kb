@@ -1,14 +1,14 @@
-//! Ingestion pipeline: text/file/folder → clean → chunk → embed → store
+//! 知识摄入管道：文本/文件/文件夹 → 清洗 → 分块 → 嵌入 → 存储
 //!
-//! Orchestrates the full ingestion flow:
-//! 1. Clean raw text (strip HTML, normalize whitespace)
-//! 2. Compute SHA256 for dedup detection
-//! 3. Recursive chunking (H2 → paragraph → sentence)
-//! 4. Tag extraction from filename + section path
-//! 5. Embed chunks in batches via fastembed
-//! 6. Store vectors in usearch HNSW index
-//! 7. Store metadata in SQLite (chunk↔vector mapping)
-//! 8. Emit progress events to frontend
+//! 编排完整的摄入流程：
+//! 1. 清洗原始文本（去除 HTML，规范化空白）
+//! 2. 计算 SHA256 用于去重检测
+//! 3. 递归分块（H2 → 段落 → 句子）
+//! 4. 从文件名 + 章节路径提取标签
+//! 5. 通过 fastembed 批量嵌入分块
+//! 6. 在 usearch HNSW 索引中存储向量
+//! 7. 在 SQLite 中存储元数据（分块↔向量映射）
+//! 8. 向前端发出进度事件
 
 use crate::services::chunker::{recursive_chunk, ChunkInputMeta};
 use crate::services::embedding::EmbeddingService;
@@ -21,7 +21,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
-/// Ingestion progress event emitted to frontend
+/// 向前端发出的摄入进度事件
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestionProgress {
     /// Current step (1-5)
@@ -34,7 +34,7 @@ pub struct IngestionProgress {
     pub message: Option<String>,
 }
 
-/// Ingestion result returned to frontend
+/// 返回给前端的摄入结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestionResult {
     /// Document ID in metadata store
@@ -51,7 +51,7 @@ pub struct IngestionResult {
     pub duration_ms: u64,
 }
 
-/// Ingest plain text (from paste or textarea)
+/// 摄入纯文本（来自粘贴或文本框）
 pub fn ingest_text(
     text: &str,
     title: &str,
@@ -192,7 +192,7 @@ pub fn ingest_text(
     })
 }
 
-/// Ingest a single file
+/// 摄入单个文件
 pub fn ingest_file(
     file_path: &Path,
     project: &str,
@@ -231,7 +231,7 @@ pub fn ingest_file(
     Ok(result)
 }
 
-/// Ingest all supported files in a directory
+/// 摄入目录中的所有支持文件
 pub fn ingest_directory(
     dir_path: &Path,
     project: &str,
@@ -283,7 +283,7 @@ pub fn ingest_directory(
     Ok(results)
 }
 
-/// Emit progress event to frontend
+/// 向前端发出进度事件
 fn emit_progress(
     app_handle: Option<&AppHandle>,
     step: u32,

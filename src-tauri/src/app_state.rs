@@ -1,7 +1,7 @@
-//! Application state management
+//! 应用状态管理
 //!
-//! Holds all Phase 2+ services (embedding, vector index, metadata store, BM25, LLM)
-//! in Arc<Mutex<>> for thread-safe access from Tauri commands.
+//! 在 Arc<Mutex<>> 中持有所有阶段 2+ 服务（嵌入、向量索引、元数据存储、BM25、LLM），
+//! 以便从 Tauri 命令中线程安全地访问。
 
 use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
@@ -15,6 +15,7 @@ use crate::services::bm25_service::BM25Service;
 use crate::services::metadata::MetadataStore;
 use crate::services::product_store::ProductStore;
 use crate::services::react_agent::ReActAgent;
+use crate::services::rig_agent::RigAgent;
 use crate::services::research_indexer::ResearchIndexer;
 use crate::services::research_session::ResearchSessionStore;
 use crate::services::risk_control::RiskControlStore;
@@ -24,60 +25,63 @@ use crate::services::vector_index::VectorIndex;
 use std::path::PathBuf;
 use rusqlite::Connection;
 
-/// Global application state shared across all Tauri commands
+/// 所有 Tauri 命令共享的全局应用状态
 pub struct AppState {
-    /// Application data directory (~/.kingdee-kb/)
+    /// 应用数据目录（~/.kingdee-kb/）
     pub data_dir: PathBuf,
-    /// Embedding model manager (download, init, status)
+    /// 嵌入模型管理器（下载、初始化、状态）
     pub model_manager: Arc<Mutex<ModelManager>>,
-    /// Text → vector embedding service
+    /// 文本 → 向量嵌入服务
     pub embedding: Arc<Mutex<EmbeddingService>>,
-    /// HNSW vector index for similarity search
+    /// 用于相似性搜索的 HNSW 向量索引
     pub vector_index: Arc<Mutex<VectorIndex>>,
-    /// SQLite metadata store for chunk↔vector mapping
+    /// 用于分块↔向量映射的 SQLite 元数据存储
     pub metadata: Arc<Mutex<MetadataStore>>,
-    /// BM25 full-text search service (tantivy + jieba)
+    /// BM25 全文搜索服务（tantivy + jieba）
     pub bm25: Arc<Mutex<BM25Service>>,
-    /// LLM service for RAG queries (OpenAI-compatible API)
+    /// 用于 RAG 查询的 LLM 服务（OpenAI 兼容 API）
     pub llm: LLMService,
-    /// Product store for generated document management
+    /// 用于生成文档管理的产品存储
     pub products: Arc<Mutex<ProductStore>>,
-    /// Download progress for embedding model (0–100). Updated by background thread.
+    /// 嵌入模型的下载进度（0–100）。由后台线程更新。
     pub download_progress: Arc<AtomicU32>,
-    /// Edition configuration (enterprise / flagship)
+    /// 版本配置（企业版 / 旗舰版）
     pub edition_config: EditionConfig,
-    /// Research outline indexer
+    /// 研究大纲索引器
     pub research_indexer: ResearchIndexer,
-    /// Research session store
+    /// 研究会话存储
     pub research_session_store: ResearchSessionStore,
-    /// Risk control store（需求蔓延警报/爆雷预警/话术库）
+    /// 风险控制存储（需求蔓延警报/爆雷预警/话术库）
     pub risk_control_store: RiskControlStore,
-    /// Data desensitizer（本地敏感信息过滤）
+    /// 数据脱敏器（本地敏感信息过滤）
     pub desensitizer: Desensitizer,
-    /// ReAct Agent（推理引擎）
+    /// ReAct Agent（推理引擎 — 旧实现，保留兼容）
+    #[allow(dead_code)]
     pub react_agent: ReActAgent,
-    /// Pending questions for the question tool (cross-process state)
+    /// Rig Agent（新推理引擎 — 基于 rig 的原生 function calling）
+    pub rig_agent: RigAgent,
+    /// 问题工具的待处理问题（跨进程状态）
     pub pending_questions: PendingQuestions,
-    /// Whisper voice transcription service (lazy model load)
+    /// Whisper 语音转录服务（延迟加载模型）
     pub whisper_service: Arc<Mutex<WhisperService>>,
-    /// Audio capture (microphone recording)
+    /// 音频捕获（麦克风录音）
     pub audio_capture: Arc<Mutex<AudioCapture>>,
 }
 
 impl AppState {
-    /// Initialize all services with the given data directory (~/.kingdee-kb/)
+    /// 使用给定的数据目录（~/.kingdee-kb/）初始化所有服务
     pub fn new(data_dir: &std::path::Path) -> Result<Self, String> {
         let model_dir = data_dir.join("models");
         let index_dir = data_dir.join("index");
         let db_path = data_dir.join("metadata.db");
 
-        // Initialize ModelManager (model download deferred)
+        // 初始化 ModelManager（模型下载延迟）
         let model_manager = ModelManager::new(model_dir);
 
-        // Initialize EmbeddingService (empty - model not loaded yet)
+        // 初始化 EmbeddingService（空 - 模型尚未加载）
         let embedding = EmbeddingService::empty();
 
-        // Initialize VectorIndex (create or load from disk)
+        // 初始化 VectorIndex（创建或从磁盘加载）
         let index_path = index_dir.join("vectors.usearch");
         let vector_index = if index_path.exists() {
             VectorIndex::load(index_path)
@@ -86,18 +90,18 @@ impl AppState {
             VectorIndex::new(index_dir)?
         };
 
-        // Initialize MetadataStore (create if not exists)
+        // 初始化 MetadataStore（如果不存在则创建）
         let metadata = MetadataStore::new(db_path.clone())?;
 
-        // Initialize BM25Service (tantivy + jieba full-text index)
+        // 初始化 BM25Service（tantivy + jieba 全文索引）
         let bm25_index_dir = data_dir.join("bm25_index");
         let bm25 = BM25Service::new(bm25_index_dir)?;
 
-        // Initialize ProductStore (create if not exists)
+        // 初始化 ProductStore（如果不存在则创建）
         let products_db_path = data_dir.join("products.db");
         let products = ProductStore::new(products_db_path)?;
 
-        // Initialize EditionConfig (shares metadata.db for app_config table)
+        // 初始化 EditionConfig（共享 metadata.db 的 app_config 表）
         let edition_config = {
             let conn = Connection::open(&db_path)
                 .map_err(|e| format!("Failed to open DB for EditionConfig: {}", e))?;
@@ -106,22 +110,22 @@ impl AppState {
             config
         };
 
-        // Initialize ResearchIndexer
+        // 初始化 ResearchIndexer
         let research_indexer = {
             let indexer = ResearchIndexer::new(&db_path)?;
             indexer.init_tables()?;
             indexer
         };
 
-        // Initialize ResearchSessionStore (shares metadata.db)
+        // 初始化 ResearchSessionStore（共享 metadata.db）
         let research_session_store = ResearchSessionStore::new(&db_path)?;
 
-        // Initialize RiskControlStore (shares metadata.db)
+        // 初始化 RiskControlStore（共享 metadata.db）
         let risk_control_store = RiskControlStore::new(&db_path)?;
 
         let desensitizer = Desensitizer::new();
 
-        // Initialize ReAct Agent
+        // 初始化 ReAct Agent
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(SearchKnowledgeTool));
         registry.register(Box::new(GenerateDocTool));
@@ -156,15 +160,15 @@ impl AppState {
             whisper_service: Arc::new(Mutex::new(whisper_service)),
             audio_capture: Arc::new(Mutex::new(audio_capture)),
             react_agent,
+            rig_agent: RigAgent,
             pending_questions,
         })
     }
 
-    /// Create a minimal AppState when full initialization fails.
+    /// 当完整初始化失败时创建最小 AppState。
     ///
-    /// Tries to init each service individually. If a service fails,
-    /// uses an in-memory stub so the app can still start (commands
-    /// that depend on that service will return errors at runtime).
+    /// 尝试单独初始化每个服务。如果服务失败，
+    /// 使用内存存根以便应用仍可启动（依赖该服务的命令在运行时将返回错误）。
     pub fn minimal(data_dir: &std::path::Path) -> Self {
         let metadata = MetadataStore::new(data_dir.join("metadata.db"))
             .expect("Fatal: cannot create metadata DB — app cannot function without it");
@@ -203,7 +207,7 @@ impl AppState {
 
         let desensitizer = Desensitizer::new();
 
-        // Initialize ReAct Agent (minimal)
+        // 初始化 ReAct Agent（最小化）
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(SearchKnowledgeTool));
         registry.register(Box::new(GenerateDocTool));
@@ -236,6 +240,7 @@ impl AppState {
             risk_control_store,
             desensitizer,
             react_agent,
+            rig_agent: RigAgent,
             pending_questions,
             whisper_service: Arc::new(Mutex::new(whisper_service)),
             audio_capture: Arc::new(Mutex::new(audio_capture)),

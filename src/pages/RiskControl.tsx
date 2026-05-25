@@ -10,6 +10,7 @@ import {
   deleteScopeItem,
   checkScopeCreep,
   getProjectHealth,
+  generateRiskReport,
   generateDefenseScript,
   analyzeFitGap,
   reactChat,
@@ -153,8 +154,6 @@ function HealthTab() {
   const [loading, setLoading] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiReport, setAiReport] = useState("");
-  const aiReportRef = useRef("");
-  const aiSessionRef = useRef<string | null>(null);
   const [fitGapInput, setFitGapInput] = useState("");
   const [fitGapResult, setFitGapResult] = useState("");
   const [fitGapLoading, setFitGapLoading] = useState(false);
@@ -166,6 +165,19 @@ function HealthTab() {
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  const handleAIAnalysis = useCallback(async () => {
+    if (!health || aiLoading) return;
+    setAiLoading(true);
+    setAiReport("");
+    const context = `项目健康评分: ${health.overall_score}/100, 风险等级: ${health.risk_level}\n` +
+      health.dimensions.map(d => `- ${d.name}: ${d.score}/100 (${d.detail})`).join("\n");
+    try {
+      const report = await generateRiskReport(context);
+      setAiReport(report);
+    } catch (e) { alert("分析失败: " + String(e)); }
+    setAiLoading(false);
+  }, [health, aiLoading]);
 
   const colorClass = (level: string) =>
     level === "critical" ? "text-red-600" : level === "high" ? "text-orange-600" :
@@ -378,7 +390,9 @@ function AnalysisTab() {
   useEffect(() => {
     let cancelled = false;
     listenReActEvents((event) => {
-      if (event.session_id !== sessionRef.current) return;
+      // Support both snake_case and camelCase (Tauri v2 may convert)
+      const eventSessionId = event.session_id || (event as any).sessionId;
+      if (eventSessionId !== sessionRef.current) return;
       if (event.type === "text_delta") {
         msgRef.current += event.content;
         setMessages((prev) => {
@@ -425,7 +439,10 @@ function AnalysisTab() {
 
     setLoading(true);
     try {
-      const sid = await reactChat(
+      // Generate session ID first before calling reactChat
+      const sid = `risk_${Date.now()}`;
+      sessionRef.current = sid;
+      await reactChat(
         text,
         "你是在 KingdeeKB 双轨风险把控舱中的风控专家。分析以下问题时，你可以：\n" +
         "1) 使用 search_knowledge 搜索知识库中的风险案例和最佳实践\n" +
@@ -433,9 +450,9 @@ function AnalysisTab() {
         "3) 使用 get_project_health 获取项目健康评分\n" +
         "4) 使用 analyze_fit_gap 做差异分析\n" +
         "5) 使用 generate_defense_script 生成应对话术\n" +
-        "给出专业、简洁、可执行的回答。"
+        "给出专业、简洁、可执行的回答。",
+        sid
       );
-      sessionRef.current = sid;
     } catch {
       setLoading(false);
       setMessages((prev) => {
