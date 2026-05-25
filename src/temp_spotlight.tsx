@@ -49,8 +49,7 @@ export default function Spotlight() {
 
   // Listen for ReAct events (filtered by session)
   useEffect(() => {
-    let cancelled = false;
-    listenReActEvents((event) => {
+    const p = listenReActEvents((event) => {
       if (event.session_id !== spotSessionRef.current) return;
       if (event.type === "text_delta") {
         resultRef.current += event.content;
@@ -60,10 +59,8 @@ export default function Spotlight() {
         setLoading(false);
         spotSessionRef.current = null;
       }
-    }).then((fn) => {
-      if (cancelled) { fn(); return; }
     });
-    return () => { cancelled = true; };
+    return () => { p.then((fn) => fn()); };
   }, []);
 
   const handleSubmit = useCallback(async () => {
@@ -103,7 +100,7 @@ export default function Spotlight() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="向 AI 提问（搜索知识库、生成文档、分析风险）..."
+            placeholder="�?AI 提问（搜索知识库、生成文档、分析风险）..."
             className="flex-1 text-sm text-neutral-700 placeholder-neutral-400 outline-none bg-transparent"
           />
           {loading ? (
@@ -131,7 +128,7 @@ export default function Spotlight() {
         {!input && !result && (
           <div className="px-4 py-3 text-xs text-neutral-400 flex items-center gap-3">
             <span>Alt+Space 切换</span>
-            <span>Enter 发送</span>
+            <span>Enter 发�?/span>
             <span>Esc 关闭</span>
           </div>
         )}

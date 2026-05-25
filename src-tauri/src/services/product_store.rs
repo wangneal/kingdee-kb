@@ -142,18 +142,18 @@ impl ProductStore {
     }
 
     /// List products, optionally filtered by project. Ordered by created_at DESC.
-    pub fn list(&self, project: Option<&str>) -> Result<Vec<ProductMeta>, String> {
+    pub fn list(&self, project: Option<&str>, limit: Option<i64>, offset: Option<i64>) -> Result<Vec<ProductMeta>, String> {
         if let Some(proj) = project {
             self.query_products(
                 "SELECT id, template_id, template_name, project, status, output_path, field_count, llm_fields_count, created_at
-                 FROM products WHERE project = ?1 ORDER BY created_at DESC",
-                params![proj],
+                 FROM products WHERE project = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
+                params![proj, limit.unwrap_or(-1), offset.unwrap_or(0)],
             )
         } else {
             self.query_products(
                 "SELECT id, template_id, template_name, project, status, output_path, field_count, llm_fields_count, created_at
-                 FROM products ORDER BY created_at DESC",
-                [],
+                 FROM products ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
+                params![limit.unwrap_or(-1), offset.unwrap_or(0)],
             )
         }
     }
@@ -272,7 +272,7 @@ impl ProductStore {
     /// Export all products for a project to a target directory.
     /// Returns the paths of all exported files.
     pub fn export_all(&self, project: &str, target_dir: &str) -> Result<Vec<String>, String> {
-        let products = self.list(Some(project))?;
+        let products = self.list(Some(project), None, None)?;
         let mut exported = Vec::new();
 
         for product in products {
@@ -457,14 +457,14 @@ mod tests {
         store.create("t1", "模板A", "project_a", &out1, 5, 1, "{}").unwrap();
         store.create("t2", "模板B", "project_b", &out2, 8, 2, "{}").unwrap();
 
-        let all = store.list(None).unwrap();
+        let all = store.list(None, None, None).unwrap();
         assert_eq!(all.len(), 2);
 
-        let proj_a = store.list(Some("project_a")).unwrap();
+        let proj_a = store.list(Some("project_a"), None, None).unwrap();
         assert_eq!(proj_a.len(), 1);
         assert_eq!(proj_a[0].template_name, "模板A");
 
-        let proj_b = store.list(Some("project_b")).unwrap();
+        let proj_b = store.list(Some("project_b"), None, None).unwrap();
         assert_eq!(proj_b.len(), 1);
         assert_eq!(proj_b[0].template_name, "模板B");
     }

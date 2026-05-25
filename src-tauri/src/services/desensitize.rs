@@ -81,6 +81,17 @@ impl Desensitizer {
         }
     }
 
+    /// 删除指定的自定义敏感词
+    pub fn remove_keyword(&self, keyword: &str) -> bool {
+        if let Ok(mut kw) = self.custom_keywords.lock() {
+            let before = kw.len();
+            kw.retain(|k| k != keyword);
+            kw.len() < before
+        } else {
+            false
+        }
+    }
+
     /// 执行脱敏：扫描文本，替换敏感信息为占位符
     pub fn desensitize(&self, text: &str) -> DesensitizeResult {
         let mut safe_text = text.to_string();

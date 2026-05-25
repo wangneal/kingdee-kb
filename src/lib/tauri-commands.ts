@@ -97,6 +97,8 @@ export interface RAGResponse {
 }
 
 // ── Tauri command wrappers ───────────────────────────────────────────────────
+// NOTE: Tauri v2 invoke() does NOT auto-convert camelCase↔snake_case.
+// All parameter keys MUST match the Rust function parameter names exactly (snake_case).
 
 export async function hybridSearch(
   query: string,
@@ -105,8 +107,8 @@ export async function hybridSearch(
 ): Promise<HybridSearchResult[]> {
   return invoke("hybrid_search", {
     query,
-    projectId: projectId ?? null,
-    topK: topK ?? 5,
+    project_id: projectId ?? null,
+    top_k: topK ?? 5,
   });
 }
 
@@ -117,8 +119,8 @@ export async function bm25Search(
 ): Promise<BM25SearchResult[]> {
   return invoke("bm25_search", {
     query,
-    projectId: projectId ?? null,
-    topK: topK ?? 10,
+    project_id: projectId ?? null,
+    top_k: topK ?? 10,
   });
 }
 
@@ -134,14 +136,14 @@ export async function ingestFile(
   filePath: string,
   project: string
 ): Promise<IngestionResult> {
-  return invoke("ingest_file", { filePath, project });
+  return invoke("ingest_file", { file_path: filePath, project });
 }
 
 export async function ingestDirectory(
   dirPath: string,
   project: string
 ): Promise<IngestionResult[]> {
-  return invoke("ingest_directory", { dirPath, project });
+  return invoke("ingest_directory", { dir_path: dirPath, project });
 }
 
 export async function listDocuments(
@@ -151,7 +153,7 @@ export async function listDocuments(
 }
 
 export async function getDocumentChunks(documentId: number): Promise<ChunkMeta[]> {
-  return invoke("get_document_chunks", { documentId });
+  return invoke("get_document_chunks", { document_id: documentId });
 }
 
 export async function getStats(): Promise<KnowledgeStats> {
@@ -159,7 +161,7 @@ export async function getStats(): Promise<KnowledgeStats> {
 }
 
 export async function deleteDocument(documentId: number): Promise<void> {
-  return invoke("delete_document", { documentId });
+  return invoke("delete_document", { document_id: documentId });
 }
 
 // ── Embedding model commands ──────────────────────────────────────────────────
@@ -202,8 +204,8 @@ export async function ragQuery(
 ): Promise<RAGResponse> {
   return invoke("rag_query", {
     query,
-    projectId: projectId ?? null,
-    conversationHistory: conversationHistory ?? null,
+    project_id: projectId ?? null,
+    conversation_history: conversationHistory ?? null,
   });
 }
 
@@ -214,8 +216,8 @@ export async function ragQueryStream(
 ): Promise<StreamChunk[]> {
   return invoke("rag_query_stream", {
     query,
-    projectId: projectId ?? null,
-    conversationHistory: conversationHistory ?? null,
+    project_id: projectId ?? null,
+    conversation_history: conversationHistory ?? null,
   });
 }
 
@@ -236,10 +238,10 @@ export async function startChatStream(
   projectId?: string,
   conversationHistory?: ChatMessage[]
 ): Promise<void> {
-  return invoke("start_chat_stream", {
+    return invoke("start_chat_stream", {
     query,
-    projectId: projectId ?? null,
-    conversationHistory: conversationHistory ?? null,
+    project_id: projectId ?? null,
+    conversation_history: conversationHistory ?? null,
   });
 }
 
@@ -383,11 +385,11 @@ export interface ProductMeta {
 // ── Phase 9+ command wrappers ────────────────────────────────────────────────
 
 export async function scanTemplates(templateDir?: string): Promise<TemplateInfo[]> {
-  return invoke("scan_templates", { templateDir: templateDir ?? null });
+  return invoke("scan_templates", { template_dir: templateDir ?? null });
 }
 
 export async function extractTemplateFields(filePath: string): Promise<FieldInfo[]> {
-  return invoke("extract_template_fields", { filePath });
+  return invoke("extract_template_fields", { file_path: filePath });
 }
 
 export async function getTemplateSchema(
@@ -398,11 +400,11 @@ export async function getTemplateSchema(
   writeSidecar?: boolean
 ): Promise<TemplateSchema> {
   return invoke("get_template_schema", {
-    templateId,
-    templateName,
-    filePath,
+    template_id: templateId,
+    template_name: templateName,
+    file_path: filePath,
     phase,
-    writeSidecar: writeSidecar ?? false,
+    write_sidecar: writeSidecar ?? false,
   });
 }
 
@@ -415,7 +417,7 @@ export async function generateDoc(request: GenerateDocRequest): Promise<Generate
 }
 
 export async function getDeliverableRecipe(templateId: string): Promise<DeliverableRecipe> {
-  return invoke("get_deliverable_recipe", { templateId });
+  return invoke("get_deliverable_recipe", { template_id: templateId });
 }
 
 export async function listProducts(project?: string): Promise<ProductMeta[]> {
@@ -423,7 +425,7 @@ export async function listProducts(project?: string): Promise<ProductMeta[]> {
 }
 
 export async function exportProduct(id: number, targetDir: string): Promise<string> {
-  return invoke("export_product", { id, targetDir });
+  return invoke("export_product", { id, target_dir: targetDir });
 }
 
 export async function deleteProduct(id: number): Promise<void> {
@@ -470,9 +472,9 @@ export async function createResearchSession(
   return invoke("create_research_session", {
     title,
     edition,
-    moduleCode,
+    module_code: moduleCode,
     interviewee,
-    sessionDate,
+    session_date: sessionDate,
   });
 }
 
@@ -481,7 +483,7 @@ export async function listResearchSessions(): Promise<ResearchSession[]> {
 }
 
 export async function getResearchSession(sessionId: number): Promise<SessionDetail | null> {
-  return invoke("get_research_session", { sessionId });
+  return invoke("get_research_session", { session_id: sessionId });
 }
 
 export async function updateResearchSession(
@@ -491,11 +493,11 @@ export async function updateResearchSession(
   sessionDate: string,
   status: string,
 ): Promise<void> {
-  return invoke("update_research_session", { sessionId, title, interviewee, sessionDate, status });
+  return invoke("update_research_session", { session_id: sessionId, title, interviewee, session_date: sessionDate, status });
 }
 
 export async function deleteResearchSession(sessionId: number): Promise<void> {
-  return invoke("delete_research_session", { sessionId });
+  return invoke("delete_research_session", { session_id: sessionId });
 }
 
 export async function addQARecord(
@@ -507,12 +509,12 @@ export async function addQARecord(
   sortOrder: number,
 ): Promise<number> {
   return invoke("add_qa_record", {
-    sessionId,
-    questionId: questionId ?? null,
-    questionText,
-    answerText,
+    session_id: sessionId,
+    question_id: questionId ?? null,
+    question_text: questionText,
+    answer_text: answerText,
     notes,
-    sortOrder,
+    sort_order: sortOrder,
   });
 }
 
@@ -521,27 +523,27 @@ export async function updateQARecord(
   answerText: string,
   notes: string,
 ): Promise<void> {
-  return invoke("update_qa_record", { recordId, answerText, notes });
+  return invoke("update_qa_record", { record_id: recordId, answer_text: answerText, notes });
 }
 
 export async function deleteQARecord(recordId: number): Promise<void> {
-  return invoke("delete_qa_record", { recordId });
+  return invoke("delete_qa_record", { record_id: recordId });
 }
 
 export async function getSessionRecords(sessionId: number): Promise<QARecord[]> {
-  return invoke("get_session_records", { sessionId });
+  return invoke("get_session_records", { session_id: sessionId });
 }
 
 export async function exportSessionCsv(sessionId: number): Promise<string> {
-  return invoke("export_session_csv", { sessionId });
+  return invoke("export_session_csv", { session_id: sessionId });
 }
 
 export async function exportSessionMarkdown(sessionId: number): Promise<string> {
-  return invoke("export_session_markdown", { sessionId });
+  return invoke("export_session_markdown", { session_id: sessionId });
 }
 
 export async function reorderQARecords(sessionId: number, recordIds: number[]): Promise<void> {
-  return invoke("reorder_qa_records", { sessionId, recordIds });
+  return invoke("reorder_qa_records", { session_id: sessionId, record_ids: recordIds });
 }
 
 // ── Phase 12: Whisper Voice Recognition ───────────────────────────────────
@@ -566,7 +568,7 @@ export interface WhisperStatus {
 }
 
 export async function loadWhisperModel(modelSize: string): Promise<void> {
-  return invoke("load_whisper_model", { modelSize });
+  return invoke("load_whisper_model", { model_size: modelSize });
 }
 
 export async function getWhisperStatus(): Promise<WhisperStatus> {
@@ -638,7 +640,7 @@ export async function addScopeItem(
   isInScope: boolean,
   detail: string,
 ): Promise<number> {
-  return invoke("add_scope_item", { category, description, isInScope, detail });
+  return invoke("add_scope_item", { category, description, is_in_scope: isInScope, detail });
 }
 
 export async function listScopeItems(): Promise<ContractScopeItem[]> {
@@ -646,7 +648,7 @@ export async function listScopeItems(): Promise<ContractScopeItem[]> {
 }
 
 export async function deleteScopeItem(itemId: number): Promise<void> {
-  return invoke("delete_scope_item", { itemId });
+  return invoke("delete_scope_item", { item_id: itemId });
 }
 
 export async function checkScopeCreep(requirement: string): Promise<ScopeCreepResult> {
@@ -658,7 +660,7 @@ export async function recordHealthMetric(
   value: number,
   notes: string,
 ): Promise<number> {
-  return invoke("record_health_metric", { indicatorType, value, notes });
+  return invoke("record_health_metric", { indicator_type: indicatorType, value, notes });
 }
 
 export async function getProjectHealth(): Promise<ProjectHealthScore> {
@@ -678,7 +680,7 @@ export async function generateDefenseScript(
 // ── P2: 蓝图提炼 / Fit-Gap / 脱敏 ──────────────────────────────────────
 
 export async function extractBlueprint(researchContext: string): Promise<string> {
-  return invoke("extract_blueprint", { researchContext });
+  return invoke("extract_blueprint", { research_context: researchContext });
 }
 
 export async function analyzeFitGap(requirements: string): Promise<string> {
@@ -697,7 +699,19 @@ export async function listSensitiveKeywords(): Promise<string[]> {
   return invoke("list_sensitive_keywords");
 }
 
+export async function removeSensitiveKeyword(keyword: string): Promise<boolean> {
+  return invoke("remove_sensitive_keyword", { keyword });
+}
+
 // ── ReAct Agent ──────────────────────────────────────────────────────────
+
+/** Clarification payload sent from backend when agent uses the question tool */
+export interface ClarificationPayload {
+  question_id: string;
+  prompt: string;
+  mode: "single_choice" | "multi_choice" | "free_input";
+  options: string[];
+}
 
 export type ReActEvent =
   | { type: "thinking"; session_id: string; content: string }
@@ -705,11 +719,11 @@ export type ReActEvent =
   | { type: "tool_result"; session_id: string; name: string; result: string }
   | { type: "text_delta"; session_id: string; content: string }
   | { type: "error"; session_id: string; message: string }
-  | { type: "done"; session_id: string };
+  | { type: "done"; session_id: string }
+  | { type: "clarification"; session_id: string; payload: ClarificationPayload };
 
-let reactSessionCounter = 0;
 function nextSessionId(): string {
-  return `session_${++reactSessionCounter}_${Date.now()}`;
+  return crypto.randomUUID();
 }
 
 export async function reactChat(
@@ -719,10 +733,21 @@ export async function reactChat(
   const sessionId = nextSessionId();
   await invoke("react_chat", {
     message,
-    systemExtra: systemExtra ?? "",
-    sessionId,
+    system_extra: systemExtra ?? "",
+    session_id: sessionId,
   });
   return sessionId;
+}
+
+/** Answer a pending clarification question (resolves the blocked question tool) */
+export async function answerQuestion(
+  questionId: string,
+  answer: string,
+): Promise<void> {
+  return invoke("answer_question", {
+    question_id: questionId,
+    answer,
+  });
 }
 
 /**
@@ -745,5 +770,5 @@ export async function listenReActEvents(
 
 /** Export content to a file with UTF-8 BOM encoding (uses PowerShell to avoid Chinese encoding issues) */
 export async function exportReport(content: string, filePath: string): Promise<string> {
-  return invoke("export_report", { content, filePath });
+  return invoke("export_report", { content, file_path: filePath });
 }

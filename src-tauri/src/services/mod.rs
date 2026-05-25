@@ -1,4 +1,5 @@
 pub mod audio_capture;
+pub mod question_tool;
 pub mod bm25_service;
 pub mod chinese_postprocess;
 pub mod chunker;

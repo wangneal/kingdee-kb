@@ -22,9 +22,9 @@ type Tab = "scope" | "health" | "scripts" | "analysis";
 export default function RiskControl() {
   const [tab, setTab] = useState<Tab>("scope");
   const tabs: { key: Tab; label: string; icon: typeof Shield }[] = [
-    { key: "scope", label: "需求蔓延警报", icon: AlertTriangle },
-    { key: "health", label: "项目健康度", icon: Shield },
-    { key: "scripts", label: "防身话术库", icon: BookOpen },
+    { key: "scope", label: "需求蔓延警�?, icon: AlertTriangle },
+    { key: "health", label: "项目健康�?, icon: Shield },
+    { key: "scripts", label: "防身话术�?, icon: BookOpen },
     { key: "analysis", label: "AI 深度分析", icon: Brain },
   ];
 
@@ -32,7 +32,7 @@ export default function RiskControl() {
     <div className="flex h-full flex-col">
       <div className="flex h-14 items-center gap-2 border-b border-neutral-200 px-6">
         <ShieldAlert className="h-5 w-5 text-amber-600" />
-        <h1 className="text-base font-semibold text-neutral-800">双轨风险把控舱</h1>
+        <h1 className="text-base font-semibold text-neutral-800">双轨风险把控�?/h1>
       </div>
       <div className="flex border-b border-neutral-200 bg-white px-6">
         {tabs.map(({ key, label, icon: Icon }) => (
@@ -74,7 +74,7 @@ function ScopeTab() {
     try {
       const r = await checkScopeCreep(newReq.trim());
       setCheckResult(r);
-    } catch (e) { alert(String(e)); }
+    } catch (e) { console.warn("[Risk] 检查范围蔓延失败:", e); alert(String(e)); }
     setLoading(false);
   };
 
@@ -87,14 +87,14 @@ function ScopeTab() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
-      {/* 范围检查 */}
+      {/* 范围检�?*/}
       <div className="rounded-lg border border-neutral-200 bg-white p-4">
         <h2 className="mb-3 text-sm font-semibold text-neutral-700">检查新需求是否超范围</h2>
         <div className="flex gap-2">
-          <input value={newReq} onChange={(e) => setNewReq(e.target.value)} placeholder="输入新需求描述..." className="flex-1 rounded-lg border border-neutral-200 px-3 py-2 text-xs outline-none focus:border-amber-500" />
+          <input value={newReq} onChange={(e) => setNewReq(e.target.value)} placeholder="输入新需求描�?.." className="flex-1 rounded-lg border border-neutral-200 px-3 py-2 text-xs outline-none focus:border-amber-500" />
           <button type="button" onClick={handleCheck} disabled={loading || !newReq.trim()}
             className="flex items-center gap-1 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
-          >{loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}检查</button>
+          >{loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}检�?/button>
         </div>
         {checkResult && (
           <div className={`mt-3 rounded-lg border p-3 ${
@@ -133,7 +133,7 @@ function ScopeTab() {
                 <div className="flex items-center gap-2">
                   <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
                     item.is_in_scope ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
-                  }`}>{item.is_in_scope ? "范围内" : "排除"}</span>
+                  }`}>{item.is_in_scope ? "范围�? : "排除"}</span>
                   <span className="text-xs font-medium text-neutral-600">{item.category}</span>
                   <span className="text-xs text-neutral-500">{item.description}</span>
                 </div>
@@ -161,11 +161,40 @@ function HealthTab() {
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    try { setHealth(await getProjectHealth()); } catch (e) { alert(String(e)); }
+    try { setHealth(await getProjectHealth()); } catch (e) { console.warn("[Risk] 刷新项目健康失败:", e); alert(String(e)); }
     setLoading(false);
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // Listen for AI analysis results (filtered by session)
+  useEffect(() => {
+    const p = listenReActEvents((event) => {
+      if (event.session_id !== aiSessionRef.current) return;
+      if (event.type === "text_delta") {
+        aiReportRef.current += event.content;
+        setAiReport(aiReportRef.current);
+      }
+      if (event.type === "done" || event.type === "error") {
+        setAiLoading(false);
+        aiSessionRef.current = null;
+      }
+    });
+    return () => { p.then((fn) => fn()); };
+  }, []);
+
+  const handleAIAnalysis = async () => {
+    if (!health || aiLoading) return;
+    setAiLoading(true);
+    setAiReport("");
+    aiReportRef.current = "";
+    const dims = health.dimensions.map(d => d.name + ":" + d.score.toFixed(0)).join(",");
+    const prompt = "项目健康分析 -- 评分:" + health.overall_score + " 等级:" + health.risk_level + " 维度:" + dims;
+    try {
+      const sid = await reactChat(prompt, "ERP风险专家。基于数据给出简要分析：1)主要风险 2)建议措施 3)沟通策略�?);
+      aiSessionRef.current = sid;
+    } catch(e) { console.warn("[Risk] AI分析失败:", e); setAiLoading(false); }
+  };
 
   const colorClass = (level: string) =>
     level === "critical" ? "text-red-600" : level === "high" ? "text-orange-600" :
@@ -180,7 +209,7 @@ function HealthTab() {
       {loading ? <div className="flex justify-center pt-10"><Loader2 className="h-5 w-5 animate-spin text-neutral-400" /></div> :
       health ? (
         <div className="space-y-4">
-          {/* 总评分 */}
+          {/* 总评�?*/}
           <div className={`rounded-lg border p-6 ${bgClass(health.risk_level)}`}>
             <div className="mb-2 flex items-center gap-2">
               <Shield className={`h-5 w-5 ${colorClass(health.risk_level)}`} />
@@ -191,16 +220,16 @@ function HealthTab() {
                 health.risk_level === "critical" ? "bg-red-100 text-red-700" :
                 health.risk_level === "high" ? "bg-orange-100 text-orange-700" :
                 health.risk_level === "medium" ? "bg-yellow-100 text-yellow-700" : "bg-green-100 text-green-700"
-              }`}>{health.risk_level === "critical" ? "危急" : health.risk_level === "high" ? "高风险" :
+              }`}>{health.risk_level === "critical" ? "危�? : health.risk_level === "high" ? "高风�? :
                  health.risk_level === "medium" ? "关注" : "健康"}</span>
             </div>
             <p className="text-xs text-neutral-600">{health.trend}</p>
             {health.alert_count > 0 && (
-              <p className="mt-1 text-xs font-medium text-red-600">⚠ {health.alert_count} 项指标需要关注</p>
+              <p className="mt-1 text-xs font-medium text-red-600">�?{health.alert_count} 项指标需要关�?/p>
             )}
           </div>
 
-          {/* 各维度 */}
+          {/* 各维�?*/}
           <div className="grid gap-3 sm:grid-cols-2">
             {health.dimensions.map((d) => (
               <div key={d.name} className="rounded-lg border border-neutral-200 bg-white p-4">
@@ -223,7 +252,7 @@ function HealthTab() {
           <button type="button" onClick={handleAIAnalysis} disabled={aiLoading}
             className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors">
             {aiLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Brain className="h-3.5 w-3.5" />}
-            {aiLoading ? "分析中..." : "AI 风险分析"}
+            {aiLoading ? "分析�?.." : "AI 风险分析"}
           </button>
           {aiReport && (
             <div className="mt-2 space-y-2">
@@ -233,7 +262,7 @@ function HealthTab() {
                   const { save } = await import("@tauri-apps/plugin-dialog");
                   const path = await save({ filters: [{ name: "Markdown", extensions: ["md"] }] });
                   if (path) await exportReport(aiReport, path);
-                } catch(e) { alert("导出失败: " + String(e)); }
+                } catch(e) { console.warn("[Risk] 导出AI报告失败:", e); alert("导出失败: " + String(e)); }
               }} className="flex items-center gap-1 rounded bg-neutral-100 px-2 py-1 text-[10px] text-neutral-500 hover:bg-neutral-200">
                 <Download className="h-3 w-3" />导出报告
               </button>
@@ -247,18 +276,18 @@ function HealthTab() {
       <div className="mt-6 rounded-lg border border-neutral-200 bg-white p-4">
         <h2 className="mb-3 text-sm font-semibold text-neutral-700">Fit-Gap 差异分析</h2>
         <textarea value={fitGapInput} onChange={(e) => setFitGapInput(e.target.value)} rows={3}
-          placeholder="输入需求列表，每行一条，如：&#10;1. 总账模块支持多币种&#10;2. 需要定制化报表引擎"
+          placeholder="输入需求列表，每行一条，如：&#10;1. 总账模块支持多币�?#10;2. 需要定制化报表引擎"
           className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs outline-none focus:border-amber-500" />
         <button type="button" onClick={async () => {
           if (!fitGapInput.trim()) return;
           setFitGapLoading(true);
           try { setFitGapResult(await analyzeFitGap(fitGapInput)); }
-          catch (e) { setFitGapResult("分析失败: " + String(e)); }
+          catch (e) { console.warn("[Risk] 差异分析失败:", e); setFitGapResult("分析失败: " + String(e)); }
           setFitGapLoading(false);
         }} disabled={fitGapLoading || !fitGapInput.trim()}
           className="mt-2 flex items-center gap-1 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50">
           {fitGapLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-          {fitGapLoading ? "分析中..." : "开始分析"}
+          {fitGapLoading ? "分析�?.." : "开始分�?}
         </button>
         {fitGapResult && (
           <div className="mt-3 space-y-2">
@@ -271,7 +300,7 @@ function HealthTab() {
                   const { save } = await import("@tauri-apps/plugin-dialog");
                   const path = await save({ filters: [{ name: "Markdown", extensions: ["md"] }] });
                   if (path) await exportReport(fitGapResult, path);
-                } catch(e) { alert("导出失败: " + String(e)); }
+                } catch(e) { console.warn("[Risk] 导出差异分析失败:", e); alert("导出失败: " + String(e)); }
               }} className="flex items-center gap-1 rounded bg-neutral-100 px-2 py-1 text-[10px] text-neutral-500 hover:bg-neutral-200">
                 <Download className="h-3 w-3" />导出分析
               </button>
@@ -296,7 +325,7 @@ function ScriptsTab() {
     try {
       const r = await generateDefenseScript({ scenario: scenario.trim(), context: context.trim(), tone });
       setResult(r);
-    } catch (e) { alert(String(e)); }
+    } catch (e) { console.warn("[Risk] 生成应对话术失败:", e); alert(String(e)); }
     setLoading(false);
   };
 
@@ -314,7 +343,7 @@ function ScriptsTab() {
             <textarea value={context} onChange={(e) => setContext(e.target.value)} rows={2} placeholder="补充背景信息..." className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs outline-none focus:border-amber-500" />
           </div>
           <div className="flex items-center gap-3">
-            <label className="text-[10px] font-medium text-neutral-500">沟通基调</label>
+            <label className="text-[10px] font-medium text-neutral-500">沟通基�?/label>
             <select value={tone} onChange={(e) => setTone(e.target.value)} className="rounded-lg border border-neutral-200 px-2 py-1 text-xs outline-none">
               <option value="push_back">委婉拒绝</option>
               <option value="guide">引导说服</option>
@@ -345,7 +374,7 @@ function ScriptsTab() {
                   const { save } = await import("@tauri-apps/plugin-dialog");
                   const path = await save({ filters: [{ name: "Markdown", extensions: ["md"] }] });
                   if (path) await exportReport(md, path);
-                } catch(e) { alert("导出失败: " + String(e)); }
+                } catch(e) { console.warn("[Risk] 导出版本话术失败:", e); alert("导出失败: " + String(e)); }
               }} className="flex items-center gap-1 rounded bg-neutral-100 px-2 py-1 text-[10px] text-neutral-500 hover:bg-neutral-200">
                 <Download className="h-3 w-3" />导出话术
               </button>
@@ -376,8 +405,7 @@ function AnalysisTab() {
 
   // Listen for ReAct streaming events
   useEffect(() => {
-    let cancelled = false;
-    listenReActEvents((event) => {
+    const p = listenReActEvents((event) => {
       if (event.session_id !== sessionRef.current) return;
       if (event.type === "text_delta") {
         msgRef.current += event.content;
@@ -402,10 +430,8 @@ function AnalysisTab() {
         });
         sessionRef.current = null;
       }
-    }).then((fn) => {
-      if (cancelled) { fn(); return; }
     });
-    return () => { cancelled = true; };
+    return () => { p.then((fn) => fn()); };
   }, []);
 
   // Auto-scroll
@@ -427,16 +453,17 @@ function AnalysisTab() {
     try {
       const sid = await reactChat(
         text,
-        "你是在 KingdeeKB 双轨风险把控舱中的风控专家。分析以下问题时，你可以：\n" +
+        "你是�?KingdeeKB 双轨风险把控舱中的风控专家。分析以下问题时，你可以：\n" +
         "1) 使用 search_knowledge 搜索知识库中的风险案例和最佳实践\n" +
         "2) 使用 check_scope_creep 检查新需求是否超范围\n" +
         "3) 使用 get_project_health 获取项目健康评分\n" +
         "4) 使用 analyze_fit_gap 做差异分析\n" +
         "5) 使用 generate_defense_script 生成应对话术\n" +
-        "给出专业、简洁、可执行的回答。"
+        "给出专业、简洁、可执行的回答�?
       );
       sessionRef.current = sid;
     } catch {
+      console.warn("[Risk] AI分析失败");
       setLoading(false);
       setMessages((prev) => {
         const next = [...prev];
@@ -467,7 +494,7 @@ function AnalysisTab() {
                 : "bg-neutral-100 text-neutral-700"
             }`}>
               {msg.loading && !msg.content ? (
-                <span className="flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" />分析中</span>
+                <span className="flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" />分析�?/span>
               ) : (
                 <span className="whitespace-pre-wrap">{msg.content}</span>
               )}
@@ -490,7 +517,7 @@ function AnalysisTab() {
         <button type="button" onClick={handleSend} disabled={loading || !input.trim()}
           className="flex items-center gap-1 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50">
           {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
-          发送
+          发�?
         </button>
       </div>
     </div>

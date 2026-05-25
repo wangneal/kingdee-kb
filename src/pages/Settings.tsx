@@ -29,8 +29,9 @@ import {
   getDownloadProgress,
   type LLMConfig,
   type KnowledgeStats,
-  addSensitiveKeyword,
-  listSensitiveKeywords,
+addSensitiveKeyword,
+listSensitiveKeywords,
+removeSensitiveKeyword,
 } from "../lib/tauri-commands";
 
 const PROVIDER_DEFAULTS: Record<string, { base_url: string; model: string }> = {
@@ -657,7 +658,10 @@ export default function Settings() {
                 <span key={kw} className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-xs text-amber-700">
                   {kw}
                   <button type="button" onClick={async () => {
-                    /* delete not exposed via API yet, will implement later */
+                    try {
+                      await removeSensitiveKeyword(kw);
+                      setKeywords(await listSensitiveKeywords());
+                    } catch (e) { alert(String(e)); }
                   }} className="text-amber-400 hover:text-red-500">&times;</button>
                 </span>
               ))}

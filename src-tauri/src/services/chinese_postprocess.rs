@@ -8,8 +8,18 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 /// Common Chinese sentence-ending keywords that imply specific punctuation
+// SAFE: hardcoded regex pattern — CJK question keywords
 static QUESTION_KEYWORDS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(吗|呢|吧|啊|么|谁|什么|怎么|哪|多少|几|为什么|如何|是不是|能不能|有没有)").unwrap()
+});
+
+// SAFE: hardcoded regex pattern — removes spaces between CJK characters
+static RE_CJK_SPACE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"([\u4e00-\u9fff])\s+([\u4e00-\u9fff])").unwrap()
+});
+// SAFE: hardcoded regex pattern — collapses multiple spaces into one
+static RE_MULTI_SPACE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"  +").unwrap()
 });
 
 /// Duplicate phrase pattern — same 2-4 char sequence repeated immediately
@@ -80,7 +90,7 @@ fn remove_duplicates(text: &str) -> String {
 
             if repeat_count >= 2 {
                 // Duplicate found
-                let phrase: String = chars[i..i + phrase_len].iter().collect();
+                let _phrase: String = chars[i..i + phrase_len].iter().collect();
 
                 if phrase_len == 1 {
                     // Single char: keep 2 for emphasis
@@ -129,7 +139,7 @@ fn restore_punctuation(text: &str) -> String {
         // Look ahead: if next segment starts with a new thought indicator,
         // add appropriate punctuation after current position
         if i + 1 < len {
-            let next = chars[i + 1];
+            let _next = chars[i + 1];
 
             // Don't add punctuation if already present
             if !is_cjk_punctuation(ch) && !is_ascii_punctuation(ch) {
@@ -152,12 +162,14 @@ fn restore_punctuation(text: &str) -> String {
     }
 
     // Ensure final punctuation
-    if !result.is_empty() && !is_cjk_punctuation(result.chars().last().unwrap()) && !is_ascii_punctuation(result.chars().last().unwrap()) {
-        let recent = get_recent_text(&result, 6);
-        if QUESTION_KEYWORDS.is_match(&recent) {
-            result.push('？');
-        } else {
-            result.push('。');
+    if let Some(last_char) = result.chars().last() {
+        if !is_cjk_punctuation(last_char) && !is_ascii_punctuation(last_char) {
+            let recent = get_recent_text(&result, 6);
+            if QUESTION_KEYWORDS.is_match(&recent) {
+                result.push('？');
+            } else {
+                result.push('。');
+            }
         }
     }
 
@@ -215,9 +227,8 @@ fn clean_whitespace(text: &str) -> String {
 
     // Remove spaces between Chinese characters (Whisper artifact)
     // Loop since adjacent gaps need multiple passes
-    let re = Regex::new(r"([\u4e00-\u9fff])\s+([\u4e00-\u9fff])").unwrap();
     loop {
-        let new = re.replace_all(&result, "$1$2");
+        let new = RE_CJK_SPACE.replace_all(&result, "$1$2");
         if new.len() == result.len() {
             break;
         }
@@ -225,8 +236,7 @@ fn clean_whitespace(text: &str) -> String {
     }
 
     // Collapse multiple spaces into one
-    let re = Regex::new(r"  +").unwrap();
-    result = re.replace_all(&result, " ").to_string();
+    result = RE_MULTI_SPACE.replace_all(&result, " ").to_string();
 
     // Remove leading/trailing whitespace per line
     result = result
@@ -242,7 +252,7 @@ fn clean_whitespace(text: &str) -> String {
 // --- Helpers ---
 
 fn is_cjk_punctuation(ch: char) -> bool {
-    matches!(ch, '，'|'。'|'？'|'！'|'；'|'：'|'、'|'…'|'—'|'"'|'"')
+    matches!(ch, '，'|'。'|'？'|'！'|'；'|'：'|'、'|'…'|'—'|'\u{201C}'|'\u{201D}')
 }
 
 fn is_ascii_punctuation(ch: char) -> bool {

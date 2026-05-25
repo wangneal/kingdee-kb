@@ -52,6 +52,7 @@ export default function ResearchAssistant() {
       const list = await listResearchSessions();
       setSessions(list);
     } catch (err) {
+      console.warn("[Research] 加载调研会话列表失败:", err);
       setError(String(err));
     }
     setLoading(false);
@@ -68,17 +69,19 @@ export default function ResearchAssistant() {
       setDetail(d);
       setMode("detail");
     } catch (err) {
+      console.warn("[Research] 打开调研会话失败:", err);
       setError(String(err));
     }
     setLoading(false);
   }, []);
 
   const handleDelete = useCallback(async (id: number) => {
-    if (!confirm("确认删除此调研会话？所有记录将被永久删除。")) return;
+    if (!confirm("确认删除此调研会话？所有记录将被永久删除�?)) return;
     try {
       await deleteResearchSession(id);
       refreshList();
     } catch (err) {
+      console.warn("[Research] 删除调研会话失败:", err);
       setError(String(err));
     }
   }, [refreshList]);
@@ -91,7 +94,7 @@ export default function ResearchAssistant() {
           <div className="flex items-center gap-2">
             <ClipboardList className="h-5 w-5 text-[#1A6BD8]" />
             <h1 className="text-base font-semibold text-neutral-800">调研助手</h1>
-            <span className="text-xs text-neutral-400">{sessions.length} 个会话</span>
+            <span className="text-xs text-neutral-400">{sessions.length} 个会�?/span>
           </div>
           <button
             type="button"
@@ -121,7 +124,7 @@ export default function ResearchAssistant() {
                 <ClipboardList className="h-8 w-8 text-neutral-300" />
               </div>
               <p className="text-sm font-medium text-neutral-500">暂无调研会话</p>
-              <p className="mt-1 text-xs text-neutral-400">点击"新建调研"开始</p>
+              <p className="mt-1 text-xs text-neutral-400">点击"新建调研"开�?/p>
             </div>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -145,11 +148,11 @@ export default function ResearchAssistant() {
                     <span className="rounded bg-neutral-100 px-1.5 py-0.5">{s.edition}</span>
                     <span className="rounded bg-neutral-100 px-1.5 py-0.5">{s.module_code}</span>
                     {s.status === "completed" && (
-                      <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700">已完成</span>
+                      <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700">已完�?/span>
                     )}
                   </div>
                   <p className="mt-2 text-xs text-neutral-400">
-                    {s.interviewee || "未填受访人"} · {s.session_date || "未填日期"}
+                    {s.interviewee || "未填受访�?} · {s.session_date || "未填日期"}
                   </p>
                 </div>
               ))}
@@ -198,6 +201,7 @@ function NewSessionForm({ onCreated, onCancel }: { onCreated: (id: number) => vo
       const id = await createResearchSession(title.trim(), edition, moduleCode.trim(), interviewee.trim(), sessionDate);
       onCreated(id);
     } catch (err) {
+      console.warn("[Research] 创建调研会话失败:", err);
       alert(String(err));
     }
     setSaving(false);
@@ -223,8 +227,8 @@ function NewSessionForm({ onCreated, onCancel }: { onCreated: (id: number) => vo
             <div>
               <label className="mb-1 block text-xs font-medium text-neutral-600">版本</label>
               <select value={edition} onChange={(e) => setEdition(e.target.value)} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8]">
-                <option value="enterprise">企业版</option>
-                <option value="flagship">旗舰版</option>
+                <option value="enterprise">企业�?/option>
+                <option value="flagship">旗舰�?/option>
               </select>
             </div>
             <div>
@@ -234,7 +238,7 @@ function NewSessionForm({ onCreated, onCancel }: { onCreated: (id: number) => vo
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1 block text-xs font-medium text-neutral-600">受访人</label>
+              <label className="mb-1 block text-xs font-medium text-neutral-600">受访�?/label>
               <input value={interviewee} onChange={(e) => setInterviewee(e.target.value)} placeholder="姓名" className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20" />
             </div>
             <div>
@@ -271,13 +275,12 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
   const aiSessionRef = useRef<string | null>(null);
 
   useEffect(() => {
-    getWhisperStatus().then(setWhisperStatus).catch(() => {});
+    getWhisperStatus().then(setWhisperStatus).catch(() => { console.warn("[Research] 检查Whisper语音状态失败"); });
   }, []);
 
   // Subscribe to ReAct events for AI assist (filtered by session)
   useEffect(() => {
-    let cancelled = false;
-    listenReActEvents((event) => {
+    const p = listenReActEvents((event) => {
       if (event.session_id !== aiSessionRef.current) return;
       if (event.type === "text_delta") {
         aiAnswerRef.current += event.content;
@@ -287,10 +290,8 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
         setAiLoading(false);
         aiSessionRef.current = null;
       }
-    }).then((fn) => {
-      if (cancelled) { fn(); return; }
     });
-    return () => { cancelled = true; };
+    return () => { p.then((fn) => fn()); };
   }, []);
 
   const handleAIAssist = async () => {
@@ -298,11 +299,12 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
     setAiLoading(true);
     aiAnswerRef.current = "";
     setNewAnswer("");
-    const context = `当前调研：${session.title}（${session.edition}/${session.module_code}）\n已有记录：${records.map((r) => `Q: ${r.question_text}`).join("\n")}`;
+    const context = `当前调研�?{session.title}�?{session.edition}/${session.module_code}）\n已有记录�?{records.map((r) => `Q: ${r.question_text}`).join("\n")}`;
     try {
-      const sid = await reactChat(`请回答以下调研问题，基于知识库中的金蝶ERP实施经验：\n\n问题：${newQuestion}\n\n背景：${context}`, `你是一个金蝶ERP实施顾问，正在辅助一个调研访谈。请基于知识库给出专业的回答。回答要具体、可操作，包含系统配置路径或单据类型。不确定的写[待确认]。`);
+      const sid = await reactChat(`请回答以下调研问题，基于知识库中的金蝶ERP实施经验：\n\n问题�?{newQuestion}\n\n背景�?{context}`, `你是一个金蝶ERP实施顾问，正在辅助一个调研访谈。请基于知识库给出专业的回答。回答要具体、可操作，包含系统配置路径或单据类型。不确定的写[待确认]。`);
       aiSessionRef.current = sid;
     } catch (err) {
+      console.warn("[Research] AI辅助回答失败:", err);
       setAiLoading(false);
     }
   };
@@ -315,6 +317,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
         const status = await getWhisperStatus();
         setWhisperStatus(status);
       } catch (err) {
+        console.warn("[Research] 加载语音模型失败:", err);
         alert("加载语音模型失败: " + String(err));
         setLoadingWhisper(false);
         return;
@@ -325,6 +328,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       await startWhisperRecording();
       setRecording(true);
     } catch (err) {
+      console.warn("[Research] 启动录音失败:", err);
       alert("启动录音失败: " + String(err));
     }
   };
@@ -337,6 +341,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
         setNewQuestion(result.text.trim());
       }
     } catch (err) {
+      console.warn("[Research] 停止录音失败:", err);
       setRecording(false);
       alert("停止录音失败: " + String(err));
     }
@@ -350,6 +355,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       setNewAnswer("");
       onUpdated();
     } catch (err) {
+      console.warn("[Research] 添加问答记录失败:", err);
       alert(String(err));
     }
   };
@@ -360,6 +366,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       setEditingRecord(null);
       onUpdated();
     } catch (err) {
+      console.warn("[Research] 更新问答记录失败:", err);
       alert(String(err));
     }
   };
@@ -370,6 +377,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       await deleteQARecord(recordId);
       onUpdated();
     } catch (err) {
+      console.warn("[Research] 删除问答记录失败:", err);
       alert(String(err));
     }
   };
@@ -385,6 +393,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
+      console.warn("[Research] 导出CSV失败:", err);
       alert(String(err));
     }
   };
@@ -400,13 +409,14 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
+      console.warn("[Research] 导出Markdown失败:", err);
       alert(String(err));
     }
   };
 
   const handleExtractBlueprint = async () => {
     const qaText = records.map((r, i) => `Q${i + 1}: ${r.question_text}\nA: ${r.answer_text}`).join("\n\n");
-    if (!qaText.trim()) { alert("暂无记录，无法提炼蓝图"); return; }
+    if (!qaText.trim()) { alert("暂无记录，无法提炼蓝�?); return; }
     try {
       const blueprint = await extractBlueprint(qaText);
       const blob = new Blob([blueprint], { type: "text/markdown;charset=utf-8" });
@@ -417,6 +427,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
+      console.warn("[Research] 提炼蓝图失败:", err);
       alert("蓝图提炼失败: " + String(err));
     }
   };
@@ -434,7 +445,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
           <BookOpen className="h-5 w-5 text-[#1A6BD8]" />
           <h1 className="text-base font-semibold text-neutral-800">{session.title}</h1>
           <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-500">{session.edition}/{session.module_code}</span>
-          {session.status === "completed" && <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] text-green-700">已完成</span>}
+          {session.status === "completed" && <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] text-green-700">已完�?/span>}
         </div>
         <div className="flex items-center gap-2">
           <button type="button" onClick={handleExportCsv} className="flex items-center gap-1 rounded-lg border border-neutral-200 px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50 transition-colors">
@@ -483,7 +494,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
                       </div>
                     </div>
                   ) : (
-                    <p className="text-xs leading-relaxed text-neutral-600">{r.answer_text || <span className="italic text-neutral-300">未填写回答</span>}</p>
+                    <p className="text-xs leading-relaxed text-neutral-600">{r.answer_text || <span className="italic text-neutral-300">未填写回�?/span>}</p>
                   )}
                 </div>
               ))}
@@ -499,7 +510,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
               <Mic className="h-4 w-4 text-[#1A6BD8]" />
               <span className="text-xs font-semibold text-neutral-700">语音输入</span>
               {whisperStatus && !whisperStatus.model_loaded && (
-                <span className="text-[10px] text-amber-600">（模型未加载）</span>
+                <span className="text-[10px] text-amber-600">（模型未加载�?/span>
               )}
             </div>
             {loadingWhisper ? (
@@ -515,7 +526,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
             ) : (
               <button type="button" onClick={handleStartRecording} className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#1A6BD8] px-3 py-2 text-xs font-medium text-[#1A6BD8] hover:bg-[#1A6BD8]/5 transition-colors">
                 <Mic className="h-3.5 w-3.5" />
-                开始录音
+                开始录�?
               </button>
             )}
           </div>
@@ -557,7 +568,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
               ) : (
                 <Brain className="h-3.5 w-3.5" />
               )}
-              {aiLoading ? "搜索知识库..." : "AI 辅助"}
+              {aiLoading ? "搜索知识�?.." : "AI 辅助"}
             </button>
           </div>
         </div>

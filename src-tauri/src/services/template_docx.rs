@@ -56,7 +56,8 @@ pub fn extract_docx_fields(file_path: &Path) -> Result<Vec<FieldInfo>, String> {
 
     for cap in re.captures_iter(&merged_text) {
         let field_name = cap[1].to_string();
-        let match_start = cap.get(0).unwrap().start();
+        // SAFE: cap.get(0) always exists in captures_iter (full match)
+        let match_start = cap.get(0).map_or(0, |m| m.start());
 
         // Extract context: ~50 chars before and after
         let ctx_start = match_start.saturating_sub(30);

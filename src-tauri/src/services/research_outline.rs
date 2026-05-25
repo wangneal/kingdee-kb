@@ -1,5 +1,17 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
+
+// SAFE: hardcoded regex patterns — documented outline structure formats
+static RE_SECTION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\d+\s+(.+)").unwrap()
+});
+static RE_CATEGORY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\d+\.\d+\s+(.+)").unwrap()
+});
+static RE_QUESTION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(\d+\.\d+\.\d+)\s+(.+)").unwrap()
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -146,9 +158,9 @@ pub fn parse_outline_text(
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     let lines: Vec<String> = normalized.lines().map(clean_line).collect();
 
-    let section_re = Regex::new(r"^\d+\s+(.+)").unwrap();
-    let cat_re = Regex::new(r"^\d+\.\d+\s+(.+)").unwrap();
-    let q_re = Regex::new(r"^(\d+\.\d+\.\d+)\s+(.+)").unwrap();
+    let section_re = &RE_SECTION;
+    let cat_re = &RE_CATEGORY;
+    let q_re = &RE_QUESTION;
 
     let mut sections: Vec<Section> = Vec::new();
     let mut raw_questions: Vec<(String, String, String)> = Vec::new();
@@ -160,16 +172,16 @@ pub fn parse_outline_text(
             continue;
         }
         if let Some(caps) = section_re.captures(trimmed) {
-            sections.push(Section { name: caps.get(1).unwrap().as_str().trim().to_string(), categories: Vec::new() });
+            sections.push(Section { name: caps.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default(), categories: Vec::new() });
         } else if let Some(caps) = cat_re.captures(trimmed) {
             if let Some(s) = sections.last_mut() {
-                s.categories.push(Category { name: caps.get(1).unwrap().as_str().trim().to_string(), questions: Vec::new() });
+                s.categories.push(Category { name: caps.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default(), questions: Vec::new() });
             } else {
-                sections.push(Section { name: String::new(), categories: vec![Category { name: caps.get(1).unwrap().as_str().trim().to_string(), questions: Vec::new() }] });
+                sections.push(Section { name: String::new(), categories: vec![Category { name: caps.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default(), questions: Vec::new() }] });
             }
         } else if let Some(caps) = q_re.captures(trimmed) {
-            let full_prefix = caps.get(1).unwrap().as_str().to_string();
-            let q_text = caps.get(2).unwrap().as_str().trim().to_string();
+            let full_prefix = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+            let q_text = caps.get(2).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
             let section_part = full_prefix.split('.').next().unwrap_or("1").to_string();
             let cat_part: String = full_prefix.rsplit('.').skip(1).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(".");
             raw_questions.push((section_part, cat_part, q_text));
@@ -188,11 +200,7 @@ pub fn parse_outline_text(
 
         let mut label_iter = labels.into_iter();
         let first_label = label_iter.next().filter(|l| l.len() > 2);
-        if first_label.is_some() {
-            sections.push(Section { name: first_label.unwrap(), categories: Vec::new() });
-        } else {
-            sections.push(Section { name: String::new(), categories: Vec::new() });
-        }
+        sections.push(Section { name: first_label.unwrap_or_default(), categories: Vec::new() });
 
         for cp in &unique_cats {
             let cat_name = label_iter.next().unwrap_or_else(|| {

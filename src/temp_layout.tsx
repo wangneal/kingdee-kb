@@ -10,7 +10,7 @@ const LS_KEY_ANSWER = "kb_sidebar_answer";
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "概览" },
   { to: "/browse", icon: BookOpen, label: "知识浏览" },
-  { to: "/search", icon: Search, label: "检索" },
+  { to: "/search", icon: Search, label: "检�? },
   { to: "/chat", icon: MessageSquare, label: "AI 对话" },
   { to: "/research", icon: ClipboardList, label: "调研助手" },
   { to: "/risk", icon: ShieldAlert, label: "风险把控" },
@@ -26,10 +26,7 @@ export default function Layout() {
 
   // Sidebar localStorage bridge: poll for questions from Tencent Meeting sidebar
   useEffect(() => {
-    let cancelled = false;
-    let unsub: (() => void) | null = null;
-
-    listenReActEvents((event) => {
+    const p = listenReActEvents((event) => {
       if (event.session_id !== sideSessionRef.current) return;
       if (event.type === "text_delta") {
         sideAnswerRef.current += event.content;
@@ -42,13 +39,10 @@ export default function Layout() {
             const q = JSON.parse(raw);
             localStorage.setItem(LS_KEY_ANSWER, JSON.stringify({ id: q.id, text: answer }));
           }
-        } catch(e) { /* localStorage unavailable */ }
+        } catch(e) { console.warn("[Layout] localStorage不可用:", e); }
         sideAnswerRef.current = "";
         sideSessionRef.current = null;
       }
-    }).then((fn) => {
-      if (cancelled) { fn(); return; }
-      unsub = fn;
     });
 
     const interval = setInterval(() => {
@@ -59,15 +53,14 @@ export default function Layout() {
         if (!q.text || !q.id) return;
         localStorage.removeItem(LS_KEY_QUESTION);
         sideAnswerRef.current = "";
-        reactChat(q.text, "你是一个金蝶ERP实施顾问。请给出专业、简洁的回答。").then(sid => {
+        reactChat(q.text, "你是一个金蝶ERP实施顾问。请给出专业、简洁的回答�?).then(sid => {
           sideSessionRef.current = sid;
         });
-      } catch(e) { /* poll error */ }
+      } catch(e) { console.warn("[Layout] 轮询侧栏问题失败:", e); }
     }, 2000);
 
     return () => {
-      cancelled = true;
-      unsub?.();
+      p.then((fn) => fn());
       clearInterval(interval);
     };
   }, []);

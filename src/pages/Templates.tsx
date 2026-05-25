@@ -43,7 +43,7 @@ export default function Templates() {
           setActivePhase(firstPhase ?? null);
         }
       } catch (e) {
-        console.error("Failed to load templates:", e);
+        console.warn("[Templates] 加载模板失败:", e);
         setError(String(e));
       } finally {
         setLoading(false);

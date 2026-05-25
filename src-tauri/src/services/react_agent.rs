@@ -9,12 +9,14 @@
 //! 事件通过 mpsc channel 发出，由 Tauri 命令转发为 SSE 事件
 
 use serde::{Deserialize, Serialize};
+use serde_json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::services::llm_service::{ChatMessage, LLMService};
-use crate::services::tool_registry::ToolRegistry;
+use crate::services::question_tool::{ClarificationPayload, PendingQuestions, QuestionTool};
+use crate::services::tool_registry::{Tool, ToolRegistry};
 
 /// ReAct 事件 — 通过 SSE 流式发送给前端
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +34,13 @@ pub enum ReActEvent {
     Error { session_id: String, message: String },
     #[serde(rename = "done")]
     Done { session_id: String },
+    /// Agent uses the `question` tool to ask the user a clarification question.
+    /// `payload` contains question_id, prompt, mode, and options.
+    #[serde(rename = "clarification")]
+    Clarification {
+        session_id: String,
+        payload: ClarificationPayload,
+    },
 }
 
 /// LLM 返回的决策
@@ -62,6 +71,7 @@ impl ReActAgent {
     }
 
     /// 运行 ReAct 循环，通过 sender 发送事件
+    /// `pending` — 全局待回复问题注册表，用于 `question` 工具的跨进程通信
     pub async fn run(
         &self,
         llm: &LLMService,
@@ -70,9 +80,13 @@ impl ReActAgent {
         history: &[ChatMessage],
         sender: mpsc::UnboundedSender<ReActEvent>,
         session_id: &str,
+        pending: PendingQuestions,
     ) {
         let sid = session_id.to_string();
         let tool_descriptions = self.tools.get_tool_descriptions();
+        // Append question tool description so LLM knows it can call it
+        let question_desc = "## question\n向用户提问以获取更多信息。当用户的问题模糊、需要选择方向、或需要补充细节时使用此工具。\n参数:\n  - prompt [必填]: 要向用户提出的问题文本 (string)\n  - mode: 提问模式：single_choice(单选)/multi_choice(多选)/free_input(自由输入) (string)\n  - options: 选项列表（JSON数组字符串，如 [\"选项1\",\"选项2\"]，仅single_choice/multi_choice模式需要）(string)";
+        let all_tools_desc = format!("{}\n\n{}", tool_descriptions, question_desc);
         let system_prompt = format!(
             "{}你是一个金蝶ERP实施顾问AI助手。你有权调用以下工具来帮助用户。\n\
              \n\
@@ -93,7 +107,7 @@ impl ReActAgent {
              - 观察工具结果后再决定下一步\n\
              - 最多允许 {} 次工具调用\n\
              - 如果你已经有足够信息，直接回答，不要额外调用工具",
-            system_extra, tool_descriptions, self.max_iterations
+            system_extra, all_tools_desc, self.max_iterations
         );
 
         let mut messages = vec![ChatMessage {
@@ -140,9 +154,20 @@ impl ReActAgent {
                                     args: args_str,
                                 });
 
-                                // Execute tool
+                                // Execute tool — intercept `question` tool for per-session handling
                                 let tool_args = decision.args.unwrap_or_default();
-                                let result = self.tools.call_tool(&tool_name, tool_args).await;
+                                let result = if tool_name == "question" {
+                                    // QuestionTool needs per-session state (pending + sender),
+                                    // so we construct and call it directly instead of going through registry
+                                    let qt = QuestionTool::new(
+                                        pending.clone(),
+                                        sender.clone(),
+                                        sid.clone(),
+                                    );
+                                    qt.call(tool_args).await
+                                } else {
+                                    self.tools.call_tool(&tool_name, tool_args).await
+                                };
                                 let result_str = if result.success {
                                     result.output
                                 } else {

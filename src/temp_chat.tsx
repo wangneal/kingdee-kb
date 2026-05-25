@@ -12,9 +12,7 @@ import {
   isLLMConfigured,
   reactChat,
   listenReActEvents,
-  answerQuestion,
   type ReActEvent,
-  type ClarificationPayload,
 } from "../lib/tauri-commands";
 
 interface DisplayMessage {
@@ -24,7 +22,6 @@ interface DisplayMessage {
   streaming?: boolean;
   error?: boolean;
   reactTrace?: ReActEvent[];
-  clarification?: ClarificationPayload;
 }
 
 interface ReActTrace {
@@ -38,7 +35,6 @@ function nextId(): string {
 }
 
 const CHAT_STORAGE_KEY = "kingdee_kb_chat_history";
-const MAX_STORED_MESSAGES = 500;
 
 function loadChatHistory(): DisplayMessage[] {
   try {
@@ -47,6 +43,7 @@ function loadChatHistory(): DisplayMessage[] {
     const parsed = JSON.parse(raw) as DisplayMessage[];
     return parsed.filter((m) => m.id && m.role);
   } catch {
+    console.warn("[Chat] 加载聊天记录失败");
     return [];
   }
 }
@@ -54,12 +51,9 @@ function loadChatHistory(): DisplayMessage[] {
 function saveChatHistory(messages: DisplayMessage[]) {
   try {
     const clean = messages.map((m) => ({ ...m, streaming: false }));
-    const trimmed = clean.length > MAX_STORED_MESSAGES
-      ? clean.slice(clean.length - MAX_STORED_MESSAGES)
-      : clean;
-    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(trimmed));
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(clean));
   } catch {
-    // ignore
+    console.warn("[Chat] 保存聊天记录失败");
   }
 }
 
@@ -81,12 +75,11 @@ export default function Chat() {
   useEffect(() => {
     isLLMConfigured()
       .then(setLlmReady)
-      .catch(() => setLlmReady(false));
+      .catch(() => { console.warn("[Chat] 检查LLM配置失败"); setLlmReady(false); });
   }, []);
 
   // Subscribe to ReAct events (filtered by session)
   useEffect(() => {
-    let cancelled = false;
     listenReActEvents((event) => {
       if (event.session_id !== currentSessionId.current) return;
       switch (event.type) {
@@ -125,38 +118,11 @@ export default function Chat() {
           });
           break;
         case "done":
-          setMessages((prev) => {
-            const updated = prev.map((m) =>
+          setMessages((prev) =>
+            prev.map((m) =>
               m.streaming ? { ...m, streaming: false, reactTrace: undefined } : m
-            );
-            // Save conversation to memory after chat completes (non-blocking)
-            const conversation = updated
-              .filter((m) => !m.error)
-              .map((m) => ({ role: m.role, content: m.content }));
-            saveChatMemory(conversation).catch((e) =>
-              console.warn("[Chat] Failed to save chat memory:", e)
-            );
-            return updated;
-          });
-          setCurrentTrace({ thinking: "", toolCalls: [] });
-          setLoading(false);
-          break;
-        case "clarification":
-          setMessages((prev) => {
-            const clarPayload = event.payload;
-            const last = prev[prev.length - 1];
-            const clarMsg = { content: clarPayload.prompt, clarification: clarPayload } as DisplayMessage;
-            if (last && last.role === "assistant" && last.streaming) {
-              return [
-                ...prev.slice(0, -1),
-                { ...last, streaming: false, ...clarMsg },
-              ];
-            }
-            return [
-              ...prev,
-              { id: nextId(), role: "assistant", ...clarMsg },
-            ];
-          });
+            )
+          );
           setCurrentTrace({ thinking: "", toolCalls: [] });
           setLoading(false);
           break;
@@ -164,7 +130,7 @@ export default function Chat() {
           setMessages((prev) =>
             prev.map((m) =>
               m.streaming
-                ? { ...m, content: m.content || "请求失败：" + event.message, streaming: false, error: true }
+                ? { ...m, content: m.content || "����ʧ�ܣ�" + event.message, streaming: false, error: true }
                 : m
             )
           );
@@ -173,11 +139,9 @@ export default function Chat() {
           break;
       }
     }).then((unsub) => {
-      if (cancelled) { unsub(); return; }
       unsubRef.current = unsub;
     });
     return () => {
-      cancelled = true;
       currentSessionId.current = null;
       unsubRef.current?.();
     };
@@ -212,26 +176,18 @@ export default function Chat() {
       const sid = await reactChat(text);
       currentSessionId.current = sid;
     } catch (err) {
+      console.warn("[Chat] 发送消息失败:", err);
       const errorMsg = err instanceof Error ? err.message : String(err);
       setMessages((prev) =>
         prev.map((m) =>
           m.id === assistantId
-            ? { ...m, content: "请求失败：" + errorMsg, streaming: false, error: true }
+            ? { ...m, content: "����ʧ�ܣ�" + errorMsg, streaming: false, error: true }
             : m
         )
       );
       setLoading(false);
     }
   }, [input, loading]);
-
-  // Answer a pending clarification question (resolves the blocked question tool)
-  const handleClarify = useCallback(async (questionId: string, answer: string) => {
-    try {
-      await answerQuestion(questionId, answer);
-    } catch (err) {
-      console.error("[Chat] Failed to answer question:", err);
-    }
-  }, []);
 
   // Save to localStorage debounced
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -262,16 +218,16 @@ export default function Chat() {
       <div className="flex h-14 items-center justify-between border-b border-neutral-200 px-6">
         <div className="flex items-center gap-2">
           <Brain className="h-5 w-5 text-amber-600" />
-          <h1 className="text-base font-semibold text-neutral-800">AI 助手</h1>
+          <h1 className="text-base font-semibold text-neutral-800">AI ����</h1>
           <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">Agent</span>
           <span className="text-xs text-neutral-400">
-            {messages.filter((m) => m.role === "user").length} 轮对话
+            {messages.filter((m) => m.role === "user").length} �ֶԻ�
           </span>
         </div>
         <button type="button" onClick={handleClear}
           className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-100 transition-colors">
           <Trash2 className="h-3.5 w-3.5" />
-          清空对话
+          ��նԻ�
         </button>
       </div>
 
@@ -283,18 +239,18 @@ export default function Chat() {
               <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-amber-50">
                 <Brain className="h-8 w-8 text-amber-300" />
               </div>
-              <p className="text-sm font-medium text-neutral-500">输入问题开始对话</p>
-              <p className="mt-1 text-xs text-neutral-400">Agent 可以搜索知识库、生成文档、分析风险</p>
+              <p className="text-sm font-medium text-neutral-500">�������⿪ʼ�Ի�</p>
+              <p className="mt-1 text-xs text-neutral-400">Agent ��������֪ʶ�⡢�����ĵ�����������</p>
               {llmReady === false && (
                 <div className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
                   <AlertCircle className="h-3.5 w-3.5" />
-                  LLM 未配置，请先在设置中填写 API Key
+                  LLM δ���ã���������������д API Key
                 </div>
               )}
             </div>
           ) : (
             messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} onClarify={handleClarify} />
+              <MessageBubble key={msg.id} message={msg} />
             ))
           )}
 
@@ -303,13 +259,13 @@ export default function Chat() {
             <div className="space-y-2 border-l-2 border-amber-200 pl-4">
               {currentTrace.thinking && (
                 <div className="text-xs text-amber-700 italic leading-relaxed">
-                  🤔 {currentTrace.thinking}
+                  ?? {currentTrace.thinking}
                 </div>
               )}
               {currentTrace.toolCalls.map((tc, i) => (
                 <div key={i}>
                   <div className="rounded-t-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs font-medium text-amber-800">
-                    🔧 {tc.name}
+                    ?? {tc.name}
                   </div>
                   {tc.result && (
                     <div className="rounded-b-lg bg-green-50 border border-green-200 px-3 py-2 text-xs text-green-700 border-t-0 whitespace-pre-wrap line-clamp-3">
@@ -332,7 +288,7 @@ export default function Chat() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="输入问题，Agent 将自动调用工具来回答..."
+              placeholder="�������⣬Agent ���Զ����ù������ش�..."
               rows={1}
               disabled={loading}
               className="flex-1 resize-none rounded-lg border border-neutral-200 bg-white px-4 py-2.5 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 disabled:opacity-50"
@@ -356,11 +312,10 @@ export default function Chat() {
   );
 }
 
-// ── Message Bubble Component ──────────────────────────────────────────────
+// ���� Message Bubble Component ��������������������������������������������������������������������������������������������
 
-function MessageBubble({ message, onClarify }: { message: DisplayMessage; onClarify: (questionId: string, answer: string) => void }) {
+function MessageBubble({ message }: { message: DisplayMessage }) {
   const isUser = message.role === "user";
-  const [freeInput, setFreeInput] = useState("");
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -370,9 +325,9 @@ function MessageBubble({ message, onClarify }: { message: DisplayMessage; onClar
           isUser ? "justify-end text-neutral-400" : "text-amber-600"
         }`}>
           <span className="flex h-5 w-5 items-center justify-center rounded-full bg-neutral-100 text-[10px]">
-            {isUser ? "👤" : "🤖"}
+            {isUser ? "??" : "??"}
           </span>
-          <span className="font-medium">{isUser ? "你" : "AI 助手"}</span>
+          <span className="font-medium">{isUser ? "��" : "AI ����"}</span>
         </div>
 
         {/* Message */}
@@ -395,121 +350,8 @@ function MessageBubble({ message, onClarify }: { message: DisplayMessage; onClar
               )}
             </div>
           )}
-
-          {/* Clarification options */}
-          {message.clarification && (
-            <div className="mt-3 border-t border-neutral-100 pt-3 space-y-2">
-              {/* Single choice: clickable buttons */}
-              {message.clarification.mode === "single_choice" && (
-                <div className="flex flex-wrap gap-2">
-                  {message.clarification.options.map((opt) => (
-                    <button
-                      key={opt}
-                      type="button"
-                      onClick={() => onClarify(message.clarification!.question_id, opt)}
-                      className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100 transition-colors"
-                    >
-                      {opt}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {/* Multi choice: checkboxes + confirm */}
-              {message.clarification.mode === "multi_choice" && (
-                <MultiChoiceOptions
-                  options={message.clarification.options}
-                  questionId={message.clarification.question_id}
-                  onConfirm={onClarify}
-                />
-              )}
-
-              {/* Free input: text box + submit */}
-              {message.clarification.mode === "free_input" && (
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={freeInput}
-                    onChange={(e) => setFreeInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && freeInput.trim()) {
-                        onClarify(message.clarification!.question_id, freeInput.trim());
-                        setFreeInput("");
-                      }
-                    }}
-                    placeholder="输入你的回答..."
-                    className="flex-1 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs outline-none focus:border-amber-500"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (freeInput.trim()) {
-                        onClarify(message.clarification!.question_id, freeInput.trim());
-                        setFreeInput("");
-                      }
-                    }}
-                    disabled={!freeInput.trim()}
-                    className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors"
-                  >
-                    发送
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
         </div>
       </div>
-    </div>
-  );
-}
-
-/** Multi-choice checkbox group with confirm button */
-function MultiChoiceOptions({
-  options,
-  questionId,
-  onConfirm,
-}: {
-  options: string[];
-  questionId: string;
-  onConfirm: (questionId: string, answer: string) => void;
-}) {
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-
-  const toggle = (opt: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(opt)) next.delete(opt);
-      else next.add(opt);
-      return next;
-    });
-  };
-
-  return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap gap-2">
-        {options.map((opt) => (
-          <button
-            key={opt}
-            type="button"
-            onClick={() => toggle(opt)}
-            className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
-              selected.has(opt)
-                ? "border-amber-500 bg-amber-100 text-amber-800"
-                : "border-neutral-200 bg-white text-neutral-600 hover:border-amber-200"
-            }`}
-          >
-            {selected.has(opt) ? "✓ " : ""}{opt}
-          </button>
-        ))}
-      </div>
-      <button
-        type="button"
-        onClick={() => onConfirm(questionId, Array.from(selected).join(", "))}
-        disabled={selected.size === 0}
-        className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors"
-      >
-        确认选择 ({selected.size})
-      </button>
     </div>
   );
 }

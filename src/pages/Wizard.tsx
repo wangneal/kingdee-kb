@@ -84,7 +84,7 @@ export default function Wizard() {
         }
         setFieldValues(defaults);
       } catch (e) {
-        console.error("Failed to load template:", e);
+        console.warn("[Wizard] 加载模板失败:", e);
         setError(String(e));
       } finally {
         setLoading(false);
@@ -111,7 +111,7 @@ export default function Wizard() {
       // Merge AI-filled values
       setFieldValues((prev) => ({ ...prev, ...result.filled_fields }));
     } catch (e) {
-      console.error("Smart fill failed:", e);
+      console.warn("[Wizard] 智能填充失败:", e);
       setError(String(e));
     } finally {
       setFilling(false);
@@ -135,7 +135,7 @@ export default function Wizard() {
       });
       setGeneratedDoc(result);
     } catch (e) {
-      console.error("Generate failed:", e);
+      console.warn("[Wizard] 生成文档失败:", e);
       setError(String(e));
     } finally {
       setGenerating(false);

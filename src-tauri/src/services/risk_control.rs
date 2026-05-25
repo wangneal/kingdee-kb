@@ -138,12 +138,12 @@ impl RiskControlStore {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn list_scope_items(&self) -> Result<Vec<ContractScopeItem>, String> {
+    pub fn list_scope_items(&self, limit: Option<i64>, offset: Option<i64>) -> Result<Vec<ContractScopeItem>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         let mut stmt = conn
-            .prepare("SELECT id, category, description, is_in_scope, detail, created_at FROM contract_scope_items ORDER BY category, id")
+            .prepare("SELECT id, category, description, is_in_scope, detail, created_at FROM contract_scope_items ORDER BY category, id LIMIT ?1 OFFSET ?2")
             .map_err(|e| format!("Failed to prepare: {}", e))?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(params![limit.unwrap_or(-1), offset.unwrap_or(0)], |row| {
             Ok(ContractScopeItem {
                 id: row.get(0)?,
                 category: row.get(1)?,
@@ -291,7 +291,7 @@ impl RiskControlStore {
         llm: &LLMService,
         requirement: &str,
     ) -> Result<ScopeCreepResult, String> {
-        let scope_items = self.list_scope_items()?;
+        let scope_items = self.list_scope_items(None, None)?;
 
         let scope_desc: String = if scope_items.is_empty() {
             "暂无合同范围定义".to_string()

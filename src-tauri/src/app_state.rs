@@ -19,6 +19,7 @@ use crate::services::research_indexer::ResearchIndexer;
 use crate::services::research_session::ResearchSessionStore;
 use crate::services::risk_control::RiskControlStore;
 use crate::services::tool_registry::{ToolRegistry, SearchKnowledgeTool, GenerateDocTool, CheckScopeCreepTool, AnalyzeFitGapTool, GetProjectHealthTool, GenerateDefenseScriptTool, ExtractBlueprintTool, RecommendQuestionsTool};
+use crate::services::question_tool::{self, PendingQuestions};
 use crate::services::vector_index::VectorIndex;
 use std::path::PathBuf;
 use rusqlite::Connection;
@@ -55,6 +56,8 @@ pub struct AppState {
     pub desensitizer: Desensitizer,
     /// ReAct Agent（推理引擎）
     pub react_agent: ReActAgent,
+    /// Pending questions for the question tool (cross-process state)
+    pub pending_questions: PendingQuestions,
     /// Whisper voice transcription service (lazy model load)
     pub whisper_service: Arc<Mutex<WhisperService>>,
     /// Audio capture (microphone recording)
@@ -130,6 +133,7 @@ impl AppState {
         registry.register(Box::new(RecommendQuestionsTool));
         let tool_registry = Arc::new(registry);
         let react_agent = ReActAgent::new(tool_registry);
+        let pending_questions = question_tool::create_pending_questions();
 
         let whisper_service = WhisperService::new();
         let audio_capture = AudioCapture::new(data_dir);
@@ -152,6 +156,7 @@ impl AppState {
             whisper_service: Arc::new(Mutex::new(whisper_service)),
             audio_capture: Arc::new(Mutex::new(audio_capture)),
             react_agent,
+            pending_questions,
         })
     }
 
@@ -210,6 +215,7 @@ impl AppState {
         registry.register(Box::new(RecommendQuestionsTool));
         let tool_registry = Arc::new(registry);
         let react_agent = ReActAgent::new(tool_registry);
+        let pending_questions = question_tool::create_pending_questions();
 
         let whisper_service = WhisperService::new();
         let audio_capture = AudioCapture::new(data_dir);
@@ -230,6 +236,7 @@ impl AppState {
             risk_control_store,
             desensitizer,
             react_agent,
+            pending_questions,
             whisper_service: Arc::new(Mutex::new(whisper_service)),
             audio_capture: Arc::new(Mutex::new(audio_capture)),
         }

@@ -125,15 +125,17 @@ pub fn hybrid_search(
             let vector_keys: Vec<i64> = vector_raw.iter().map(|r| r.key as i64).collect();
             let chunks = meta.get_chunks_by_vector_keys(&vector_keys)?;
 
+// fetch all documents (eliminates N+1 query)
+            let doc_ids: Vec<i64> = chunks.iter().map(|c| c.document_id).collect();
+            let doc_map = meta.get_documents_by_ids(&doc_ids)?;
+
             chunks
-                .into_iter()
-                .filter_map(|c| {
-                    let (title, project) = meta
-                        .get_document(c.document_id)
-                        .ok()
-                        .flatten()
-                        .map(|d| (d.title, d.project))
-                        .unwrap_or_else(|| (String::new(), "default".to_string()));
+                        .into_iter()
+                        .filter_map(|c| {
+                            let (title, project) = doc_map
+                                .get(&c.document_id)
+                                .map(|d| (d.title.clone(), d.project.clone()))
+                                .unwrap_or_else(|| (String::new(), "default".to_string()));
 
                     if let Some(pid) = project_id {
                         if project != pid {

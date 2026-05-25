@@ -5,6 +5,7 @@
 
 use rusqlite::{params, Connection, Result as SqlResult};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Document metadata
@@ -149,8 +150,37 @@ impl MetadataStore {
         )
     }
 
+    /// Get multiple documents by their IDs (batch fetch to eliminate N+1 queries)
+    pub fn get_documents_by_ids(&self, ids: &[i64]) -> Result<HashMap<i64, DocumentMeta>, String> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders: Vec<String> = ids.iter().enumerate().map(|(i, _)| format!("?{0}", i + 1)).collect();
+        let sql = format!(
+            "SELECT id, title, source_path, sha256, created_at, project
+             FROM documents WHERE id IN ({0})",
+            placeholders.join(", ")
+        );
+
+        let mut stmt = self.db
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare batch query: {0}", e))?;
+
+        let params: Vec<&dyn rusqlite::types::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let rows = stmt
+            .query_map(params.as_slice(), Self::row_to_document)
+            .map_err(|e| format!("Failed to batch query documents: {0}", e))?;
+
+        let mut map = HashMap::new();
+        for row in rows {
+            let doc = row.map_err(|e| format!("Failed to read document row: {0}", e))?;
+            map.insert(doc.id, doc);
+        }
+        Ok(map)
+    }
+
     /// Get all documents, optionally filtered by project
-    pub fn get_documents(&self, project: Option<&str>) -> Result<Vec<DocumentMeta>, String> {
+    pub fn list_documents(&self, project: Option<&str>) -> Result<Vec<DocumentMeta>, String> {
         if let Some(proj) = project {
             self.query_documents(
                 "SELECT id, title, source_path, sha256, created_at, project

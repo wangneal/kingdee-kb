@@ -145,7 +145,37 @@ impl ModelManager {
         std::fs::create_dir_all(&self.model_dir)
             .map_err(|e| format!("Failed to create model directory: {}", e))?;
 
-        // Try bge-small-zh-v1.5 (Chinese-optimized) first, fall back to all-MiniLM-L6-v2
+        // Step 0: Try loading from local cache first (no network required).
+        // If the model was previously downloaded and cached, fastembed can load
+        // it directly without any network access. This handles the case where
+        // the user has a cached model but is currently offline or behind a
+        // firewall that blocks HuggingFace.
+        eprintln!("[ModelManager] Checking for locally cached model...");
+        for model in &[EmbeddingModel::BGESmallZHV15, EmbeddingModel::AllMiniLML6V2] {
+            if Self::has_cached_model_files(&model) {
+                eprintln!("[ModelManager] Found cached files for {:?}, attempting to load...", model);
+                // Remove HF_ENDPOINT to let fastembed use default cache lookup
+                let original_hf_endpoint = std::env::var("HF_ENDPOINT").ok();
+                std::env::remove_var("HF_ENDPOINT");
+                match TextEmbedding::try_new(
+                    InitOptions::new(model.clone()).with_show_download_progress(false),
+                ) {
+                    Ok(text_emb) => {
+                        Self::restore_hf_endpoint(&original_hf_endpoint);
+                        eprintln!("[ModelManager] Successfully loaded {:?} from local cache!", model);
+                        self.model = Some(text_emb);
+                        self.is_ready = true;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        Self::restore_hf_endpoint(&original_hf_endpoint);
+                        eprintln!("[ModelManager] Local cache load failed for {:?}: {}", model, e);
+                    }
+                }
+            }
+        }
+
+        // Step 1: Try downloading from mirrors (network required)
         let model = Self::try_init_with_mirrors(EmbeddingModel::BGESmallZHV15)
             .or_else(|_| {
                 eprintln!("[ModelManager] BGE model unavailable, trying default model...");

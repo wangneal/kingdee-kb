@@ -1295,14 +1295,16 @@ impl LLMService {
         &self,
         conversation: &[ChatMessage],
     ) -> Result<Vec<ChatMessage>, String> {
-        let total_tokens: u32 = conversation
-            .iter()
-            .map(|m| count_tokens(&m.content))
-            .sum();
+        let total_tokens = estimate_tokens(conversation);
 
         if total_tokens <= COMPRESS_THRESHOLD || !self.is_configured() {
             return Ok(conversation.to_vec());
         }
+
+        eprintln!(
+            "[Compress] Conversation tokens {} exceed threshold {} — starting summarization",
+            total_tokens, COMPRESS_THRESHOLD
+        );
 
         // Walk backwards from the end to find split point:
         // keep last KEEP_LAST_PAIRS user+assistant pairs (+ any trailing non-user msgs)
@@ -1369,6 +1371,11 @@ impl LLMService {
                     content: format!("【历史对话摘要】\n{}", summary.trim()),
                 });
                 result.extend(tail.iter().cloned());
+                let compressed_tokens = estimate_tokens(&result);
+                eprintln!(
+                    "[Compress] Summarized {} head messages → {} tokens (was {} tokens, tail has {} msgs)",
+                    head.len(), compressed_tokens, total_tokens, tail.len()
+                );
                 Ok(result)
             }
             Err(e) => {

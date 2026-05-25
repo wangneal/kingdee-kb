@@ -42,7 +42,6 @@ use services::smart_completion::{SmartFillRequest, SmartFillResult};
 use services::question_recommend::{RecommendRequest, RecommendedQuestion, FollowUpRequest, FollowUpResult};
 use services::research_session::{ResearchSession, QARecord, SessionDetail};
 use services::risk_control::{ContractScopeItem, ScopeCreepResult, ProjectHealthScore, DefenseScriptRequest, DefenseScriptResult};
-use services::desensitize::DesensitizeResult;
 use services::template_docx::FieldInfo;
 use services::template_scanner::TemplateInfo;
 use services::template_schema::TemplateSchema;
@@ -338,7 +337,7 @@ async fn list_documents(
     project: Option<String>,
 ) -> Result<Vec<DocumentMeta>, String> {
     let meta = state.metadata.lock().map_err(|e| e.to_string())?;
-    meta.get_documents(project.as_deref())
+    meta.list_documents(project.as_deref())
 }
 
 /// Get all chunks for a specific document
@@ -957,7 +956,7 @@ async fn list_products(
     project: Option<String>,
 ) -> Result<Vec<ProductMeta>, String> {
     let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.list(project.as_deref())
+    store.list(project.as_deref(), None, None)
 }
 
 /// Get a single product by ID.
@@ -1525,7 +1524,7 @@ fn add_scope_item(
 
 #[tauri::command]
 fn list_scope_items(state: State<'_, AppState>) -> Result<Vec<ContractScopeItem>, String> {
-    state.risk_control_store.list_scope_items()
+    state.risk_control_store.list_scope_items(None, None)
 }
 
 #[tauri::command]
@@ -1597,6 +1596,11 @@ fn list_sensitive_keywords(state: State<'_, AppState>) -> Result<Vec<String>, St
     Ok(state.desensitizer.get_keywords())
 }
 
+#[tauri::command]
+fn remove_sensitive_keyword(state: State<'_, AppState>, keyword: String) -> Result<bool, String> {
+    Ok(state.desensitizer.remove_keyword(&keyword))
+}
+
 // --- P2.2: Blueprint Extraction ---
 
 const BLUEPRINT_SYSTEM_PROMPT: &str = "\
@@ -1662,11 +1666,12 @@ async fn react_chat(
     let sid = session_id;
 
     // Run agent in a separate task — get state from AppHandle to avoid lifetime issues
+    let pending = state.pending_questions.clone();
     let _ = state; // state not used directly (use ah.state() inside spawn for 'static lifetime)
     let ah = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         let state = ah.state::<AppState>();
-        state.react_agent.run(&state.llm, &message, &system_extra, &[], tx, &sid).await;
+        state.react_agent.run(&state.llm, &message, &system_extra, &[], tx, &sid, pending).await;
     });
 
     // Forward events as they arrive (real-time streaming)
@@ -1682,6 +1687,16 @@ async fn react_chat(
     }
 
     Ok(())
+}
+
+/// Answer a pending question from the question tool (called by frontend after user picks/types answer)
+#[tauri::command]
+async fn answer_question(
+    state: State<'_, AppState>,
+    question_id: String,
+    answer: String,
+) -> Result<(), String> {
+    services::question_tool::answer_question(&state.pending_questions, &question_id, &answer).await
 }
 
 /// Write content to a file using PowerShell (UTF-8 BOM encoding)
@@ -1877,9 +1892,11 @@ pub fn run() {
             desensitize_text,
             add_sensitive_keyword,
             list_sensitive_keywords,
+            remove_sensitive_keyword,
             extract_blueprint,
             analyze_fit_gap,
             react_chat,
+            answer_question,
             export_report,
         ])
     .run(tauri::generate_context!())
