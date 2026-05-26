@@ -20,6 +20,11 @@ pub fn compute_sha256(content: &str) -> String {
 /// - Adds section path segments as tags
 /// - Deduplicates and sorts
 pub fn extract_tags(filename: &str, section_path: Option<&str>) -> Vec<String> {
+    /// Meaningless fallback values that should never become tags.
+    /// These appear when `source_file` is None (paste/text ingestion)
+    /// and the caller passes `unwrap_or("untitled")` etc.
+    const STOP_TAGS: &[&str] = &["untitled", "unknown", "unnamed", "default", "nobody"];
+
     let mut tags: Vec<String> = Vec::new();
 
     // Extract tags from filename
@@ -30,7 +35,7 @@ pub fn extract_tags(filename: &str, section_path: Option<&str>) -> Vec<String> {
 
     for token in name.split(|c: char| c == '-' || c == '_' || c == ' ') {
         let t = token.trim();
-        if !t.is_empty() && t.len() >= 2 {
+        if !t.is_empty() && t.len() >= 2 && !STOP_TAGS.contains(&t.to_lowercase().as_str()) {
             tags.push(t.to_string());
         }
     }
@@ -39,7 +44,7 @@ pub fn extract_tags(filename: &str, section_path: Option<&str>) -> Vec<String> {
     if let Some(path) = section_path {
         for segment in path.split(" > ") {
             let s = segment.trim();
-            if !s.is_empty() && s.len() >= 2 {
+            if !s.is_empty() && s.len() >= 2 && !STOP_TAGS.contains(&s.to_lowercase().as_str()) {
                 tags.push(s.to_string());
             }
         }

@@ -12,6 +12,7 @@
 
 use crate::services::chunker::{recursive_chunk, ChunkInputMeta};
 use crate::services::embedding::EmbeddingService;
+use crate::services::file_extractor;
 use crate::services::ingestion_helpers::{compute_sha256, extract_tags, extract_title_from_filename};
 use crate::services::metadata::MetadataStore;
 use crate::services::text_cleaner::clean_text;
@@ -34,6 +35,24 @@ pub struct IngestionProgress {
     pub message: Option<String>,
 }
 
+/// A file-level error during directory ingestion
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileError {
+    /// The file path that failed
+    pub path: String,
+    /// The error message
+    pub error: String,
+}
+
+/// 返回给前端的文件夹摄入结果（成功列表 + 失败列表）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirectoryIngestionResult {
+    /// 成功导入的文件
+    pub imported: Vec<IngestionResult>,
+    /// 导入失败的文件及原因
+    pub errors: Vec<FileError>,
+}
+
 /// 返回给前端的摄入结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestionResult {
@@ -43,6 +62,8 @@ pub struct IngestionResult {
     pub title: String,
     /// SHA256 hash of content
     pub sha256: String,
+    /// Whether this was a duplicate (SHA256 already existed)
+    pub is_duplicate: bool,
     /// Number of chunks created
     pub chunk_count: usize,
     /// Number of vectors stored
@@ -72,18 +93,40 @@ pub fn ingest_text(
     emit_progress(app_handle, 2, "hashing", 0.0, Some("Computing hash..."));
     let sha256 = compute_sha256(&cleaned);
 
-    // Check for duplicate
+    // Check for duplicate — but also detect orphan documents (documents
+    // with a SHA256 record but zero chunks, left over from a failed
+    // embedding step).  Orphan documents are silently deleted and the
+    // import proceeds as fresh.
     {
         let meta = metadata.lock().map_err(|e| format!("Lock error: {}", e))?;
         if let Some(existing) = meta.get_document_by_sha256(&sha256)? {
-            return Ok(IngestionResult {
-                document_id: existing.id,
-                title: existing.title,
-                sha256,
-                chunk_count: 0,
-                vector_count: 0,
-                duration_ms: start.elapsed().as_millis() as u64,
-            });
+            let existing_chunks = meta.get_document_chunk_count(existing.id)?;
+            if existing_chunks == 0 {
+                // Orphan document — no chunks were ever stored (likely
+                // because the embedding model wasn't ready on the original
+                // import).  Clean up so we can re-import.
+                eprintln!(
+                    "[Ingestion] Orphan document '{}' (id={}) — has SHA256 but 0 chunks, re-importing",
+                    existing.title, existing.id
+                );
+                drop(meta); // release lock before delete_document re-acquires
+                {
+                    let meta = metadata.lock().map_err(|e| format!("Lock error: {}", e))?;
+                    meta.delete_document(existing.id)?;
+                }
+                // Fall through to fresh import below
+            } else {
+                // Genuine duplicate — document already has chunks
+                return Ok(IngestionResult {
+                    document_id: existing.id,
+                    title: existing.title,
+                    sha256,
+                    is_duplicate: true,
+                    chunk_count: existing_chunks as usize,
+                    vector_count: existing_chunks as usize,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                });
+            }
         }
     }
     emit_progress(app_handle, 2, "hashing", 100.0, None);
@@ -133,11 +176,23 @@ pub fn ingest_text(
             let mut idx = vector_index.lock().map_err(|e| format!("Lock error: {}", e))?;
             let meta = metadata.lock().map_err(|e| format!("Lock error: {}", e))?;
 
-            // Get starting vector_key from metadata (globally unique, never collides)
-            let start_key = meta.next_vector_key().unwrap_or(0);
+            // Get starting vector_key from metadata
+            let sqlite_next_key = meta.next_vector_key().unwrap_or(0);
+            // Also account for vectors that exist in usearch but not in SQLite
+            // (orphaned from a previous delete that only cleaned SQLite rows).
+            // This prevents "Duplicate keys not allowed" when usearch still holds
+            // keys that SQLite no longer tracks.
+            let usearch_size = idx.len() as i64;
+            let start_key = sqlite_next_key.max(usearch_size);
 
             for (i, (chunk, embedding)) in chunk_batch.iter().zip(embeddings.iter()).enumerate() {
                 let vector_key = start_key + i as i64;
+
+                // Defensive: remove any orphaned vector at this key before adding.
+                // With multi:false, usearch rejects duplicate keys. If a previous
+                // delete only cleaned SQLite but left the vector in usearch, this
+                // prevents the collision.
+                let _ = idx.remove(vector_key as u64);
 
                 // Add to vector index
                 idx.add(vector_key as u64, embedding)?;
@@ -186,6 +241,7 @@ pub fn ingest_text(
         document_id: doc_id,
         title: title.to_string(),
         sha256,
+        is_duplicate: false,
         chunk_count,
         vector_count,
         duration_ms: start.elapsed().as_millis() as u64,
@@ -201,9 +257,21 @@ pub fn ingest_file(
     metadata: &Arc<Mutex<MetadataStore>>,
     app_handle: Option<&AppHandle>,
 ) -> Result<IngestionResult, String> {
-    // Read file content
-    let content = std::fs::read_to_string(file_path)
-        .map_err(|e| format!("Failed to read file {:?}: {}", file_path, e))?;
+    // 检查文件是否存在
+    if !file_path.exists() {
+        return Err(format!("文件不存在: {:?}", file_path.display()));
+    }
+
+    // 检查文件格式是否支持
+    if !file_extractor::is_supported(file_path) {
+        return Err(format!(
+            "不支持的文件格式: {:?}",
+            file_path.display()
+        ));
+    }
+
+    // 使用 file_extractor 提取文本内容
+    let content = file_extractor::extract_text(file_path)?;
 
     // Extract title from filename
     let filename = file_path
@@ -231,7 +299,7 @@ pub fn ingest_file(
     Ok(result)
 }
 
-/// 摄入目录中的所有支持文件
+/// 摄入目录中的所有支持文件（递归子目录）
 pub fn ingest_directory(
     dir_path: &Path,
     project: &str,
@@ -239,48 +307,84 @@ pub fn ingest_directory(
     vector_index: &Arc<Mutex<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
     app_handle: Option<&AppHandle>,
-) -> Result<Vec<IngestionResult>, String> {
+) -> Result<DirectoryIngestionResult, String> {
     if !dir_path.is_dir() {
         return Err(format!("Not a directory: {:?}", dir_path));
     }
 
-    let supported_extensions = ["md", "txt", "text", "markdown"];
-    let mut results = Vec::new();
+    let mut imported = Vec::new();
+    let mut errors = Vec::new();
 
-    // Walk directory
-    let entries = std::fs::read_dir(dir_path)
-        .map_err(|e| format!("Failed to read directory {:?}: {}", dir_path, e))?;
+    // Recursively walk directory tree
+    ingest_dir_recursive(
+        dir_path,
+        project,
+        embedding,
+        vector_index,
+        metadata,
+        app_handle,
+        &mut imported,
+        &mut errors,
+    )?;
+
+    if imported.is_empty() && errors.is_empty() {
+        eprintln!(
+            "[Ingestion] No supported files found in {:?}",
+            dir_path
+        );
+    }
+
+    Ok(DirectoryIngestionResult { imported, errors })
+}
+
+/// Recursive helper — walks directories depth-first, ingesting all supported files
+fn ingest_dir_recursive(
+    dir: &Path,
+    project: &str,
+    embedding: &Arc<Mutex<EmbeddingService>>,
+    vector_index: &Arc<Mutex<VectorIndex>>,
+    metadata: &Arc<Mutex<MetadataStore>>,
+    app_handle: Option<&AppHandle>,
+    imported: &mut Vec<IngestionResult>,
+    errors: &mut Vec<FileError>,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read directory {:?}: {}", dir, e))?;
 
     for entry in entries {
         let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
         let path = entry.path();
 
-        // Skip directories and non-supported files
         if path.is_dir() {
-            continue;
-        }
-
-        let extension = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-
-        if !supported_extensions.contains(&extension.as_str()) {
-            continue;
-        }
-
-        // Ingest file
-        match ingest_file(&path, project, embedding, vector_index, metadata, app_handle) {
-            Ok(result) => results.push(result),
-            Err(e) => {
-                eprintln!("[Ingestion] Failed to ingest {:?}: {}", path, e);
-                // Continue with other files
+            // Recurse into subdirectories
+            ingest_dir_recursive(
+                &path,
+                project,
+                embedding,
+                vector_index,
+                metadata,
+                app_handle,
+                imported,
+                errors,
+            )?;
+        } else if file_extractor::is_supported(&path) {
+            match ingest_file(&path, project, embedding, vector_index, metadata, app_handle) {
+                Ok(result) => imported.push(result),
+                Err(e) => {
+                    let filename = path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("?");
+                    eprintln!("[Ingestion] Failed to ingest {:?}: {}", path, e);
+                    errors.push(FileError {
+                        path: filename.to_string(),
+                        error: e,
+                    });
+                    // Continue with other files
+                }
             }
         }
     }
-
-    Ok(results)
+    Ok(())
 }
 
 /// 向前端发出进度事件
