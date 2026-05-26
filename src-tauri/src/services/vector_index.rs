@@ -77,7 +77,7 @@ impl VectorIndex {
             connectivity: DEFAULT_CONNECTIVITY,
             expansion_add: DEFAULT_EXPANSION_ADD,
             expansion_search: DEFAULT_EXPANSION_SEARCH,
-            multi: false,
+            multi: true,
         };
 
         let index = new_index(&options).map_err(|e| format!("Failed to create index: {}", e))?;
@@ -96,10 +96,32 @@ impl VectorIndex {
         Self::load_with_dimensions(index_path, 512)
     }
 
-    /// Load an existing index from disk with explicit dimensions
+    /// Load an existing index from disk with explicit dimensions.
+    ///
+    /// If the on-disk index was built with `multi: false` (legacy), it is
+    /// automatically deleted and a new `multi: true` index is created in its
+    /// place. The caller should re-ingest documents to repopulate the index.
     pub fn load_with_dimensions(index_path: PathBuf, dimensions: usize) -> Result<Self, String> {
+        // Try to read metadata from the existing index file.
+        // If it was built with multi:false, delete it — we can't load it
+        // with multi:true (usearch rejects mismatched multi flag).
+        if index_path.exists() {
+            if let Ok(meta) = Index::metadata(
+                index_path.to_str().unwrap_or(""),
+            ) {
+                if !meta.multi {
+                    // Legacy index with multi:false — delete and recreate.
+                    // The caller will need to re-ingest, but this prevents
+                    // the "Duplicate keys" crash at runtime.
+                    let _ = std::fs::remove_file(&index_path);
+                }
+            }
+        }
+
         if !index_path.exists() {
-            return Err(format!("Index file not found: {:?}", index_path));
+            // No index file (deleted above or never created) — return a fresh index.
+            let index_dir = index_path.parent().ok_or("Invalid index path: no parent")?;
+            return Self::with_dimensions(index_dir.to_path_buf(), dimensions);
         }
 
         let options = IndexOptions {
@@ -109,7 +131,7 @@ impl VectorIndex {
             connectivity: DEFAULT_CONNECTIVITY,
             expansion_add: DEFAULT_EXPANSION_ADD,
             expansion_search: DEFAULT_EXPANSION_SEARCH,
-            multi: false,
+            multi: true,
         };
 
         let index = new_index(&options).map_err(|e| format!("Failed to create index: {}", e))?;

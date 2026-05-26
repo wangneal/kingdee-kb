@@ -35,6 +35,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": [
+      "resources/models/bge-small-zh-v1.5/*"
+    ],
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"

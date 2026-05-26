@@ -150,6 +150,17 @@ impl MetadataStore {
         )
     }
 
+    /// Count chunks for a given document (returns 0 if document has no chunks)
+    pub fn get_document_chunk_count(&self, document_id: i64) -> Result<i64, String> {
+        self.db
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE document_id = ?1",
+                params![document_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("Failed to count chunks for document {document_id}: {e}", document_id = document_id, e = e))
+    }
+
     /// Get multiple documents by their IDs (batch fetch to eliminate N+1 queries)
     pub fn get_documents_by_ids(&self, ids: &[i64]) -> Result<HashMap<i64, DocumentMeta>, String> {
         if ids.is_empty() {
@@ -205,6 +216,65 @@ impl MetadataStore {
             .execute("DELETE FROM documents WHERE id = ?1", params![id])
             .map_err(|e| format!("Failed to delete document: {}", e))?;
         Ok(())
+    }
+
+    /// Batch-delete multiple documents (and their chunks) in a single transaction
+    pub fn delete_documents_batch(&self, document_ids: Vec<i64>) -> Result<u64, String> {
+        if document_ids.is_empty() {
+            return Ok(0);
+        }
+        // Build placeholders: "?,?,?" for IN clause
+        let placeholders: String = document_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let params: Vec<&dyn rusqlite::types::ToSql> = document_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
+
+        let tx = self.db.unchecked_transaction().map_err(|e| format!("Failed to begin transaction: {}", e))?;
+
+        let _chunks_deleted = tx
+            .execute(
+                &format!("DELETE FROM chunks WHERE document_id IN ({})", placeholders),
+                params.as_slice(),
+            )
+            .map_err(|e| format!("Failed to batch-delete chunks: {}", e))?;
+
+        let docs_deleted = tx
+            .execute(
+                &format!("DELETE FROM documents WHERE id IN ({})", placeholders),
+                params.as_slice(),
+            )
+            .map_err(|e| format!("Failed to batch-delete documents: {}", e))?;
+
+        tx.commit().map_err(|e| format!("Failed to commit batch delete: {}", e))?;
+
+        Ok(docs_deleted as u64)
+    }
+
+    /// Get vector keys for all chunks belonging to the given document IDs.
+    /// Used to remove vectors from the usearch index when deleting documents.
+    pub fn get_vector_keys_by_document_ids(&self, document_ids: &[i64]) -> Result<Vec<i64>, String> {
+        if document_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let placeholders: String = document_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let params: Vec<&dyn rusqlite::types::ToSql> = document_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
+
+        let mut stmt = self
+            .db
+            .prepare(&format!("SELECT vector_key FROM chunks WHERE document_id IN ({})", placeholders))
+            .map_err(|e| format!("Failed to prepare vector key query: {}", e))?;
+
+        let keys: Vec<i64> = stmt
+            .query_map(params.as_slice(), |row| row.get(0))
+            .map_err(|e| format!("Failed to query vector keys: {}", e))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(keys)
     }
 
     // ─── Chunk operations ───

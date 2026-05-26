@@ -17,6 +17,8 @@ import {
   Eye,
   EyeOff,
   Plus,
+  FolderOpen,
+  RotateCcw,
 } from "lucide-react";
 import {
   getLLMConfig,
@@ -27,8 +29,11 @@ import {
   initModel,
   getModelStatus,
   getDownloadProgress,
+  getEmbeddingModelConfig,
+  setEmbeddingModelConfig,
   type LLMConfig,
   type KnowledgeStats,
+  type EmbeddingModelConfig,
 addSensitiveKeyword,
 listSensitiveKeywords,
 removeSensitiveKeyword,
@@ -87,33 +92,61 @@ export default function Settings() {
     ok: boolean;
     msg: string;
   } | null>(null);
+  const [embeddingConfig, setEmbeddingConfig] =
+    useState<EmbeddingModelConfig>({});
+  const [embeddingConfigSaving, setEmbeddingConfigSaving] = useState(false);
   const [keywordInput, setKeywordInput] = useState("");
   const [keywords, setKeywords] = useState<string[]>([]);
 
-  // Load existing config, stats, and model status
+  // Load config, stats; poll model status (auto-load may still be async in progress)
   useEffect(() => {
+    let cancelled = false;
+    let retries = 0;
+    const MAX_RETRIES = 60; // up to 60s wait for async model auto-load
+
     Promise.all([
       getLLMConfig().catch(() => DEFAULT_CONFIG),
       isLLMConfigured().catch(() => false),
       getStats().catch(() => null),
-      getModelStatus().catch(() => false),
-    ]).then(([cfg, configured, s, modelStatus]) => {
-      // Backward compat: if saved config has no provider field, default to openai
-      const normalizedCfg: LLMConfig = {
+      getEmbeddingModelConfig().catch(() => ({})),
+    ]).then(([cfg, configured, s, embeddingCfg]) => {
+      if (cancelled) return;
+      setConfig({
         provider: cfg.provider ?? "openai",
         api_key: cfg.api_key,
         base_url: cfg.base_url,
         model: cfg.model,
         max_tokens: cfg.max_tokens,
         temperature: cfg.temperature,
-      };
-      setConfig(normalizedCfg);
+      });
       setConfigured(configured);
       setStats(s);
-      setModelReady(modelStatus);
-      setLoading(false);
+      setEmbeddingConfig(embeddingCfg);
     });
+
+    // Poll model status until ready or timeout
+    const pollModelStatus = async () => {
+      if (cancelled) return;
+      try {
+        const status = await getModelStatus();
+        if (status) {
+          setModelReady(true);
+          setLoading(false);
+          return;
+        }
+      } catch { /* ignore polling errors */ }
+      retries++;
+      if (retries >= MAX_RETRIES) {
+        setModelReady(false);
+        setLoading(false);
+        return;
+      }
+      setTimeout(pollModelStatus, 1000);
+    };
+    pollModelStatus();
+
     listSensitiveKeywords().then(setKeywords).catch(() => {});
+    return () => { cancelled = true; };
   }, []);
 
   const handleSave = useCallback(async () => {
@@ -192,6 +225,58 @@ export default function Settings() {
       });
     } finally {
       setInitializing(false);
+    }
+  }, []);
+
+  const handleChooseEmbeddingDir = useCallback(async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "选择 Embedding 模型目录",
+    });
+    if (typeof selected === "string") {
+      setEmbeddingConfig({ custom_model_dir: selected });
+    }
+  }, []);
+
+  const handleSaveEmbeddingConfig = useCallback(async () => {
+    setEmbeddingConfigSaving(true);
+    setInitResult(null);
+    try {
+      const dir = embeddingConfig.custom_model_dir?.trim() || null;
+      const ok = await setEmbeddingModelConfig(dir);
+      setModelReady(ok);
+      setEmbeddingConfig({ custom_model_dir: dir });
+      setInitResult({
+        ok,
+        msg: dir ? "自定义 Embedding 模型已加载" : "已切换为内置 Embedding 模型",
+      });
+    } catch (err) {
+      setInitResult({
+        ok: false,
+        msg: `Embedding 模型配置失败：${err instanceof Error ? err.message : String(err)}`,
+      });
+    } finally {
+      setEmbeddingConfigSaving(false);
+    }
+  }, [embeddingConfig.custom_model_dir]);
+
+  const handleResetEmbeddingConfig = useCallback(async () => {
+    setEmbeddingConfig({ custom_model_dir: null });
+    setEmbeddingConfigSaving(true);
+    setInitResult(null);
+    try {
+      const ok = await setEmbeddingModelConfig(null);
+      setModelReady(ok);
+      setInitResult({ ok, msg: "已切换为内置 Embedding 模型" });
+    } catch (err) {
+      setInitResult({
+        ok: false,
+        msg: `切换内置模型失败：${err instanceof Error ? err.message : String(err)}`,
+      });
+    } finally {
+      setEmbeddingConfigSaving(false);
     }
   }, []);
 
@@ -527,7 +612,54 @@ export default function Settings() {
             </div>
           )}
 
+          <div className="mb-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={embeddingConfig.custom_model_dir ?? ""}
+                onChange={(e) =>
+                  setEmbeddingConfig({ custom_model_dir: e.target.value })
+                }
+                placeholder="默认使用内置 BGE 模型；可选择本地 ONNX 模型目录"
+                className="flex-1 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+              />
+              <button
+                type="button"
+                onClick={handleChooseEmbeddingDir}
+                className="rounded-lg border border-neutral-200 p-2 text-neutral-500 hover:bg-neutral-50"
+                title="选择目录"
+              >
+                <FolderOpen className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={handleResetEmbeddingConfig}
+                disabled={embeddingConfigSaving}
+                className="rounded-lg border border-neutral-200 p-2 text-neutral-500 hover:bg-neutral-50 disabled:opacity-50"
+                title="使用内置模型"
+              >
+                <RotateCcw className="h-4 w-4" />
+              </button>
+            </div>
+            <p className="text-xs text-neutral-400">
+              目录需包含 model.onnx、tokenizer.json；config.json、tokenizer_config.json、special_tokens_map.json 可选。
+            </p>
+          </div>
+
           <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleSaveEmbeddingConfig}
+              disabled={embeddingConfigSaving}
+              className="flex items-center gap-1.5 rounded-lg border border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
+            >
+              {embeddingConfigSaving ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              保存模型设置
+            </button>
             <button
               type="button"
               onClick={handleInitModel}
