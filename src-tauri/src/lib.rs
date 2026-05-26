@@ -41,7 +41,7 @@ use services::research_outline::Edition;
 use services::smart_completion::{SmartFillRequest, SmartFillResult};
 use services::question_recommend::{RecommendRequest, RecommendedQuestion, FollowUpRequest, FollowUpResult};
 use services::research_session::{ResearchSession, QARecord, SessionDetail};
-use services::risk_control::{ContractScopeItem, ScopeCreepResult, ProjectHealthScore, DefenseScriptRequest, DefenseScriptResult};
+use services::risk_control::{ContractScopeItem, ScopeCreepResult, ProjectHealthScore, DefenseScriptRequest, DefenseScriptResult, RiskProject, ImportDbResult, CandidateScopeItem};
 use services::template_docx::FieldInfo;
 use services::template_scanner::TemplateInfo;
 use services::template_schema::TemplateSchema;
@@ -1807,17 +1807,18 @@ fn reorder_qa_records(
 #[tauri::command]
 fn add_scope_item(
     state: State<'_, AppState>,
+    project_id: i64,
     category: String,
     description: String,
     is_in_scope: bool,
     detail: String,
 ) -> Result<i64, String> {
-    state.risk_control_store.add_scope_item(&category, &description, is_in_scope, &detail)
+    state.risk_control_store.add_scope_item(project_id, &category, &description, is_in_scope, &detail)
 }
 
 #[tauri::command]
-fn list_scope_items(state: State<'_, AppState>) -> Result<Vec<ContractScopeItem>, String> {
-    state.risk_control_store.list_scope_items(None, None)
+fn list_scope_items(state: State<'_, AppState>, project_id: i64) -> Result<Vec<ContractScopeItem>, String> {
+    state.risk_control_store.list_scope_items(project_id, None, None)
 }
 
 #[tauri::command]
@@ -1828,24 +1829,26 @@ fn delete_scope_item(state: State<'_, AppState>, item_id: i64) -> Result<(), Str
 #[tauri::command]
 async fn check_scope_creep(
     state: State<'_, AppState>,
+    project_id: i64,
     requirement: String,
 ) -> Result<ScopeCreepResult, String> {
-    state.risk_control_store.check_scope_creep(&state.llm, &requirement).await
+    state.risk_control_store.check_scope_creep(project_id, &state.llm, &requirement).await
 }
 
 #[tauri::command]
 fn record_health_metric(
     state: State<'_, AppState>,
+    project_id: i64,
     indicator_type: String,
     value: f64,
     notes: String,
 ) -> Result<i64, String> {
-    state.risk_control_store.record_health_metric(&indicator_type, value, &notes)
+    state.risk_control_store.record_health_metric(project_id, &indicator_type, value, &notes)
 }
 
 #[tauri::command]
-fn get_project_health(state: State<'_, AppState>) -> Result<ProjectHealthScore, String> {
-    state.risk_control_store.calculate_health_score()
+fn get_project_health(state: State<'_, AppState>, project_id: i64) -> Result<ProjectHealthScore, String> {
+    state.risk_control_store.calculate_health_score(project_id)
 }
 
 #[tauri::command]
@@ -1862,6 +1865,74 @@ async fn generate_defense_script(
     request: DefenseScriptRequest,
 ) -> Result<DefenseScriptResult, String> {
     state.risk_control_store.generate_defense_script(&state.llm, &request).await
+}
+
+// --- P1.4: 风险项目管理 ---
+
+#[tauri::command]
+fn create_risk_project(
+    state: State<'_, AppState>,
+    name: String,
+    client_name: Option<String>,
+    kb_project: Option<String>,
+) -> Result<i64, String> {
+    state.risk_control_store.create_risk_project(
+        &name,
+        &client_name.unwrap_or_default(),
+        &kb_project.unwrap_or_default(),
+    )
+}
+
+#[tauri::command]
+fn list_risk_projects(state: State<'_, AppState>) -> Result<Vec<RiskProject>, String> {
+    state.risk_control_store.list_risk_projects()
+}
+
+#[tauri::command]
+fn delete_risk_project(state: State<'_, AppState>, project_id: i64) -> Result<(), String> {
+    state.risk_control_store.delete_risk_project(project_id)
+}
+
+// --- P1.5: 合同范围提取 ---
+
+#[tauri::command]
+async fn extract_scope_from_document(
+    state: State<'_, AppState>,
+    _project_id: i64,
+    doc_id: i64,
+) -> Result<Vec<CandidateScopeItem>, String> {
+    let chunks = {
+        let meta = state.metadata.lock().map_err(|e| e.to_string())?;
+        meta.get_chunks_by_document(doc_id)?
+    };
+    if chunks.is_empty() {
+        return Err("文档中未找到任何内容分块".to_string());
+    }
+    state.risk_control_store.extract_scope_from_document(&state.llm, &chunks).await
+}
+
+#[tauri::command]
+fn confirm_scope_items(
+    state: State<'_, AppState>,
+    project_id: i64,
+    items: Vec<CandidateScopeItem>,
+) -> Result<usize, String> {
+    state.risk_control_store.confirm_scope_items(project_id, &items)
+}
+
+// --- P1.6: 整库备份 ---
+
+#[tauri::command]
+fn export_database(state: State<'_, AppState>, target_path: String) -> Result<(), String> {
+    state.risk_control_store.export_database(&target_path)
+}
+
+#[tauri::command]
+fn import_database(
+    state: State<'_, AppState>,
+    backup_path: String,
+) -> Result<ImportDbResult, String> {
+    state.risk_control_store.import_database(&backup_path)
 }
 
 // --- P2.1: 本地脱敏 ---
@@ -2196,6 +2267,16 @@ pub fn run() {
             get_project_health,
             generate_risk_report,
             generate_defense_script,
+            // P1.4: 风险项目管理
+            create_risk_project,
+            list_risk_projects,
+            delete_risk_project,
+            // P1.5: 合同范围提取
+            extract_scope_from_document,
+            confirm_scope_items,
+            // P1.6: 整库备份
+            export_database,
+            import_database,
             // P2: 蓝图提炼/Fit-Gap/脱敏
             desensitize_text,
             add_sensitive_keyword,
