@@ -56,11 +56,16 @@ zip = "2"
 quick-xml = "0.36"
 umya-spreadsheet = "2"
 serde_yaml = "0.9"
+pdf-extract = "0.7"
+calamine = "0.26"
 
 # Phase 12: Whisper Voice Recognition
 whisper-rs = { version = "0.16", features = [] }
 cpal = "0.15"
 hound = "3"
+
+# Phase 14: Video Transcription (audio extraction from video)
+ffmpeg-sidecar = "2"
 
 # Global Shortcut (OS-level Alt+Space)
 tauri-plugin-global-shortcut = "2"

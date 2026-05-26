@@ -426,6 +426,47 @@ impl LLMService {
         Ok(cfg.clone())
     }
 
+    /// Synchronous text generation (non-streaming) for internal backend use.
+    ///
+    /// Uses `ureq` for a simple blocking HTTP call. Returns the complete generated text.
+    pub fn generate_text_sync(&self, system_prompt: &str, user_message: &str) -> Result<String, String> {
+        let config = self.config.lock().map_err(|e| e.to_string())?;
+
+        if config.api_key.is_empty() {
+            return Err("LLM API key not configured".to_string());
+        }
+
+        let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+
+        let body = serde_json::json!({
+            "model": config.model,
+            "messages": [
+                { "role": "system", "content": system_prompt },
+                { "role": "user", "content": user_message }
+            ],
+            "temperature": config.temperature,
+            "max_tokens": config.max_tokens,
+            "stream": false
+        });
+
+        let auth_header = format!("Bearer {}", config.api_key);
+        let response: serde_json::Value = ureq::post(&url)
+            .header("Authorization", &auth_header)
+            .header("Content-Type", "application/json")
+            .send_json(&body)
+            .map_err(|e| format!("LLM request failed: {}", e))?
+            .body_mut()
+            .read_json()
+            .map_err(|e| format!("Failed to parse LLM response: {}", e))?;
+
+        let text = response["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+
+        Ok(text)
+    }
+
     fn needs_relaxed_tls(base_url: &str) -> bool {
         let base_url = base_url.to_ascii_lowercase();
         base_url.starts_with("https://maas.gd.chinamobile.com")
