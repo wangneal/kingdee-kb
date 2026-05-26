@@ -36,6 +36,10 @@ import {
   reactChat,
   listenReActEvents,
   type WhisperStatus,
+  listAsrProviders,
+  type AsrProviderInfo,
+  getAsrConfigStatus,
+  type AsrConfigStatus,
 } from "../lib/tauri-commands";
 
 export default function ResearchAssistant() {
@@ -262,6 +266,9 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
   const [recording, setRecording] = useState(false);
   const [whisperStatus, setWhisperStatus] = useState<WhisperStatus | null>(null);
   const [loadingWhisper, setLoadingWhisper] = useState(false);
+  const [asrProviders, setAsrProviders] = useState<AsrProviderInfo[]>([]);
+  const [selectedAsrProvider, setSelectedAsrProvider] = useState<string>("whisper");
+  const [_asrConfigStatus, setAsrConfigStatus] = useState<AsrConfigStatus | null>(null);
   const [newQuestion, setNewQuestion] = useState("");
   const [newAnswer, setNewAnswer] = useState("");
   const [editingRecord, setEditingRecord] = useState<number | null>(null);
@@ -272,7 +279,11 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
   const unsubRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    getWhisperStatus().then(setWhisperStatus).catch(() => {});
+    getWhisperStatus().then(setWhisperStatus).catch((err) => {
+      console.error("获取 Whisper 状态失败:", err);
+    });
+    listAsrProviders().then(setAsrProviders).catch(console.error);
+    getAsrConfigStatus().then(setAsrConfigStatus).catch(console.error);
   }, []);
 
   // Subscribe to ReAct events for AI assist (filtered by session)
@@ -507,10 +518,30 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
             <div className="mb-2 flex items-center gap-2">
               <Mic className="h-4 w-4 text-[#1A6BD8]" />
               <span className="text-xs font-semibold text-neutral-700">语音输入</span>
-              {whisperStatus && !whisperStatus.model_loaded && (
-                <span className="text-[10px] text-amber-600">（模型未加载）</span>
+            </div>
+            {/* ASR Provider selector */}
+            <div className="mb-2">
+              <select
+                value={selectedAsrProvider}
+                onChange={(e) => setSelectedAsrProvider(e.target.value)}
+                className="w-full rounded border border-neutral-200 px-2 py-1 text-[10px] text-neutral-600 outline-none focus:border-[#1A6BD8]"
+              >
+                {asrProviders.map((p) => (
+                  <option key={p.type} value={p.type}>
+                    {p.name} {p.type === "whisper" ? (whisperStatus?.model_loaded ? "✓" : "⚠") : ""}
+                  </option>
+                ))}
+              </select>
+              {/* Provider description */}
+              {asrProviders.find(p => p.type === selectedAsrProvider) && (
+                <p className="text-[10px] text-neutral-400 mt-0.5">
+                  {asrProviders.find(p => p.type === selectedAsrProvider)?.description}
+                </p>
               )}
             </div>
+            {whisperStatus && !whisperStatus.model_loaded && selectedAsrProvider === "whisper" && (
+              <span className="text-[10px] text-amber-600">（模型未加载）</span>
+            )}
             {loadingWhisper ? (
               <div className="flex items-center gap-2 text-xs text-neutral-500">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />

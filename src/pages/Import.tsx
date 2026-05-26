@@ -26,6 +26,10 @@ import {
   type VideoPipelineResult,
   listenVideoProgress,
   type VideoProgressEvent,
+  listAsrProviders,
+  type AsrProviderInfo,
+  getAsrConfigStatus,
+  type AsrConfigStatus,
 } from "../lib/tauri-commands";
 
 type ImportStatus = "idle" | "loading" | "success" | "error";
@@ -64,15 +68,31 @@ export default function Import() {
   const [videoResult, setVideoResult] = useState<VideoPipelineResult | null>(null);
   const [whisperReady, setWhisperReady] = useState(false);
   const [whisperLoading, setWhisperLoading] = useState(false);
+  const [whisperError, setWhisperError] = useState<string | null>(null);
   const [videoProgress, setVideoProgress] = useState<VideoProgressEvent | null>(null);
+  const [asrProviders, setAsrProviders] = useState<AsrProviderInfo[]>([]);
+  const [selectedAsrProvider, setSelectedAsrProvider] = useState<string>("whisper");
+  const [asrConfigStatus, setAsrConfigStatus] = useState<AsrConfigStatus | null>(null);
   const [copyOk, setCopyOk] = useState<string | null>(null); // "transcript" | "minutes"
   const progressRef = useRef<VideoProgressEvent | null>(null);
 
   // Check Whisper model status on mount
   useEffect(() => {
     getWhisperStatus()
-      .then((status) => setWhisperReady(status.model_loaded))
-      .catch(() => setWhisperReady(false));
+      .then((status) => {
+        setWhisperReady(status.model_loaded);
+        setWhisperError(null);
+      })
+      .catch((err) => {
+        setWhisperReady(false);
+        setWhisperError(String(err));
+      });
+  }, []);
+
+  // Load ASR providers and config status
+  useEffect(() => {
+    listAsrProviders().then(setAsrProviders).catch(console.error);
+    getAsrConfigStatus().then(setAsrConfigStatus).catch(console.error);
   }, []);
 
   // Listen for video progress events
@@ -88,12 +108,14 @@ export default function Import() {
   // Load Whisper model
   const handleLoadWhisper = useCallback(async () => {
     setWhisperLoading(true);
+    setWhisperError(null);
     try {
       await loadWhisperModel("tiny");
       const status = await getWhisperStatus();
       setWhisperReady(status.model_loaded);
-    } catch {
+    } catch (err) {
       setWhisperReady(false);
+      setWhisperError(String(err));
     } finally {
       setWhisperLoading(false);
     }
@@ -617,32 +639,63 @@ export default function Import() {
           导入录屏或音频文件，自动提取音频并转写为文字，支持入库和生成会议纪要。
         </p>
 
-        {/* Whisper model status + load button */}
-        {whisperReady ? (
-          <p className="text-xs text-green-600 mb-3 flex items-center gap-1">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            语音识别模型已就绪
-          </p>
-        ) : (
-          <div className="mb-3 flex items-center gap-2">
-            <p className="text-xs text-amber-600">⚠️ 语音识别模型未加载</p>
-            <button
-              type="button"
-              onClick={handleLoadWhisper}
-              disabled={whisperLoading}
-              className="rounded border border-purple-300 px-2 py-0.5 text-xs text-purple-600 hover:bg-purple-50 disabled:opacity-50 transition-colors"
+        {/* ASR Provider selector */}
+        <div className="mb-3">
+          <label className="block text-xs text-neutral-500 mb-1">语音识别引擎</label>
+          <div className="flex items-center gap-2">
+            <select
+              value={selectedAsrProvider}
+              onChange={(e) => setSelectedAsrProvider(e.target.value)}
+              className="rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400/20"
             >
-              {whisperLoading ? (
-                <span className="flex items-center gap-1">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  加载中...
-                </span>
-              ) : (
-                "加载模型"
-              )}
-            </button>
+              {asrProviders.map((p) => (
+                <option key={p.type} value={p.type}>
+                  {p.name} {p.type === "whisper" ? (whisperReady ? "✓" : "⚠") : ""}
+                </option>
+              ))}
+            </select>
+            {selectedAsrProvider === "whisper" && !whisperReady && (
+              <button
+                type="button"
+                onClick={handleLoadWhisper}
+                disabled={whisperLoading}
+                className="rounded border border-purple-300 px-2 py-0.5 text-xs text-purple-600 hover:bg-purple-50 disabled:opacity-50 transition-colors"
+              >
+                {whisperLoading ? (
+                  <span className="flex items-center gap-1">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    加载中...
+                  </span>
+                ) : (
+                  "加载模型"
+                )}
+              </button>
+            )}
           </div>
-        )}
+          {/* Provider description */}
+          {asrProviders.find(p => p.type === selectedAsrProvider) && (
+            <p className="text-[10px] text-neutral-400 mt-1">
+              {asrProviders.find(p => p.type === selectedAsrProvider)?.description}
+            </p>
+          )}
+          {/* Whisper error */}
+          {selectedAsrProvider === "whisper" && whisperError && (
+            <p className="text-[10px] text-red-500 truncate max-w-lg mt-1" title={whisperError}>
+              错误: {whisperError}
+            </p>
+          )}
+          {/* Online ASR not configured warning */}
+          {selectedAsrProvider !== "whisper" && asrConfigStatus && !asrConfigStatus.tencent_configured && selectedAsrProvider.startsWith("tencent") && (
+            <p className="text-[10px] text-amber-500 mt-1">
+              ⚠️ 腾讯 ASR 未配置，请前往<a href="#/settings" className="underline hover:text-amber-600">设置页面</a>配置
+            </p>
+          )}
+          {selectedAsrProvider !== "whisper" && asrConfigStatus && !asrConfigStatus.xfyun_configured && selectedAsrProvider === "xfyun_iat" && (
+            <p className="text-[10px] text-amber-500 mt-1">
+              ⚠️ 讯飞 ASR 未配置，请前往<a href="#/settings" className="underline hover:text-amber-600">设置页面</a>配置
+            </p>
+          )}
+        </div>
 
         {/* Project selector */}
         <div className="flex items-center gap-2 mb-3">
@@ -681,7 +734,10 @@ export default function Import() {
         <button
           type="button"
           onClick={handleVideoImport}
-          disabled={!whisperReady || videoFeedback?.status === "loading"}
+          disabled={
+            (selectedAsrProvider === "whisper" && !whisperReady) ||
+            videoFeedback?.status === "loading"
+          }
           className="flex items-center gap-2 rounded-md bg-purple-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {videoFeedback?.status === "loading" ? (
@@ -812,6 +868,7 @@ export default function Import() {
           </div>
         )}
       </section>
+
     </div>
   );
 }

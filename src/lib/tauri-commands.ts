@@ -888,9 +888,9 @@ export interface ScriptItem {
 
 export interface ImportDbResult {
   db_size_bytes: number;
-  document_count: number;
-  chunk_count: number;
   risk_project_count: number;
+  scope_item_count: number;
+  metric_count: number;
 }
 
 // ─── Risk Control API ───
@@ -969,8 +969,8 @@ export async function recordHealthMetric(
 }
 
 // 健康风险报告
-export async function generateRiskReport(context: string): Promise<string> {
-  return invoke("generate_risk_report", { context });
+export async function generateRiskReport(projectId: number, context: string): Promise<string> {
+  return invoke("generate_risk_report", { project_id: projectId, context });
 }
 
 // 防身话术
@@ -1005,4 +1005,62 @@ export async function exportDatabase(targetPath: string): Promise<void> {
 
 export async function importDatabase(backupPath: string): Promise<ImportDbResult> {
   return invoke("import_database", { backup_path: backupPath });
+}
+
+// ─── Phase 12b: 在线 ASR Provider ───
+
+export interface AsrProviderInfo {
+  type: string;
+  name: string;
+  description: string;
+  supports_streaming: boolean;
+  supports_file: boolean;
+}
+
+export interface AsrResult {
+  text: string;
+  is_final: boolean;
+  confidence: number;
+  processing_time_ms: number;
+  segments: Array<{ start_ms: number; end_ms: number; text: string }> | null;
+}
+
+export interface AsrConfigStatus {
+  tencent_configured: boolean;
+  xfyun_configured: boolean;
+}
+
+/** 获取所有可用的 ASR Provider 列表 */
+export async function listAsrProviders(): Promise<AsrProviderInfo[]> {
+  return invoke("list_asr_providers");
+}
+
+/** 使用指定 Provider 识别音频文件（PCM f32 格式） */
+export async function recognizeAudioWithProvider(
+  providerType: string,
+  audioData: number[],
+  language?: string
+): Promise<AsrResult> {
+  return invoke("recognize_audio_with_provider", {
+    provider_type: providerType,
+    audio_data: audioData,
+    language: language ?? null,
+  });
+}
+
+/** 保存在线 ASR 配置（腾讯/讯飞） */
+export async function saveAsrConfig(config: {
+  tencent_secret_id?: string;
+  tencent_secret_key?: string;
+  tencent_app_id?: number;
+  xfyun_app_id?: string;
+  xfyun_api_key?: string;
+  xfyun_api_secret?: string;
+}): Promise<void> {
+  return invoke("save_asr_config", config);
+}
+
+/** 获取当前 ASR 配置状态 */
+export async function getAsrConfigStatus(): Promise<AsrConfigStatus> {
+  return invoke("get_asr_config_status");
 }

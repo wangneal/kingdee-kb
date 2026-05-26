@@ -19,7 +19,10 @@ import {
   Plus,
   FolderOpen,
   RotateCcw,
+  Download,
+  Upload,
 } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   getLLMConfig,
   setLLMConfig,
@@ -37,6 +40,12 @@ import {
 addSensitiveKeyword,
 listSensitiveKeywords,
 removeSensitiveKeyword,
+saveAsrConfig,
+getAsrConfigStatus,
+type AsrConfigStatus,
+exportDatabase,
+importDatabase,
+type ImportDbResult,
 } from "../lib/tauri-commands";
 
 const PROVIDER_DEFAULTS: Record<string, { base_url: string; model: string }> = {
@@ -98,6 +107,17 @@ export default function Settings() {
   const [keywordInput, setKeywordInput] = useState("");
   const [keywords, setKeywords] = useState<string[]>([]);
 
+  // ASR config state
+  const [asrConfigStatus, setAsrConfigStatus] = useState<AsrConfigStatus | null>(null);
+  const [tencentSecretId, setTencentSecretId] = useState("");
+  const [tencentSecretKey, setTencentSecretKey] = useState("");
+  const [tencentAppId, setTencentAppId] = useState("");
+  const [xfyunAppId, setXfyunAppId] = useState("");
+  const [xfyunApiKey, setXfyunApiKey] = useState("");
+  const [xfyunApiSecret, setXfyunApiSecret] = useState("");
+  const [asrSaving, setAsrSaving] = useState(false);
+  const [asrSaveMsg, setAsrSaveMsg] = useState<string | null>(null);
+
   // Load config, stats; poll model status (auto-load may still be async in progress)
   useEffect(() => {
     let cancelled = false;
@@ -146,6 +166,7 @@ export default function Settings() {
     pollModelStatus();
 
     listSensitiveKeywords().then(setKeywords).catch(() => {});
+    getAsrConfigStatus().then(setAsrConfigStatus).catch(() => {});
     return () => { cancelled = true; };
   }, []);
 
@@ -801,6 +822,133 @@ export default function Settings() {
           )}
         </div>
       </section>
+
+      {/* ASR Config Card */}
+      <section className="mt-6 rounded-xl border border-neutral-200 bg-white">
+        <div className="border-b border-neutral-100 px-5 py-3">
+          <h2 className="text-sm font-semibold text-neutral-700">
+            语音识别服务配置
+          </h2>
+          <p className="mt-0.5 text-xs text-neutral-400">
+            配置在线语音识别服务（腾讯/讯飞），用于替代本地 Whisper 模型
+          </p>
+        </div>
+        <div className="p-5 space-y-4">
+          {/* Tencent ASR */}
+          <div className="rounded-lg border border-neutral-200 p-4">
+            <h3 className="text-xs font-semibold text-neutral-700 mb-2">
+              腾讯云语音识别
+              {asrConfigStatus?.tencent_configured && (
+                <span className="ml-2 text-green-600">✓ 已配置</span>
+              )}
+            </h3>
+            <div className="grid grid-cols-3 gap-2">
+              <input
+                type="text"
+                placeholder="SecretId"
+                value={tencentSecretId}
+                onChange={(e) => setTencentSecretId(e.target.value)}
+                className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+              />
+              <input
+                type="password"
+                placeholder="SecretKey"
+                value={tencentSecretKey}
+                onChange={(e) => setTencentSecretKey(e.target.value)}
+                className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+              />
+              <input
+                type="text"
+                placeholder="AppId"
+                value={tencentAppId}
+                onChange={(e) => setTencentAppId(e.target.value)}
+                className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+              />
+            </div>
+            <p className="text-[10px] text-neutral-400 mt-1">
+              在腾讯云控制台 → API密钥管理 获取
+            </p>
+          </div>
+
+          {/* Xfyun ASR */}
+          <div className="rounded-lg border border-neutral-200 p-4">
+            <h3 className="text-xs font-semibold text-neutral-700 mb-2">
+              讯飞语音听写
+              {asrConfigStatus?.xfyun_configured && (
+                <span className="ml-2 text-green-600">✓ 已配置</span>
+              )}
+            </h3>
+            <div className="grid grid-cols-3 gap-2">
+              <input
+                type="text"
+                placeholder="AppID"
+                value={xfyunAppId}
+                onChange={(e) => setXfyunAppId(e.target.value)}
+                className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+              />
+              <input
+                type="text"
+                placeholder="APIKey"
+                value={xfyunApiKey}
+                onChange={(e) => setXfyunApiKey(e.target.value)}
+                className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+              />
+              <input
+                type="password"
+                placeholder="APISecret"
+                value={xfyunApiSecret}
+                onChange={(e) => setXfyunApiSecret(e.target.value)}
+                className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+              />
+            </div>
+            <p className="text-[10px] text-neutral-400 mt-1">
+              在讯飞开放平台 → 我的应用 → 语音听写（流式版） 获取
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={async () => {
+                setAsrSaving(true);
+                setAsrSaveMsg(null);
+                try {
+                  await saveAsrConfig({
+                    tencent_secret_id: tencentSecretId || undefined,
+                    tencent_secret_key: tencentSecretKey || undefined,
+                    tencent_app_id: tencentAppId ? Number(tencentAppId) : undefined,
+                    xfyun_app_id: xfyunAppId || undefined,
+                    xfyun_api_key: xfyunApiKey || undefined,
+                    xfyun_api_secret: xfyunApiSecret || undefined,
+                  });
+                  const status = await getAsrConfigStatus();
+                  setAsrConfigStatus(status);
+                  setAsrSaveMsg("配置已保存");
+                  setTimeout(() => setAsrSaveMsg(null), 3000);
+                } catch (err) {
+                  setAsrSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+                }
+                setAsrSaving(false);
+              }}
+              disabled={asrSaving}
+              className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
+            >
+              {asrSaving ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              保存配置
+            </button>
+            {asrSaveMsg && (
+              <span className="text-xs text-neutral-500">{asrSaveMsg}</span>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* Database Backup Card */}
+      <DatabaseBackupCard />
     </div>
   );
 }
@@ -859,5 +1007,113 @@ function StatCard({
         {isText ? value : typeof value === "number" ? value.toLocaleString() : value}
       </p>
     </div>
+  );
+}
+
+function DatabaseBackupCard() {
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [importResult, setImportResult] = useState<ImportDbResult | null>(null);
+
+  const handleExport = async () => {
+    setExporting(true);
+    setMsg(null);
+    try {
+      const targetPath = await open({
+        directory: true,
+        multiple: false,
+        title: "选择导出目录",
+      });
+      if (!targetPath) { setExporting(false); return; }
+      const filePath = `${targetPath}/risk_control_backup.db`;
+      await exportDatabase(filePath);
+      setMsg({ ok: true, text: `已导出到 ${filePath}` });
+    } catch (err) {
+      setMsg({ ok: false, text: `导出失败：${err instanceof Error ? err.message : String(err)}` });
+    }
+    setExporting(false);
+  };
+
+  const handleImport = async () => {
+    setImporting(true);
+    setMsg(null);
+    setImportResult(null);
+    try {
+      const filePath = await open({
+        multiple: false,
+        filters: [{ name: "SQLite 数据库", extensions: ["db"] }],
+        title: "选择备份文件",
+      });
+      if (!filePath) { setImporting(false); return; }
+      const result = await importDatabase(filePath as string);
+      setImportResult(result);
+      setMsg({ ok: true, text: `导入成功：${result.risk_project_count} 个项目，${result.scope_item_count} 条范围，${result.metric_count} 条指标` });
+    } catch (err) {
+      setMsg({ ok: false, text: `导入失败：${err instanceof Error ? err.message : String(err)}` });
+    }
+    setImporting(false);
+  };
+
+  return (
+    <section className="mt-6 rounded-xl border border-neutral-200 bg-white">
+      <div className="border-b border-neutral-100 px-5 py-3">
+        <h2 className="text-sm font-semibold text-neutral-700">整库备份</h2>
+        <p className="mt-0.5 text-xs text-neutral-400">
+          导出/导入风控数据库（项目、范围、指标）
+        </p>
+      </div>
+      <div className="p-5">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={exporting}
+            className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
+          >
+            {exporting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4" />
+            )}
+            导出备份
+          </button>
+          <button
+            type="button"
+            onClick={handleImport}
+            disabled={importing}
+            className="flex items-center gap-1.5 rounded-lg border border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
+          >
+            {importing ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Upload className="h-4 w-4" />
+            )}
+            导入备份
+          </button>
+          {msg && (
+            <span className={`text-xs ${msg.ok ? "text-green-600" : "text-red-600"}`}>
+              {msg.text}
+            </span>
+          )}
+        </div>
+        {importResult && (
+          <div className="mt-3 grid grid-cols-3 gap-3">
+            <div className="rounded-lg border border-neutral-100 bg-neutral-50 p-2 text-center">
+              <p className="text-lg font-semibold text-neutral-800">{importResult.risk_project_count}</p>
+              <p className="text-xs text-neutral-500">风控项目</p>
+            </div>
+            <div className="rounded-lg border border-neutral-100 bg-neutral-50 p-2 text-center">
+              <p className="text-lg font-semibold text-neutral-800">{importResult.scope_item_count}</p>
+              <p className="text-xs text-neutral-500">范围条目</p>
+            </div>
+            <div className="rounded-lg border border-neutral-100 bg-neutral-50 p-2 text-center">
+              <p className="text-lg font-semibold text-neutral-800">{importResult.metric_count}</p>
+              <p className="text-xs text-neutral-500">健康指标</p>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }

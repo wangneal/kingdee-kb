@@ -26,6 +26,7 @@ import {
   confirmScopeItems,
   exportDatabase,
   importDatabase,
+  desensitizeText,
 } from "../lib/tauri-commands";
 
 type Tab = "scope" | "health" | "scripts" | "analysis" | "backup";
@@ -36,6 +37,7 @@ export default function RiskControl() {
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [showNewProject, setShowNewProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
+  const [newClientName, setNewClientName] = useState("");
 
   const tabs: { key: Tab; label: string; icon: typeof Shield }[] = [
     { key: "scope", label: "需求蔓延警报", icon: AlertTriangle },
@@ -60,8 +62,14 @@ export default function RiskControl() {
   const handleCreateProject = async () => {
     if (!newProjectName.trim()) return;
     try {
-      const id = await createRiskProject(newProjectName.trim());
+      let safeClientName = newClientName.trim();
+      if (safeClientName) {
+        const result = await desensitizeText(safeClientName);
+        safeClientName = result.safe_text;
+      }
+      const id = await createRiskProject(newProjectName.trim(), safeClientName || undefined);
       setNewProjectName("");
+      setNewClientName("");
       setShowNewProject(false);
       setSelectedProjectId(id);
       await refreshProjects();
@@ -93,7 +101,7 @@ export default function RiskControl() {
               className="appearance-none rounded-lg border border-neutral-200 bg-white py-1.5 pl-3 pr-8 text-xs font-medium text-neutral-700 outline-none focus:border-amber-500"
             >
               {projects.length === 0 && <option value="">暂无项目</option>}
-              {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {projects.map(p => <option key={p.id} value={p.id}>{p.name}{p.client_name ? ` — ${p.client_name}` : ""}</option>)}
             </select>
             <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-neutral-400" />
           </div>
@@ -113,16 +121,25 @@ export default function RiskControl() {
       {/* 新建项目对话框 */}
       {showNewProject && (
         <div className="border-b border-neutral-200 bg-amber-50 px-6 py-3">
-          <div className="flex items-center gap-2">
-            <input value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleCreateProject(); }}
-              placeholder="输入项目名称..."
-              className="w-64 rounded-lg border border-amber-200 px-3 py-1.5 text-xs outline-none focus:border-amber-500" />
-            <button type="button" onClick={handleCreateProject}
-              className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700">确认</button>
-            <button type="button" onClick={() => { setShowNewProject(false); setNewProjectName(""); }}
-              className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs text-neutral-500 hover:bg-neutral-100">取消</button>
+          <div className="flex items-start gap-2">
+            <div className="flex flex-col gap-1.5">
+              <input value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleCreateProject(); }}
+                placeholder="输入项目名称..."
+                className="w-64 rounded-lg border border-amber-200 px-3 py-1.5 text-xs outline-none focus:border-amber-500" />
+              <input value={newClientName} onChange={(e) => setNewClientName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleCreateProject(); }}
+                placeholder="输入客户名（自动脱敏）..."
+                className="w-64 rounded-lg border border-amber-200 px-3 py-1.5 text-xs outline-none focus:border-amber-500" />
+            </div>
+            <div className="flex items-center gap-2 pt-0.5">
+              <button type="button" onClick={handleCreateProject}
+                className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700">确认</button>
+              <button type="button" onClick={() => { setShowNewProject(false); setNewProjectName(""); setNewClientName(""); }}
+                className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs text-neutral-500 hover:bg-neutral-100">取消</button>
+            </div>
           </div>
+          <p className="mt-1.5 text-[10px] text-neutral-400">客户名将自动脱敏（敏感词替换为占位符），可在脱敏管理中添加敏感词</p>
         </div>
       )}
 
@@ -138,8 +155,8 @@ export default function RiskControl() {
       <div className="flex-1 overflow-y-auto p-6">
         {tab === "scope" && <ScopeTab projectId={selectedProjectId} />}
         {tab === "health" && <HealthTab projectId={selectedProjectId} />}
-        {tab === "scripts" && <ScriptsTab />}
-        {tab === "analysis" && <AnalysisTab />}
+        {tab === "scripts" && <ScriptsTab projectId={selectedProjectId} />}
+        {tab === "analysis" && <AnalysisTab projectId={selectedProjectId} />}
         {tab === "backup" && <BackupTab />}
       </div>
     </div>
@@ -344,17 +361,17 @@ function HealthTab({ projectId }: { projectId: number | null }) {
   useEffect(() => { refresh(); }, [refresh]);
 
   const handleAIAnalysis = useCallback(async () => {
-    if (!health || aiLoading) return;
+    if (!health || aiLoading || projectId === null) return;
     setAiLoading(true);
     setAiReport("");
     const context = `项目健康评分: ${health.overall_score}/100, 风险等级: ${health.risk_level}\n` +
       health.dimensions.map(d => `- ${d.name}: ${d.score}/100 (${d.detail})`).join("\n");
     try {
-      const report = await generateRiskReport(context);
+      const report = await generateRiskReport(projectId, context);
       setAiReport(report);
     } catch (e) { alert("分析失败: " + String(e)); }
     setAiLoading(false);
-  }, [health, aiLoading]);
+  }, [health, aiLoading, projectId]);
 
   const colorClass = (level: string) =>
     level === "critical" ? "text-red-600" : level === "high" ? "text-orange-600" :
@@ -481,7 +498,8 @@ function HealthTab({ projectId }: { projectId: number | null }) {
   );
 }
 
-function ScriptsTab() {
+function ScriptsTab({ projectId }: { projectId: number | null }) {
+  void projectId;
   const [scenario, setScenario] = useState("");
   const [context, setContext] = useState("");
   const [tone, setTone] = useState("push_back");
@@ -645,16 +663,16 @@ function BackupTab() {
               <p className="text-xs font-bold text-neutral-700">{formatBytes(importResult.db_size_bytes)}</p>
             </div>
             <div className="rounded border border-green-100 bg-white p-2 text-center">
-              <p className="text-[10px] text-neutral-400">文档数</p>
-              <p className="text-xs font-bold text-neutral-700">{importResult.document_count}</p>
-            </div>
-            <div className="rounded border border-green-100 bg-white p-2 text-center">
-              <p className="text-[10px] text-neutral-400">分块数</p>
-              <p className="text-xs font-bold text-neutral-700">{importResult.chunk_count}</p>
-            </div>
-            <div className="rounded border border-green-100 bg-white p-2 text-center">
               <p className="text-[10px] text-neutral-400">风控项目</p>
               <p className="text-xs font-bold text-neutral-700">{importResult.risk_project_count}</p>
+            </div>
+            <div className="rounded border border-green-100 bg-white p-2 text-center">
+              <p className="text-[10px] text-neutral-400">范围条目</p>
+              <p className="text-xs font-bold text-neutral-700">{importResult.scope_item_count}</p>
+            </div>
+            <div className="rounded border border-green-100 bg-white p-2 text-center">
+              <p className="text-[10px] text-neutral-400">健康指标</p>
+              <p className="text-xs font-bold text-neutral-700">{importResult.metric_count}</p>
             </div>
           </div>
         </div>
@@ -672,7 +690,8 @@ interface ChatMsg {
   loading?: boolean;
 }
 
-function AnalysisTab() {
+function AnalysisTab({ projectId }: { projectId: number | null }) {
+  void projectId;
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);

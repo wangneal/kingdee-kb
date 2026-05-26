@@ -64,6 +64,17 @@ whisper-rs = { version = "0.16", features = [] }
 cpal = "0.15"
 hound = "3"
 
+# Phase 12b: Online ASR Providers (Tencent/Xfyun)
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+hmac = "0.12"
+sha1 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
+urlencoding = "2"
+rand = "0.8"
+
 # Phase 14: Video Transcription (audio extraction from video)
 ffmpeg-sidecar = "2"
 

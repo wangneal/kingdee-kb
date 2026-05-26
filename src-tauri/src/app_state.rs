@@ -1,12 +1,15 @@
 //! 应用状态管理
 //!
-//! 在 Arc<Mutex<>> 中持有所有阶段 2+ 服务（嵌入、向量索引、元数据存储、BM25、LLM），
-//! 以便从 Tauri 命令中线程安全地访问。
+//! 在 Arc<Mutex<>> 中持有所有服务，以便从 Tauri 命令中线程安全地访问。
+//!
+//! 注意：AppState 字段较多（22个）是 Tauri 框架的典型模式。
+//! 所有命令通过 `State<'_, AppState>` 访问，拆分为子状态会增加大量胶水代码。
 
 use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 use crate::services::audio_capture::AudioCapture;
 use crate::services::whisper_service::WhisperService;
+use crate::AsrConfigStore;
 use crate::services::desensitize::Desensitizer;
 use crate::services::edition_config::EditionConfig;
 use crate::services::embedding::{EmbeddingService, ModelManager};
@@ -24,6 +27,22 @@ use crate::services::question_tool::{self, PendingQuestions};
 use crate::services::vector_index::VectorIndex;
 use std::path::PathBuf;
 use rusqlite::Connection;
+
+/// 创建一个配置了金蝶实施 AI 工具的 ToolRegistry。
+///
+/// 在 `AppState::new()` 和 `AppState::minimal()` 之间共享，避免代码重复。
+fn create_tool_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(SearchKnowledgeTool));
+    registry.register(Box::new(GenerateDocTool));
+    registry.register(Box::new(CheckScopeCreepTool));
+    registry.register(Box::new(AnalyzeFitGapTool));
+    registry.register(Box::new(GetProjectHealthTool));
+    registry.register(Box::new(GenerateDefenseScriptTool));
+    registry.register(Box::new(ExtractBlueprintTool));
+    registry.register(Box::new(RecommendQuestionsTool));
+    registry
+}
 
 /// 所有 Tauri 命令共享的全局应用状态
 pub struct AppState {
@@ -66,6 +85,8 @@ pub struct AppState {
     pub whisper_service: Arc<Mutex<WhisperService>>,
     /// 音频捕获（麦克风录音）
     pub audio_capture: Arc<Mutex<AudioCapture>>,
+    /// 在线 ASR 配置（腾讯/讯飞）
+    pub asr_config: Arc<Mutex<AsrConfigStore>>,
 }
 
 impl AppState {
@@ -126,21 +147,13 @@ impl AppState {
         let desensitizer = Desensitizer::new();
 
         // 初始化 ReAct Agent
-        let mut registry = ToolRegistry::new();
-        registry.register(Box::new(SearchKnowledgeTool));
-        registry.register(Box::new(GenerateDocTool));
-        registry.register(Box::new(CheckScopeCreepTool));
-        registry.register(Box::new(AnalyzeFitGapTool));
-        registry.register(Box::new(GetProjectHealthTool));
-        registry.register(Box::new(GenerateDefenseScriptTool));
-        registry.register(Box::new(ExtractBlueprintTool));
-        registry.register(Box::new(RecommendQuestionsTool));
-        let tool_registry = Arc::new(registry);
+        let tool_registry = Arc::new(create_tool_registry());
         let react_agent = ReActAgent::new(tool_registry);
         let pending_questions = question_tool::create_pending_questions();
 
         let whisper_service = WhisperService::new();
         let audio_capture = AudioCapture::new(data_dir);
+        let asr_config = AsrConfigStore::new(&db_path);
 
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
@@ -159,6 +172,7 @@ impl AppState {
             desensitizer,
             whisper_service: Arc::new(Mutex::new(whisper_service)),
             audio_capture: Arc::new(Mutex::new(audio_capture)),
+            asr_config: Arc::new(Mutex::new(asr_config)),
             react_agent,
             rig_agent: RigAgent,
             pending_questions,
@@ -208,16 +222,7 @@ impl AppState {
         let desensitizer = Desensitizer::new();
 
         // 初始化 ReAct Agent（最小化）
-        let mut registry = ToolRegistry::new();
-        registry.register(Box::new(SearchKnowledgeTool));
-        registry.register(Box::new(GenerateDocTool));
-        registry.register(Box::new(CheckScopeCreepTool));
-        registry.register(Box::new(AnalyzeFitGapTool));
-        registry.register(Box::new(GetProjectHealthTool));
-        registry.register(Box::new(GenerateDefenseScriptTool));
-        registry.register(Box::new(ExtractBlueprintTool));
-        registry.register(Box::new(RecommendQuestionsTool));
-        let tool_registry = Arc::new(registry);
+        let tool_registry = Arc::new(create_tool_registry());
         let react_agent = ReActAgent::new(tool_registry);
         let pending_questions = question_tool::create_pending_questions();
 
@@ -244,6 +249,7 @@ impl AppState {
             pending_questions,
             whisper_service: Arc::new(Mutex::new(whisper_service)),
             audio_capture: Arc::new(Mutex::new(audio_capture)),
+            asr_config: Arc::new(Mutex::new(AsrConfigStore::new(&db_path))),
         }
     }
 }
