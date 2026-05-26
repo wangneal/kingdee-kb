@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 mod app_state;
 mod services;
@@ -30,9 +30,9 @@ use app_state::AppState;
 use services::bm25_service::BM25SearchResult;
 use services::deliverable_recipes::DeliverableRecipe;
 use services::doc_generator::{GeneratedDoc, GenerateDocRequest, RecipeDocRequest, RecipeDocResult};
-use services::embedding::start_download_progress_polling;
+use services::embedding::{start_download_progress_polling, EmbeddingModelConfig};
 use services::hybrid_search::HybridSearchResult;
-use services::ingestion::{IngestionResult, ingest_text as ingest_text_fn, ingest_file as ingest_file_fn, ingest_directory as ingest_directory_fn};
+use services::ingestion::{DirectoryIngestionResult, IngestionResult, ingest_text as ingest_text_fn, ingest_file as ingest_file_fn, ingest_directory as ingest_directory_fn};
 use services::llm_service::{ChatMessage, LLMConfig, RAGResponse, RAGSource, StreamChunk};
 use services::memory;
 use services::metadata::{ChunkMeta, DocumentMeta, KnowledgeStats};
@@ -47,6 +47,7 @@ use services::template_scanner::TemplateInfo;
 use services::template_schema::TemplateSchema;
 use services::vector_index::SearchResult;
 use services::whisper_service::{TranscriptionResult, WhisperStatus};
+use services::video_transcriber::{VideoTranscriptionResult, VideoPipelineResult, MeetingMinutesResult};
 use services::model_downloader;
 
 const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
@@ -212,6 +213,34 @@ async fn get_download_progress(
 
 /// 嵌入单个文本 — 返回 512 维向量
 #[tauri::command]
+async fn get_embedding_model_config(
+    state: State<'_, AppState>,
+) -> Result<EmbeddingModelConfig, String> {
+    let mm = state.model_manager.lock().map_err(|e| e.to_string())?;
+    Ok(mm.embedding_config())
+}
+
+#[tauri::command]
+async fn set_embedding_model_config(
+    state: State<'_, AppState>,
+    custom_model_dir: Option<String>,
+) -> Result<bool, String> {
+    {
+        let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
+        mm.set_custom_model_dir(custom_model_dir)?;
+        mm.init()?;
+    }
+
+    let model = {
+        let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
+        mm.take_model().ok_or("Model initialized but no model returned")?
+    };
+    let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
+    emb.set_model(model);
+    Ok(true)
+}
+
+#[tauri::command]
 async fn embed_text(
     state: State<'_, AppState>,
     text: String,
@@ -317,7 +346,7 @@ async fn ingest_directory(
     app: AppHandle,
     dir_path: String,
     project: String,
-) -> Result<Vec<IngestionResult>, String> {
+) -> Result<DirectoryIngestionResult, String> {
     ingest_directory_fn(
         PathBuf::from(&dir_path).as_path(),
         &project,
@@ -350,14 +379,66 @@ async fn get_document_chunks(
     meta.get_chunks_by_document(document_id)
 }
 
-/// 删除文档及其所有关联分块
+/// 删除文档及其所有关联分块（同时从向量索引中移除向量）
 #[tauri::command]
 async fn delete_document(
     state: State<'_, AppState>,
     document_id: i64,
 ) -> Result<(), String> {
-    let meta = state.metadata.lock().map_err(|e| e.to_string())?;
-    meta.delete_document(document_id)
+    // Step 1: Get vector keys for this document's chunks before deleting metadata
+    let vector_keys: Vec<i64> = {
+        let meta = state.metadata.lock().map_err(|e| e.to_string())?;
+        meta.get_vector_keys_by_document_ids(&[document_id])?
+    };
+
+    // Step 2: Remove vectors from usearch index
+    {
+        let idx = state.vector_index.lock().map_err(|e| e.to_string())?;
+        for key in &vector_keys {
+            let _ = idx.remove(*key as u64); // ignore errors for orphaned keys
+        }
+    }
+
+    // Step 3: Delete metadata (chunks + document) from SQLite
+    {
+        let meta = state.metadata.lock().map_err(|e| e.to_string())?;
+        meta.delete_document(document_id)?
+    }
+
+    Ok(())
+}
+
+/// 批量删除多个文档（及其所有关联分块和向量），在单个事务中执行
+#[tauri::command]
+async fn delete_documents_batch(
+    state: State<'_, AppState>,
+    document_ids: Vec<i64>,
+) -> Result<u64, String> {
+    if document_ids.is_empty() {
+        return Ok(0);
+    }
+
+    // Step 1: Get all vector keys for these documents before deleting metadata
+    let vector_keys: Vec<i64> = {
+        let meta = state.metadata.lock().map_err(|e| e.to_string())?;
+        meta.get_vector_keys_by_document_ids(&document_ids)?
+    };
+
+    // Step 2: Remove vectors from usearch index
+    {
+        let idx = state.vector_index.lock().map_err(|e| e.to_string())?;
+        for key in &vector_keys {
+            let _ = idx.remove(*key as u64); // ignore errors for orphaned keys
+        }
+    }
+
+    // Step 3: Batch-delete metadata from SQLite
+    let count: u64 = {
+        let meta = state.metadata.lock().map_err(|e| e.to_string())?;
+        meta.delete_documents_batch(document_ids)?
+    };
+
+    Ok(count)
 }
 
 /// 获取知识库统计信息（get_knowledge_stats 的别名）
@@ -1106,12 +1187,12 @@ async fn regenerate_product(
         .ok_or_else(|| format!("Product not found after regeneration: {}", id))
 }
 
-/// 执行后端初始化任务
+/// 执行后端初始化任务（异步，不阻塞 UI 启动）
 async fn setup_backend(app: AppHandle) -> Result<(), String> {
     let data_dir = ensure_data_dir()?;
     println!("Data directory initialized at: {:?}", data_dir);
 
-    // 初始化阶段 2 服务（如果模型下载被阻止可能会失败）
+    // 初始化阶段 2 服务
     match AppState::new(&data_dir) {
         Ok(app_state) => {
             app.manage(app_state);
@@ -1123,6 +1204,52 @@ async fn setup_backend(app: AppHandle) -> Result<(), String> {
             app.manage(AppState::minimal(&data_dir));
         }
     }
+
+    // 异步自动加载缓存的嵌入模型（后台加载，不阻塞前端启动）
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app_clone.state::<AppState>();
+        // clone Arcs to avoid lifetime issues with State
+        let mm_arc = state.model_manager.clone();
+        let emb_arc = state.embedding.clone();
+        drop(state);
+
+        // Step 1: init model + take_model (scope ensures MutexGuard is freed before Step 2)
+        let model = {
+            let mut mm = match mm_arc.lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    eprintln!("Auto-load: model_manager lock error: {}", e);
+                    return;
+                }
+            };
+            if let Err(e) = mm.init() {
+                eprintln!("Auto-load embedding model init failed: {}", e);
+                return;
+            }
+            match mm.take_model() {
+                Some(m) => m,
+                None => {
+                    eprintln!("Auto-load: model initialized but take_model returned None");
+                    return;
+                }
+            }
+        };
+
+        // Step 2: set model into EmbeddingService (separate scope)
+        {
+            let mut emb = match emb_arc.lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    eprintln!("Auto-load: embedding lock error: {}", e);
+                    return;
+                }
+            };
+            emb.set_model(model);
+            println!("Embedding model auto-loaded from local cache!");
+            let _ = app_clone.emit("model-ready", ());
+        }
+    });
 
     // 确保模板目录存在，如果为空则同步内置模板
     let template_dir = data_dir.join("templates");
@@ -1166,12 +1293,14 @@ async fn setup_backend(app: AppHandle) -> Result<(), String> {
         }
     }
 
-    set_complete(
+    let _ = set_complete(
         app.clone(),
         app.state::<Mutex<SetupState>>(),
         "backend".to_string(),
     )
-    .await
+    .await;
+
+    Ok(())
 }
 
 // ─── 阶段 11: 智能补全命令 ───
@@ -1413,6 +1542,170 @@ async fn stop_whisper_recording(state: State<'_, AppState>) -> Result<Transcript
         processing_time_ms: whisper_result.processing_time_ms,
     })
 }
+
+// ─── 阶段 14: 视频文件转写 ───
+
+/// 内部转写逻辑（分片流式处理，内存安全）
+///
+/// 步骤：ffmpeg → 临时 PCM 文件 → 分片读取 → Whisper 分段转写 → 中文后处理
+fn do_transcribe_video(
+    whisper_service: &std::sync::MutexGuard<'_, services::whisper_service::WhisperService>,
+    video_path: &str,
+    data_dir: &std::path::Path,
+    app_handle: Option<&AppHandle>,
+) -> Result<VideoTranscriptionResult, String> {
+    let path = std::path::Path::new(video_path);
+    if !path.exists() {
+        return Err(format!("视频文件不存在: {}", video_path));
+    }
+
+    // 步骤 1: 流式提取音频到临时文件（不会 OOM）
+    emit_video_progress(app_handle, "extracting", 0.0, "正在提取音频...");
+    let extract_start = std::time::Instant::now();
+    let (pcm_path, duration_secs) = services::video_transcriber::extract_audio_to_file(path, data_dir)?;
+    let extraction_time_ms = extract_start.elapsed().as_millis() as u64;
+
+    // 确保临时文件最终被清理
+    let _cleanup = TempCleanup(pcm_path.clone());
+
+    emit_video_progress(app_handle, "transcribing", 0.0, "正在转写语音...");
+
+    // 步骤 2: 分片转写（内存安全：每次只加载 30s 分片）
+    let app_handle_clone = app_handle.map(|h| h.clone());
+    let result = services::video_transcriber::transcribe_chunks(
+        &pcm_path,
+        whisper_service,
+        app_handle_clone.map(|h| move |chunk_idx: usize, total_chunks: usize| {
+            let pct = chunk_idx as f32 / total_chunks as f32 * 100.0;
+            let msg = format!("转写中 ({}/{})", chunk_idx, total_chunks);
+            h.emit("video_progress", serde_json::json!({
+                "step": "transcribing",
+                "progress": pct,
+                "message": msg
+            })).ok();
+        }),
+    )?;
+
+    // 步骤 3: 中文后处理
+    let processed_text = services::chinese_postprocess::postprocess_chinese(&result.text);
+
+    Ok(VideoTranscriptionResult {
+        video_path: video_path.to_string(),
+        text: processed_text,
+        segments: result.segments,
+        confidence: result.confidence,
+        extraction_time_ms,
+        transcription_time_ms: result.processing_time_ms,
+        duration_secs,
+    })
+}
+
+/// RAII 临时文件清理
+struct TempCleanup(std::path::PathBuf);
+impl Drop for TempCleanup {
+    fn drop(&mut self) {
+        services::video_transcriber::cleanup_temp_file(&self.0);
+    }
+}
+
+/// 向前端发送视频处理进度事件
+fn emit_video_progress(app_handle: Option<&AppHandle>, step: &str, progress: f32, message: &str) {
+    if let Some(handle) = app_handle {
+        let payload = serde_json::json!({
+            "step": step,
+            "progress": progress,
+            "message": message
+        });
+        let _ = handle.emit("video_progress", payload);
+    }
+}
+
+/// 从视频文件中提取音频并通过 Whisper 转写。
+#[tauri::command]
+async fn transcribe_video_file(
+    state: State<'_, AppState>,
+    video_path: String,
+    app_handle: AppHandle,
+) -> Result<VideoTranscriptionResult, String> {
+    let whisper = state.whisper_service.lock().map_err(|e| e.to_string())?;
+    if !whisper.is_model_loaded() {
+        return Err("Whisper 模型未加载。请先在研究助手页面加载 Whisper 模型。".to_string());
+    }
+    do_transcribe_video(&whisper, &video_path, &state.data_dir, Some(&app_handle))
+}
+
+/// 视频转写一站式管道：提取音频 → 转写 → 入库 → 可选生成会议纪要。
+#[tauri::command]
+async fn transcribe_and_ingest_video(
+    state: State<'_, AppState>,
+    video_path: String,
+    project: String,
+    generate_minutes: bool,
+    app_handle: AppHandle,
+) -> Result<VideoPipelineResult, String> {
+    // 步骤 1: 转写
+    let transcription = {
+        let whisper = state.whisper_service.lock().map_err(|e| e.to_string())?;
+        if !whisper.is_model_loaded() {
+            return Err("Whisper 模型未加载。请先在研究助手页面加载 Whisper 模型。".to_string());
+        }
+        do_transcribe_video(&whisper, &video_path, &state.data_dir, Some(&app_handle))?
+    };
+
+    if transcription.text.is_empty() {
+        return Err("转写结果为空，无法入库".to_string());
+    }
+
+    // 步骤 2: 入库知识库
+    emit_video_progress(Some(&app_handle), "ingesting", 0.0, "正在入库知识库...");
+    let title = std::path::Path::new(&transcription.video_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("视频转写")
+        .to_string();
+
+    let ingestion_result = services::ingestion::ingest_text(
+        &transcription.text,
+        &format!("[视频转写] {}", title),
+        &project,
+        &state.embedding,
+        &state.vector_index,
+        &state.metadata,
+        None,
+    )?;
+
+    // 步骤 3: 可选生成会议纪要
+    let meeting_minutes = if generate_minutes {
+        emit_video_progress(Some(&app_handle), "generating_minutes", 0.0, "正在生成会议纪要...");
+        Some(services::video_transcriber::generate_meeting_minutes(
+            &transcription.text,
+            &state.llm,
+        )?)
+    } else {
+        None
+    };
+
+    emit_video_progress(Some(&app_handle), "done", 100.0, "全部完成");
+
+    Ok(VideoPipelineResult {
+        transcription,
+        ingestion_document_id: Some(ingestion_result.document_id),
+        meeting_minutes,
+    })
+}
+
+/// 从已有转写文本生成会议纪要。
+#[tauri::command]
+async fn generate_meeting_minutes_from_transcript(
+    state: State<'_, AppState>,
+    transcript: String,
+) -> Result<MeetingMinutesResult, String> {
+    if transcript.is_empty() {
+        return Err("转写文本为空".to_string());
+    }
+    services::video_transcriber::generate_meeting_minutes(&transcript, &state.llm)
+}
+
 // ─── 阶段 13: 研究会话管理 ───
 
 #[tauri::command]
@@ -1759,7 +2052,7 @@ pub fn run() {
                 backend_task: false,
             }));
 
-            // 生成后端初始化任务
+            // 生成后端初始化任务（异步，不阻塞 UI 启动）
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = setup_backend(app_handle).await {
@@ -1811,6 +2104,8 @@ pub fn run() {
             get_model_status,
             init_model,
             get_download_progress,
+            get_embedding_model_config,
+            set_embedding_model_config,
             embed_text,
             embed_batch,
             search_similar,
@@ -1825,6 +2120,7 @@ pub fn run() {
             list_documents,
             get_document_chunks,
             delete_document,
+            delete_documents_batch,
             get_stats,
             // Phase 4: BM25 Search
             bm25_search,
@@ -1869,6 +2165,10 @@ pub fn run() {
             get_whisper_status,
             start_whisper_recording,
             stop_whisper_recording,
+            // Phase 14: Video Transcription
+            transcribe_video_file,
+            transcribe_and_ingest_video,
+            generate_meeting_minutes_from_transcript,
             // Phase 9: Research Edition Commands
             get_current_edition,
             set_edition,
