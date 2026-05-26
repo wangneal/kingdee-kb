@@ -46,10 +46,10 @@ impl WhisperModelSize {
         }
     }
 
-    /// HuggingFace download URL
+    /// HuggingFace download URL (uses hf-mirror.com for China accessibility)
     pub fn download_url(&self) -> String {
         format!(
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{}.bin",
+            "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-{}.bin",
             self.as_str()
         )
     }
@@ -74,11 +74,12 @@ pub struct ModelDownloadProgress {
 
 /// Ensure a Whisper model is available locally.
 ///
-/// Checks if the model file exists; if not, downloads it from HuggingFace.
-/// Returns the path to the model file.
+/// Resolution order:
+/// 1. Check if already in data dir (`{model_dir}/models/whisper/ggml-{size}.bin`) and valid
+/// 2. Copy from bundled project models (`exe_dir/../../models/ggml-{size}.bin`) if available
+/// 3. Download from hf-mirror.com as fallback
 ///
-/// `model_dir` is the base data directory (e.g. ~/.kingdee-kb/).
-/// Model is stored at `{model_dir}/models/whisper/ggml-{size}.bin`.
+/// Returns the path to the model file.
 pub fn ensure_model(model_dir: &Path, model_size: &str) -> Result<PathBuf, String> {
     let size = WhisperModelSize::from_str(model_size)?;
     let model_path = model_dir
@@ -118,7 +119,46 @@ pub fn ensure_model(model_dir: &Path, model_size: &str) -> Result<PathBuf, Strin
     std::fs::create_dir_all(&whisper_dir)
         .map_err(|e| format!("Failed to create whisper model directory: {}", e))?;
 
-    // Download model
+    // Try to copy from bundled project models directory
+    if let Ok(exe_path) = std::env::current_exe() {
+        // exe is at target/debug/kingdee-kb.exe or target/release/kingdee-kb.exe
+        // models/ is at project root: ../../models/ggml-{size}.bin (dev) or bundled alongside exe
+        let exe_dir = exe_path.parent().unwrap_or(Path::new("."));
+        
+        // Try multiple locations for bundled model
+        let bundled_candidates = vec![
+            exe_dir.join("..").join("..").join("models").join(format!("ggml-{}.bin", size.as_str())),
+            exe_dir.join("models").join(format!("ggml-{}.bin", size.as_str())),
+            // Also try relative to CWD for dev mode
+            PathBuf::from("models").join(format!("ggml-{}.bin", size.as_str())),
+        ];
+        
+        for bundled_path in &bundled_candidates {
+            if let Ok(canonical) = bundled_path.canonicalize() {
+                let file_size = std::fs::metadata(&canonical)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                    
+                if file_size >= size.expected_size() / 2 {
+                    eprintln!(
+                        "[ModelDownloader] Copying bundled model from {} ({} bytes)",
+                        canonical.display(),
+                        file_size
+                    );
+                    std::fs::copy(&canonical, &model_path)
+                        .map_err(|e| format!("Failed to copy bundled model: {}", e))?;
+                    eprintln!(
+                        "[ModelDownloader] Model '{}' copied from bundled resource",
+                        model_size
+                    );
+                    return Ok(model_path);
+                }
+            }
+        }
+    }
+
+    // Fallback: download model from mirror
+    eprintln!("[ModelDownloader] No bundled model found, downloading from mirror...");
     download_model(&size, &model_path)?;
 
     Ok(model_path)
