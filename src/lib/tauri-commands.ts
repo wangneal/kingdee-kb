@@ -648,66 +648,6 @@ export interface ProjectHealthScore {
   alert_count: number;
 }
 
-export interface DefenseScriptRequest {
-  scenario: string;
-  context: string;
-  tone: string;
-}
-
-export interface ScriptItem {
-  phase: string;
-  content: string;
-  tip: string;
-}
-
-export interface DefenseScriptResult {
-  scenario_label: string;
-  scripts: ScriptItem[];
-}
-
-export async function addScopeItem(
-  category: string,
-  description: string,
-  isInScope: boolean,
-  detail: string,
-): Promise<number> {
-  return invoke("add_scope_item", { category, description, isInScope, detail });
-}
-
-export async function listScopeItems(): Promise<ContractScopeItem[]> {
-  return invoke("list_scope_items");
-}
-
-export async function deleteScopeItem(itemId: number): Promise<void> {
-  return invoke("delete_scope_item", { itemId });
-}
-
-export async function checkScopeCreep(requirement: string): Promise<ScopeCreepResult> {
-  return invoke("check_scope_creep", { requirement });
-}
-
-export async function recordHealthMetric(
-  indicatorType: string,
-  value: number,
-  notes: string,
-): Promise<number> {
-  return invoke("record_health_metric", { indicatorType, value, notes });
-}
-
-export async function getProjectHealth(): Promise<ProjectHealthScore> {
-  return invoke("get_project_health");
-}
-
-export async function generateRiskReport(context: string): Promise<string> {
-  return invoke("generate_risk_report", { context });
-}
-
-export async function generateDefenseScript(
-  request: DefenseScriptRequest,
-): Promise<DefenseScriptResult> {
-  return invoke("generate_defense_script", { request });
-}
-
 // ── P2: 蓝图提炼 / Fit-Gap / 脱敏 ──────────────────────────────────────
 
 export async function extractBlueprint(researchContext: string): Promise<string> {
@@ -875,4 +815,194 @@ export function listenVideoProgress(
   handler: (event: VideoProgressEvent) => void,
 ): Promise<() => void> {
   return listen<VideoProgressEvent>("video_progress", (e) => handler(e.payload));
+}
+
+// ─── Risk Control Types (P1: 双轨风险把控舱) ───
+
+export interface RiskProject {
+  id: number;
+  name: string;
+  client_name: string;
+  kb_project: string;
+  contract_doc_id: number | null;
+  sow_doc_id: number | null;
+  created_at: string;
+}
+
+export interface ContractScopeItem {
+  id: number;
+  category: string;
+  description: string;
+  is_in_scope: boolean;
+  detail: string;
+  created_at: string;
+}
+
+export interface ScopeCreepResult {
+  risk_level: string;
+  risk_label: string;
+  explanation: string;
+  matched_items: string[];
+  suggestion: string;
+}
+
+export interface ProjectHealthScore {
+  overall_score: number;
+  risk_level: string;
+  dimensions: HealthDimension[];
+  trend: string;
+  alert_count: number;
+}
+
+export interface HealthDimension {
+  name: string;
+  score: number;
+  weight: number;
+  detail: string;
+}
+
+export interface CandidateScopeItem {
+  category: string;
+  description: string;
+  is_in_scope: boolean;
+  detail: string;
+  confidence: number;
+}
+
+export interface DefenseScriptRequest {
+  scenario: string;
+  context?: string;
+  tone?: string;
+}
+
+export interface DefenseScriptResult {
+  scenario_label: string;
+  scripts: ScriptItem[];
+}
+
+export interface ScriptItem {
+  phase: string;
+  content: string;
+  tip: string;
+}
+
+export interface ImportDbResult {
+  db_size_bytes: number;
+  document_count: number;
+  chunk_count: number;
+  risk_project_count: number;
+}
+
+// ─── Risk Control API ───
+
+// 项目
+export async function createRiskProject(
+  name: string,
+  clientName?: string,
+  kbProject?: string
+): Promise<number> {
+  return invoke("create_risk_project", {
+    name,
+    client_name: clientName ?? "",
+    kb_project: kbProject ?? "",
+  });
+}
+
+export async function listRiskProjects(): Promise<RiskProject[]> {
+  return invoke("list_risk_projects");
+}
+
+export async function deleteRiskProject(projectId: number): Promise<void> {
+  return invoke("delete_risk_project", { project_id: projectId });
+}
+
+// 合同范围
+export async function listScopeItems(projectId: number): Promise<ContractScopeItem[]> {
+  return invoke("list_scope_items", { project_id: projectId });
+}
+
+export async function addScopeItem(
+  projectId: number,
+  category: string,
+  description: string,
+  isInScope: boolean,
+  detail: string
+): Promise<number> {
+  return invoke("add_scope_item", {
+    project_id: projectId,
+    category,
+    description,
+    is_in_scope: isInScope,
+    detail,
+  });
+}
+
+export async function deleteScopeItem(itemId: number): Promise<void> {
+  return invoke("delete_scope_item", { item_id: itemId });
+}
+
+// 需求蔓延检查
+export async function checkScopeCreep(
+  projectId: number,
+  requirement: string
+): Promise<ScopeCreepResult> {
+  return invoke("check_scope_creep", { project_id: projectId, requirement });
+}
+
+// 项目健康度
+export async function getProjectHealth(projectId: number): Promise<ProjectHealthScore> {
+  return invoke("get_project_health", { project_id: projectId });
+}
+
+export async function recordHealthMetric(
+  projectId: number,
+  indicatorType: string,
+  value: number,
+  notes: string
+): Promise<number> {
+  return invoke("record_health_metric", {
+    project_id: projectId,
+    indicator_type: indicatorType,
+    value,
+    notes,
+  });
+}
+
+// 健康风险报告
+export async function generateRiskReport(context: string): Promise<string> {
+  return invoke("generate_risk_report", { context });
+}
+
+// 防身话术
+export async function generateDefenseScript(
+  request: DefenseScriptRequest
+): Promise<DefenseScriptResult> {
+  return invoke("generate_defense_script", { request });
+}
+
+// 文档范围提取
+export async function extractScopeFromDocument(
+  projectId: number,
+  docId: number
+): Promise<CandidateScopeItem[]> {
+  return invoke("extract_scope_from_document", {
+    project_id: projectId,
+    doc_id: docId,
+  });
+}
+
+export async function confirmScopeItems(
+  projectId: number,
+  items: CandidateScopeItem[]
+): Promise<number> {
+  return invoke("confirm_scope_items", { project_id: projectId, items });
+}
+
+// 整库备份
+export async function exportDatabase(targetPath: string): Promise<void> {
+  return invoke("export_database", { target_path: targetPath });
+}
+
+export async function importDatabase(backupPath: string): Promise<ImportDbResult> {
+  return invoke("import_database", { backup_path: backupPath });
 }
