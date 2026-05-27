@@ -4,8 +4,8 @@
 //! P1.2 实施爆雷预警: 周报/缺席率/数据延迟 → 延期概率计算
 //! P1.3 顾问防身话术库: 场景匹配 → 专业话术生成
 
-use serde::{Deserialize, Serialize};
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -25,21 +25,21 @@ impl Drop for TempFileGuard {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContractScopeItem {
     pub id: i64,
-    pub category: String,       // 模块/功能分类
-    pub description: String,    // 范围描述
-    pub is_in_scope: bool,      // true=在范围内, false=明确排除
-    pub detail: String,         // 详细说明/合同条款引用
+    pub category: String,    // 模块/功能分类
+    pub description: String, // 范围描述
+    pub is_in_scope: bool,   // true=在范围内, false=明确排除
+    pub detail: String,      // 详细说明/合同条款引用
     pub created_at: String,
 }
 
 /// 需求蔓延检查结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScopeCreepResult {
-    pub risk_level: String,     // "red" / "yellow" / "green"
-    pub risk_label: String,     // "超范围" / "需评估" / "范围内"
-    pub explanation: String,    // 详细解释
+    pub risk_level: String,         // "red" / "yellow" / "green"
+    pub risk_label: String,         // "超范围" / "需评估" / "范围内"
+    pub explanation: String,        // 详细解释
     pub matched_items: Vec<String>, // 匹配的合同条款
-    pub suggestion: String,     // 建议行动
+    pub suggestion: String,         // 建议行动
 }
 
 /// 项目健康指标
@@ -55,11 +55,11 @@ pub struct HealthMetric {
 /// 项目健康评分
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectHealthScore {
-    pub overall_score: f64,     // 0-100, 越高越危险
-    pub risk_level: String,     // "low" / "medium" / "high" / "critical"
+    pub overall_score: f64, // 0-100, 越高越危险
+    pub risk_level: String, // "low" / "medium" / "high" / "critical"
     pub dimensions: Vec<HealthDimension>,
-    pub trend: String,          // 趋势描述
-    pub alert_count: u32,       // 需要关注的告警数
+    pub trend: String,    // 趋势描述
+    pub alert_count: u32, // 需要关注的告警数
 }
 
 /// 健康维度评分
@@ -74,9 +74,9 @@ pub struct HealthDimension {
 /// 防身话术请求
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefenseScriptRequest {
-    pub scenario: String,       // 场景描述
-    pub context: String,        // 上下文/背景
-    pub tone: String,           // "push_back" / "guide" / "escalate"
+    pub scenario: String, // 场景描述
+    pub context: String,  // 上下文/背景
+    pub tone: String,     // "push_back" / "guide" / "escalate"
 }
 
 /// 防身话术结果
@@ -89,9 +89,9 @@ pub struct DefenseScriptResult {
 /// 单条话术
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScriptItem {
-    pub phase: String,          // 阶段：开场 / 核心 / 收尾
-    pub content: String,        // 话术内容
-    pub tip: String,            // 使用提示
+    pub phase: String,   // 阶段：开场 / 核心 / 收尾
+    pub content: String, // 话术内容
+    pub tip: String,     // 使用提示
 }
 
 /// 风控项目
@@ -139,6 +139,18 @@ impl RiskControlStore {
         let store = Self {
             conn: Mutex::new(conn),
             db_path: db_path.to_path_buf(),
+        };
+        store.init_tables()?;
+        Ok(store)
+    }
+
+    /// Create an in-memory store (for fallback when DB is corrupted).
+    pub fn new_in_memory() -> Result<Self, String> {
+        let conn = Connection::open_in_memory()
+            .map_err(|e| format!("Failed to create in-memory risk control DB: {}", e))?;
+        let store = Self {
+            conn: Mutex::new(conn),
+            db_path: PathBuf::from(":memory:"),
         };
         store.init_tables()?;
         Ok(store)
@@ -195,7 +207,14 @@ impl RiskControlStore {
 
     // ─── 合同范围管理 ───
 
-    pub fn add_scope_item(&self, project_id: i64, category: &str, description: &str, is_in_scope: bool, detail: &str) -> Result<i64, String> {
+    pub fn add_scope_item(
+        &self,
+        project_id: i64,
+        category: &str,
+        description: &str,
+        is_in_scope: bool,
+        detail: &str,
+    ) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         conn.execute(
             "INSERT INTO contract_scope_items (project_id, category, description, is_in_scope, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -205,22 +224,31 @@ impl RiskControlStore {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn list_scope_items(&self, project_id: i64, limit: Option<i64>, offset: Option<i64>) -> Result<Vec<ContractScopeItem>, String> {
+    pub fn list_scope_items(
+        &self,
+        project_id: i64,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<Vec<ContractScopeItem>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         let mut stmt = conn
             .prepare("SELECT id, category, description, is_in_scope, detail, created_at FROM contract_scope_items WHERE project_id = ?1 ORDER BY category, id LIMIT ?2 OFFSET ?3")
             .map_err(|e| format!("Failed to prepare: {}", e))?;
-        let rows = stmt.query_map(params![project_id, limit.unwrap_or(-1), offset.unwrap_or(0)], |row| {
-            Ok(ContractScopeItem {
-                id: row.get(0)?,
-                category: row.get(1)?,
-                description: row.get(2)?,
-                is_in_scope: row.get::<_, i32>(3)? != 0,
-                detail: row.get(4)?,
-                created_at: row.get(5)?,
-            })
-        })
-        .map_err(|e| format!("Failed to query: {}", e))?;
+        let rows = stmt
+            .query_map(
+                params![project_id, limit.unwrap_or(-1), offset.unwrap_or(0)],
+                |row| {
+                    Ok(ContractScopeItem {
+                        id: row.get(0)?,
+                        category: row.get(1)?,
+                        description: row.get(2)?,
+                        is_in_scope: row.get::<_, i32>(3)? != 0,
+                        detail: row.get(4)?,
+                        created_at: row.get(5)?,
+                    })
+                },
+            )
+            .map_err(|e| format!("Failed to query: {}", e))?;
 
         let mut items = Vec::new();
         for row in rows {
@@ -231,14 +259,23 @@ impl RiskControlStore {
 
     pub fn delete_scope_item(&self, id: i64) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-        conn.execute("DELETE FROM contract_scope_items WHERE id = ?1", params![id])
-            .map_err(|e| format!("Failed to delete: {}", e))?;
+        conn.execute(
+            "DELETE FROM contract_scope_items WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| format!("Failed to delete: {}", e))?;
         Ok(())
     }
 
     // ─── 健康指标管理 ───
 
-    pub fn record_health_metric(&self, project_id: i64, indicator_type: &str, value: f64, notes: &str) -> Result<i64, String> {
+    pub fn record_health_metric(
+        &self,
+        project_id: i64,
+        indicator_type: &str,
+        value: f64,
+        notes: &str,
+    ) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         conn.execute(
             "INSERT INTO project_health_metrics (project_id, indicator_type, value, notes) VALUES (?1, ?2, ?3, ?4)",
@@ -248,21 +285,27 @@ impl RiskControlStore {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn get_recent_metrics(&self, project_id: i64, indicator_type: &str, limit: usize) -> Result<Vec<HealthMetric>, String> {
+    pub fn get_recent_metrics(
+        &self,
+        project_id: i64,
+        indicator_type: &str,
+        limit: usize,
+    ) -> Result<Vec<HealthMetric>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         let mut stmt = conn
             .prepare("SELECT id, indicator_type, value, notes, recorded_at FROM project_health_metrics WHERE project_id = ?1 AND indicator_type = ?2 ORDER BY id DESC LIMIT ?3")
             .map_err(|e| format!("Failed to prepare: {}", e))?;
-        let rows = stmt.query_map(params![project_id, indicator_type, limit as i64], |row| {
-            Ok(HealthMetric {
-                id: row.get(0)?,
-                indicator_type: row.get(1)?,
-                value: row.get(2)?,
-                notes: row.get(3)?,
-                recorded_at: row.get(4)?,
+        let rows = stmt
+            .query_map(params![project_id, indicator_type, limit as i64], |row| {
+                Ok(HealthMetric {
+                    id: row.get(0)?,
+                    indicator_type: row.get(1)?,
+                    value: row.get(2)?,
+                    notes: row.get(3)?,
+                    recorded_at: row.get(4)?,
+                })
             })
-        })
-        .map_err(|e| format!("Failed to query: {}", e))?;
+            .map_err(|e| format!("Failed to query: {}", e))?;
 
         let mut items = Vec::new();
         for row in rows {
@@ -276,16 +319,17 @@ impl RiskControlStore {
         let mut stmt = conn
             .prepare("SELECT id, indicator_type, value, notes, recorded_at FROM project_health_metrics WHERE project_id = ?1 ORDER BY recorded_at DESC LIMIT 100")
             .map_err(|e| format!("Failed to prepare: {}", e))?;
-        let rows = stmt.query_map(params![project_id], |row| {
-            Ok(HealthMetric {
-                id: row.get(0)?,
-                indicator_type: row.get(1)?,
-                value: row.get(2)?,
-                notes: row.get(3)?,
-                recorded_at: row.get(4)?,
+        let rows = stmt
+            .query_map(params![project_id], |row| {
+                Ok(HealthMetric {
+                    id: row.get(0)?,
+                    indicator_type: row.get(1)?,
+                    value: row.get(2)?,
+                    notes: row.get(3)?,
+                    recorded_at: row.get(4)?,
+                })
             })
-        })
-        .map_err(|e| format!("Failed to query: {}", e))?;
+            .map_err(|e| format!("Failed to query: {}", e))?;
 
         let mut items = Vec::new();
         for row in rows {
@@ -329,17 +373,30 @@ impl RiskControlStore {
             });
         }
 
-        let overall = if total_weight > 0.0 { weighted_sum / total_weight } else { 0.0 };
+        let overall = if total_weight > 0.0 {
+            weighted_sum / total_weight
+        } else {
+            0.0
+        };
 
-        let risk_level = if overall >= 70.0 { "critical" }
-            else if overall >= 50.0 { "high" }
-            else if overall >= 30.0 { "medium" }
-            else { "low" };
+        let risk_level = if overall >= 70.0 {
+            "critical"
+        } else if overall >= 50.0 {
+            "high"
+        } else if overall >= 30.0 {
+            "medium"
+        } else {
+            "low"
+        };
 
         let alert_count = dimensions.iter().filter(|d| d.score >= 50.0).count() as u32;
-        let trend = if alert_count >= 2 { "⚠️ 多项指标偏高，建议紧急干预" }
-            else if alert_count >= 1 { "🔶 存在风险点，建议关注" }
-            else { "✅ 项目整体健康" };
+        let trend = if alert_count >= 2 {
+            "⚠️ 多项指标偏高，建议紧急干预"
+        } else if alert_count >= 1 {
+            "🔶 存在风险点，建议关注"
+        } else {
+            "✅ 项目整体健康"
+        };
 
         Ok(ProjectHealthScore {
             overall_score: (overall * 10.0).round() / 10.0,
@@ -364,10 +421,21 @@ impl RiskControlStore {
         let scope_desc: String = if scope_items.is_empty() {
             "暂无合同范围定义".to_string()
         } else {
-            scope_items.iter().map(|item| {
-                let scope = if item.is_in_scope { "[范围内]" } else { "[排除]" };
-                format!("{} {} {}: {}", scope, item.category, item.description, item.detail)
-            }).collect::<Vec<_>>().join("\n")
+            scope_items
+                .iter()
+                .map(|item| {
+                    let scope = if item.is_in_scope {
+                        "[范围内]"
+                    } else {
+                        "[排除]"
+                    };
+                    format!(
+                        "{} {} {}: {}",
+                        scope, item.category, item.description, item.detail
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
         };
 
         let prompt = format!(
@@ -386,8 +454,14 @@ impl RiskControlStore {
         );
 
         let messages = vec![
-            ChatMessage { role: "system".to_string(), content: SYSTEM_RISK_PROMPT.to_string() },
-            ChatMessage { role: "user".to_string(), content: prompt },
+            ChatMessage {
+                role: "system".to_string(),
+                content: SYSTEM_RISK_PROMPT.to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: prompt,
+            },
         ];
 
         let config = llm.get_config()?;
@@ -407,8 +481,14 @@ impl RiskControlStore {
         let health = self.calculate_health_score(-1)?;
         let metrics = self.get_all_recent_metrics(-1)?;
 
-        let metrics_summary: String = metrics.iter()
-            .map(|m| format!("[{}] {}: {:.1} — {}", m.recorded_at, m.indicator_type, m.value, m.notes))
+        let metrics_summary: String = metrics
+            .iter()
+            .map(|m| {
+                format!(
+                    "[{}] {}: {:.1} — {}",
+                    m.recorded_at, m.indicator_type, m.value, m.notes
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -423,15 +503,28 @@ impl RiskControlStore {
              2. 主要风险因子\n\
              3. 建议的缓解措施\n\
              4. 建议告知客户的沟通策略",
-            health.overall_score, health.risk_level, health.alert_count,
-            health.dimensions.iter().map(|d| format!("- {}: {:.1}/100", d.name, d.score)).collect::<Vec<_>>().join("\n"),
+            health.overall_score,
+            health.risk_level,
+            health.alert_count,
+            health
+                .dimensions
+                .iter()
+                .map(|d| format!("- {}: {:.1}/100", d.name, d.score))
+                .collect::<Vec<_>>()
+                .join("\n"),
             metrics_summary,
             additional_context
         );
 
         let messages = vec![
-            ChatMessage { role: "system".to_string(), content: SYSTEM_RISK_PROMPT.to_string() },
-            ChatMessage { role: "user".to_string(), content: prompt },
+            ChatMessage {
+                role: "system".to_string(),
+                content: SYSTEM_RISK_PROMPT.to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: prompt,
+            },
         ];
 
         let config = llm.get_config()?;
@@ -466,8 +559,14 @@ impl RiskControlStore {
         );
 
         let messages = vec![
-            ChatMessage { role: "system".to_string(), content: SCRIPT_SYSTEM_PROMPT.to_string() },
-            ChatMessage { role: "user".to_string(), content: prompt },
+            ChatMessage {
+                role: "system".to_string(),
+                content: SCRIPT_SYSTEM_PROMPT.to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: prompt,
+            },
         ];
 
         let config = llm.get_config()?;
@@ -479,12 +578,18 @@ impl RiskControlStore {
 
     // ─── 风控项目 CRUD ───
 
-    pub fn create_risk_project(&self, name: &str, client_name: &str, kb_project: &str) -> Result<i64, String> {
+    pub fn create_risk_project(
+        &self,
+        name: &str,
+        client_name: &str,
+        kb_project: &str,
+    ) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         conn.execute(
             "INSERT INTO risk_projects (name, client_name, kb_project) VALUES (?1, ?2, ?3)",
             params![name, client_name, kb_project],
-        ).map_err(|e| format!("Failed to create project: {}", e))?;
+        )
+        .map_err(|e| format!("Failed to create project: {}", e))?;
         Ok(conn.last_insert_rowid())
     }
 
@@ -493,17 +598,19 @@ impl RiskControlStore {
         let mut stmt = conn.prepare(
             "SELECT id, name, client_name, kb_project, contract_doc_id, sow_doc_id, created_at FROM risk_projects ORDER BY created_at DESC"
         ).map_err(|e| format!("Failed to prepare: {}", e))?;
-        let rows = stmt.query_map([], |row| {
-            Ok(RiskProject {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                client_name: row.get(2)?,
-                kb_project: row.get(3)?,
-                contract_doc_id: row.get(4)?,
-                sow_doc_id: row.get(5)?,
-                created_at: row.get(6)?,
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(RiskProject {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    client_name: row.get(2)?,
+                    kb_project: row.get(3)?,
+                    contract_doc_id: row.get(4)?,
+                    sow_doc_id: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
             })
-        }).map_err(|e| format!("Failed to query: {}", e))?;
+            .map_err(|e| format!("Failed to query: {}", e))?;
         let mut items = Vec::new();
         for row in rows {
             items.push(row.map_err(|e| format!("Failed to read row: {}", e))?);
@@ -513,14 +620,26 @@ impl RiskControlStore {
 
     pub fn delete_risk_project(&self, project_id: i64) -> Result<(), String> {
         let mut conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-        let tx = conn.transaction().map_err(|e| format!("Failed to begin transaction: {}", e))?;
-        tx.execute("DELETE FROM risk_projects WHERE id = ?1", params![project_id])
-            .map_err(|e| format!("Failed to delete project: {}", e))?;
-        tx.execute("DELETE FROM contract_scope_items WHERE project_id = ?1", params![project_id])
-            .map_err(|e| format!("Failed to delete scope items: {}", e))?;
-        tx.execute("DELETE FROM project_health_metrics WHERE project_id = ?1", params![project_id])
-            .map_err(|e| format!("Failed to delete health metrics: {}", e))?;
-        tx.commit().map_err(|e| format!("Failed to commit deletion: {}", e))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Failed to begin transaction: {}", e))?;
+        tx.execute(
+            "DELETE FROM risk_projects WHERE id = ?1",
+            params![project_id],
+        )
+        .map_err(|e| format!("Failed to delete project: {}", e))?;
+        tx.execute(
+            "DELETE FROM contract_scope_items WHERE project_id = ?1",
+            params![project_id],
+        )
+        .map_err(|e| format!("Failed to delete scope items: {}", e))?;
+        tx.execute(
+            "DELETE FROM project_health_metrics WHERE project_id = ?1",
+            params![project_id],
+        )
+        .map_err(|e| format!("Failed to delete health metrics: {}", e))?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit deletion: {}", e))?;
         Ok(())
     }
 
@@ -532,7 +651,8 @@ impl RiskControlStore {
         llm: &LLMService,
         chunks: &[super::metadata::ChunkMeta],
     ) -> Result<Vec<CandidateScopeItem>, String> {
-        let doc_content: String = chunks.iter()
+        let doc_content: String = chunks
+            .iter()
             .map(|c| c.content.as_str())
             .collect::<Vec<_>>()
             .join("\n")
@@ -548,7 +668,8 @@ impl RiskControlStore {
         let messages = vec![
             ChatMessage {
                 role: "system".to_string(),
-                content: "你是 ERP 实施合同审计专家。严格基于文档内容提取范围定义，不编造信息。".to_string(),
+                content: "你是 ERP 实施合同审计专家。严格基于文档内容提取范围定义，不编造信息。"
+                    .to_string(),
             },
             ChatMessage {
                 role: "user".to_string(),
@@ -579,9 +700,15 @@ impl RiskControlStore {
     }
 
     /// 确认入库候选范围项（事务保护）
-    pub fn confirm_scope_items(&self, project_id: i64, items: &[CandidateScopeItem]) -> Result<usize, String> {
+    pub fn confirm_scope_items(
+        &self,
+        project_id: i64,
+        items: &[CandidateScopeItem],
+    ) -> Result<usize, String> {
         let mut conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-        let tx = conn.transaction().map_err(|e| format!("Failed to begin transaction: {}", e))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Failed to begin transaction: {}", e))?;
         let mut count = 0usize;
         for item in items {
             tx.execute(
@@ -590,7 +717,8 @@ impl RiskControlStore {
             ).map_err(|e| format!("Failed to insert scope item: {}", e))?;
             count += 1;
         }
-        tx.commit().map_err(|e| format!("Failed to commit transaction: {}", e))?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit transaction: {}", e))?;
         Ok(count)
     }
 
@@ -601,7 +729,11 @@ impl RiskControlStore {
         let db_path = self.db_path.to_str().ok_or("Invalid db path")?.to_string();
         let backup_conn = rusqlite::Connection::open(&db_path)
             .map_err(|e| format!("Failed to open DB for export: {}", e))?;
-        backup_conn.execute_batch(&format!("VACUUM INTO '{}';", target_path.replace('\'', "''")))
+        backup_conn
+            .execute_batch(&format!(
+                "VACUUM INTO '{}';",
+                target_path.replace('\'', "''")
+            ))
             .map_err(|e| format!("VACUUM INTO failed: {}", e))?;
         Ok(())
     }
@@ -616,7 +748,8 @@ impl RiskControlStore {
             let mut f = fs::File::open(backup_path)
                 .map_err(|e| format!("Cannot open backup file: {}", e))?;
             let mut buf = [0u8; 16];
-            f.read_exact(&mut buf).map_err(|e| format!("Cannot read backup file: {}", e))?;
+            f.read_exact(&mut buf)
+                .map_err(|e| format!("Cannot read backup file: {}", e))?;
             buf
         };
         if &header != b"SQLite format 3\0" {
@@ -698,10 +831,16 @@ mod tests {
     #[test]
     fn test_add_and_list_scope_items() {
         let store = new_store();
-        let pid = store.create_risk_project("测试项目", "测试客户", "kb_test").unwrap();
-        let id = store.add_scope_item(pid, "FI", "总账模块实施", true, "合同第3.1条").unwrap();
+        let pid = store
+            .create_risk_project("测试项目", "测试客户", "kb_test")
+            .unwrap();
+        let id = store
+            .add_scope_item(pid, "FI", "总账模块实施", true, "合同第3.1条")
+            .unwrap();
         assert!(id > 0);
-        store.add_scope_item(pid, "FI", "银企直连", false, "合同排除项清单第5条").unwrap();
+        store
+            .add_scope_item(pid, "FI", "银企直连", false, "合同排除项清单第5条")
+            .unwrap();
 
         let items = store.list_scope_items(pid, None, None).unwrap();
         assert_eq!(items.len(), 2);
@@ -712,9 +851,15 @@ mod tests {
     #[test]
     fn test_record_and_calculate_health() {
         let store = new_store();
-        let pid = store.create_risk_project("测试项目", "测试客户", "kb_test").unwrap();
-        store.record_health_metric(pid, "attendance", 80.0, "项目经理连续2周缺席").unwrap();
-        store.record_health_metric(pid, "data_delay", 60.0, "期初数据延迟2周").unwrap();
+        let pid = store
+            .create_risk_project("测试项目", "测试客户", "kb_test")
+            .unwrap();
+        store
+            .record_health_metric(pid, "attendance", 80.0, "项目经理连续2周缺席")
+            .unwrap();
+        store
+            .record_health_metric(pid, "data_delay", 60.0, "期初数据延迟2周")
+            .unwrap();
 
         let score = store.calculate_health_score(pid).unwrap();
         assert!(score.overall_score > 0.0);
@@ -724,8 +869,12 @@ mod tests {
     #[test]
     fn test_delete_scope_item() {
         let store = new_store();
-        let pid = store.create_risk_project("测试项目", "测试客户", "kb_test").unwrap();
-        let id = store.add_scope_item(pid, "MM", "采购模块", true, "").unwrap();
+        let pid = store
+            .create_risk_project("测试项目", "测试客户", "kb_test")
+            .unwrap();
+        let id = store
+            .add_scope_item(pid, "MM", "采购模块", true, "")
+            .unwrap();
         store.delete_scope_item(id).unwrap();
         assert_eq!(store.list_scope_items(pid, None, None).unwrap().len(), 0);
     }
@@ -733,7 +882,9 @@ mod tests {
     #[test]
     fn test_health_empty_returns_default() {
         let store = new_store();
-        let pid = store.create_risk_project("测试项目", "测试客户", "kb_test").unwrap();
+        let pid = store
+            .create_risk_project("测试项目", "测试客户", "kb_test")
+            .unwrap();
         let score = store.calculate_health_score(pid).unwrap();
         // 空数据默认返回30分
         assert!(score.overall_score > 0.0);
@@ -742,10 +893,16 @@ mod tests {
     #[test]
     fn test_get_recent_metrics() {
         let store = new_store();
-        let pid = store.create_risk_project("测试项目", "测试客户", "kb_test").unwrap();
-        store.record_health_metric(pid, "attendance", 50.0, "测试").unwrap();
+        let pid = store
+            .create_risk_project("测试项目", "测试客户", "kb_test")
+            .unwrap();
+        store
+            .record_health_metric(pid, "attendance", 50.0, "测试")
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(10));
-        store.record_health_metric(pid, "attendance", 60.0, "测试2").unwrap();
+        store
+            .record_health_metric(pid, "attendance", 60.0, "测试2")
+            .unwrap();
 
         let metrics = store.get_recent_metrics(pid, "attendance", 2).unwrap();
         assert_eq!(metrics.len(), 2);
@@ -783,7 +940,9 @@ mod tests {
     #[test]
     fn test_confirm_scope_items() {
         let store = new_store();
-        let pid = store.create_risk_project("确认测试", "客户C", "kb_c").unwrap();
+        let pid = store
+            .create_risk_project("确认测试", "客户C", "kb_c")
+            .unwrap();
 
         // 构造候选范围项
         let candidates = vec![
@@ -828,8 +987,12 @@ mod tests {
     #[ignore = "涉及文件系统 VACUUM INTO 操作，需在集成测试环境中运行"]
     fn test_export_import_database() {
         let store = new_store();
-        let pid = store.create_risk_project("导出测试", "客户D", "kb_d").unwrap();
-        store.add_scope_item(pid, "FI", "总账", true, "测试").unwrap();
+        let pid = store
+            .create_risk_project("导出测试", "客户D", "kb_d")
+            .unwrap();
+        store
+            .add_scope_item(pid, "FI", "总账", true, "测试")
+            .unwrap();
 
         // 导出到临时文件
         let export_path = std::env::temp_dir().join("risk_control_test_export.db");

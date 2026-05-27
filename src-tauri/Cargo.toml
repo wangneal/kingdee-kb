@@ -85,6 +85,6 @@ tauri-plugin-global-shortcut = "2"
 async-trait = "0.1"
 
 # rig AI framework
-rig-core = "0.35"
+rig-core = "0.37"
 thiserror = "2"
 futures = "0.3.32"

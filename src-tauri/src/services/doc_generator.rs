@@ -173,13 +173,8 @@ pub async fn generate_document(
             .collect();
 
         if !llm_fields.is_empty() {
-            match generate_llm_fields(
-                llm,
-                &llm_fields,
-                &request.project_name,
-                &request.context,
-            )
-            .await
+            match generate_llm_fields(llm, &llm_fields, &request.project_name, &request.context)
+                .await
             {
                 Ok(generated) => {
                     for (name, value) in generated {
@@ -358,13 +353,12 @@ async fn generate_llm_fields(
 
     // Parse JSON response
     let json_str = extract_json_from_response(&response);
-    let generated: HashMap<String, String> =
-        serde_json::from_str(&json_str).map_err(|e| {
-            format!(
-                "Failed to parse LLM response as JSON: {}. Response: {}",
-                e, response
-            )
-        })?;
+    let generated: HashMap<String, String> = serde_json::from_str(&json_str).map_err(|e| {
+        format!(
+            "Failed to parse LLM response as JSON: {}. Response: {}",
+            e, response
+        )
+    })?;
 
     Ok(generated)
 }
@@ -391,7 +385,9 @@ fn extract_json_from_response(response: &str) -> String {
             json_start
         };
         if let Some(end) = trimmed[content_start..].find("```") {
-            return trimmed[content_start..content_start + end].trim().to_string();
+            return trimmed[content_start..content_start + end]
+                .trim()
+                .to_string();
         }
     }
 
@@ -443,14 +439,18 @@ pub async fn generate_recipe_doc(
     let system_prompt = recipe.system_prompt.clone();
 
     // ── Step 2: Apply recipe overrides to schema ──
-    let schema_fields = deliverable_recipes::apply_recipe_overrides(&request.schema_fields, &recipe);
+    let schema_fields =
+        deliverable_recipes::apply_recipe_overrides(&request.schema_fields, &recipe);
 
     // ── Step 3: Validate template exists ──
     let template_path = PathBuf::from(&request.template_path);
     let output_path = PathBuf::from(&request.output_path);
 
     if !template_path.exists() {
-        return Err(format!("Template file not found: {}", template_path.display()));
+        return Err(format!(
+            "Template file not found: {}",
+            template_path.display()
+        ));
     }
 
     let ext = template_path
@@ -458,6 +458,74 @@ pub async fn generate_recipe_doc(
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
+
+    // ── Step 3.5: Handle empty-field templates (like investigation_report) ──
+    // When template has no fillable fields, generate full document content via LLM
+    if schema_fields.is_empty() {
+        eprintln!(
+            "[DocGenerator] Template has no fillable fields, generating full content via LLM"
+        );
+
+        // Build KB context for the LLM
+        let search_query = format!(
+            "{} {}",
+            request.project_name.as_deref().unwrap_or(""),
+            recipe_name
+        );
+        let search_results = hybrid_search::hybrid_search(
+            &search_query,
+            request
+                .project_id
+                .as_deref()
+                .or(request.project_name.as_deref()),
+            RECIPE_KB_TOP_K,
+            embedding,
+            vector_index,
+            bm25,
+            metadata,
+        )
+        .unwrap_or_default();
+
+        let kb_context = if !search_results.is_empty() {
+            assemble_kb_context(&search_results, RECIPE_KB_MAX_TOKENS)
+        } else {
+            String::new()
+        };
+
+        // Call LLM to generate full document content
+        let full_content = generate_full_document_content(
+            llm,
+            &system_prompt,
+            &kb_context,
+            &request.project_name,
+            &request.context,
+            &recipe_name,
+        )
+        .await
+        .map_err(|e| format!("LLM full document generation failed: {}", e))?;
+
+        // Write content to output file
+        let output_path_buf = PathBuf::from(&request.output_path);
+        std::fs::write(&output_path_buf, &full_content)
+            .map_err(|e| format!("Failed to write output file: {}", e))?;
+
+        let doc = GeneratedDoc {
+            output_path: request.output_path.clone(),
+            fields_filled: 1,
+            user_fields: vec![],
+            ai_fields: vec!["full_content".to_string()],
+            missing_fields: vec![],
+            missing_fields_detail: vec![],
+        };
+
+        let kb_sources: Vec<KbSource> = vec![];
+
+        return Ok(RecipeDocResult {
+            doc,
+            recipe_name,
+            kb_sources,
+        });
+    }
 
     // ── Step 4: Start with user-provided fields ──
     let mut all_fields: HashMap<String, String> = request.fields.clone();
@@ -481,15 +549,15 @@ pub async fn generate_recipe_doc(
     // ── Step 6: Search KB for kb-strategy fields ──
     let kb_context = if !kb_fields.is_empty() {
         // Build search query from field names, descriptions, and project context
-        let search_query = build_kb_search_query(
-            &kb_fields,
-            &request.project_name,
-            &request.context,
-        );
+        let search_query =
+            build_kb_search_query(&kb_fields, &request.project_name, &request.context);
 
         let search_results = hybrid_search::hybrid_search(
             &search_query,
-            request.project_id.as_deref().or(request.project_name.as_deref()),
+            request
+                .project_id
+                .as_deref()
+                .or(request.project_name.as_deref()),
             RECIPE_KB_TOP_K,
             embedding,
             vector_index,
@@ -505,8 +573,8 @@ pub async fn generate_recipe_doc(
                 .filter(|r| {
                     // Simple relevance check: does the result content or title
                     // contain the field name or its description keywords?
-                    let name_match = r.content.contains(&field.name)
-                        || r.title.contains(&field.name);
+                    let name_match =
+                        r.content.contains(&field.name) || r.title.contains(&field.name);
                     let desc_match = field
                         .description
                         .as_ref()
@@ -701,17 +769,11 @@ fn build_kb_search_query(
 ///
 /// Format: `[来源：title | section]\ncontent\n\n`
 /// Truncated to fit within `max_tokens`.
-fn assemble_kb_context(
-    results: &[hybrid_search::HybridSearchResult],
-    max_tokens: u32,
-) -> String {
+fn assemble_kb_context(results: &[hybrid_search::HybridSearchResult], max_tokens: u32) -> String {
     let mut context = String::new();
 
     for result in results {
-        let section = result
-            .section_path
-            .as_deref()
-            .unwrap_or("（无章节信息）");
+        let section = result.section_path.as_deref().unwrap_or("（无章节信息）");
 
         let entry = format!(
             "[来源：{} | {}]\n{}\n\n",
@@ -744,7 +806,10 @@ async fn generate_llm_fields_with_recipe(
     let field_descriptions: Vec<String> = fields
         .iter()
         .map(|f| {
-            let mut desc = format!("- {} (类型: {}, 填充策略: {})", f.name, f.field_type, f.fill_strategy);
+            let mut desc = format!(
+                "- {} (类型: {}, 填充策略: {})",
+                f.name, f.field_type, f.fill_strategy
+            );
             if let Some(ref d) = f.description {
                 desc.push_str(&format!(": {}", d));
             }
@@ -775,10 +840,7 @@ async fn generate_llm_fields_with_recipe(
     let mut user_prompt = String::new();
 
     if !kb_context.is_empty() {
-        user_prompt.push_str(&format!(
-            "知识库检索到的相关内容：\n{}\n\n",
-            kb_context
-        ));
+        user_prompt.push_str(&format!("知识库检索到的相关内容：\n{}\n\n", kb_context));
     }
 
     user_prompt.push_str("请为以下文档字段生成合适的值：\n\n");
@@ -805,15 +867,87 @@ async fn generate_llm_fields_with_recipe(
 
     // Parse JSON response
     let json_str = extract_json_from_response(&response);
-    let generated: HashMap<String, String> =
-        serde_json::from_str(&json_str).map_err(|e| {
-            format!(
-                "Failed to parse LLM response as JSON: {}. Response: {}",
-                e, response
-            )
-        })?;
+    let generated: HashMap<String, String> = serde_json::from_str(&json_str).map_err(|e| {
+        format!(
+            "Failed to parse LLM response as JSON: {}. Response: {}",
+            e, response
+        )
+    })?;
 
     Ok(generated)
+}
+
+/// Generate full document content via LLM when template has no fillable fields.
+///
+/// This is used for templates like investigation_report that are fixed-format
+/// documents without placeholders. The LLM generates the entire document content
+/// based on the recipe's system_prompt and any available context.
+async fn generate_full_document_content(
+    llm: &LLMService,
+    system_prompt: &str,
+    kb_context: &str,
+    project_name: &Option<String>,
+    context: &Option<String>,
+    recipe_name: &str,
+) -> Result<String, String> {
+    use super::llm_service::ChatMessage;
+
+    let mut full_system_prompt = system_prompt.to_string();
+    full_system_prompt.push_str(
+        "\n\n【输出要求】\n\
+         1. 生成完整的文档内容，包含所有必要的章节和格式\n\
+         2. 使用 Markdown 格式输出，便于后续转换为 Word 文档\n\
+         3. 每个章节必须有具体内容，不得使用占位符或「待填写」\n\
+         4. 不确定的内容写「待确认」，不得用模糊表述填充\n\
+         5. 文档标题使用一级标题（#），章节使用二级标题（##），子章节使用三级标题（###）",
+    );
+
+    if let Some(project) = project_name {
+        full_system_prompt.push_str(&format!("\n\n项目名称: {}", project));
+    }
+
+    let mut user_prompt = String::new();
+
+    if !kb_context.is_empty() {
+        user_prompt.push_str(&format!("知识库检索到的相关内容：\n{}\n\n", kb_context));
+    }
+
+    user_prompt.push_str(&format!(
+        "请生成完整的{}文档内容。\n\n",
+        recipe_name
+    ));
+
+    if let Some(ctx) = context {
+        user_prompt.push_str(&format!("补充信息:\n{}\n\n", ctx));
+    }
+
+    user_prompt.push_str("请直接输出文档内容，不要添加任何解释或说明。");
+
+    let messages = vec![
+        ChatMessage {
+            role: "system".to_string(),
+            content: full_system_prompt,
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: user_prompt,
+        },
+    ];
+
+    let config = llm.get_config()?;
+    let response = llm.chat_completion(&messages, &config).await?;
+
+    // Clean up the response - remove code block markers if present
+    let content = response
+        .trim()
+        .trim_start_matches("```markdown")
+        .trim_start_matches("```md")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim()
+        .to_string();
+
+    Ok(content)
 }
 
 #[cfg(test)]
@@ -888,8 +1022,7 @@ mod tests {
         assert!(json.contains("调研结论"));
         assert!(json.contains("调研报告A"));
 
-        let deserialized: KbSource =
-            serde_json::from_str(&json).expect("deserialize failed");
+        let deserialized: KbSource = serde_json::from_str(&json).expect("deserialize failed");
         assert_eq!(deserialized.field_name, "调研结论");
         assert_eq!(deserialized.sources.len(), 2);
     }

@@ -3,12 +3,15 @@ use tauri::{Emitter, State};
 use crate::app_state::AppState;
 use crate::services::question_tool;
 use crate::services::react_agent::ReActEvent;
-use crate::services::risk_control::{ContractScopeItem, ScopeCreepResult, ProjectHealthScore, DefenseScriptRequest, DefenseScriptResult, RiskProject, ImportDbResult, CandidateScopeItem};
+use crate::services::risk_control::{
+    CandidateScopeItem, ContractScopeItem, DefenseScriptRequest, DefenseScriptResult,
+    ImportDbResult, ProjectHealthScore, RiskProject, ScopeCreepResult,
+};
 
 // ─── P1: 双轨风险把控舱 ───
 
 #[tauri::command]
-pub fn add_scope_item(
+pub async fn add_scope_item(
     state: State<'_, AppState>,
     project_id: i64,
     category: String,
@@ -16,17 +19,30 @@ pub fn add_scope_item(
     is_in_scope: bool,
     detail: String,
 ) -> Result<i64, String> {
-    state.risk_control_store.add_scope_item(project_id, &category, &description, is_in_scope, &detail)
+    state.risk_control_store.lock().await.add_scope_item(
+        project_id,
+        &category,
+        &description,
+        is_in_scope,
+        &detail,
+    )
 }
 
 #[tauri::command]
-pub fn list_scope_items(state: State<'_, AppState>, project_id: i64) -> Result<Vec<ContractScopeItem>, String> {
-    state.risk_control_store.list_scope_items(project_id, None, None)
+pub async fn list_scope_items(
+    state: State<'_, AppState>,
+    project_id: i64,
+) -> Result<Vec<ContractScopeItem>, String> {
+    state
+        .risk_control_store
+        .lock()
+        .await
+        .list_scope_items(project_id, None, None)
 }
 
 #[tauri::command]
-pub fn delete_scope_item(state: State<'_, AppState>, item_id: i64) -> Result<(), String> {
-    state.risk_control_store.delete_scope_item(item_id)
+pub async fn delete_scope_item(state: State<'_, AppState>, item_id: i64) -> Result<(), String> {
+    state.risk_control_store.lock().await.delete_scope_item(item_id)
 }
 
 #[tauri::command]
@@ -35,23 +51,35 @@ pub async fn check_scope_creep(
     project_id: i64,
     requirement: String,
 ) -> Result<ScopeCreepResult, String> {
-    state.risk_control_store.check_scope_creep(project_id, &state.llm, &requirement).await
+    state
+        .risk_control_store
+        .lock()
+        .await
+        .check_scope_creep(project_id, &state.llm, &requirement)
+        .await
 }
 
 #[tauri::command]
-pub fn record_health_metric(
+pub async fn record_health_metric(
     state: State<'_, AppState>,
     project_id: i64,
     indicator_type: String,
     value: f64,
     notes: String,
 ) -> Result<i64, String> {
-    state.risk_control_store.record_health_metric(project_id, &indicator_type, value, &notes)
+    state
+        .risk_control_store
+        .lock()
+        .await
+        .record_health_metric(project_id, &indicator_type, value, &notes)
 }
 
 #[tauri::command]
-pub fn get_project_health(state: State<'_, AppState>, project_id: i64) -> Result<ProjectHealthScore, String> {
-    state.risk_control_store.calculate_health_score(project_id)
+pub async fn get_project_health(
+    state: State<'_, AppState>,
+    project_id: i64,
+) -> Result<ProjectHealthScore, String> {
+    state.risk_control_store.lock().await.calculate_health_score(project_id)
 }
 
 #[tauri::command]
@@ -59,7 +87,12 @@ pub async fn generate_risk_report(
     state: State<'_, AppState>,
     context: String,
 ) -> Result<String, String> {
-    state.risk_control_store.generate_risk_report(&state.llm, &context).await
+    state
+        .risk_control_store
+        .lock()
+        .await
+        .generate_risk_report(&state.llm, &context)
+        .await
 }
 
 #[tauri::command]
@@ -67,19 +100,24 @@ pub async fn generate_defense_script(
     state: State<'_, AppState>,
     request: DefenseScriptRequest,
 ) -> Result<DefenseScriptResult, String> {
-    state.risk_control_store.generate_defense_script(&state.llm, &request).await
+    state
+        .risk_control_store
+        .lock()
+        .await
+        .generate_defense_script(&state.llm, &request)
+        .await
 }
 
 // --- P1.4: 风险项目管理 ---
 
 #[tauri::command]
-pub fn create_risk_project(
+pub async fn create_risk_project(
     state: State<'_, AppState>,
     name: String,
     client_name: Option<String>,
     kb_project: Option<String>,
 ) -> Result<i64, String> {
-    state.risk_control_store.create_risk_project(
+    state.risk_control_store.lock().await.create_risk_project(
         &name,
         &client_name.unwrap_or_default(),
         &kb_project.unwrap_or_default(),
@@ -87,13 +125,13 @@ pub fn create_risk_project(
 }
 
 #[tauri::command]
-pub fn list_risk_projects(state: State<'_, AppState>) -> Result<Vec<RiskProject>, String> {
-    state.risk_control_store.list_risk_projects()
+pub async fn list_risk_projects(state: State<'_, AppState>) -> Result<Vec<RiskProject>, String> {
+    state.risk_control_store.lock().await.list_risk_projects()
 }
 
 #[tauri::command]
-pub fn delete_risk_project(state: State<'_, AppState>, project_id: i64) -> Result<(), String> {
-    state.risk_control_store.delete_risk_project(project_id)
+pub async fn delete_risk_project(state: State<'_, AppState>, project_id: i64) -> Result<(), String> {
+    state.risk_control_store.lock().await.delete_risk_project(project_id)
 }
 
 // --- P1.5: 合同范围提取 ---
@@ -111,31 +149,40 @@ pub async fn extract_scope_from_document(
     if chunks.is_empty() {
         return Err("文档中未找到任何内容分块".to_string());
     }
-    state.risk_control_store.extract_scope_from_document(&state.llm, &chunks).await
+    state
+        .risk_control_store
+        .lock()
+        .await
+        .extract_scope_from_document(&state.llm, &chunks)
+        .await
 }
 
 #[tauri::command]
-pub fn confirm_scope_items(
+pub async fn confirm_scope_items(
     state: State<'_, AppState>,
     project_id: i64,
     items: Vec<CandidateScopeItem>,
 ) -> Result<usize, String> {
-    state.risk_control_store.confirm_scope_items(project_id, &items)
+    state
+        .risk_control_store
+        .lock()
+        .await
+        .confirm_scope_items(project_id, &items)
 }
 
 // --- P1.6: 整库备份 ---
 
 #[tauri::command]
-pub fn export_database(state: State<'_, AppState>, target_path: String) -> Result<(), String> {
-    state.risk_control_store.export_database(&target_path)
+pub async fn export_database(state: State<'_, AppState>, target_path: String) -> Result<(), String> {
+    state.risk_control_store.lock().await.export_database(&target_path)
 }
 
 #[tauri::command]
-pub fn import_database(
+pub async fn import_database(
     state: State<'_, AppState>,
     backup_path: String,
 ) -> Result<ImportDbResult, String> {
-    state.risk_control_store.import_database(&backup_path)
+    state.risk_control_store.lock().await.import_database(&backup_path)
 }
 
 // --- P2.1: 本地脱敏 ---
@@ -164,7 +211,10 @@ pub fn list_sensitive_keywords(state: State<'_, AppState>) -> Result<Vec<String>
 }
 
 #[tauri::command]
-pub fn remove_sensitive_keyword(state: State<'_, AppState>, keyword: String) -> Result<bool, String> {
+pub fn remove_sensitive_keyword(
+    state: State<'_, AppState>,
+    keyword: String,
+) -> Result<bool, String> {
     Ok(state.desensitizer.remove_keyword(&keyword))
 }
 
@@ -186,8 +236,14 @@ pub async fn extract_blueprint(
 ) -> Result<String, String> {
     use crate::services::llm_service::ChatMessage;
     let messages = vec![
-        ChatMessage { role: "system".to_string(), content: BLUEPRINT_SYSTEM_PROMPT.to_string() },
-        ChatMessage { role: "user".to_string(), content: research_context },
+        ChatMessage {
+            role: "system".to_string(),
+            content: BLUEPRINT_SYSTEM_PROMPT.to_string(),
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: research_context,
+        },
     ];
     let config = state.llm.get_config()?;
     state.llm.chat_completion(&messages, &config).await
@@ -207,42 +263,70 @@ pub async fn analyze_fit_gap(
 ) -> Result<String, String> {
     use crate::services::llm_service::ChatMessage;
     let messages = vec![
-        ChatMessage { role: "system".to_string(), content: FITGAP_SYSTEM_PROMPT.to_string() },
-        ChatMessage { role: "user".to_string(), content: requirements },
+        ChatMessage {
+            role: "system".to_string(),
+            content: FITGAP_SYSTEM_PROMPT.to_string(),
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: requirements,
+        },
     ];
     let config = state.llm.get_config()?;
     state.llm.chat_completion(&messages, &config).await
 }
 
-// --- ReAct 对话 ---
+// --- Agent 对话 ---
 
+/// Agent 对话入口：使用 rig_agent 处理用户消息，通过 SSE 事件流返回结果。
 #[tauri::command]
-pub async fn react_chat(
+pub async fn agent_chat(
     app_handle: tauri::AppHandle,
-    state: State<'_, AppState>,
     message: String,
     system_extra: String,
     session_id: String,
+    project_id: Option<String>,
 ) -> Result<(), String> {
+    use tauri::Manager;
     use tokio::sync::mpsc;
+
+    // 手动获取 AppState，避免框架级别的 State 注入竞争
+    let state = app_handle
+        .try_state::<AppState>()
+        .ok_or("后端尚未初始化完成，请稍后重试")?;
 
     let (tx, mut rx) = mpsc::unbounded_channel::<ReActEvent>();
 
     let sid = session_id;
+    let pid = project_id;
 
     let pending = state.pending_questions.clone();
-    let ah = app_handle.clone();
+    let llm = state.llm.clone();
+    let embedding = state.embedding.clone();
+    let vector_index = state.vector_index.clone();
+    let bm25 = state.bm25.clone();
+    let metadata = state.metadata.clone();
+    let data_dir = state.data_dir.clone();
+    let products = state.products.clone();
+    let risk_store = state.risk_control_store.clone();
+
     tauri::async_runtime::spawn(async move {
-        use tauri::Manager;
-        let state = ah.state::<AppState>();
         crate::services::rig_agent::RigAgent::run(
-            &state.llm,
+            &llm,
             &message,
             &system_extra,
             &[],
             tx,
             &sid,
             pending,
+            pid.as_deref(),
+            embedding,
+            vector_index,
+            bm25,
+            metadata,
+            data_dir,
+            products,
+            risk_store,
         )
         .await;
     });
@@ -264,9 +348,14 @@ pub async fn react_chat(
 /// 回答问题工具的待处理问题
 #[tauri::command]
 pub async fn answer_question(
-    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
     question_id: String,
     answer: String,
+    _project_id: Option<String>,
 ) -> Result<(), String> {
+    use tauri::Manager;
+    let state = app_handle
+        .try_state::<AppState>()
+        .ok_or("后端尚未初始化完成")?;
     question_tool::answer_question(&state.pending_questions, &question_id, &answer).await
 }

@@ -1,7 +1,7 @@
 use crate::services::llm_service::{LLMConfig, LLMProvider};
 use bytes::Bytes;
 use futures::StreamExt;
-use rig::http_client::{self, HttpClientExt, MultipartForm, Request, Response};
+use rig_core::http_client::{self, HttpClientExt, MultipartForm, Request, Response};
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
@@ -73,10 +73,7 @@ impl CompatReqwestClient {
         }
 
         let body: http_client::LazyBody<U> = Box::pin(async {
-            let bytes = response
-                .bytes()
-                .await
-                .map_err(instance_error)?;
+            let bytes = response.bytes().await.map_err(instance_error)?;
             Ok(U::from(bytes))
         });
 
@@ -88,7 +85,9 @@ impl HttpClientExt for CompatReqwestClient {
     fn send<T, U>(
         &self,
         req: Request<T>,
-    ) -> impl std::future::Future<Output = http_client::Result<Response<http_client::LazyBody<U>>>> + Send + 'static
+    ) -> impl std::future::Future<Output = http_client::Result<Response<http_client::LazyBody<U>>>>
+           + Send
+           + 'static
     where
         T: Into<Bytes>,
         T: Send,
@@ -133,7 +132,9 @@ impl HttpClientExt for CompatReqwestClient {
     fn send_multipart<U>(
         &self,
         req: Request<MultipartForm>,
-    ) -> impl std::future::Future<Output = http_client::Result<Response<http_client::LazyBody<U>>>> + Send + 'static
+    ) -> impl std::future::Future<Output = http_client::Result<Response<http_client::LazyBody<U>>>>
+           + Send
+           + 'static
     where
         U: From<Bytes>,
         U: Send + 'static,
@@ -144,7 +145,7 @@ impl HttpClientExt for CompatReqwestClient {
             let (boundary, body) = form.encode();
             parts.headers.insert(
                 "content-type",
-                rig::http_client::HeaderValue::from_str(&format!(
+                rig_core::http_client::HeaderValue::from_str(&format!(
                     "multipart/form-data; boundary={boundary}"
                 ))?,
             );
@@ -171,11 +172,7 @@ impl HttpClientExt for CompatReqwestClient {
                 .build()
                 .map_err(instance_error)?;
 
-            let response = client
-                .inner
-                .execute(req)
-                .await
-                .map_err(instance_error)?;
+            let response = client.inner.execute(req).await.map_err(instance_error)?;
             if !response.status().is_success() {
                 let status = response.status();
                 let message = response.text().await.unwrap_or_default();
@@ -192,7 +189,7 @@ impl HttpClientExt for CompatReqwestClient {
                 *headers = response.headers().clone();
             }
 
-            let stream: rig::http_client::sse::BoxedStream = Box::pin(
+            let stream: rig_core::http_client::sse::BoxedStream = Box::pin(
                 response
                     .bytes_stream()
                     .map(|chunk| chunk.map_err(instance_error)),
@@ -205,7 +202,7 @@ impl HttpClientExt for CompatReqwestClient {
 
 pub fn build_openai_client(
     config: &LLMConfig,
-) -> Result<rig::providers::openai::Client<CompatReqwestClient>, String> {
+) -> Result<rig_core::providers::openai::Client<CompatReqwestClient>, String> {
     if config.api_key.is_empty() && config.provider != LLMProvider::Local {
         return Err("API key 为空，无法构建 rig OpenAI client".to_string());
     }
@@ -216,7 +213,7 @@ pub fn build_openai_client(
         config.api_key.clone()
     };
 
-    let mut builder = rig::providers::openai::Client::builder()
+    let mut builder = rig_core::providers::openai::Client::builder()
         .api_key(api_key)
         .http_client(custom_http_client(&config.base_url)?);
 
@@ -231,12 +228,12 @@ pub fn build_openai_client(
 
 pub fn build_anthropic_client(
     config: &LLMConfig,
-) -> Result<rig::providers::anthropic::Client<CompatReqwestClient>, String> {
+) -> Result<rig_core::providers::anthropic::Client<CompatReqwestClient>, String> {
     if config.api_key.is_empty() {
         return Err("API key 为空，无法构建 rig Anthropic client".to_string());
     }
 
-    let mut builder = rig::providers::anthropic::Client::builder()
+    let mut builder = rig_core::providers::anthropic::Client::builder()
         .api_key(&config.api_key)
         .http_client(custom_http_client(&config.base_url)?);
 
@@ -253,11 +250,19 @@ pub fn build_anthropic_client(
 mod tests {
     use super::*;
     use futures::StreamExt;
-    use rig::client::CompletionClient;
-    use rig::streaming::StreamingPrompt;
+    use rig_core::client::CompletionClient;
+    use rig_core::streaming::StreamingPrompt;
     use serde::Deserialize;
+    use std::sync::{Arc, Mutex};
 
+    use crate::services::bm25_service::BM25Service;
+    use crate::services::embedding::EmbeddingService;
+    use crate::services::llm_service::LLMService;
+    use crate::services::metadata::MetadataStore;
+    use crate::services::product_store::ProductStore;
+    use crate::services::risk_control::RiskControlStore;
     use crate::services::rig_tool::all_rig_tools;
+    use crate::services::vector_index::VectorIndex;
 
     #[derive(Debug, Deserialize)]
     struct SavedConfig {
@@ -281,6 +286,36 @@ mod tests {
             max_tokens: saved.max_tokens,
             temperature: saved.temperature,
         })
+    }
+
+    fn test_tool_deps(
+        root: &std::path::Path,
+    ) -> (
+        Arc<std::sync::Mutex<EmbeddingService>>,
+        Arc<std::sync::Mutex<VectorIndex>>,
+        Arc<std::sync::Mutex<BM25Service>>,
+        Arc<std::sync::Mutex<MetadataStore>>,
+        Arc<std::sync::Mutex<ProductStore>>,
+        Arc<tokio::sync::Mutex<RiskControlStore>>,
+    ) {
+        (
+            Arc::new(std::sync::Mutex::new(EmbeddingService::empty())),
+            Arc::new(std::sync::Mutex::new(
+                VectorIndex::new(root.join("vector")).expect("vector index"),
+            )),
+            Arc::new(std::sync::Mutex::new(
+                BM25Service::new(root.join("bm25")).expect("bm25 index"),
+            )),
+            Arc::new(std::sync::Mutex::new(
+                MetadataStore::new(root.join("metadata.db")).expect("metadata store"),
+            )),
+            Arc::new(std::sync::Mutex::new(
+                ProductStore::new(root.join("products.db")).expect("product store"),
+            )),
+            Arc::new(tokio::sync::Mutex::new(
+                RiskControlStore::new(&root.join("metadata.db")).expect("risk control store"),
+            )),
+        )
     }
 
     #[test]
@@ -329,9 +364,23 @@ mod tests {
                 .expect("build OpenAI client")
                 .completions_api();
 
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let (embedding, vector_index, bm25, metadata, products, risk_store) = test_tool_deps(tmp.path());
+            let llm = LLMService::new(tmp.path());
+
             let mut stream = client
                 .agent(&config.model)
-                .tools(all_rig_tools())
+                .tools(all_rig_tools(
+                    None,
+                    tmp.path().to_path_buf(),
+                    llm,
+                    embedding,
+                    vector_index,
+                    bm25,
+                    metadata,
+                    products,
+                    risk_store,
+                ))
                 .max_tokens(32)
                 .temperature(0.0)
                 .build()

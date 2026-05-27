@@ -5,44 +5,26 @@
 //! 注意：AppState 字段较多（22个）是 Tauri 框架的典型模式。
 //! 所有命令通过 `State<'_, AppState>` 访问，拆分为子状态会增加大量胶水代码。
 
-use std::sync::atomic::AtomicU32;
-use std::sync::{Arc, Mutex};
 use crate::services::audio_capture::AudioCapture;
-use crate::services::whisper_service::WhisperService;
-use crate::AsrConfigStore;
+use crate::services::bm25_service::BM25Service;
 use crate::services::desensitize::Desensitizer;
 use crate::services::edition_config::EditionConfig;
 use crate::services::embedding::{EmbeddingService, ModelManager};
 use crate::services::llm_service::LLMService;
-use crate::services::bm25_service::BM25Service;
 use crate::services::metadata::MetadataStore;
 use crate::services::product_store::ProductStore;
-use crate::services::react_agent::ReActAgent;
-use crate::services::rig_agent::RigAgent;
+use crate::services::question_tool::{self, PendingQuestions};
 use crate::services::research_indexer::ResearchIndexer;
 use crate::services::research_session::ResearchSessionStore;
+use crate::services::rig_agent::RigAgent;
 use crate::services::risk_control::RiskControlStore;
-use crate::services::tool_registry::{ToolRegistry, SearchKnowledgeTool, GenerateDocTool, CheckScopeCreepTool, AnalyzeFitGapTool, GetProjectHealthTool, GenerateDefenseScriptTool, ExtractBlueprintTool, RecommendQuestionsTool};
-use crate::services::question_tool::{self, PendingQuestions};
 use crate::services::vector_index::VectorIndex;
-use std::path::PathBuf;
+use crate::services::whisper_service::WhisperService;
+use crate::AsrConfigStore;
 use rusqlite::Connection;
-
-/// 创建一个配置了金蝶实施 AI 工具的 ToolRegistry。
-///
-/// 在 `AppState::new()` 和 `AppState::minimal()` 之间共享，避免代码重复。
-fn create_tool_registry() -> ToolRegistry {
-    let mut registry = ToolRegistry::new();
-    registry.register(Box::new(SearchKnowledgeTool));
-    registry.register(Box::new(GenerateDocTool));
-    registry.register(Box::new(CheckScopeCreepTool));
-    registry.register(Box::new(AnalyzeFitGapTool));
-    registry.register(Box::new(GetProjectHealthTool));
-    registry.register(Box::new(GenerateDefenseScriptTool));
-    registry.register(Box::new(ExtractBlueprintTool));
-    registry.register(Box::new(RecommendQuestionsTool));
-    registry
-}
+use std::path::PathBuf;
+use std::sync::atomic::AtomicU32;
+use std::sync::{Arc, Mutex};
 
 /// 所有 Tauri 命令共享的全局应用状态
 pub struct AppState {
@@ -71,12 +53,9 @@ pub struct AppState {
     /// 研究会话存储
     pub research_session_store: ResearchSessionStore,
     /// 风险控制存储（需求蔓延警报/爆雷预警/话术库）
-    pub risk_control_store: RiskControlStore,
+    pub risk_control_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
     /// 数据脱敏器（本地敏感信息过滤）
     pub desensitizer: Desensitizer,
-    /// ReAct Agent（推理引擎 — 旧实现，保留兼容）
-    #[allow(dead_code)]
-    pub react_agent: ReActAgent,
     /// Rig Agent（新推理引擎 — 基于 rig 的原生 function calling）
     pub rig_agent: RigAgent,
     /// 问题工具的待处理问题（跨进程状态）
@@ -142,13 +121,10 @@ impl AppState {
         let research_session_store = ResearchSessionStore::new(&db_path)?;
 
         // 初始化 RiskControlStore（共享 metadata.db）
-        let risk_control_store = RiskControlStore::new(&db_path)?;
+        let risk_control_store = Arc::new(tokio::sync::Mutex::new(RiskControlStore::new(&db_path)?));
 
         let desensitizer = Desensitizer::new();
 
-        // 初始化 ReAct Agent
-        let tool_registry = Arc::new(create_tool_registry());
-        let react_agent = ReActAgent::new(tool_registry);
         let pending_questions = question_tool::create_pending_questions();
 
         let whisper_service = WhisperService::new();
@@ -173,7 +149,6 @@ impl AppState {
             whisper_service: Arc::new(Mutex::new(whisper_service)),
             audio_capture: Arc::new(Mutex::new(audio_capture)),
             asr_config: Arc::new(Mutex::new(asr_config)),
-            react_agent,
             rig_agent: RigAgent,
             pending_questions,
         })
@@ -199,31 +174,50 @@ impl AppState {
         let db_path = data_dir.join("metadata.db");
 
         let edition_config = {
-            let conn = Connection::open(&db_path)
-                .expect("Fatal: cannot open DB for EditionConfig");
+            let conn = Connection::open(&db_path).expect("Fatal: cannot open DB for EditionConfig");
             let config = EditionConfig::new(conn);
-            config.init_table().expect("Fatal: cannot init config table");
+            config
+                .init_table()
+                .expect("Fatal: cannot init config table");
             config
         };
 
         let research_indexer = {
-            let indexer = ResearchIndexer::new(&db_path)
-                .expect("Fatal: cannot create ResearchIndexer");
-            indexer.init_tables().expect("Fatal: cannot init research tables");
+            let indexer =
+                ResearchIndexer::new(&db_path).expect("Fatal: cannot create ResearchIndexer");
+            indexer
+                .init_tables()
+                .expect("Fatal: cannot init research tables");
             indexer
         };
 
-        let research_session_store = ResearchSessionStore::new(&db_path)
-            .expect("Fatal: cannot create ResearchSessionStore");
+        // ResearchSessionStore 和 RiskControlStore 不是核心服务，失败时用内存兜底
+        let research_session_store = match ResearchSessionStore::new(&db_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "WARNING: ResearchSessionStore init failed (non-fatal): {}",
+                    e
+                );
+                // 用内存数据库兜底，避免 crash
+                ResearchSessionStore::new_in_memory()
+                    .expect("Fatal: cannot create in-memory ResearchSessionStore")
+            }
+        };
 
-        let risk_control_store = RiskControlStore::new(&db_path)
-            .expect("Fatal: cannot create RiskControlStore");
+        let risk_control_store = Arc::new(tokio::sync::Mutex::new(
+            match RiskControlStore::new(&db_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("WARNING: RiskControlStore init failed (non-fatal): {}", e);
+                    RiskControlStore::new_in_memory()
+                        .expect("Fatal: cannot create in-memory RiskControlStore")
+                }
+            }
+        ));
 
         let desensitizer = Desensitizer::new();
 
-        // 初始化 ReAct Agent（最小化）
-        let tool_registry = Arc::new(create_tool_registry());
-        let react_agent = ReActAgent::new(tool_registry);
         let pending_questions = question_tool::create_pending_questions();
 
         let whisper_service = WhisperService::new();
@@ -244,7 +238,6 @@ impl AppState {
             research_session_store,
             risk_control_store,
             desensitizer,
-            react_agent,
             rig_agent: RigAgent,
             pending_questions,
             whisper_service: Arc::new(Mutex::new(whisper_service)),

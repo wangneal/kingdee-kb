@@ -7,10 +7,10 @@ mod services;
 use std::sync::Mutex;
 use tauri::Manager;
 
-pub use commands::core::{SetupState, ensure_data_dir, setup_backend};
+pub use commands::core::{ensure_data_dir, setup_backend, SetupState};
 pub use services::template_docx;
-pub use services::template_xlsx;
 pub use services::template_schema;
+pub use services::template_xlsx;
 
 /// 在线 ASR 配置存储（腾讯/讯飞）
 pub struct AsrConfigStore {
@@ -131,6 +131,7 @@ pub fn run() {
             // Phase 3: Ingestion Pipeline
             commands::ingestion::ingest_text,
             commands::ingestion::ingest_file,
+            commands::ingestion::extract_file_text,
             commands::ingestion::ingest_directory,
             // Document Management
             commands::document::list_documents,
@@ -146,9 +147,6 @@ pub fn run() {
             commands::search_llm::get_llm_config,
             commands::search_llm::is_llm_configured,
             commands::search_llm::test_llm_connection,
-            commands::search_llm::rag_query,
-            commands::search_llm::rag_query_stream,
-            commands::search_llm::start_chat_stream,
             commands::search_llm::save_chat_memory,
             commands::search_llm::count_tokens,
             // Phase 9: Template Engine
@@ -229,9 +227,9 @@ pub fn run() {
             commands::risk_blueprint::remove_sensitive_keyword,
             commands::risk_blueprint::extract_blueprint,
             commands::risk_blueprint::analyze_fit_gap,
-            commands::risk_blueprint::react_chat,
+            commands::risk_blueprint::agent_chat,
             commands::risk_blueprint::answer_question,
         ])
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }

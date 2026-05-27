@@ -106,9 +106,7 @@ impl VectorIndex {
         // If it was built with multi:false, delete it — we can't load it
         // with multi:true (usearch rejects mismatched multi flag).
         if index_path.exists() {
-            if let Ok(meta) = Index::metadata(
-                index_path.to_str().unwrap_or(""),
-            ) {
+            if let Ok(meta) = Index::metadata(index_path.to_str().unwrap_or("")) {
                 if !meta.multi {
                     // Legacy index with multi:false — delete and recreate.
                     // The caller will need to re-ingest, but this prevents
@@ -136,9 +134,7 @@ impl VectorIndex {
 
         let index = new_index(&options).map_err(|e| format!("Failed to create index: {}", e))?;
 
-        let path_str = index_path
-            .to_str()
-            .ok_or("Invalid index path (non-UTF8)")?;
+        let path_str = index_path.to_str().ok_or("Invalid index path (non-UTF8)")?;
 
         index
             .load(path_str)
@@ -160,17 +156,33 @@ impl VectorIndex {
     /// Auto-reserves `MIN_RESERVE_CAPACITY` if no reserve has been performed yet.
     /// This prevents the Access Violation 0xc0000005 crash that occurs when
     /// `add()` dereferences a null `contexts_` pointer.
+    ///
+    /// Also handles dynamic扩容 when current capacity is insufficient.
     fn ensure_reserved(&mut self) -> Result<(), String> {
-        if !self.reserved {
-            let current_cap = self.index.capacity();
-            let capacity = if current_cap > 0 {
-                current_cap
-            } else {
+        let current_size = self.index.size();
+        let current_cap = self.index.capacity();
+
+        // 需要扩容的情况：
+        // 1. 从未 reserve 过（capacity == 0）
+        // 2. 当前 size 已达到 capacity 的 80%（提前扩容避免溢出）
+        let needs_reserve = current_cap == 0 || current_size >= (current_cap * 80 / 100);
+
+        if needs_reserve {
+            // 新容量：至少 MIN_RESERVE_CAPACITY，或者当前容量的 2 倍
+            let new_cap = if current_cap == 0 {
                 MIN_RESERVE_CAPACITY
+            } else {
+                std::cmp::max(current_cap * 2, current_size + MIN_RESERVE_CAPACITY)
             };
+
+            eprintln!(
+                "[VectorIndex] Reserving capacity: {} (current size: {}, current cap: {})",
+                new_cap, current_size, current_cap
+            );
+
             self.index
-                .reserve(capacity)
-                .map_err(|e| format!("Failed to auto-reserve {}: {}", capacity, e))?;
+                .reserve(new_cap)
+                .map_err(|e| format!("Failed to reserve {}: {}", new_cap, e))?;
             self.reserved = true;
         }
         Ok(())

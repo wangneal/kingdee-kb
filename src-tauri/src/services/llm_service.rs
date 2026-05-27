@@ -217,10 +217,8 @@ fn apply_memory_temporal_decay(
         .ok()
         .and_then(|meta| meta.get_chunks_by_vector_keys(&chunk_ids).ok())
         .unwrap_or_default();
-    let created_at_map: std::collections::HashMap<i64, String> = chunks
-        .into_iter()
-        .map(|c| (c.id, c.created_at))
-        .collect();
+    let created_at_map: std::collections::HashMap<i64, String> =
+        chunks.into_iter().map(|c| (c.id, c.created_at)).collect();
 
     for r in results.iter_mut() {
         if let Some(created_at) = created_at_map.get(&r.chunk_id) {
@@ -234,7 +232,11 @@ fn apply_memory_temporal_decay(
     }
 
     // 按衰减后的分数重新排序
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 }
 
 /// 解析 ISO 风格的日期字符串，返回从 `now_secs` 起的天数。
@@ -306,10 +308,7 @@ pub fn assemble_context(results: &[HybridSearchResult], max_tokens: u32) -> Stri
     let mut context = String::new();
 
     for result in results {
-        let section = result
-            .section_path
-            .as_deref()
-            .unwrap_or("（无章节信息）");
+        let section = result.section_path.as_deref().unwrap_or("（无章节信息）");
 
         let entry = format!(
             "[来源：{} | {}]\n{}\n\n",
@@ -398,18 +397,16 @@ impl LLMService {
 
     /// Load config from JSON file, returning default on any failure.
     fn load_config(path: &std::path::Path) -> Result<LLMConfig, String> {
-        let data = std::fs::read_to_string(path)
-            .map_err(|e| format!("Read config failed: {}", e))?;
-        serde_json::from_str(&data)
-            .map_err(|e| format!("Parse config failed: {}", e))
+        let data =
+            std::fs::read_to_string(path).map_err(|e| format!("Read config failed: {}", e))?;
+        serde_json::from_str(&data).map_err(|e| format!("Parse config failed: {}", e))
     }
 
     /// Persist current config to JSON file.
     fn save_config(config: &LLMConfig, path: &std::path::Path) -> Result<(), String> {
         let data = serde_json::to_string_pretty(config)
             .map_err(|e| format!("Serialize config failed: {}", e))?;
-        std::fs::write(path, data)
-            .map_err(|e| format!("Write config failed: {}", e))
+        std::fs::write(path, data).map_err(|e| format!("Write config failed: {}", e))
     }
 
     /// Update the LLM configuration and persist to disk.
@@ -429,7 +426,11 @@ impl LLMService {
     /// Synchronous text generation (non-streaming) for internal backend use.
     ///
     /// Uses `ureq` for a simple blocking HTTP call. Returns the complete generated text.
-    pub fn generate_text_sync(&self, system_prompt: &str, user_message: &str) -> Result<String, String> {
+    pub fn generate_text_sync(
+        &self,
+        system_prompt: &str,
+        user_message: &str,
+    ) -> Result<String, String> {
         let config = self.config.lock().map_err(|e| e.to_string())?;
 
         if config.api_key.is_empty() {
@@ -566,7 +567,9 @@ impl LLMService {
 
         // Step 5: Assemble context
         let system_tokens = count_tokens(SYSTEM_PROMPT);
-        let budget = config.max_tokens.saturating_sub(system_tokens + RESPONSE_TOKENS + 200);
+        let budget = config
+            .max_tokens
+            .saturating_sub(system_tokens + RESPONSE_TOKENS + 200);
         let context = assemble_context(&search_results, budget);
         let user_prompt = build_user_prompt(&context, query);
 
@@ -587,10 +590,12 @@ impl LLMService {
         // Step 7: Branch by provider (Local uses OpenAI-compatible protocol)
         match config.provider {
             LLMProvider::OpenAI | LLMProvider::Local => {
-                self.rag_query_openai(&config, SYSTEM_PROMPT, &messages).await
+                self.rag_query_openai(&config, SYSTEM_PROMPT, &messages)
+                    .await
             }
             LLMProvider::Anthropic => {
-                self.rag_query_anthropic(&config, SYSTEM_PROMPT, &messages).await
+                self.rag_query_anthropic(&config, SYSTEM_PROMPT, &messages)
+                    .await
             }
         }
     }
@@ -642,7 +647,11 @@ impl LLMService {
             match event {
                 Ok(Event::Message(msg)) => {
                     if msg.data == "[DONE]" {
-                        chunks.push(StreamChunk { content: String::new(), done: true, thinking: None });
+                        chunks.push(StreamChunk {
+                            content: String::new(),
+                            done: true,
+                            thinking: None,
+                        });
                         return Ok(chunks);
                     }
 
@@ -660,20 +669,24 @@ impl LLMService {
                             }
                         }
                         // Extract text content from delta
-                        if let Some(content) =
-                            parsed["choices"][0]["delta"]["content"].as_str()
-                        {
+                        if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
                             let cleaned = scrub_response(content);
                             if !cleaned.is_empty() {
-                                chunks.push(StreamChunk { content: cleaned, done: false, thinking: None });
+                                chunks.push(StreamChunk {
+                                    content: cleaned,
+                                    done: false,
+                                    thinking: None,
+                                });
                             }
                         }
                         // Check finish_reason
-                        if let Some(reason) =
-                            parsed["choices"][0]["finish_reason"].as_str()
-                        {
+                        if let Some(reason) = parsed["choices"][0]["finish_reason"].as_str() {
                             if !reason.is_empty() && reason != "null" && reason != "null" {
-                                chunks.push(StreamChunk { content: String::new(), done: true, thinking: None });
+                                chunks.push(StreamChunk {
+                                    content: String::new(),
+                                    done: true,
+                                    thinking: None,
+                                });
                                 return Ok(chunks);
                             }
                         }
@@ -685,7 +698,11 @@ impl LLMService {
                 Err(e) => {
                     // If we already have some content, return it gracefully
                     if !chunks.is_empty() {
-                        chunks.push(StreamChunk { content: String::new(), done: true, thinking: None });
+                        chunks.push(StreamChunk {
+                            content: String::new(),
+                            done: true,
+                            thinking: None,
+                        });
                         return Ok(chunks);
                     }
                     return Err(format!("SSE error: {}", e));
@@ -694,7 +711,11 @@ impl LLMService {
         }
 
         if chunks.last().map(|c| c.done) != Some(true) {
-            chunks.push(StreamChunk { content: String::new(), done: true, thinking: None });
+            chunks.push(StreamChunk {
+                content: String::new(),
+                done: true,
+                thinking: None,
+            });
         }
         Ok(chunks)
     }
@@ -716,10 +737,12 @@ impl LLMService {
         let api_messages: Vec<serde_json::Value> = messages
             .iter()
             .filter(|m| m.role != "system")
-            .map(|m| serde_json::json!({
-                "role": m.role,
-                "content": m.content
-            }))
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role,
+                    "content": m.content
+                })
+            })
             .collect();
 
         let body = serde_json::json!({
@@ -750,16 +773,18 @@ impl LLMService {
                 Ok(Event::Message(msg)) => {
                     match msg.event.as_str() {
                         "content_block_delta" => {
-                            if let Ok(data) =
-                                serde_json::from_str::<serde_json::Value>(&msg.data)
-                            {
+                            if let Ok(data) = serde_json::from_str::<serde_json::Value>(&msg.data) {
                                 if data["type"] == "content_block_delta" {
                                     if let Some(delta) = data.get("delta") {
                                         if delta["type"] == "text_delta" {
                                             if let Some(text) = delta["text"].as_str() {
                                                 let cleaned = scrub_response(text);
                                                 if !cleaned.is_empty() {
-                                                    chunks.push(StreamChunk { content: cleaned, done: false, thinking: None });
+                                                    chunks.push(StreamChunk {
+                                                        content: cleaned,
+                                                        done: false,
+                                                        thinking: None,
+                                                    });
                                                 }
                                             }
                                         }
@@ -768,19 +793,25 @@ impl LLMService {
                             }
                         }
                         "message_delta" => {
-                            chunks.push(StreamChunk { content: String::new(), done: true, thinking: None });
+                            chunks.push(StreamChunk {
+                                content: String::new(),
+                                done: true,
+                                thinking: None,
+                            });
                             return Ok(chunks);
                         }
                         "message_stop" => {
                             // Safety net: some Anthropic-compatible endpoints
                             // skip message_delta — ensure done is emitted
-                            chunks.push(StreamChunk { content: String::new(), done: true, thinking: None });
+                            chunks.push(StreamChunk {
+                                content: String::new(),
+                                done: true,
+                                thinking: None,
+                            });
                             return Ok(chunks);
                         }
                         "error" => {
-                            if let Ok(data) =
-                                serde_json::from_str::<serde_json::Value>(&msg.data)
-                            {
+                            if let Ok(data) = serde_json::from_str::<serde_json::Value>(&msg.data) {
                                 let err_msg = data["error"]["message"]
                                     .as_str()
                                     .unwrap_or("Unknown Anthropic stream error");
@@ -796,7 +827,11 @@ impl LLMService {
                 Err(e) => {
                     // If we already have content, return it gracefully
                     if !chunks.is_empty() {
-                        chunks.push(StreamChunk { content: String::new(), done: true, thinking: None });
+                        chunks.push(StreamChunk {
+                            content: String::new(),
+                            done: true,
+                            thinking: None,
+                        });
                         return Ok(chunks);
                     }
                     return Err(format!("SSE error: {}", e));
@@ -805,7 +840,11 @@ impl LLMService {
         }
 
         if chunks.last().map(|c| c.done) != Some(true) {
-            chunks.push(StreamChunk { content: String::new(), done: true, thinking: None });
+            chunks.push(StreamChunk {
+                content: String::new(),
+                done: true,
+                thinking: None,
+            });
         }
         Ok(chunks)
     }
@@ -901,7 +940,9 @@ impl LLMService {
 
         match config.provider {
             LLMProvider::OpenAI | LLMProvider::Local => {
-                let result = self.chat_completion_openai_with_tools(messages, config, &[], true).await?;
+                let result = self
+                    .chat_completion_openai_with_tools(messages, config, &[], true)
+                    .await?;
                 Ok(result)
             }
             LLMProvider::Anthropic => self.chat_completion_anthropic(messages, config).await,
@@ -999,10 +1040,12 @@ impl LLMService {
         let api_messages: Vec<serde_json::Value> = messages
             .iter()
             .filter(|m| m.role != "system")
-            .map(|m| serde_json::json!({
-                "role": m.role,
-                "content": m.content
-            }))
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role,
+                    "content": m.content
+                })
+            })
             .collect();
 
         let mut body = serde_json::json!({
@@ -1135,7 +1178,9 @@ impl LLMService {
 
         // Step 4: Assemble context
         let system_tokens = count_tokens(SYSTEM_PROMPT);
-        let budget = config.max_tokens.saturating_sub(system_tokens + RESPONSE_TOKENS + 200);
+        let budget = config
+            .max_tokens
+            .saturating_sub(system_tokens + RESPONSE_TOKENS + 200);
         let context = assemble_context(&search_results, budget);
         let user_prompt = build_user_prompt(&context, query);
 
@@ -1209,31 +1254,53 @@ impl LLMService {
             match event {
                 Ok(Event::Message(msg)) => {
                     if msg.data == "[DONE]" {
-                        let _ = tx.send(StreamChunk { content: String::new(), done: true, thinking: None }).await;
+                        let _ = tx
+                            .send(StreamChunk {
+                                content: String::new(),
+                                done: true,
+                                thinking: None,
+                            })
+                            .await;
                         return Ok(());
                     }
 
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg.data) {
                         // Extract reasoning/thinking content (e.g. DeepSeek R1)
-                        if let Some(reasoning) = parsed["choices"][0]["delta"]["reasoning_content"].as_str() {
+                        if let Some(reasoning) =
+                            parsed["choices"][0]["delta"]["reasoning_content"].as_str()
+                        {
                             if !reasoning.is_empty() {
-                                let _ = tx.send(StreamChunk {
-                                    content: String::new(),
-                                    done: false,
-                                    thinking: Some(reasoning.to_string()),
-                                }).await;
+                                let _ = tx
+                                    .send(StreamChunk {
+                                        content: String::new(),
+                                        done: false,
+                                        thinking: Some(reasoning.to_string()),
+                                    })
+                                    .await;
                             }
                         }
                         // Extract visible text content
                         if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
                             let cleaned = scrub_response(content);
                             if !cleaned.is_empty() {
-                                let _ = tx.send(StreamChunk { content: cleaned, done: false, thinking: None }).await;
+                                let _ = tx
+                                    .send(StreamChunk {
+                                        content: cleaned,
+                                        done: false,
+                                        thinking: None,
+                                    })
+                                    .await;
                             }
                         }
                         if let Some(reason) = parsed["choices"][0]["finish_reason"].as_str() {
                             if !reason.is_empty() && reason != "null" {
-                                let _ = tx.send(StreamChunk { content: String::new(), done: true, thinking: None }).await;
+                                let _ = tx
+                                    .send(StreamChunk {
+                                        content: String::new(),
+                                        done: true,
+                                        thinking: None,
+                                    })
+                                    .await;
                                 return Ok(());
                             }
                         }
@@ -1247,7 +1314,13 @@ impl LLMService {
         }
 
         // Stream ended without explicit done marker
-        let _ = tx.send(StreamChunk { content: String::new(), done: true, thinking: None }).await;
+        let _ = tx
+            .send(StreamChunk {
+                content: String::new(),
+                done: true,
+                thinking: None,
+            })
+            .await;
         Ok(())
     }
 
@@ -1264,10 +1337,12 @@ impl LLMService {
         let api_messages: Vec<serde_json::Value> = messages
             .iter()
             .filter(|m| m.role != "system")
-            .map(|m| serde_json::json!({
-                "role": m.role,
-                "content": m.content
-            }))
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role,
+                    "content": m.content
+                })
+            })
             .collect();
 
         let body = serde_json::json!({
@@ -1293,43 +1368,59 @@ impl LLMService {
 
         while let Some(event) = es.next().await {
             match event {
-                Ok(Event::Message(msg)) => {
-                    match msg.event.as_str() {
-                        "content_block_delta" => {
-                            if let Ok(data) = serde_json::from_str::<serde_json::Value>(&msg.data) {
-                                if data["type"] == "content_block_delta" {
-                                    if let Some(delta) = data.get("delta") {
-                                        if delta["type"] == "text_delta" {
-                                            if let Some(text) = delta["text"].as_str() {
-                                                let cleaned = scrub_response(text);
-                                                if !cleaned.is_empty() {
-                                                    let _ = tx.send(StreamChunk { content: cleaned, done: false, thinking: None }).await;
-                                                }
+                Ok(Event::Message(msg)) => match msg.event.as_str() {
+                    "content_block_delta" => {
+                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&msg.data) {
+                            if data["type"] == "content_block_delta" {
+                                if let Some(delta) = data.get("delta") {
+                                    if delta["type"] == "text_delta" {
+                                        if let Some(text) = delta["text"].as_str() {
+                                            let cleaned = scrub_response(text);
+                                            if !cleaned.is_empty() {
+                                                let _ = tx
+                                                    .send(StreamChunk {
+                                                        content: cleaned,
+                                                        done: false,
+                                                        thinking: None,
+                                                    })
+                                                    .await;
                                             }
                                         }
                                     }
                                 }
                             }
                         }
-                        "message_delta" => {
-                            let _ = tx.send(StreamChunk { content: String::new(), done: true, thinking: None }).await;
-                            return Ok(());
-                        }
-                        "message_stop" => {
-                            let _ = tx.send(StreamChunk { content: String::new(), done: true, thinking: None }).await;
-                            return Ok(());
-                        }
-                        "error" => {
-                            if let Ok(data) = serde_json::from_str::<serde_json::Value>(&msg.data) {
-                                let err_msg = data["error"]["message"]
-                                    .as_str()
-                                    .unwrap_or("Unknown Anthropic stream error");
-                                return Err(format!("Anthropic stream error: {}", err_msg));
-                            }
-                        }
-                        _ => {}
                     }
-                }
+                    "message_delta" => {
+                        let _ = tx
+                            .send(StreamChunk {
+                                content: String::new(),
+                                done: true,
+                                thinking: None,
+                            })
+                            .await;
+                        return Ok(());
+                    }
+                    "message_stop" => {
+                        let _ = tx
+                            .send(StreamChunk {
+                                content: String::new(),
+                                done: true,
+                                thinking: None,
+                            })
+                            .await;
+                        return Ok(());
+                    }
+                    "error" => {
+                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&msg.data) {
+                            let err_msg = data["error"]["message"]
+                                .as_str()
+                                .unwrap_or("Unknown Anthropic stream error");
+                            return Err(format!("Anthropic stream error: {}", err_msg));
+                        }
+                    }
+                    _ => {}
+                },
                 Ok(Event::Open) => {}
                 Err(e) => {
                     return Err(format!("SSE error: {}", e));
@@ -1338,7 +1429,13 @@ impl LLMService {
         }
 
         // Stream ended without done marker
-        let _ = tx.send(StreamChunk { content: String::new(), done: true, thinking: None }).await;
+        let _ = tx
+            .send(StreamChunk {
+                content: String::new(),
+                done: true,
+                thinking: None,
+            })
+            .await;
         Ok(())
     }
 
@@ -1411,9 +1508,10 @@ impl LLMService {
         let messages = vec![
             ChatMessage {
                 role: "system".to_string(),
-                content: "你是一个对话摘要助手。提取关键信息，保持项目名、决策、技术选型、业务规则等。\
+                content:
+                    "你是一个对话摘要助手。提取关键信息，保持项目名、决策、技术选型、业务规则等。\
                          直接输出结构化摘要，不要前缀。"
-                    .to_string(),
+                        .to_string(),
             },
             ChatMessage {
                 role: "user".to_string(),
@@ -1455,7 +1553,8 @@ impl LLMService {
         let config = {
             let cfg = self.config.lock().map_err(|e| e.to_string())?;
             // Local models (non-standard) are allowed to have empty API key
-            let is_local = cfg.provider != LLMProvider::OpenAI && cfg.provider != LLMProvider::Anthropic;
+            let is_local =
+                cfg.provider != LLMProvider::OpenAI && cfg.provider != LLMProvider::Anthropic;
             if cfg.api_key.is_empty() && !is_local {
                 return Err("API Key 未配置".to_string());
             }
@@ -1550,10 +1649,7 @@ impl LLMService {
 
         let mut output = String::new();
         for (i, r) in results.iter().enumerate() {
-            let section = r
-                .section_path
-                .as_deref()
-                .unwrap_or("（无章节信息）");
+            let section = r.section_path.as_deref().unwrap_or("（无章节信息）");
             output.push_str(&format!(
                 "**{}. {}** （来源：{} | {}）\n{}\n\n",
                 i + 1,

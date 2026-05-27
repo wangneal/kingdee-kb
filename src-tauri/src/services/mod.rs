@@ -1,5 +1,4 @@
-﻿pub mod audio_capture;
-pub mod question_tool;
+pub mod audio_capture;
 pub mod bm25_service;
 pub mod chinese_postprocess;
 pub mod chunker;
@@ -20,13 +19,14 @@ pub mod model_downloader;
 pub mod product_store;
 pub mod prompts;
 pub mod question_recommend;
+pub mod question_tool;
 pub mod react_agent;
-pub mod rig_agent;
-pub mod rig_provider;
-pub mod rig_tool;
 pub mod research_indexer;
 pub mod research_outline;
 pub mod research_session;
+pub mod rig_agent;
+pub mod rig_provider;
+pub mod rig_tool;
 pub mod risk_control;
 pub mod smart_completion;
 pub mod template_common;
@@ -36,11 +36,8 @@ pub mod template_scanner;
 pub mod template_schema;
 pub mod template_xlsx;
 pub mod text_cleaner;
-pub mod tool_registry;
 pub mod traits;
 pub mod vector_index;
 pub mod video_transcriber;
 pub mod whisper_service;
 pub mod xlsx_filler;
-
-
