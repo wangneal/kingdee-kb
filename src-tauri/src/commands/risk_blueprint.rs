@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Emitter, State};
+use tauri::{Emitter, State};
 
 use crate::app_state::AppState;
 use crate::services::question_tool;

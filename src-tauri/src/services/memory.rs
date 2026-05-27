@@ -11,6 +11,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use crate::services::bm25_service::BM25Service;
 use crate::services::embedding::EmbeddingService;
 use crate::services::ingestion::ingest_text;
 use crate::services::llm_service::{ChatMessage, LLMService};
@@ -38,6 +39,7 @@ pub async fn save_chat_memory(
     embedding: &Arc<Mutex<EmbeddingService>>,
     vector_index: &Arc<Mutex<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
+    bm25: &Arc<Mutex<BM25Service>>,
 ) {
     // --- Semantic quality check: skip trivial conversations ---
     // Use LLM to judge whether the conversation contains substantive project
@@ -113,6 +115,7 @@ pub async fn save_chat_memory(
         embedding,
         vector_index,
         metadata,
+        bm25,
         None,
     );
 

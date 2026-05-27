@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{Manager, State};
+use tauri::State;
 
 use crate::app_state::AppState;
 use crate::services::embedding::{start_download_progress_polling, EmbeddingModelConfig};

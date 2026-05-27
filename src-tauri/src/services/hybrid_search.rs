@@ -16,6 +16,13 @@ use crate::services::vector_index::VectorIndex;
 /// RRF constant — higher k favors more uniform weighting across retrievers
 const RRF_K: f32 = 60.0;
 
+/// Per-retriever weights for weighted RRF fusion.
+///
+/// Vector search captures semantic similarity (higher weight for KB QA),
+/// BM25 captures exact keyword matches (lower weight as supplement).
+const VECTOR_WEIGHT: f32 = 2.0;
+const BM25_WEIGHT: f32 = 1.0;
+
 /// Number of candidates to fetch from each retriever before fusion
 const TOP_N: usize = 30;
 
@@ -55,10 +62,11 @@ struct ResolvedChunk {
 
 // ─── RRFR Fusion ───
 
-/// Compute Reciprocal Rank Fusion scores from two ranked result sets.
+/// Compute Weighted Reciprocal Rank Fusion scores from two ranked result sets.
 ///
-/// Each retriever returns `ResolvedChunk`s keyed by `chunk_id`. The RRF score
-/// for a document is `sum(1 / (k + rank))` across all retrievers where it appears.
+/// Each retriever returns `ResolvedChunk`s keyed by `chunk_id`. The weighted RRF
+/// score for a document is `sum(weight / (k + rank))` across all retrievers where
+/// it appears. Vector results get `VECTOR_WEIGHT=2.0`, BM25 gets `BM25_WEIGHT=1.0`.
 ///
 /// Returns a vec of `(chunk_id, fused_score)` sorted descending by score.
 fn rrf_fuse(
@@ -67,16 +75,16 @@ fn rrf_fuse(
 ) -> Vec<(i64, f32)> {
     let mut scores: HashMap<i64, f32> = HashMap::new();
 
-    // Vector results (rank is 0-based, so +1 for 1-based rank)
+    // Vector results (weighted: VECTOR_WEIGHT / (RRF_K + rank))
     for (rank, r) in vector_results.iter().enumerate() {
         let entry = scores.entry(r.chunk_id).or_insert(0.0);
-        *entry += 1.0 / (RRF_K + (rank + 1) as f32);
+        *entry += VECTOR_WEIGHT / (RRF_K + (rank + 1) as f32);
     }
 
-    // BM25 results
+    // BM25 results (weighted: BM25_WEIGHT / (RRF_K + rank))
     for (rank, r) in bm25_results.iter().enumerate() {
         let entry = scores.entry(r.chunk_id).or_insert(0.0);
-        *entry += 1.0 / (RRF_K + (rank + 1) as f32);
+        *entry += BM25_WEIGHT / (RRF_K + (rank + 1) as f32);
     }
 
     let mut fused: Vec<(i64, f32)> = scores.into_iter().collect();

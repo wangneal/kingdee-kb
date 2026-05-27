@@ -5,7 +5,7 @@ use crate::services::bm25_service::BM25SearchResult;
 use crate::services::hybrid_search::HybridSearchResult;
 use crate::services::llm_service::{ChatMessage, LLMConfig, RAGResponse, RAGSource, StreamChunk};
 use crate::services::memory;
-use crate::services::metadata::MetadataStore;
+
 
 /// 使用 BM25 按关键词搜索分块（jieba 分词 + tantivy 评分）
 #[tauri::command]
@@ -260,6 +260,8 @@ pub async fn save_chat_memory(
     let vector_index = state.vector_index.clone();
     let metadata = state.metadata.clone();
 
+    let bm25 = state.bm25.clone();
+
     tokio::spawn(async move {
         memory::save_chat_memory(
             &conversation,
@@ -268,6 +270,7 @@ pub async fn save_chat_memory(
             &embedding,
             &vector_index,
             &metadata,
+            &bm25,
         )
         .await;
     });

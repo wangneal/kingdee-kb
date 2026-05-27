@@ -199,6 +199,7 @@ pub async fn transcribe_and_ingest_video(
         &state.embedding,
         &state.vector_index,
         &state.metadata,
+        &state.bm25,
         None,
     )?;
 

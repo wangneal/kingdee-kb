@@ -2,7 +2,12 @@ use std::path::PathBuf;
 use tauri::{AppHandle, State};
 
 use crate::app_state::AppState;
-use crate::services::ingestion::{DirectoryIngestionResult, IngestionResult, ingest_text as ingest_text_fn, ingest_file as ingest_file_fn, ingest_directory as ingest_directory_fn};
+use crate::services::ingestion::{
+    DirectoryIngestionResult, IngestionResult,
+    ingest_text as ingest_text_fn,
+    ingest_file as ingest_file_fn,
+    ingest_directory as ingest_directory_fn,
+};
 
 /// 摄入纯文本（来自粘贴或文本框）
 #[tauri::command]
@@ -20,6 +25,7 @@ pub async fn ingest_text(
         &state.embedding,
         &state.vector_index,
         &state.metadata,
+        &state.bm25,
         Some(&app),
     )
 }
@@ -38,6 +44,7 @@ pub async fn ingest_file(
         &state.embedding,
         &state.vector_index,
         &state.metadata,
+        &state.bm25,
         Some(&app),
     )
 }
@@ -56,6 +63,7 @@ pub async fn ingest_directory(
         &state.embedding,
         &state.vector_index,
         &state.metadata,
+        &state.bm25,
         Some(&app),
     )
 }
