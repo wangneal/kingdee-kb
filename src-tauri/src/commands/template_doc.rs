@@ -43,6 +43,7 @@ pub async fn extract_template_fields(file_path: String) -> Result<Vec<FieldInfo>
                     field_type: f.field_type,
                     context: f.cell_refs.join(", "),
                     count: f.count,
+                    source: f.source,
                 })
                 .collect())
         }

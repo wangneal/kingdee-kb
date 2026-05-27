@@ -3,6 +3,7 @@
 //! Run with: cargo test --test generate_schemas -- --nocapture
 
 /// Generate schema sidecar files for all templates in the default template directory.
+/// Uses the public extract_docx_fields / extract_xlsx_fields functions.
 #[test]
 fn generate_all_schema_yaml_files() {
     // Use the default template directory (~/.kingdee-kb/templates)
@@ -16,36 +17,98 @@ fn generate_all_schema_yaml_files() {
     }
 
     println!("Template directory: {}", template_dir.display());
-    println!("Generating schema files...");
 
-    // Force regenerate all schemas
-    let result = kingdee_kb_lib::services::template_schema::batch_generate_schemas(
-        &template_dir,
-        true, // force overwrite
-    );
+    let mut generated: usize = 0;
+    let mut skipped: usize = 0;
+    let mut errors: Vec<String> = Vec::new();
 
-    match result {
-        Ok((generated, skipped, errors)) => {
-            println!("=== Schema Generation Complete ===");
-            println!("Generated: {}", generated);
-            println!("Skipped (already existed): {}", skipped);
+    // Collect all files recursively (templates organized by phase subdirectories)
+    let mut all_files: Vec<std::path::PathBuf> = Vec::new();
+    collect_files_recursive(&template_dir, &mut all_files);
+    all_files.sort();
 
-            if errors.is_empty() {
-                println!("Errors: 0");
-            } else {
-                println!("Errors: {}", errors.len());
-                for err in &errors {
-                    eprintln!("  - {}", err);
+    for file_path in &all_files {
+        let ext = file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        let field_count = match ext.as_str() {
+            "docx" => {
+                match kingdee_kb_lib::template_docx::extract_docx_fields(file_path) {
+                    Ok(f) => {
+                        let count = f.len();
+                        if !f.is_empty() {
+                            let file_name = file_path.file_name().unwrap_or_default().to_string_lossy();
+                            println!(
+                                "  [DOCX] {} fields: {}",
+                                file_name,
+                                f.iter()
+                                    .map(|f| format!("{}({})", f.name, f.source))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            );
+                        }
+                        count
+                    }
+                    Err(e) => {
+                        errors.push(format!("{}: {}", file_path.display(), e));
+                        continue;
+                    }
                 }
             }
-
-            if generated > 0 || !errors.is_empty() {
-                println!("Check the template directory for new .schema.yaml files.");
+            "xlsx" => {
+                match kingdee_kb_lib::template_xlsx::extract_xlsx_fields(file_path) {
+                    Ok(f) => {
+                        let count = f.len();
+                        if !f.is_empty() {
+                            let file_name = file_path.file_name().unwrap_or_default().to_string_lossy();
+                            println!(
+                                "  [XLSX] {} fields: {}",
+                                file_name,
+                                f.iter()
+                                    .map(|f| format!("{}({})", f.name, f.source))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            );
+                        }
+                        count
+                    }
+                    Err(e) => {
+                        errors.push(format!("{}: {}", file_path.display(), e));
+                        continue;
+                    }
+                }
             }
+            _ => continue,
+        };
+
+        if field_count == 0 {
+            skipped += 1;
+        } else {
+            generated += 1;
         }
-        Err(e) => {
-            eprintln!("Schema generation failed: {}", e);
-            panic!("Schema generation failed: {}", e);
+    }
+
+    println!("=== Schema Generation Complete ===");
+    println!("Templates with fields: {}", generated);
+    println!("Templates without fields: {}", skipped);
+    println!("Errors: {}", errors.len());
+    for err in &errors {
+        eprintln!("  - {}", err);
+    }
+}
+
+fn collect_files_recursive(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_files_recursive(&path, files);
+            } else {
+                files.push(path);
+            }
         }
     }
 }

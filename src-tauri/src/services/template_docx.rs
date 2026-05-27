@@ -1,6 +1,11 @@
 //! Docx field placeholder extractor
 //!
-//! Parses .docx files to find `{field_name}` placeholders in document.xml.
+//! Parses .docx files to find field placeholders in document.xml.
+//! Supports three Kingdee template formats:
+//!   1. `{field_name}` — brace-style placeholders
+//!   2. `XXXX字段名` — Kingdee XXXX-style placeholders (most common in 金蝶 templates)
+//!   3. SDT content controls with alias/tag/title attributes
+//!
 //! Handles Word's split-run problem by merging adjacent runs before regex matching.
 
 use regex::Regex;
@@ -13,7 +18,7 @@ use std::path::Path;
 /// Field placeholder extracted from a docx template
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldInfo {
-    /// Field name (e.g., "项目名称", "调研日期")
+    /// Field name (e.g., "客户名称", "调研日期")
     pub name: String,
     /// Inferred field type: "text", "number", "date"
     pub field_type: String,
@@ -21,15 +26,22 @@ pub struct FieldInfo {
     pub context: String,
     /// Occurrence count in the document
     pub count: usize,
+    /// Source format: "brace", "xxxx", "sdt"
+    #[serde(default = "default_source")]
+    pub source: String,
 }
 
-/// Extract all `{field_name}` placeholders from a .docx file.
+fn default_source() -> String {
+    "brace".to_string()
+}
+
+/// Extract all field placeholders from a .docx file.
 ///
 /// Strategy:
 /// 1. Open .docx as ZIP archive
 /// 2. Extract word/document.xml
 /// 3. Parse XML to collect all `<w:t>` text nodes in order (merging across runs)
-/// 4. Apply regex `\{([^}]+)\}` on the merged text to find placeholders
+/// 4. Extract fields from multiple formats: `{name}`, `XXXX名称`, SDT controls
 /// 5. Return deduplicated field list with context
 pub fn extract_docx_fields(file_path: &Path) -> Result<Vec<FieldInfo>, String> {
     let file =
@@ -49,39 +61,124 @@ pub fn extract_docx_fields(file_path: &Path) -> Result<Vec<FieldInfo>, String> {
     // Extract all text content, handling split runs
     let merged_text = merge_runs(&document_xml)?;
 
-    // Find all {field_name} patterns
-    let re = Regex::new(r"\{([^}]+)\}").map_err(|e| format!("Regex error: {}", e))?;
+    // Collect fields from all formats
+    let mut fields: BTreeMap<String, (usize, String, String)> = BTreeMap::new();
 
-    let mut fields: BTreeMap<String, (usize, String)> = BTreeMap::new();
+    // 1. Brace-style: {field_name}
+    extract_brace_fields(&merged_text, &mut fields);
 
-    for cap in re.captures_iter(&merged_text) {
-        let field_name = cap[1].to_string();
-        // SAFE: cap.get(0) always exists in captures_iter (full match)
-        let match_start = cap.get(0).map_or(0, |m| m.start());
+    // 2. Kingdee XXXX-style: XXXX字段名
+    extract_xxxx_fields(&merged_text, &mut fields);
 
-        // Extract context: ~50 chars before and after
-        let ctx_start = match_start.saturating_sub(30);
-        let ctx_end = (match_start + cap[0].len() + 30).min(merged_text.len());
-        let context = merged_text[ctx_start..ctx_end]
-            .chars()
-            .collect::<String>()
-            .replace('\n', " ");
-
-        let entry = fields.entry(field_name.clone()).or_insert((0, context));
-        entry.0 += 1;
-    }
+    // 3. SDT content controls with alias/tag/title
+    extract_sdt_fields(&document_xml, &mut fields);
 
     let result: Vec<FieldInfo> = fields
         .into_iter()
-        .map(|(name, (count, context))| FieldInfo {
+        .map(|(name, (count, context, source))| FieldInfo {
             field_type: infer_field_type(&name),
             name,
             context,
             count,
+            source,
         })
         .collect();
 
     Ok(result)
+}
+
+/// Extract `{field_name}` brace-style placeholders.
+fn extract_brace_fields(
+    merged_text: &str,
+    fields: &mut BTreeMap<String, (usize, String, String)>,
+) {
+    let re = Regex::new(r"\{([^}]+)\}").unwrap();
+
+    for cap in re.captures_iter(merged_text) {
+        let field_name = cap[1].trim().to_string();
+        if field_name.is_empty() {
+            continue;
+        }
+        let context = extract_context(merged_text, cap.get(0).map_or(0, |m| m.start()), cap.get(0).map_or(0, |m| m.len()));
+
+        let entry = fields.entry(field_name).or_insert((0, context, "brace".to_string()));
+        entry.0 += 1;
+    }
+}
+
+/// Extract `XXXX字段名` Kingdee-style placeholders.
+///
+/// Kingdee templates use `XXXX` as a visual placeholder marker followed by the field name
+/// in Chinese characters. The field name extends until a non-field character is encountered.
+///
+/// Examples from real templates:
+///   - "XXXX客户名称" → field "客户名称"
+///   - "XXXX项目风险跟踪记录表" → field "项目风险跟踪记录表" (but too long, likely a title)
+///   - "XXXX系统" → field "系统"
+fn extract_xxxx_fields(
+    merged_text: &str,
+    fields: &mut BTreeMap<String, (usize, String, String)>,
+) {
+    // Match XXXX followed by 1-20 Chinese/word characters (the field name)
+    let re = Regex::new(r"XXXX([\u4e00-\u9fff][\u4e00-\u9fff\w/（）()\-]{0,19})").unwrap();
+
+    for cap in re.captures_iter(merged_text) {
+        let field_name = cap[1].trim().to_string();
+        // Filter out very long names (>10 chars) which are likely titles/sentences, not field names
+        // Also filter out single-char names (too ambiguous)
+        if field_name.is_empty() || field_name.len() > 30 || field_name.chars().count() > 10 {
+            continue;
+        }
+        // Skip if already found via brace pattern (brace takes priority)
+        if fields.contains_key(&field_name) {
+            continue;
+        }
+
+        let context = extract_context(merged_text, cap.get(0).map_or(0, |m| m.start()), cap.get(0).map_or(0, |m| m.len()));
+
+        let entry = fields.entry(field_name).or_insert((0, context, "xxxx".to_string()));
+        entry.0 += 1;
+    }
+}
+
+/// Extract SDT content control field names from alias, tag, or title attributes.
+///
+/// Note: In real Kingdee templates, SDT blocks are typically used for TOC (table of contents)
+/// rather than form fields, so this extractor often returns nothing useful.
+fn extract_sdt_fields(
+    document_xml: &str,
+    fields: &mut BTreeMap<String, (usize, String, String)>,
+) {
+    // Match SDT alias: <w:alias w:val="..."/>
+    let alias_re = Regex::new(r#"<w:alias[^>]*w:val="([^"]+)""#).unwrap();
+    for cap in alias_re.captures_iter(document_xml) {
+        let name = cap[1].trim().to_string();
+        if !name.is_empty() && !fields.contains_key(&name) {
+            fields.insert(name, (1, "SDT alias".to_string(), "sdt".to_string()));
+        }
+    }
+
+    // Match SDT tag: <w:tag w:val="..."/> (only if value looks like a field name, not a GUID)
+    let tag_re = Regex::new(r#"<w:tag[^>]*w:val="([^"]+)""#).unwrap();
+    for cap in tag_re.captures_iter(document_xml) {
+        let val = cap[1].trim().to_string();
+        // Skip GUIDs and numeric-only tags
+        if val.is_empty() || val.contains('-') && val.len() > 20 {
+            continue;
+        }
+        if !fields.contains_key(&val) {
+            fields.insert(val, (1, "SDT tag".to_string(), "sdt".to_string()));
+        }
+    }
+
+    // Match SDT title: <w:title w:val="..."/>
+    let title_re = Regex::new(r#"<w:title[^>]*w:val="([^"]+)""#).unwrap();
+    for cap in title_re.captures_iter(document_xml) {
+        let name = cap[1].trim().to_string();
+        if !name.is_empty() && !fields.contains_key(&name) {
+            fields.insert(name, (1, "SDT title".to_string(), "sdt".to_string()));
+        }
+    }
 }
 
 /// Merge text runs from document.xml to handle Word's split-run problem.
@@ -136,6 +233,44 @@ fn merge_runs(xml: &str) -> Result<String, String> {
     }
 
     Ok(text_buffer)
+}
+
+/// Extract a context window around a match position, safe for multi-byte (UTF-8) strings.
+///
+/// Takes ~30 chars before and after the match, handling char boundaries correctly.
+fn extract_context(text: &str, match_start: usize, match_len: usize) -> String {
+    // Convert byte positions to char positions for safe slicing
+    let chars: Vec<char> = text.chars().collect();
+    let total_chars = chars.len();
+
+    // Find the char index corresponding to the byte position
+    let mut byte_pos = 0;
+    let mut char_match_start = 0;
+    let mut char_match_end = 0;
+    let mut found_start = false;
+
+    for (i, ch) in chars.iter().enumerate() {
+        if byte_pos >= match_start && !found_start {
+            char_match_start = i;
+            found_start = true;
+        }
+        if byte_pos >= match_start + match_len && char_match_end == 0 {
+            char_match_end = i;
+            break;
+        }
+        byte_pos += ch.len_utf8();
+    }
+    if char_match_end == 0 {
+        char_match_end = total_chars;
+    }
+
+    let ctx_start = char_match_start.saturating_sub(30);
+    let ctx_end = (char_match_end + 30).min(total_chars);
+
+    chars[ctx_start..ctx_end]
+        .iter()
+        .collect::<String>()
+        .replace('\n', " ")
 }
 
 /// Infer field type from the field name.

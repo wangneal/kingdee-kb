@@ -8,6 +8,9 @@ use std::sync::Mutex;
 use tauri::Manager;
 
 pub use commands::core::{SetupState, ensure_data_dir, setup_backend};
+pub use services::template_docx;
+pub use services::template_xlsx;
+pub use services::template_schema;
 
 /// 在线 ASR 配置存储（腾讯/讯飞）
 pub struct AsrConfigStore {
