@@ -78,7 +78,10 @@ pub fn check_ffmpeg_available() -> (bool, String) {
     if ffmpeg_path.exists() {
         (true, ffmpeg_path.display().to_string())
     } else {
-        (false, "FFmpeg 二进制尚未下载，首次使用时将自动下载".to_string())
+        (
+            false,
+            "FFmpeg 二进制尚未下载，首次使用时将自动下载".to_string(),
+        )
     }
 }
 
@@ -90,18 +93,18 @@ pub fn extract_audio_to_file(
     video_path: &Path,
     data_dir: &Path,
 ) -> Result<(std::path::PathBuf, f32), String> {
-    let video_str = video_path
-        .to_str()
-        .ok_or("视频文件路径包含非法字符")?;
+    let video_str = video_path.to_str().ok_or("视频文件路径包含非法字符")?;
 
     let ffmpeg_path = ffmpeg_sidecar::paths::ffmpeg_path();
 
-    eprintln!("[VideoTranscriber] Using ffmpeg at: {}", ffmpeg_path.display());
+    eprintln!(
+        "[VideoTranscriber] Using ffmpeg at: {}",
+        ffmpeg_path.display()
+    );
 
     // 创建临时 PCM 文件
     let temp_dir = data_dir.join("video_temp");
-    std::fs::create_dir_all(&temp_dir)
-        .map_err(|e| format!("创建临时目录失败: {}", e))?;
+    std::fs::create_dir_all(&temp_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
 
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -114,13 +117,18 @@ pub fn extract_audio_to_file(
 
     let status = std::process::Command::new(&ffmpeg_path)
         .args([
-            "-i", video_str,
-            "-vn",           // no video
-            "-ac", "1",      // mono
-            "-ar", "16000",  // 16kHz
-            "-f", "f32le",   // raw float32 little-endian
-            "-acodec", "pcm_f32le",
-            "-y",            // overwrite
+            "-i",
+            video_str,
+            "-vn", // no video
+            "-ac",
+            "1", // mono
+            "-ar",
+            "16000", // 16kHz
+            "-f",
+            "f32le", // raw float32 little-endian
+            "-acodec",
+            "pcm_f32le",
+            "-y", // overwrite
             temp_str,
         ])
         .stdout(Stdio::null())
@@ -173,10 +181,11 @@ pub fn transcribe_chunks<F>(
 where
     F: FnMut(usize, usize),
 {
-    let mut file = std::fs::File::open(pcm_path)
-        .map_err(|e| format!("打开 PCM 文件失败: {}", e))?;
+    let mut file =
+        std::fs::File::open(pcm_path).map_err(|e| format!("打开 PCM 文件失败: {}", e))?;
 
-    let file_size = file.metadata()
+    let file_size = file
+        .metadata()
         .map_err(|e| format!("读取 PCM 文件信息失败: {}", e))?
         .len();
 
@@ -203,7 +212,8 @@ where
     let mut chunk_idx = 0usize;
 
     loop {
-        let bytes_read = file.read(&mut buf)
+        let bytes_read = file
+            .read(&mut buf)
             .map_err(|e| format!("读取 PCM 文件失败: {}", e))?;
 
         if bytes_read == 0 {
@@ -346,7 +356,11 @@ pub fn generate_meeting_minutes(
 pub fn cleanup_temp_file(path: &Path) {
     if path.exists() {
         if let Err(e) = std::fs::remove_file(path) {
-            eprintln!("[VideoTranscriber] Failed to cleanup temp file {}: {}", path.display(), e);
+            eprintln!(
+                "[VideoTranscriber] Failed to cleanup temp file {}: {}",
+                path.display(),
+                e
+            );
         }
     }
 }

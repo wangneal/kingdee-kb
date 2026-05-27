@@ -29,7 +29,9 @@ fn random_vector(dim: usize, seed: u64) -> Vec<f32> {
     let mut v = Vec::with_capacity(dim);
     let mut s = seed;
     for _ in 0..dim {
-        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         v.push(((s as f64 / u64::MAX as f64) * 2.0 - 1.0) as f32);
     }
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -56,7 +58,11 @@ fn spike_usearch_hnsw_roundtrip() {
     let index: Index = new_index(&options).expect("Failed to create index");
     assert_eq!(index.size(), 0);
     assert_eq!(index.dimensions(), 512);
-    println!("[SPIKE] Index created: dims={}, conn={}", index.dimensions(), index.connectivity());
+    println!(
+        "[SPIKE] Index created: dims={}, conn={}",
+        index.dimensions(),
+        index.connectivity()
+    );
 
     // ─── 2. Reserve and add vectors ───
     index.reserve(10).expect("Failed to reserve");
@@ -77,8 +83,14 @@ fn spike_usearch_hnsw_roundtrip() {
     let results = index.search(&v0, 3).expect("Search failed");
     assert!(!results.keys.is_empty());
     assert_eq!(results.keys[0], 100, "Self should be first");
-    println!("[SPIKE] Search: keys={:?}, distances={:?}", results.keys, results.distances);
-    assert!(results.distances[0] < 0.01, "Self cos distance should be near 0");
+    println!(
+        "[SPIKE] Search: keys={:?}, distances={:?}",
+        results.keys, results.distances
+    );
+    assert!(
+        results.distances[0] < 0.01,
+        "Self cos distance should be near 0"
+    );
 
     // ─── 4. Persist to temp file ───
     let tmp = tempfile::tempdir().expect("Failed to create temp dir");
@@ -90,8 +102,13 @@ fn spike_usearch_hnsw_roundtrip() {
 
     // ─── 5. Reload from disk ───
     let options2 = IndexOptions {
-        dimensions: 512, metric: MetricKind::Cos, quantization: ScalarKind::BF16,
-        connectivity: 16, expansion_add: 200, expansion_search: 64, multi: false,
+        dimensions: 512,
+        metric: MetricKind::Cos,
+        quantization: ScalarKind::BF16,
+        connectivity: 16,
+        expansion_add: 200,
+        expansion_search: 64,
+        multi: false,
     };
     let index2: Index = new_index(&options2).expect("Failed to create index2");
     index2.load(path_str).expect("Failed to load index");
@@ -99,7 +116,9 @@ fn spike_usearch_hnsw_roundtrip() {
     println!("[SPIKE] Index reloaded, size: {}", index2.size());
 
     // Verify search after reload
-    let results2 = index2.search(&v0, 3).expect("Search on loaded index failed");
+    let results2 = index2
+        .search(&v0, 3)
+        .expect("Search on loaded index failed");
     assert_eq!(results2.keys[0], 100);
     for i in 0..results.keys.len() {
         assert_eq!(results2.keys[i], results.keys[i], "Key mismatch at {}", i);
@@ -110,7 +129,10 @@ fn spike_usearch_hnsw_roundtrip() {
     index2.remove(101).expect("Failed to remove key 101");
     assert_eq!(index2.size(), 3);
     let results3 = index2.search(&v0, 4).expect("Search after remove");
-    assert!(!results3.keys.iter().any(|&k| k == 101), "Removed key should not appear");
+    assert!(
+        !results3.keys.iter().any(|&k| k == 101),
+        "Removed key should not appear"
+    );
     println!("[SPIKE] After remove (size=3): keys={:?}", results3.keys);
 
     println!("[SPIKE] All assertions passed!");
@@ -123,13 +145,22 @@ fn spike_cosine_similarity() {
     let c = vec![0.0, 1.0, 0.0];
     let d = vec![-1.0, 0.0, 0.0];
     assert!((cosine_similarity(&a, &b) - 1.0).abs() < 0.001, "Identical");
-    assert!((cosine_similarity(&a, &c) - 0.0).abs() < 0.001, "Orthogonal");
+    assert!(
+        (cosine_similarity(&a, &c) - 0.0).abs() < 0.001,
+        "Orthogonal"
+    );
     assert!((cosine_similarity(&a, &d) + 1.0).abs() < 0.001, "Opposite");
     let v1 = random_vector(512, 42);
     let v2 = random_vector(512, 42);
-    assert!((cosine_similarity(&v1, &v2) - 1.0).abs() < 0.001, "Same seed");
+    assert!(
+        (cosine_similarity(&v1, &v2) - 1.0).abs() < 0.001,
+        "Same seed"
+    );
     let v3 = random_vector(512, 99);
     let sim = cosine_similarity(&v1, &v3);
     assert!(sim < 1.0 && sim > -1.0, "Random vectors sim in range");
-    println!("[SPIKE] Cosine similarity tests passed! v1-v3 sim: {:.4}", sim);
+    println!(
+        "[SPIKE] Cosine similarity tests passed! v1-v3 sim: {:.4}",
+        sim
+    );
 }

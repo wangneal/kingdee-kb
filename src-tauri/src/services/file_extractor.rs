@@ -4,6 +4,7 @@
 //! - Markdown / TXT：直接读取纯文本
 //! - HTML：读取后去除标签（由 text_cleaner 处理）
 //! - PDF：使用 pdf-extract crate 提取文本
+//! - DOC：使用本机 Microsoft Word COM 提取文本（需要安装 Word）
 //! - DOCX：解压 ZIP → 解析 word/document.xml → 提取 <w:t> 文本
 //! - XLSX/XLS：使用 umya-spreadsheet 读取每个 sheet 的单元格文本
 
@@ -30,6 +31,7 @@ pub fn extract_text(file_path: &Path) -> Result<String, String> {
         "pdf" => extract_pdf_text(file_path),
 
         // DOCX：解压 ZIP 并提取 XML 文本
+        "doc" => super::research_outline::parse_doc_file(file_path),
         "docx" => extract_docx_text(file_path),
 
         // Excel：使用 umya-spreadsheet
@@ -50,7 +52,7 @@ pub fn extract_text(file_path: &Path) -> Result<String, String> {
 /// 获取所有支持的文件扩展名
 pub fn supported_extensions() -> &'static [&'static str] {
     &[
-        "md", "txt", "text", "markdown", "html", "htm", "pdf", "docx", "xlsx", "xls",
+        "md", "txt", "text", "markdown", "html", "htm", "pdf", "doc", "docx", "xlsx", "xls",
         // Phase 14: Video/Audio formats (require transcription pipeline)
         "mp4", "webm", "avi", "mov", "mkv", "flv", "wmv", "m4a", "mp3", "wav",
     ]
@@ -130,9 +132,11 @@ fn extract_docx_text(file_path: &Path) -> Result<String, String> {
     // 解析 XML 提取文本
     let text = extract_text_from_docx_xml(&document_xml)?;
 
-    eprintln!("[DOCX] 提取文本长度: {} chars, 前200字: {:?}", 
-        text.len(), 
-        text.chars().take(200).collect::<String>());
+    eprintln!(
+        "[DOCX] 提取文本长度: {} chars, 前200字: {:?}",
+        text.len(),
+        text.chars().take(200).collect::<String>()
+    );
 
     if text.trim().is_empty() {
         return Err(format!("DOCX 文件内容为空: {:?}", file_path.display()));
@@ -161,9 +165,7 @@ fn extract_text_from_docx_xml(xml: &str) -> Result<String, String> {
             }
             Ok(Event::Text(ref e)) => {
                 if in_text_node {
-                    let text = e
-                        .unescape()
-                        .map_err(|e| format!("XML 反转义错误: {}", e))?;
+                    let text = e.unescape().map_err(|e| format!("XML 反转义错误: {}", e))?;
                     text_buffer.push_str(&text);
                 }
             }
@@ -290,7 +292,8 @@ fn extract_xls_text(file_path: &Path) -> Result<String, String> {
     let mut text_buffer = String::new();
 
     for sheet_name in &sheet_names {
-        let range = workbook.worksheet_range(sheet_name)
+        let range = workbook
+            .worksheet_range(sheet_name)
             .map_err(|e| format!("读取工作表 {} 失败: {}", sheet_name, e))?;
 
         if !text_buffer.is_empty() {
@@ -341,6 +344,7 @@ mod tests {
         assert!(is_supported(Path::new("test.md")));
         assert!(is_supported(Path::new("test.txt")));
         assert!(is_supported(Path::new("test.pdf")));
+        assert!(is_supported(Path::new("test.doc")));
         assert!(is_supported(Path::new("test.docx")));
         assert!(is_supported(Path::new("test.xlsx")));
         assert!(is_supported(Path::new("test.html")));

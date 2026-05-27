@@ -37,15 +37,21 @@ trait SampleToF32 {
 }
 
 impl SampleToF32 for f32 {
-    fn to_f32_(&self) -> f32 { *self }
+    fn to_f32_(&self) -> f32 {
+        *self
+    }
 }
 
 impl SampleToF32 for i16 {
-    fn to_f32_(&self) -> f32 { *self as f32 / 32768.0 }
+    fn to_f32_(&self) -> f32 {
+        *self as f32 / 32768.0
+    }
 }
 
 impl SampleToF32 for u16 {
-    fn to_f32_(&self) -> f32 { (*self as f32 - 32768.0) / 32768.0 }
+    fn to_f32_(&self) -> f32 {
+        (*self as f32 - 32768.0) / 32768.0
+    }
 }
 
 /// Recording state info for frontend
@@ -154,13 +160,28 @@ impl AudioCapture {
         let temp_path = self.temp_file_path();
         let temp_file = File::create(&temp_path)
             .map_err(|e| format!("Failed to create temp audio file: {}", e))?;
-        eprintln!("[AudioCapture] Crash-safe temp file: {}", temp_path.display());
+        eprintln!(
+            "[AudioCapture] Crash-safe temp file: {}",
+            temp_path.display()
+        );
 
         // Mark as recording
         self.state.is_recording.store(true, Ordering::SeqCst);
-        *self.state.start_time.lock().map_err(|e| format!("Lock error: {}", e))? = Some(Instant::now());
-        self.state.buffer.lock().map_err(|e| format!("Lock error: {}", e))?.clear();
-        *self.state.temp_file.lock().map_err(|e| format!("Lock error: {}", e))? = Some(temp_file);
+        *self
+            .state
+            .start_time
+            .lock()
+            .map_err(|e| format!("Lock error: {}", e))? = Some(Instant::now());
+        self.state
+            .buffer
+            .lock()
+            .map_err(|e| format!("Lock error: {}", e))?
+            .clear();
+        *self
+            .state
+            .temp_file
+            .lock()
+            .map_err(|e| format!("Lock error: {}", e))? = Some(temp_file);
 
         let capture_state = self.state.clone();
         let target_rate = 16000u32;
@@ -172,9 +193,30 @@ impl AudioCapture {
             };
 
             let stream_result = match sample_format {
-                SampleFormat::F32 => build_stream::<f32>(&device, &config, capture_state.clone(), device_sample_rate, target_rate, err_fn),
-                SampleFormat::I16 => build_stream::<i16>(&device, &config, capture_state.clone(), device_sample_rate, target_rate, err_fn),
-                SampleFormat::U16 => build_stream::<u16>(&device, &config, capture_state.clone(), device_sample_rate, target_rate, err_fn),
+                SampleFormat::F32 => build_stream::<f32>(
+                    &device,
+                    &config,
+                    capture_state.clone(),
+                    device_sample_rate,
+                    target_rate,
+                    err_fn,
+                ),
+                SampleFormat::I16 => build_stream::<i16>(
+                    &device,
+                    &config,
+                    capture_state.clone(),
+                    device_sample_rate,
+                    target_rate,
+                    err_fn,
+                ),
+                SampleFormat::U16 => build_stream::<u16>(
+                    &device,
+                    &config,
+                    capture_state.clone(),
+                    device_sample_rate,
+                    target_rate,
+                    err_fn,
+                ),
                 sf => {
                     eprintln!("[AudioCapture] Unsupported sample format: {:?}", sf);
                     capture_state.is_recording.store(false, Ordering::SeqCst);
@@ -223,22 +265,36 @@ impl AudioCapture {
         // Let the audio thread exit and stream drop
         std::thread::sleep(std::time::Duration::from_millis(200));
 
-        let mut start = self.state.start_time.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let mut start = self
+            .state
+            .start_time
+            .lock()
+            .map_err(|e| format!("Lock error: {}", e))?;
         *start = None;
 
         // Read buffer (primary source for Whisper)
-        let mut buf = self.state.buffer.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let mut buf = self
+            .state
+            .buffer
+            .lock()
+            .map_err(|e| format!("Lock error: {}", e))?;
         let buffer = std::mem::take(&mut *buf);
 
         // Close and clean up temp file
-        let mut temp_file = self.state.temp_file.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let mut temp_file = self
+            .state
+            .temp_file
+            .lock()
+            .map_err(|e| format!("Lock error: {}", e))?;
         if let Some(mut file) = temp_file.take() {
             let _ = file.flush();
             // Get the file path from the file (best effort)
             if let Ok(metadata) = file.metadata() {
-                eprintln!("[AudioCapture] Temp file size: {} bytes ({} samples)",
+                eprintln!(
+                    "[AudioCapture] Temp file size: {} bytes ({} samples)",
                     metadata.len(),
-                    metadata.len() / 4);
+                    metadata.len() / 4
+                );
             }
         }
 
@@ -259,12 +315,13 @@ impl AudioCapture {
     /// Get current recording state info.
     pub fn recording_state(&self) -> AudioRecordingState {
         let is_recording = self.state.is_recording.load(Ordering::SeqCst);
-        let duration_ms = self.state.start_time.lock()
+        let duration_ms = self
+            .state
+            .start_time
+            .lock()
             .map(|s| s.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0))
             .unwrap_or(0);
-        let buffer_size = self.state.buffer.lock()
-            .map(|b| b.len())
-            .unwrap_or(0);
+        let buffer_size = self.state.buffer.lock().map(|b| b.len()).unwrap_or(0);
 
         AudioRecordingState {
             is_recording,
@@ -338,53 +395,55 @@ where
     let channels = config.channels as usize;
     let resample_ratio = target_rate as f64 / device_rate as f64;
 
-    let stream = device.build_input_stream(
-        config,
-        move |data: &[T], _: &cpal::InputCallbackInfo| {
-            // Convert to f32 mono
-            let samples: Vec<f32> = data
-                .chunks(channels)
-                .filter_map(|chunk| {
-                    if chunk.is_empty() {
-                        return None;
+    let stream = device
+        .build_input_stream(
+            config,
+            move |data: &[T], _: &cpal::InputCallbackInfo| {
+                // Convert to f32 mono
+                let samples: Vec<f32> = data
+                    .chunks(channels)
+                    .filter_map(|chunk| {
+                        if chunk.is_empty() {
+                            return None;
+                        }
+                        let sum: f32 = chunk.iter().map(|s| s.to_f32_()).sum();
+                        Some(sum / chunk.len() as f32)
+                    })
+                    .collect();
+
+                // Simple linear resampling to target rate
+                let resampled = if (device_rate as i32 - target_rate as i32).abs() > 100 {
+                    resample(&samples, resample_ratio)
+                } else {
+                    samples
+                };
+
+                // Write to in-memory buffer
+                if let Ok(mut buf) = state.buffer.lock() {
+                    if state.is_recording.load(Ordering::SeqCst) {
+                        buf.extend_from_slice(&resampled);
                     }
-                    let sum: f32 = chunk.iter().map(|s| s.to_f32_()).sum();
-                    Some(sum / chunk.len() as f32)
-                })
-                .collect();
-
-            // Simple linear resampling to target rate
-            let resampled = if (device_rate as i32 - target_rate as i32).abs() > 100 {
-                resample(&samples, resample_ratio)
-            } else {
-                samples
-            };
-
-            // Write to in-memory buffer
-            if let Ok(mut buf) = state.buffer.lock() {
-                if state.is_recording.load(Ordering::SeqCst) {
-                    buf.extend_from_slice(&resampled);
                 }
-            }
 
-            // CRASH SAFETY: Also write raw f32 bytes to temp file immediately.
-            // Even if power is lost, only this ~10ms chunk is gone.
-            if let Ok(mut file_guard) = state.temp_file.lock() {
-                if let Some(ref mut file) = *file_guard {
-                    let bytes: &[u8] = unsafe {
-                        std::slice::from_raw_parts(
-                            resampled.as_ptr() as *const u8,
-                            resampled.len() * 4,
-                        )
-                    };
-                    let _ = file.write_all(bytes);
-                    let _ = file.flush();
+                // CRASH SAFETY: Also write raw f32 bytes to temp file immediately.
+                // Even if power is lost, only this ~10ms chunk is gone.
+                if let Ok(mut file_guard) = state.temp_file.lock() {
+                    if let Some(ref mut file) = *file_guard {
+                        let bytes: &[u8] = unsafe {
+                            std::slice::from_raw_parts(
+                                resampled.as_ptr() as *const u8,
+                                resampled.len() * 4,
+                            )
+                        };
+                        let _ = file.write_all(bytes);
+                        let _ = file.flush();
+                    }
                 }
-            }
-        },
-        err_fn,
-        None,
-    ).map_err(|e| format!("Failed to build input stream: {}", e))?;
+            },
+            err_fn,
+            None,
+        )
+        .map_err(|e| format!("Failed to build input stream: {}", e))?;
 
     Ok(stream)
 }

@@ -11,7 +11,10 @@ fn generate_all_schema_yaml_files() {
     let template_dir = home.join(".kingdee-kb").join("templates");
 
     if !template_dir.exists() {
-        eprintln!("Template directory not found at: {}", template_dir.display());
+        eprintln!(
+            "Template directory not found at: {}",
+            template_dir.display()
+        );
         eprintln!("Skipping schema generation - no templates to process.");
         return;
     }
@@ -35,52 +38,48 @@ fn generate_all_schema_yaml_files() {
             .to_lowercase();
 
         let field_count = match ext.as_str() {
-            "docx" => {
-                match kingdee_kb_lib::template_docx::extract_docx_fields(file_path) {
-                    Ok(f) => {
-                        let count = f.len();
-                        if !f.is_empty() {
-                            let file_name = file_path.file_name().unwrap_or_default().to_string_lossy();
-                            println!(
-                                "  [DOCX] {} fields: {}",
-                                file_name,
-                                f.iter()
-                                    .map(|f| format!("{}({})", f.name, f.source))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            );
-                        }
-                        count
+            "docx" => match kingdee_kb_lib::template_docx::extract_docx_fields(file_path) {
+                Ok(f) => {
+                    let count = f.len();
+                    if !f.is_empty() {
+                        let file_name = file_path.file_name().unwrap_or_default().to_string_lossy();
+                        println!(
+                            "  [DOCX] {} fields: {}",
+                            file_name,
+                            f.iter()
+                                .map(|f| format!("{}({})", f.name, f.source))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
                     }
-                    Err(e) => {
-                        errors.push(format!("{}: {}", file_path.display(), e));
-                        continue;
-                    }
+                    count
                 }
-            }
-            "xlsx" => {
-                match kingdee_kb_lib::template_xlsx::extract_xlsx_fields(file_path) {
-                    Ok(f) => {
-                        let count = f.len();
-                        if !f.is_empty() {
-                            let file_name = file_path.file_name().unwrap_or_default().to_string_lossy();
-                            println!(
-                                "  [XLSX] {} fields: {}",
-                                file_name,
-                                f.iter()
-                                    .map(|f| format!("{}({})", f.name, f.source))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            );
-                        }
-                        count
-                    }
-                    Err(e) => {
-                        errors.push(format!("{}: {}", file_path.display(), e));
-                        continue;
-                    }
+                Err(e) => {
+                    errors.push(format!("{}: {}", file_path.display(), e));
+                    continue;
                 }
-            }
+            },
+            "xlsx" => match kingdee_kb_lib::template_xlsx::extract_xlsx_fields(file_path) {
+                Ok(f) => {
+                    let count = f.len();
+                    if !f.is_empty() {
+                        let file_name = file_path.file_name().unwrap_or_default().to_string_lossy();
+                        println!(
+                            "  [XLSX] {} fields: {}",
+                            file_name,
+                            f.iter()
+                                .map(|f| format!("{}({})", f.name, f.source))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
+                    }
+                    count
+                }
+                Err(e) => {
+                    errors.push(format!("{}: {}", file_path.display(), e));
+                    continue;
+                }
+            },
             _ => continue,
         };
 

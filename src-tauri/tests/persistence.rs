@@ -16,7 +16,9 @@ fn random_vector(dim: usize, seed: u64) -> Vec<f32> {
     let mut v = Vec::with_capacity(dim);
     let mut s = seed;
     for _ in 0..dim {
-        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         v.push(((s as f64 / u64::MAX as f64) * 2.0 - 1.0) as f32);
     }
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -34,24 +36,34 @@ fn init_sqlite(path: &PathBuf) -> Connection {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             vector_key INTEGER UNIQUE,
             content TEXT NOT NULL
-        );"
-    ).unwrap();
+        );",
+    )
+    .unwrap();
     db
 }
 
 fn init_index(path: &PathBuf) -> Index {
     let options = IndexOptions {
-        dimensions: 512, metric: MetricKind::Cos, quantization: ScalarKind::BF16,
-        connectivity: 16, expansion_add: 200, expansion_search: 64, multi: false,
+        dimensions: 512,
+        metric: MetricKind::Cos,
+        quantization: ScalarKind::BF16,
+        connectivity: 16,
+        expansion_add: 200,
+        expansion_search: 64,
+        multi: false,
     };
     let index = new_index(&options).expect("Failed to create index");
     if path.exists() {
-        index.load(path.to_str().unwrap()).expect("Failed to load index");
+        index
+            .load(path.to_str().unwrap())
+            .expect("Failed to load index");
     }
     // Must reserve before add() or usearch crashes with Access Violation 0xc0000005:
     // add() dereferences contexts_[config.thread] which is null until reserve() allocates it.
     if index.capacity() == 0 {
-        index.reserve(1024).expect("Failed to reserve index capacity");
+        index
+            .reserve(1024)
+            .expect("Failed to reserve index capacity");
     }
     index
 }
@@ -88,14 +100,21 @@ fn test_full_persistence_roundtrip() {
     }
 
     assert_eq!(index.size(), 5);
-    let count: i64 = db.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0)).unwrap();
+    let count: i64 = db
+        .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(count, 5);
 
     // Save to disk
-    index.save(index_path.to_str().unwrap()).expect("Failed to save index");
+    index
+        .save(index_path.to_str().unwrap())
+        .expect("Failed to save index");
     let idx_size = std::fs::metadata(&index_path).unwrap().len();
     assert!(idx_size > 0, "Index file should have content");
-    println!("Phase A: Index saved ({} bytes), DB has {} chunks", idx_size, count);
+    println!(
+        "Phase A: Index saved ({} bytes), DB has {} chunks",
+        idx_size, count
+    );
 
     // Drop resources (simulate app shutdown)
     drop(index);
@@ -105,11 +124,17 @@ fn test_full_persistence_roundtrip() {
     let index2 = init_index(&index_path);
     let db2 = init_sqlite(&db_path);
 
-    assert_eq!(index2.size(), 5, "Index should still have 5 vectors after reload");
+    assert_eq!(
+        index2.size(),
+        5,
+        "Index should still have 5 vectors after reload"
+    );
 
     // Verify all vector keys can be looked up in SQLite
     for key in 0..5u64 {
-        let results = index2.search(&vectors[key as usize], 1).expect("Search failed");
+        let results = index2
+            .search(&vectors[key as usize], 1)
+            .expect("Search failed");
         assert_eq!(results.keys[0], key, "Self-search should return self");
 
         let content: String = db2
@@ -144,12 +169,18 @@ fn test_empty_index_persistence() {
     // Create and save empty index
     let index = init_index(&index_path);
     assert_eq!(index.size(), 0);
-    index.save(index_path.to_str().unwrap()).expect("Failed to save");
+    index
+        .save(index_path.to_str().unwrap())
+        .expect("Failed to save");
     drop(index);
 
     // Reload
     let index2 = init_index(&index_path);
-    assert_eq!(index2.size(), 0, "Empty index should stay empty after reload");
+    assert_eq!(
+        index2.size(),
+        0,
+        "Empty index should stay empty after reload"
+    );
     println!("Empty index persistence test passed!");
 }
 
@@ -182,7 +213,8 @@ fn test_chunk_vector_key_consistency() {
         db.execute(
             "INSERT INTO chunks (vector_key, content) VALUES (?1, ?2)",
             params![i as i64, format!("chunk_{}", i)],
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     // Verify every key has matching content
@@ -192,7 +224,11 @@ fn test_chunk_vector_key_consistency() {
         assert_eq!(results.keys[0], i);
 
         let content: String = db
-            .query_row("SELECT content FROM chunks WHERE vector_key = ?1", params![i as i64], |r| r.get(0))
+            .query_row(
+                "SELECT content FROM chunks WHERE vector_key = ?1",
+                params![i as i64],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(content, format!("chunk_{}", i));
     }

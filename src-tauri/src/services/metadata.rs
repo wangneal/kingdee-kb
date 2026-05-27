@@ -54,8 +54,8 @@ impl MetadataStore {
                 .map_err(|e| format!("Failed to create DB directory: {}", e))?;
         }
 
-        let db = Connection::open(&db_path)
-            .map_err(|e| format!("Failed to open database: {}", e))?;
+        let db =
+            Connection::open(&db_path).map_err(|e| format!("Failed to open database: {}", e))?;
 
         // Enable WAL mode for better concurrent read performance
         db.execute_batch("PRAGMA journal_mode=WAL;")
@@ -158,7 +158,13 @@ impl MetadataStore {
                 params![document_id],
                 |row| row.get(0),
             )
-            .map_err(|e| format!("Failed to count chunks for document {document_id}: {e}", document_id = document_id, e = e))
+            .map_err(|e| {
+                format!(
+                    "Failed to count chunks for document {document_id}: {e}",
+                    document_id = document_id,
+                    e = e
+                )
+            })
     }
 
     /// Get multiple documents by their IDs (batch fetch to eliminate N+1 queries)
@@ -166,18 +172,26 @@ impl MetadataStore {
         if ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let placeholders: Vec<String> = ids.iter().enumerate().map(|(i, _)| format!("?{0}", i + 1)).collect();
+        let placeholders: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{0}", i + 1))
+            .collect();
         let sql = format!(
             "SELECT id, title, source_path, sha256, created_at, project
              FROM documents WHERE id IN ({0})",
             placeholders.join(", ")
         );
 
-        let mut stmt = self.db
+        let mut stmt = self
+            .db
             .prepare(&sql)
             .map_err(|e| format!("Failed to prepare batch query: {0}", e))?;
 
-        let params: Vec<&dyn rusqlite::types::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
         let rows = stmt
             .query_map(params.as_slice(), Self::row_to_document)
             .map_err(|e| format!("Failed to batch query documents: {0}", e))?;
@@ -208,7 +222,26 @@ impl MetadataStore {
     }
 
     /// Delete a document and its associated chunks
-    pub fn delete_document(&self, id: i64) -> Result<(), String> {
+    /// If project is specified, verify the document belongs to that project before deleting
+    pub fn delete_document(&self, id: i64, project: Option<&str>) -> Result<(), String> {
+        // Verify project ownership if project is specified
+        if let Some(pid) = project {
+            let doc_project: String = self
+                .db
+                .query_row(
+                    "SELECT project FROM documents WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("Document {} not found: {}", id, e))?;
+            if doc_project != pid {
+                return Err(format!(
+                    "Document {} belongs to project '{}', not '{}'",
+                    id, doc_project, pid
+                ));
+            }
+        }
+
         self.db
             .execute("DELETE FROM chunks WHERE document_id = ?1", params![id])
             .map_err(|e| format!("Failed to delete chunks: {}", e))?;
@@ -219,18 +252,51 @@ impl MetadataStore {
     }
 
     /// Batch-delete multiple documents (and their chunks) in a single transaction
-    pub fn delete_documents_batch(&self, document_ids: Vec<i64>) -> Result<u64, String> {
+    /// If project is specified, verify all documents belong to that project before deleting
+    pub fn delete_documents_batch(
+        &self,
+        document_ids: Vec<i64>,
+        project: Option<&str>,
+    ) -> Result<u64, String> {
         if document_ids.is_empty() {
             return Ok(0);
         }
+
+        // Verify project ownership if project is specified
+        if let Some(pid) = project {
+            for &doc_id in &document_ids {
+                let doc_project: String = self
+                    .db
+                    .query_row(
+                        "SELECT project FROM documents WHERE id = ?1",
+                        params![doc_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| format!("Document {} not found: {}", doc_id, e))?;
+                if doc_project != pid {
+                    return Err(format!(
+                        "Document {} belongs to project '{}', not '{}'",
+                        doc_id, doc_project, pid
+                    ));
+                }
+            }
+        }
+
         // Build placeholders: "?,?,?" for IN clause
-        let placeholders: String = document_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders: String = document_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let params: Vec<&dyn rusqlite::types::ToSql> = document_ids
             .iter()
             .map(|id| id as &dyn rusqlite::types::ToSql)
             .collect();
 
-        let tx = self.db.unchecked_transaction().map_err(|e| format!("Failed to begin transaction: {}", e))?;
+        let tx = self
+            .db
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to begin transaction: {}", e))?;
 
         let _chunks_deleted = tx
             .execute(
@@ -246,18 +312,26 @@ impl MetadataStore {
             )
             .map_err(|e| format!("Failed to batch-delete documents: {}", e))?;
 
-        tx.commit().map_err(|e| format!("Failed to commit batch delete: {}", e))?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit batch delete: {}", e))?;
 
         Ok(docs_deleted as u64)
     }
 
     /// Get vector keys for all chunks belonging to the given document IDs.
     /// Used to remove vectors from the usearch index when deleting documents.
-    pub fn get_vector_keys_by_document_ids(&self, document_ids: &[i64]) -> Result<Vec<i64>, String> {
+    pub fn get_vector_keys_by_document_ids(
+        &self,
+        document_ids: &[i64],
+    ) -> Result<Vec<i64>, String> {
         if document_ids.is_empty() {
             return Ok(vec![]);
         }
-        let placeholders: String = document_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders: String = document_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let params: Vec<&dyn rusqlite::types::ToSql> = document_ids
             .iter()
             .map(|id| id as &dyn rusqlite::types::ToSql)
@@ -265,7 +339,10 @@ impl MetadataStore {
 
         let mut stmt = self
             .db
-            .prepare(&format!("SELECT vector_key FROM chunks WHERE document_id IN ({})", placeholders))
+            .prepare(&format!(
+                "SELECT vector_key FROM chunks WHERE document_id IN ({})",
+                placeholders
+            ))
             .map_err(|e| format!("Failed to prepare vector key query: {}", e))?;
 
         let keys: Vec<i64> = stmt
@@ -309,7 +386,14 @@ impl MetadataStore {
             .execute(
                 "INSERT INTO chunks (vector_key, document_id, content, section_path, tags, line_no)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![vector_key, document_id, content, section_path, tags_json, line_no],
+                params![
+                    vector_key,
+                    document_id,
+                    content,
+                    section_path,
+                    tags_json,
+                    line_no
+                ],
             )
             .map_err(|e| format!("Failed to insert chunk: {}", e))?;
 
@@ -331,7 +415,11 @@ impl MetadataStore {
             return Ok(vec![]);
         }
 
-        let placeholders: Vec<String> = keys.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+        let placeholders: Vec<String> = keys
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect();
         let sql = format!(
             "SELECT id, vector_key, document_id, content, section_path, tags, line_no, created_at
              FROM chunks WHERE vector_key IN ({})",
@@ -343,7 +431,10 @@ impl MetadataStore {
             .prepare(&sql)
             .map_err(|e| format!("Failed to prepare query: {}", e))?;
 
-        let params: Vec<&dyn rusqlite::types::ToSql> = keys.iter().map(|k| k as &dyn rusqlite::types::ToSql).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = keys
+            .iter()
+            .map(|k| k as &dyn rusqlite::types::ToSql)
+            .collect();
         let rows = stmt
             .query_map(params.as_slice(), Self::row_to_chunk)
             .map_err(|e| format!("Failed to query chunks: {}", e))?;
@@ -367,24 +458,47 @@ impl MetadataStore {
     /// Delete a chunk by its vector key
     pub fn delete_chunk_by_vector_key(&self, vector_key: i64) -> Result<(), String> {
         self.db
-            .execute("DELETE FROM chunks WHERE vector_key = ?1", params![vector_key])
+            .execute(
+                "DELETE FROM chunks WHERE vector_key = ?1",
+                params![vector_key],
+            )
             .map_err(|e| format!("Failed to delete chunk: {}", e))?;
         Ok(())
     }
 
     // ─── Stats ───
 
-    /// Get knowledge base statistics
-    pub fn get_stats(&self) -> Result<KnowledgeStats, String> {
-        let doc_count: i64 = self
-            .db
-            .query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0))
-            .map_err(|e| format!("Failed to count documents: {}", e))?;
+    /// Get knowledge base statistics, optionally filtered by project
+    pub fn get_stats(&self, project: Option<&str>) -> Result<KnowledgeStats, String> {
+        let doc_count: i64 = match project {
+            Some(pid) => self
+                .db
+                .query_row(
+                    "SELECT COUNT(*) FROM documents WHERE project = ?1",
+                    [pid],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("Failed to count documents: {}", e))?,
+            None => self
+                .db
+                .query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0))
+                .map_err(|e| format!("Failed to count documents: {}", e))?,
+        };
 
-        let chunk_count: i64 = self
-            .db
-            .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
-            .map_err(|e| format!("Failed to count chunks: {}", e))?;
+        let chunk_count: i64 = match project {
+            Some(pid) => self
+                .db
+                .query_row(
+                    "SELECT COUNT(*) FROM chunks c JOIN documents d ON c.document_id = d.id WHERE d.project = ?1",
+                    [pid],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("Failed to count chunks: {}", e))?,
+            None => self
+                .db
+                .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
+                .map_err(|e| format!("Failed to count chunks: {}", e))?,
+        };
 
         Ok(KnowledgeStats {
             document_count: doc_count,
@@ -533,7 +647,14 @@ mod tests {
 
         // Insert chunks
         let chunk_id = store
-            .insert_chunk(100, doc_id, "这是测试内容", Some("section/1"), Some(&["tag1".to_string()]), Some(1))
+            .insert_chunk(
+                100,
+                doc_id,
+                "这是测试内容",
+                Some("section/1"),
+                Some(&["tag1".to_string()]),
+                Some(1),
+            )
             .unwrap();
         assert!(chunk_id > 0);
 
@@ -543,7 +664,7 @@ mod tests {
         assert_eq!(chunk.vector_key, 100);
 
         // Stats
-        let stats = store.get_stats().unwrap();
+        let stats = store.get_stats(None).unwrap();
         assert_eq!(stats.document_count, 1);
         assert_eq!(stats.chunk_count, 1);
 
@@ -552,8 +673,8 @@ mod tests {
         assert!(store.get_chunk_by_vector_key(100).unwrap().is_none());
 
         // Delete document cascades
-        store.delete_document(doc_id).unwrap();
-        assert_eq!(store.get_stats().unwrap().document_count, 0);
+        store.delete_document(doc_id, None).unwrap();
+        assert_eq!(store.get_stats(None).unwrap().document_count, 0);
     }
 
     #[test]
@@ -569,7 +690,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(id1, id2);
-        assert_eq!(store.get_stats().unwrap().document_count, 1);
+        assert_eq!(store.get_stats(None).unwrap().document_count, 1);
     }
 
     #[test]
@@ -577,8 +698,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = MetadataStore::new(tmp.path().join("test.db")).unwrap();
 
-        store.insert_document("Project A doc", None, Some("hash1"), Some("project_a")).unwrap();
-        store.insert_document("Project B doc", None, Some("hash2"), Some("project_b")).unwrap();
+        store
+            .insert_document("Project A doc", None, Some("hash1"), Some("project_a"))
+            .unwrap();
+        store
+            .insert_document("Project B doc", None, Some("hash2"), Some("project_b"))
+            .unwrap();
 
         let docs_a = store.list_documents(Some("project_a")).unwrap();
         assert_eq!(docs_a.len(), 1);

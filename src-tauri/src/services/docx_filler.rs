@@ -46,21 +46,21 @@ pub fn fill_docx(
             .map_err(|e| format!("Failed to read zip entry {}: {}", i, e))?;
         let name = entry.name().to_string();
 
-        if name == "word/document.xml" {
+        if is_word_text_part(&name) {
             let mut xml = String::new();
             entry
                 .read_to_string(&mut xml)
-                .map_err(|e| format!("Failed to read document.xml: {}", e))?;
+                .map_err(|e| format!("Failed to read {}: {}", name, e))?;
 
             let (processed_xml, count) = process_document_xml(&xml, fields)?;
-            total_replaced = count;
+            total_replaced += count;
 
             writer
                 .start_file(&name, options)
                 .map_err(|e| format!("Failed to start file in output zip: {}", e))?;
             writer
                 .write_all(processed_xml.as_bytes())
-                .map_err(|e| format!("Failed to write document.xml: {}", e))?;
+                .map_err(|e| format!("Failed to write {}: {}", name, e))?;
         } else {
             let mut content = Vec::new();
             entry
@@ -91,87 +91,35 @@ fn process_document_xml(
     xml: &str,
     fields: &HashMap<String, String>,
 ) -> Result<(String, usize), String> {
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-
-    let mut writer = Writer::new(Cursor::new(Vec::new()));
-    let mut paragraph_buf: Vec<u8> = Vec::new();
-    let mut in_paragraph = false;
-    let mut _depth: u32 = 0;
+    let paragraph_re =
+        Regex::new(r#"(?s)<w:p\b[^>]*>.*?</w:p>"#).map_err(|e| format!("Regex error: {}", e))?;
     let mut total_replaced = 0;
+    let mut error: Option<String> = None;
 
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(ref e)) if e.name().as_ref() == b"w:p" => {
-                in_paragraph = true;
-                _depth = 1;
-                paragraph_buf.clear();
-                // Write the start tag to buffer
-                let mut temp_writer = Writer::new(Cursor::new(Vec::new()));
-                temp_writer
-                    .write_event(Event::Start(e.clone()))
-                    .map_err(|e| format!("XML write error: {}", e))?;
-                paragraph_buf.extend_from_slice(&temp_writer.into_inner().into_inner());
+    let result = paragraph_re
+        .replace_all(xml, |caps: &regex::Captures| {
+            if error.is_some() {
+                return caps[0].to_string();
             }
-            Ok(Event::Start(ref e)) if in_paragraph => {
-                _depth += 1;
-                let mut temp_writer = Writer::new(Cursor::new(Vec::new()));
-                temp_writer
-                    .write_event(Event::Start(e.clone()))
-                    .map_err(|e| format!("XML write error: {}", e))?;
-                paragraph_buf.extend_from_slice(&temp_writer.into_inner().into_inner());
-            }
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"w:p" && in_paragraph => {
-                // Write the end tag to buffer
-                let mut temp_writer = Writer::new(Cursor::new(Vec::new()));
-                temp_writer
-                    .write_event(Event::End(e.clone()))
-                    .map_err(|e| format!("XML write error: {}", e))?;
-                paragraph_buf.extend_from_slice(&temp_writer.into_inner().into_inner());
 
-                // Process paragraph: merge runs, replace fields, write to main writer
-                let paragraph_xml = String::from_utf8_lossy(&paragraph_buf).to_string();
-                let (processed, count) = process_paragraph_str(&paragraph_xml, fields)?;
-                total_replaced += count;
-
-                writer
-                    .write_event(Event::Text(quick_xml::events::BytesText::new(&processed)))
-                    .map_err(|e| format!("XML write error: {}", e))?;
-
-                in_paragraph = false;
-                paragraph_buf.clear();
-            }
-            Ok(Event::End(ref e)) if in_paragraph => {
-                _depth -= 1;
-                let mut temp_writer = Writer::new(Cursor::new(Vec::new()));
-                temp_writer
-                    .write_event(Event::End(e.clone()))
-                    .map_err(|e| format!("XML write error: {}", e))?;
-                paragraph_buf.extend_from_slice(&temp_writer.into_inner().into_inner());
-            }
-            Ok(Event::Eof) => break,
-            Ok(ref event) => {
-                if in_paragraph {
-                    let mut temp_writer = Writer::new(Cursor::new(Vec::new()));
-                    temp_writer
-                        .write_event(event.clone())
-                        .map_err(|e| format!("XML write error: {}", e))?;
-                    paragraph_buf.extend_from_slice(&temp_writer.into_inner().into_inner());
-                } else {
-                    writer
-                        .write_event(event.clone())
-                        .map_err(|e| format!("XML write error: {}", e))?;
+            match process_paragraph_str(&caps[0], fields) {
+                Ok((processed, count)) => {
+                    total_replaced += count;
+                    processed
+                }
+                Err(e) => {
+                    error = Some(e);
+                    caps[0].to_string()
                 }
             }
-            Err(e) => return Err(format!("XML parse error: {}", e)),
-        }
+        })
+        .to_string();
+
+    if let Some(e) = error {
+        return Err(e);
     }
 
-    let result = writer.into_inner().into_inner();
-    let xml_str =
-        String::from_utf8(result).map_err(|e| format!("UTF-8 conversion error: {}", e))?;
-
-    Ok((xml_str, total_replaced))
+    Ok((result, total_replaced))
 }
 
 /// 处理段落 XML 字符串，合并 split run 并替换字段占位符。
@@ -218,7 +166,14 @@ fn process_paragraph_str(
     }
 
     let merged: String = text_parts.join("");
-    let (replaced, count) = replace_fields(&merged, fields);
+    let (mut replaced, mut count) = replace_fields(&merged, fields);
+
+    if count == 0 {
+        if let Some((field_name, value)) = field_code_value(paragraph_xml, fields) {
+            replaced = replace_field_code_display(&merged, &field_name, &value);
+            count = 1;
+        }
+    }
 
     if count == 0 {
         return Ok((paragraph_xml.to_string(), 0));
@@ -281,15 +236,30 @@ fn process_paragraph_str(
 /// Fields not found in the map are left as-is (original placeholder preserved).
 fn replace_fields(text: &str, fields: &HashMap<String, String>) -> (String, usize) {
     let re = Regex::new(r"\{([^}]+)\}").expect("Invalid regex");
+    let xxxx_re = Regex::new(r"XXXX([\u4e00-\u9fff][\u4e00-\u9fff\w/（）()\-]{0,19})")
+        .expect("Invalid regex");
     let mut count = 0usize;
 
     let result = re
         .replace_all(text, |caps: &regex::Captures| {
             let field_name = &caps[1];
-            match fields.get(field_name) {
+            match get_field_value(fields, field_name) {
                 Some(value) => {
                     count += 1;
-                    value.clone()
+                    value
+                }
+                None => caps[0].to_string(),
+            }
+        })
+        .to_string();
+
+    let result = xxxx_re
+        .replace_all(&result, |caps: &regex::Captures| {
+            let field_name = &caps[1];
+            match get_field_value(fields, field_name) {
+                Some(value) => {
+                    count += 1;
+                    value
                 }
                 None => caps[0].to_string(),
             }
@@ -297,6 +267,98 @@ fn replace_fields(text: &str, fields: &HashMap<String, String>) -> (String, usiz
         .to_string();
 
     (result, count)
+}
+
+fn is_word_text_part(name: &str) -> bool {
+    name == "word/document.xml"
+        || (name.starts_with("word/header") && name.ends_with(".xml"))
+        || (name.starts_with("word/footer") && name.ends_with(".xml"))
+        || name == "word/footnotes.xml"
+        || name == "word/endnotes.xml"
+        || name == "word/comments.xml"
+}
+
+fn get_field_value(fields: &HashMap<String, String>, name: &str) -> Option<String> {
+    let normalized = normalize_field_name(name);
+    fields
+        .get(name)
+        .or_else(|| fields.get(name.trim()))
+        .or_else(|| fields.get(&normalized))
+        .cloned()
+}
+
+fn normalize_field_name(name: &str) -> String {
+    name.trim()
+        .trim_matches('《')
+        .trim_matches('》')
+        .trim_matches('«')
+        .trim_matches('»')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_string()
+}
+
+fn field_code_value(
+    paragraph_xml: &str,
+    fields: &HashMap<String, String>,
+) -> Option<(String, String)> {
+    for name in field_code_names(paragraph_xml) {
+        if let Some(value) = get_field_value(fields, &name) {
+            return Some((name, value));
+        }
+    }
+    None
+}
+
+fn field_code_names(paragraph_xml: &str) -> Vec<String> {
+    let patterns = [
+        r#"<w:name[^>]*w:val="([^"]+)""#,
+        r#"<w:alias[^>]*w:val="([^"]+)""#,
+        r#"<w:tag[^>]*w:val="([^"]+)""#,
+        r#"MERGEFIELD\s+["']?([^"'\s\\]+)"#,
+    ];
+
+    let mut names = Vec::new();
+    for pattern in patterns {
+        let re = Regex::new(pattern).expect("Invalid regex");
+        for cap in re.captures_iter(paragraph_xml) {
+            let name = normalize_field_name(&decode_xml_entities(&cap[1]));
+            if !name.is_empty() && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+fn decode_xml_entities(value: &str) -> String {
+    value
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+fn replace_field_code_display(text: &str, field_name: &str, value: &str) -> String {
+    if text.trim().is_empty() {
+        return value.to_string();
+    }
+
+    let guillemet_re = Regex::new(r"«[^»]+»").expect("Invalid regex");
+    if guillemet_re.is_match(text) {
+        return guillemet_re.replace_all(text, value).to_string();
+    }
+
+    if text.contains(field_name) {
+        return text.replace(field_name, value);
+    }
+
+    if text.trim() == "XXXX" {
+        return text.replace("XXXX", value);
+    }
+
+    value.to_string()
 }
 
 #[cfg(test)]
@@ -333,6 +395,27 @@ mod tests {
         let (result, count) = replace_fields(text, &fields);
         assert_eq!(result, "项目名称：{项目名称}");
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_replace_fields_xxxx() {
+        let mut fields = HashMap::new();
+        fields.insert("项目名称".to_string(), "罗孚项目".to_string());
+
+        let (result, count) = replace_fields("项目：XXXX项目名称", &fields);
+        assert_eq!(result, "项目：罗孚项目");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_process_document_xml_mergefield_display() {
+        let xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:instrText> MERGEFIELD ProjectName \* MERGEFORMAT </w:instrText></w:r><w:r><w:t>项目：«ProjectName»</w:t></w:r></w:p></w:body></w:document>"#;
+        let mut fields = HashMap::new();
+        fields.insert("ProjectName".to_string(), "罗孚项目".to_string());
+
+        let (result, count) = process_document_xml(xml, &fields).unwrap();
+        assert_eq!(count, 1);
+        assert!(result.contains("项目：罗孚项目"), "result: {}", result);
     }
 
     #[test]

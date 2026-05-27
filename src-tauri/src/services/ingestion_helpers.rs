@@ -137,12 +137,18 @@ mod tests {
 
     #[test]
     fn test_extract_title_underscores() {
-        assert_eq!(extract_title_from_filename("my_document.txt"), "my document");
+        assert_eq!(
+            extract_title_from_filename("my_document.txt"),
+            "my document"
+        );
     }
 
     #[test]
     fn test_extract_title_chinese() {
-        assert_eq!(extract_title_from_filename("期货点价-操作指南.md"), "期货点价 操作指南");
+        assert_eq!(
+            extract_title_from_filename("期货点价-操作指南.md"),
+            "期货点价 操作指南"
+        );
     }
 
     #[test]

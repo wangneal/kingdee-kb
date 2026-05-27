@@ -53,8 +53,13 @@ pub struct TemplateInfo {
 pub fn scan_templates(root_dir: &Path) -> Result<Vec<TemplateInfo>, String> {
     if !root_dir.exists() {
         // Auto-create the templates directory so the app can start cleanly
-        std::fs::create_dir_all(root_dir)
-            .map_err(|e| format!("Failed to create template directory {}: {}", root_dir.display(), e))?;
+        std::fs::create_dir_all(root_dir).map_err(|e| {
+            format!(
+                "Failed to create template directory {}: {}",
+                root_dir.display(),
+                e
+            )
+        })?;
         return Ok(Vec::new());
     }
 

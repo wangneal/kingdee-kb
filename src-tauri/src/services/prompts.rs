@@ -12,7 +12,8 @@
 pub const SYSTEM_PROMPT: &str = include_str!("../../resources/prompts/system_prompt.md");
 
 /// 文档生成系统提示词 — 反模糊结构约束
-pub const DOC_GEN_SYSTEM_PROMPT: &str = include_str!("../../resources/prompts/doc_gen_system_prompt.md");
+pub const DOC_GEN_SYSTEM_PROMPT: &str =
+    include_str!("../../resources/prompts/doc_gen_system_prompt.md");
 
 /// 调研报告配方系统提示词
 pub const RECIPE_INVESTIGATION: &str = "\

@@ -15,7 +15,8 @@ pub struct ResearchIndexer {
 
 impl ResearchIndexer {
     pub fn new(db_path: &Path) -> Result<Self, String> {
-        let conn = Connection::open(db_path).map_err(|e| format!("Failed to open database: {}", e))?;
+        let conn =
+            Connection::open(db_path).map_err(|e| format!("Failed to open database: {}", e))?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -59,7 +60,11 @@ impl ResearchIndexer {
 
     pub fn insert_outline(&self, outline: &ResearchOutline) -> Result<i64, String> {
         let flat = outline.flatten();
-        let section_count: i64 = outline.sections.iter().map(|s| s.categories.len() as i64).sum();
+        let section_count: i64 = outline
+            .sections
+            .iter()
+            .map(|s| s.categories.len() as i64)
+            .sum();
         let question_count = flat.len() as i64;
 
         let mut conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
@@ -103,7 +108,8 @@ impl ResearchIndexer {
             .map_err(|e| format!("Failed to insert question: {}", e))?;
         }
 
-        tx.commit().map_err(|e| format!("Failed to commit transaction: {}", e))?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit transaction: {}", e))?;
         Ok(outline_id)
     }
 
@@ -121,12 +127,12 @@ impl ResearchIndexer {
         let rows = stmt
             .query_map(rusqlite::params![edition.as_str()], |row| {
                 let edition_str: String = row.get(0)?;
-                let edition = Edition::from_str(&edition_str)
-                    .ok_or_else(|| {
-                        rusqlite::Error::InvalidParameterName(
-                            format!("invalid edition value in database: {}", edition_str)
-                        )
-                    })?;
+                let edition = Edition::from_str(&edition_str).ok_or_else(|| {
+                    rusqlite::Error::InvalidParameterName(format!(
+                        "invalid edition value in database: {}",
+                        edition_str
+                    ))
+                })?;
                 Ok(FlatQuestion {
                     edition,
                     module_code: row.get(1)?,
@@ -218,12 +224,12 @@ impl ResearchIndexer {
             .query_map(rusqlite::params![edition.as_str(), limit as i64], |row| {
                 let id: i64 = row.get(0)?;
                 let edition_str: String = row.get(1)?;
-                let edition = Edition::from_str(&edition_str)
-                    .ok_or_else(|| {
-                        rusqlite::Error::InvalidParameterName(
-                            format!("invalid edition value in database: {}", edition_str)
-                        )
-                    })?;
+                let edition = Edition::from_str(&edition_str).ok_or_else(|| {
+                    rusqlite::Error::InvalidParameterName(format!(
+                        "invalid edition value in database: {}",
+                        edition_str
+                    ))
+                })?;
                 let fq = FlatQuestion {
                     edition,
                     module_code: row.get(2)?,
@@ -293,7 +299,9 @@ impl ResearchIndexer {
             let text = match parse_doc_file(&path) {
                 Ok(t) => t,
                 Err(e) => {
-                    result.errors.push(format!("Failed to parse {}: {}", filename, e));
+                    result
+                        .errors
+                        .push(format!("Failed to parse {}: {}", filename, e));
                     continue;
                 }
             };
@@ -313,7 +321,9 @@ impl ResearchIndexer {
                     result.total_questions += outline.flatten().len() as i64;
                 }
                 Err(e) => {
-                    result.errors.push(format!("Failed to insert {}: {}", filename, e));
+                    result
+                        .errors
+                        .push(format!("Failed to insert {}: {}", filename, e));
                 }
             }
         }
@@ -431,22 +441,16 @@ mod tests {
                         },
                         Category {
                             name: "微服务".to_string(),
-                            questions: vec![
-                                "服务注册发现机制？".to_string(),
-                            ],
+                            questions: vec!["服务注册发现机制？".to_string()],
                         },
                     ],
                 },
                 Section {
                     name: "安全".to_string(),
-                    categories: vec![
-                        Category {
-                            name: "认证".to_string(),
-                            questions: vec![
-                                "支持的认证方式？".to_string(),
-                            ],
-                        },
-                    ],
+                    categories: vec![Category {
+                        name: "认证".to_string(),
+                        questions: vec!["支持的认证方式？".to_string()],
+                    }],
                 },
             ],
         }
@@ -471,7 +475,9 @@ mod tests {
         let count = indexer.question_count(&Edition::Enterprise).unwrap();
         assert_eq!(count, 4);
 
-        let questions = indexer.get_questions_by_edition(&Edition::Enterprise).unwrap();
+        let questions = indexer
+            .get_questions_by_edition(&Edition::Enterprise)
+            .unwrap();
         assert_eq!(questions.len(), 4);
         assert_eq!(questions[0].question_text, "支持的部署模式有哪些？");
         assert_eq!(questions[1].question_text, "高可用方案如何？");
@@ -485,7 +491,9 @@ mod tests {
         let count = indexer.question_count(&Edition::Flagship).unwrap();
         assert_eq!(count, 0);
 
-        let questions = indexer.get_questions_by_edition(&Edition::Flagship).unwrap();
+        let questions = indexer
+            .get_questions_by_edition(&Edition::Flagship)
+            .unwrap();
         assert_eq!(questions.len(), 0);
 
         let outlines = indexer.list_outlines(&Edition::Flagship).unwrap();
@@ -496,7 +504,10 @@ mod tests {
     fn test_import_enterprise_directory() {
         let dir = Path::new(r"E:\工作资料\项目资料\企业版调研提纲\企业版");
         if !dir.exists() {
-            eprintln!("Skipping test_import_enterprise_directory: directory not found at {:?}", dir);
+            eprintln!(
+                "Skipping test_import_enterprise_directory: directory not found at {:?}",
+                dir
+            );
             return;
         }
         let indexer = new_indexer();
@@ -505,8 +516,16 @@ mod tests {
             "Import result: imported={}, skipped={}, total_questions={}, errors={:?}",
             result.imported, result.skipped, result.total_questions, result.errors
         );
-        assert!(result.imported > 0, "Expected at least 1 imported file, got {}", result.imported);
-        assert!(result.total_questions > 0, "Expected total_questions > 0, got {}", result.total_questions);
+        assert!(
+            result.imported > 0,
+            "Expected at least 1 imported file, got {}",
+            result.imported
+        );
+        assert!(
+            result.total_questions > 0,
+            "Expected total_questions > 0, got {}",
+            result.total_questions
+        );
         let total_in_db = indexer.question_count(&Edition::Enterprise).unwrap();
         assert_eq!(total_in_db, result.total_questions);
     }

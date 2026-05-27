@@ -46,8 +46,8 @@ impl ProductStore {
                 .map_err(|e| format!("Failed to create DB directory: {}", e))?;
         }
 
-        let db = Connection::open(&db_path)
-            .map_err(|e| format!("Failed to open database: {}", e))?;
+        let db =
+            Connection::open(&db_path).map_err(|e| format!("Failed to open database: {}", e))?;
 
         // Enable WAL mode for better concurrent read performance
         db.execute_batch("PRAGMA journal_mode=WAL;")
@@ -142,7 +142,12 @@ impl ProductStore {
     }
 
     /// List products, optionally filtered by project. Ordered by created_at DESC.
-    pub fn list(&self, project: Option<&str>, limit: Option<i64>, offset: Option<i64>) -> Result<Vec<ProductMeta>, String> {
+    pub fn list(
+        &self,
+        project: Option<&str>,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<Vec<ProductMeta>, String> {
         if let Some(proj) = project {
             self.query_products(
                 "SELECT id, template_id, template_name, project, status, output_path, field_count, llm_fields_count, created_at
@@ -159,7 +164,21 @@ impl ProductStore {
     }
 
     /// Delete a product and its versions
-    pub fn delete(&self, id: i64) -> Result<(), String> {
+    /// If project is specified, verify the product belongs to that project before deleting
+    pub fn delete(&self, id: i64, project: Option<&str>) -> Result<(), String> {
+        // Verify project ownership if project is specified
+        if let Some(pid) = project {
+            let product = self
+                .get(id)?
+                .ok_or_else(|| format!("Product not found: {}", id))?;
+            if product.project != pid {
+                return Err(format!(
+                    "Product {} belongs to project '{}', not '{}'",
+                    id, product.project, pid
+                ));
+            }
+        }
+
         // Delete versions first (foreign key cascade should handle this, but be explicit)
         self.db
             .execute(
@@ -240,18 +259,31 @@ impl ProductStore {
     // ─── Export operations ───
 
     /// Export a product's output file to a target directory.
+    /// If project is specified, verify the product belongs to that project before exporting.
     /// Returns the path of the exported file.
-    pub fn export_product(&self, product_id: i64, target_dir: &str) -> Result<String, String> {
+    pub fn export_product(
+        &self,
+        product_id: i64,
+        target_dir: &str,
+        project: Option<&str>,
+    ) -> Result<String, String> {
         let product = self
             .get(product_id)?
             .ok_or_else(|| format!("Product not found: {}", product_id))?;
 
+        // Verify project ownership if project is specified
+        if let Some(pid) = project {
+            if product.project != pid {
+                return Err(format!(
+                    "Product {} belongs to project '{}', not '{}'",
+                    product_id, product.project, pid
+                ));
+            }
+        }
+
         let source = PathBuf::from(&product.output_path);
         if !source.exists() {
-            return Err(format!(
-                "Output file not found: {}",
-                product.output_path
-            ));
+            return Err(format!("Output file not found: {}", product.output_path));
         }
 
         let target = PathBuf::from(target_dir);
@@ -263,8 +295,7 @@ impl ProductStore {
             .ok_or_else(|| "Invalid source file name".to_string())?;
         let dest = target.join(file_name);
 
-        std::fs::copy(&source, &dest)
-            .map_err(|e| format!("Failed to copy file: {}", e))?;
+        std::fs::copy(&source, &dest).map_err(|e| format!("Failed to copy file: {}", e))?;
 
         Ok(dest.to_string_lossy().to_string())
     }
@@ -276,7 +307,7 @@ impl ProductStore {
         let mut exported = Vec::new();
 
         for product in products {
-            match self.export_product(product.id, target_dir) {
+            match self.export_product(product.id, target_dir, Some(project)) {
                 Ok(path) => exported.push(path),
                 Err(e) => {
                     eprintln!(
@@ -454,8 +485,12 @@ mod tests {
         let out1 = create_dummy_output(tmp.path(), "out1.docx");
         let out2 = create_dummy_output(tmp.path(), "out2.docx");
 
-        store.create("t1", "模板A", "project_a", &out1, 5, 1, "{}").unwrap();
-        store.create("t2", "模板B", "project_b", &out2, 8, 2, "{}").unwrap();
+        store
+            .create("t1", "模板A", "project_a", &out1, 5, 1, "{}")
+            .unwrap();
+        store
+            .create("t2", "模板B", "project_b", &out2, 8, 2, "{}")
+            .unwrap();
 
         let all = store.list(None, None, None).unwrap();
         assert_eq!(all.len(), 2);
@@ -474,10 +509,12 @@ mod tests {
         let (tmp, store) = create_test_store();
         let output = create_dummy_output(tmp.path(), "del_test.docx");
 
-        let id = store.create("t1", "待删除", "p1", &output, 3, 0, "{}").unwrap();
+        let id = store
+            .create("t1", "待删除", "p1", &output, 3, 0, "{}")
+            .unwrap();
         assert!(store.get(id).unwrap().is_some());
 
-        store.delete(id).unwrap();
+        store.delete(id, None).unwrap();
         assert!(store.get(id).unwrap().is_none());
     }
 
@@ -510,10 +547,14 @@ mod tests {
         let (tmp, store) = create_test_store();
         let output = create_dummy_output(tmp.path(), "export_me.docx");
 
-        let id = store.create("t1", "导出测试", "p1", &output, 5, 0, "{}").unwrap();
+        let id = store
+            .create("t1", "导出测试", "p1", &output, 5, 0, "{}")
+            .unwrap();
 
         let export_dir = tmp.path().join("exported");
-        let exported_path = store.export_product(id, export_dir.to_str().unwrap()).unwrap();
+        let exported_path = store
+            .export_product(id, export_dir.to_str().unwrap(), None)
+            .unwrap();
 
         assert!(std::path::Path::new(&exported_path).exists());
         assert!(exported_path.contains("export_me.docx"));
@@ -525,11 +566,17 @@ mod tests {
         let out1 = create_dummy_output(tmp.path(), "batch1.docx");
         let out2 = create_dummy_output(tmp.path(), "batch2.docx");
 
-        store.create("t1", "批量A", "proj_batch", &out1, 3, 0, "{}").unwrap();
-        store.create("t2", "批量B", "proj_batch", &out2, 4, 1, "{}").unwrap();
+        store
+            .create("t1", "批量A", "proj_batch", &out1, 3, 0, "{}")
+            .unwrap();
+        store
+            .create("t2", "批量B", "proj_batch", &out2, 4, 1, "{}")
+            .unwrap();
 
         let export_dir = tmp.path().join("batch_export");
-        let exported = store.export_all("proj_batch", export_dir.to_str().unwrap()).unwrap();
+        let exported = store
+            .export_all("proj_batch", export_dir.to_str().unwrap())
+            .unwrap();
 
         assert_eq!(exported.len(), 2);
         for path in &exported {

@@ -206,10 +206,7 @@ fn assemble_kb_context(results: &[HybridSearchResult], max_tokens: u32) -> Strin
     let mut context = String::new();
 
     for result in results {
-        let section = result
-            .section_path
-            .as_deref()
-            .unwrap_or("（无章节信息）");
+        let section = result.section_path.as_deref().unwrap_or("（无章节信息）");
 
         let entry = format!(
             "[来源：{} | {}]\n{}\n\n",
@@ -266,10 +263,7 @@ async fn generate_fields_with_kb_context(
     let mut user_prompt = String::new();
 
     if !kb_context.is_empty() {
-        user_prompt.push_str(&format!(
-            "知识库检索到的相关内容：\n{}\n\n",
-            kb_context
-        ));
+        user_prompt.push_str(&format!("知识库检索到的相关内容：\n{}\n\n", kb_context));
     }
 
     user_prompt.push_str(&format!("用户输入说明: {}\n\n", user_input));
@@ -352,7 +346,9 @@ fn extract_json_from_response(response: &str) -> String {
             json_start
         };
         if let Some(end) = trimmed[content_start..].find("```") {
-            return trimmed[content_start..content_start + end].trim().to_string();
+            return trimmed[content_start..content_start + end]
+                .trim()
+                .to_string();
         }
     }
 

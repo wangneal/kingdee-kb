@@ -14,7 +14,9 @@ use crate::services::bm25_service::BM25Service;
 use crate::services::chunker::{recursive_chunk, ChunkInputMeta};
 use crate::services::embedding::EmbeddingService;
 use crate::services::file_extractor;
-use crate::services::ingestion_helpers::{compute_sha256, extract_tags, extract_title_from_filename};
+use crate::services::ingestion_helpers::{
+    compute_sha256, extract_tags, extract_title_from_filename,
+};
 use crate::services::metadata::MetadataStore;
 use crate::services::text_cleaner::clean_text;
 use crate::services::vector_index::VectorIndex;
@@ -124,7 +126,7 @@ pub fn ingest_text(
                 drop(meta); // release lock before delete_document re-acquires
                 {
                     let meta = metadata.lock().map_err(|e| format!("Lock error: {}", e))?;
-                    meta.delete_document(existing.id)?;
+                    meta.delete_document(existing.id, None)?;
                 }
                 // Fall through to fresh import below
             } else {
@@ -144,7 +146,13 @@ pub fn ingest_text(
     emit_progress(app_handle, 2, "hashing", 100.0, None);
 
     // Step 3: Chunk
-    emit_progress(app_handle, 3, "chunking", 0.0, Some("Splitting into chunks..."));
+    emit_progress(
+        app_handle,
+        3,
+        "chunking",
+        0.0,
+        Some("Splitting into chunks..."),
+    );
     let chunk_meta = ChunkInputMeta {
         source_file: None,
         title: title.to_string(),
@@ -161,7 +169,13 @@ pub fn ingest_text(
     );
 
     // Step 4: Embed and store
-    emit_progress(app_handle, 4, "embedding", 0.0, Some("Generating embeddings..."));
+    emit_progress(
+        app_handle,
+        4,
+        "embedding",
+        0.0,
+        Some("Generating embeddings..."),
+    );
 
     // Insert document first
     let doc_id = {
@@ -187,7 +201,9 @@ pub fn ingest_text(
 
         // Store vectors and metadata
         {
-            let mut idx = vector_index.lock().map_err(|e| format!("Lock error: {}", e))?;
+            let mut idx = vector_index
+                .lock()
+                .map_err(|e| format!("Lock error: {}", e))?;
             let meta = metadata.lock().map_err(|e| format!("Lock error: {}", e))?;
 
             // Get starting vector_key from metadata
@@ -260,7 +276,9 @@ pub fn ingest_text(
 
     // Save index
     {
-        let idx = vector_index.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let idx = vector_index
+            .lock()
+            .map_err(|e| format!("Lock error: {}", e))?;
         idx.save()?;
     }
 
@@ -306,10 +324,7 @@ pub fn ingest_file(
 
     // 检查文件格式是否支持
     if !file_extractor::is_supported(file_path) {
-        return Err(format!(
-            "不支持的文件格式: {:?}",
-            file_path.display()
-        ));
+        return Err(format!("不支持的文件格式: {:?}", file_path.display()));
     }
 
     // 使用 file_extractor 提取文本内容
@@ -360,23 +375,20 @@ pub fn ingest_directory(
     let mut errors = Vec::new();
 
     // Recursively walk directory tree
-        ingest_dir_recursive(
-            dir_path,
-            project,
-            embedding,
-            vector_index,
-            metadata,
-            bm25,
-            app_handle,
-            &mut imported,
-            &mut errors,
-        )?;
+    ingest_dir_recursive(
+        dir_path,
+        project,
+        embedding,
+        vector_index,
+        metadata,
+        bm25,
+        app_handle,
+        &mut imported,
+        &mut errors,
+    )?;
 
     if imported.is_empty() && errors.is_empty() {
-        eprintln!(
-            "[Ingestion] No supported files found in {:?}",
-            dir_path
-        );
+        eprintln!("[Ingestion] No supported files found in {:?}", dir_path);
     }
 
     Ok(DirectoryIngestionResult { imported, errors })
@@ -418,12 +430,18 @@ fn ingest_dir_recursive(
             // Skip Office lock files and other temp files silently
             continue;
         } else if file_extractor::is_supported(&path) {
-            match ingest_file(&path, project, embedding, vector_index, metadata, bm25, app_handle) {
+            match ingest_file(
+                &path,
+                project,
+                embedding,
+                vector_index,
+                metadata,
+                bm25,
+                app_handle,
+            ) {
                 Ok(result) => imported.push(result),
                 Err(e) => {
-                    let filename = path.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("?");
+                    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
                     eprintln!("[Ingestion] Failed to ingest {:?}: {}", path, e);
                     errors.push(FileError {
                         path: filename.to_string(),
@@ -468,9 +486,15 @@ mod tests {
 
         // Create services
         let embedding = Arc::new(Mutex::new(EmbeddingService::empty()));
-        let vector_index = Arc::new(Mutex::new(VectorIndex::new(data_dir.join("index")).unwrap()));
-        let metadata = Arc::new(Mutex::new(MetadataStore::new(data_dir.join("meta.db")).unwrap()));
-        let bm25 = Arc::new(Mutex::new(BM25Service::new(data_dir.join("bm25_index")).unwrap()));
+        let vector_index = Arc::new(Mutex::new(
+            VectorIndex::new(data_dir.join("index")).unwrap(),
+        ));
+        let metadata = Arc::new(Mutex::new(
+            MetadataStore::new(data_dir.join("meta.db")).unwrap(),
+        ));
+        let bm25 = Arc::new(Mutex::new(
+            BM25Service::new(data_dir.join("bm25_index")).unwrap(),
+        ));
 
         // Ingest text (will fail because embedding is empty, but we can test the flow)
         let result = ingest_text(
@@ -494,9 +518,15 @@ mod tests {
         let data_dir = tmp.path();
 
         let embedding = Arc::new(Mutex::new(EmbeddingService::empty()));
-        let vector_index = Arc::new(Mutex::new(VectorIndex::new(data_dir.join("index")).unwrap()));
-        let metadata = Arc::new(Mutex::new(MetadataStore::new(data_dir.join("meta.db")).unwrap()));
-        let bm25 = Arc::new(Mutex::new(BM25Service::new(data_dir.join("bm25_index")).unwrap()));
+        let vector_index = Arc::new(Mutex::new(
+            VectorIndex::new(data_dir.join("index")).unwrap(),
+        ));
+        let metadata = Arc::new(Mutex::new(
+            MetadataStore::new(data_dir.join("meta.db")).unwrap(),
+        ));
+        let bm25 = Arc::new(Mutex::new(
+            BM25Service::new(data_dir.join("bm25_index")).unwrap(),
+        ));
 
         // First ingest
         let _ = ingest_text(
@@ -534,9 +564,15 @@ mod tests {
         let data_dir = tmp.path();
 
         let embedding = Arc::new(Mutex::new(EmbeddingService::empty()));
-        let vector_index = Arc::new(Mutex::new(VectorIndex::new(data_dir.join("index")).unwrap()));
-        let metadata = Arc::new(Mutex::new(MetadataStore::new(data_dir.join("meta.db")).unwrap()));
-        let bm25 = Arc::new(Mutex::new(BM25Service::new(data_dir.join("bm25_index")).unwrap()));
+        let vector_index = Arc::new(Mutex::new(
+            VectorIndex::new(data_dir.join("index")).unwrap(),
+        ));
+        let metadata = Arc::new(Mutex::new(
+            MetadataStore::new(data_dir.join("meta.db")).unwrap(),
+        ));
+        let bm25 = Arc::new(Mutex::new(
+            BM25Service::new(data_dir.join("bm25_index")).unwrap(),
+        ));
 
         let result = ingest_file(
             Path::new("/nonexistent/file.txt"),
@@ -557,9 +593,15 @@ mod tests {
         let data_dir = tmp.path();
 
         let embedding = Arc::new(Mutex::new(EmbeddingService::empty()));
-        let vector_index = Arc::new(Mutex::new(VectorIndex::new(data_dir.join("index")).unwrap()));
-        let metadata = Arc::new(Mutex::new(MetadataStore::new(data_dir.join("meta.db")).unwrap()));
-        let bm25 = Arc::new(Mutex::new(BM25Service::new(data_dir.join("bm25_index")).unwrap()));
+        let vector_index = Arc::new(Mutex::new(
+            VectorIndex::new(data_dir.join("index")).unwrap(),
+        ));
+        let metadata = Arc::new(Mutex::new(
+            MetadataStore::new(data_dir.join("meta.db")).unwrap(),
+        ));
+        let bm25 = Arc::new(Mutex::new(
+            BM25Service::new(data_dir.join("bm25_index")).unwrap(),
+        ));
 
         let result = ingest_directory(
             Path::new("/nonexistent/dir"),

@@ -11,17 +11,20 @@ pub async fn list_products(
     state: State<'_, AppState>,
     project: Option<String>,
 ) -> Result<Vec<ProductMeta>, String> {
-    let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+    let store = state
+        .products
+        .lock()
+        .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
     store.list(project.as_deref(), None, None)
 }
 
 /// 根据 ID 获取单个产品。
 #[tauri::command]
-pub async fn get_product(
-    state: State<'_, AppState>,
-    id: i64,
-) -> Result<ProductMeta, String> {
-    let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+pub async fn get_product(state: State<'_, AppState>, id: i64) -> Result<ProductMeta, String> {
+    let store = state
+        .products
+        .lock()
+        .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
     store
         .get(id)?
         .ok_or_else(|| format!("Product not found: {}", id))
@@ -32,9 +35,13 @@ pub async fn get_product(
 pub async fn delete_product(
     state: State<'_, AppState>,
     id: i64,
+    project: Option<String>,
 ) -> Result<(), String> {
-    let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.delete(id)
+    let store = state
+        .products
+        .lock()
+        .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+    store.delete(id, project.as_deref())
 }
 
 /// 将产品的输出文件导出到目标目录。
@@ -43,9 +50,13 @@ pub async fn export_product(
     state: State<'_, AppState>,
     id: i64,
     target_dir: String,
+    project: Option<String>,
 ) -> Result<String, String> {
-    let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.export_product(id, &target_dir)
+    let store = state
+        .products
+        .lock()
+        .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+    store.export_product(id, &target_dir, project.as_deref())
 }
 
 /// 使用更新的字段值重新生成产品。
@@ -54,23 +65,40 @@ pub async fn regenerate_product(
     state: State<'_, AppState>,
     id: i64,
     updated_fields: std::collections::HashMap<String, String>,
+    project: Option<String>,
 ) -> Result<ProductMeta, String> {
     let (product_output_path, original_input, _latest_input_data) = {
-        let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+        let store = state
+            .products
+            .lock()
+            .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
 
         let product = store
             .get(id)?
             .ok_or_else(|| format!("Product not found: {}", id))?;
+
+        // Verify project ownership if project is specified
+        if let Some(pid) = &project {
+            if product.project != *pid {
+                return Err(format!(
+                    "Product {} belongs to project '{}', not '{}'",
+                    id, product.project, pid
+                ));
+            }
+        }
 
         let latest = store
             .get_latest_version(id)?
             .ok_or_else(|| format!("No versions found for product: {}", id))?;
 
         let original_input: serde_json::Value =
-            serde_json::from_str(&latest.input_data)
-                .unwrap_or_else(|_| serde_json::json!({}));
+            serde_json::from_str(&latest.input_data).unwrap_or_else(|_| serde_json::json!({}));
 
-        (product.output_path.clone(), original_input, latest.input_data.clone())
+        (
+            product.output_path.clone(),
+            original_input,
+            latest.input_data.clone(),
+        )
     };
 
     let template_path = original_input
@@ -130,7 +158,10 @@ pub async fn regenerate_product(
 
     let result = crate::services::doc_generator::generate_document(request, &state.llm).await?;
 
-    let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+    let store = state
+        .products
+        .lock()
+        .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
     let input_json = serde_json::to_string(&serde_json::json!({
         "template_path": original_input.get("template_path"),
         "fields": updated_fields,

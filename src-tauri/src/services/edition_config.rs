@@ -46,7 +46,10 @@ impl EditionConfig {
                 Edition::Enterprise
             }),
             Err(e) => {
-                eprintln!("[EditionConfig] Query failed (table not initialized?): {}", e);
+                eprintln!(
+                    "[EditionConfig] Query failed (table not initialized?): {}",
+                    e
+                );
                 Edition::Enterprise
             }
         }

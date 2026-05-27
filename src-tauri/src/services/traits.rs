@@ -100,10 +100,20 @@ pub trait MetadataStore {
 /// BM25 全文搜索抽象
 pub trait BM25Search {
     /// 添加单个分块到索引
-    fn add_chunk(&self, chunk_id: i64, title: &str, content: &str, section_path: Option<&str>, project: &str) -> Result<(), String>;
+    fn add_chunk(
+        &self,
+        chunk_id: i64,
+        title: &str,
+        content: &str,
+        section_path: Option<&str>,
+        project: &str,
+    ) -> Result<(), String>;
 
     /// 批量添加分块
-    fn add_chunks(&self, chunks: &[(i64, String, String, Option<String>, String)]) -> Result<(), String>;
+    fn add_chunks(
+        &self,
+        chunks: &[(i64, String, String, Option<String>, String)],
+    ) -> Result<(), String>;
 
     /// 删除分块
     fn remove_chunk(&self, chunk_id: i64) -> Result<(), String>;
@@ -126,7 +136,10 @@ pub trait BM25Search {
     fn doc_count(&self) -> usize;
 
     /// 重建索引
-    fn rebuild(&self, chunks: &[(i64, String, String, Option<String>, String)]) -> Result<(), String>;
+    fn rebuild(
+        &self,
+        chunks: &[(i64, String, String, Option<String>, String)],
+    ) -> Result<(), String>;
 }
 
 // ─── LLM 服务 trait ───
@@ -146,7 +159,8 @@ pub trait LLMServiceSync {
     fn set_config(&self, config: LLMConfig) -> Result<(), String>;
 
     /// 同步生成文本（非流式）
-    fn generate_text_sync(&self, system_prompt: &str, user_message: &str) -> Result<String, String>;
+    fn generate_text_sync(&self, system_prompt: &str, user_message: &str)
+        -> Result<String, String>;
 }
 
 #[cfg(test)]
@@ -159,8 +173,8 @@ mod tests {
         fn _check_search(_: &mut dyn super::VectorSearch) {}
         fn _check_bm25(_: &dyn super::BM25Search) {}
         fn _check_meta(_: &dyn super::MetadataStore) {}
-        let _ = (_check_search as fn(&mut dyn super::VectorSearch));
-        let _ = (_check_bm25 as fn(&dyn super::BM25Search));
-        let _ = (_check_meta as fn(&dyn super::MetadataStore));
+        let _ = _check_search as fn(&mut dyn super::VectorSearch);
+        let _ = _check_bm25 as fn(&dyn super::BM25Search);
+        let _ = _check_meta as fn(&dyn super::MetadataStore);
     }
 }

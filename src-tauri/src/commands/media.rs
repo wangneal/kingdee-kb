@@ -2,8 +2,10 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::app_state::AppState;
 use crate::services::model_downloader;
+use crate::services::video_transcriber::{
+    MeetingMinutesResult, VideoPipelineResult, VideoTranscriptionResult,
+};
 use crate::services::whisper_service::{TranscriptionResult, WhisperStatus};
-use crate::services::video_transcriber::{VideoTranscriptionResult, VideoPipelineResult, MeetingMinutesResult};
 
 /// 加载 Whisper 模型用于语音转录。
 #[tauri::command]
@@ -36,7 +38,9 @@ pub fn start_whisper_recording(state: State<'_, AppState>) -> Result<(), String>
 
 /// 停止录音并转录音频。
 #[tauri::command]
-pub async fn stop_whisper_recording(state: State<'_, AppState>) -> Result<TranscriptionResult, String> {
+pub async fn stop_whisper_recording(
+    state: State<'_, AppState>,
+) -> Result<TranscriptionResult, String> {
     let pcm_data = {
         let capture = state.audio_capture.lock().map_err(|e| e.to_string())?;
         capture.stop_recording()?
@@ -59,7 +63,8 @@ pub async fn stop_whisper_recording(state: State<'_, AppState>) -> Result<Transc
         });
     }
 
-    let speech_pcm: Vec<f32> = speech_segments.iter()
+    let speech_pcm: Vec<f32> = speech_segments
+        .iter()
         .flat_map(|(start, end)| pcm_data[*start..*end].to_vec())
         .collect();
 
@@ -71,7 +76,8 @@ pub async fn stop_whisper_recording(state: State<'_, AppState>) -> Result<Transc
         whisper.transcribe(&speech_pcm)?
     };
 
-    let processed_text = crate::services::chinese_postprocess::postprocess_chinese(&whisper_result.text);
+    let processed_text =
+        crate::services::chinese_postprocess::postprocess_chinese(&whisper_result.text);
 
     Ok(TranscriptionResult {
         text: processed_text,
@@ -115,7 +121,8 @@ fn do_transcribe_video(
 
     emit_video_progress(app_handle, "extracting", 0.0, "正在提取音频...");
     let extract_start = std::time::Instant::now();
-    let (pcm_path, duration_secs) = crate::services::video_transcriber::extract_audio_to_file(path, data_dir)?;
+    let (pcm_path, duration_secs) =
+        crate::services::video_transcriber::extract_audio_to_file(path, data_dir)?;
     let extraction_time_ms = extract_start.elapsed().as_millis() as u64;
 
     let _cleanup = TempCleanup(pcm_path.clone());
@@ -126,14 +133,20 @@ fn do_transcribe_video(
     let result = crate::services::video_transcriber::transcribe_chunks(
         &pcm_path,
         whisper_service,
-        app_handle_clone.map(|h| move |chunk_idx: usize, total_chunks: usize| {
-            let pct = chunk_idx as f32 / total_chunks as f32 * 100.0;
-            let msg = format!("转写中 ({}/{})", chunk_idx, total_chunks);
-            h.emit("video_progress", serde_json::json!({
-                "step": "transcribing",
-                "progress": pct,
-                "message": msg
-            })).ok();
+        app_handle_clone.map(|h| {
+            move |chunk_idx: usize, total_chunks: usize| {
+                let pct = chunk_idx as f32 / total_chunks as f32 * 100.0;
+                let msg = format!("转写中 ({}/{})", chunk_idx, total_chunks);
+                h.emit(
+                    "video_progress",
+                    serde_json::json!({
+                        "step": "transcribing",
+                        "progress": pct,
+                        "message": msg
+                    }),
+                )
+                .ok();
+            }
         }),
     )?;
 
@@ -204,11 +217,18 @@ pub async fn transcribe_and_ingest_video(
     )?;
 
     let meeting_minutes = if generate_minutes {
-        emit_video_progress(Some(&app_handle), "generating_minutes", 0.0, "正在生成会议纪要...");
-        Some(crate::services::video_transcriber::generate_meeting_minutes(
-            &transcription.text,
-            &state.llm,
-        )?)
+        emit_video_progress(
+            Some(&app_handle),
+            "generating_minutes",
+            0.0,
+            "正在生成会议纪要...",
+        );
+        Some(
+            crate::services::video_transcriber::generate_meeting_minutes(
+                &transcription.text,
+                &state.llm,
+            )?,
+        )
     } else {
         None
     };

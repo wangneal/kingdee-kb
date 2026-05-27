@@ -44,8 +44,7 @@ pub fn extract_xlsx_fields(file_path: &Path) -> Result<Vec<XlsxFieldInfo>, Strin
         .map_err(|e| format!("Failed to read xlsx {}: {}", file_path.display(), e))?;
 
     let brace_re = Regex::new(r"\{([^}]+)\}").map_err(|e| format!("Regex error: {}", e))?;
-    let xxxx_re =
-        Regex::new(r"XXXX([\u4e00-\u9fff][\u4e00-\u9fff\w/（）()\-]{0,19})").unwrap();
+    let xxxx_re = Regex::new(r"XXXX([\u4e00-\u9fff][\u4e00-\u9fff\w/（）()\-]{0,19})").unwrap();
 
     let mut fields: BTreeMap<String, XlsxFieldInfo> = BTreeMap::new();
 
@@ -78,16 +77,15 @@ pub fn extract_xlsx_fields(file_path: &Path) -> Result<Vec<XlsxFieldInfo>, Strin
                 if field_name.is_empty() {
                     continue;
                 }
-                let entry =
-                    fields
-                        .entry(field_name.clone())
-                        .or_insert_with(|| XlsxFieldInfo {
-                            name: field_name.clone(),
-                            field_type: infer_field_type(&field_name),
-                            cell_refs: Vec::new(),
-                            count: 0,
-                            source: "brace".to_string(),
-                        });
+                let entry = fields
+                    .entry(field_name.clone())
+                    .or_insert_with(|| XlsxFieldInfo {
+                        name: field_name.clone(),
+                        field_type: infer_field_type(&field_name),
+                        cell_refs: Vec::new(),
+                        count: 0,
+                        source: "brace".to_string(),
+                    });
 
                 entry.cell_refs.push(full_ref.clone());
                 entry.count += 1;
@@ -97,7 +95,8 @@ pub fn extract_xlsx_fields(file_path: &Path) -> Result<Vec<XlsxFieldInfo>, Strin
             for cap in xxxx_re.captures_iter(&cell_value) {
                 let field_name = cap[1].trim().to_string();
                 // Filter: skip empty, too long (>30 bytes / >10 chars), or already found via brace
-                if field_name.is_empty() || field_name.len() > 30 || field_name.chars().count() > 10 {
+                if field_name.is_empty() || field_name.len() > 30 || field_name.chars().count() > 10
+                {
                     continue;
                 }
                 if fields.contains_key(&field_name) {
@@ -108,16 +107,15 @@ pub fn extract_xlsx_fields(file_path: &Path) -> Result<Vec<XlsxFieldInfo>, Strin
                     }
                     continue;
                 }
-                let entry =
-                    fields
-                        .entry(field_name.clone())
-                        .or_insert_with(|| XlsxFieldInfo {
-                            name: field_name.clone(),
-                            field_type: infer_field_type(&field_name),
-                            cell_refs: Vec::new(),
-                            count: 0,
-                            source: "xxxx".to_string(),
-                        });
+                let entry = fields
+                    .entry(field_name.clone())
+                    .or_insert_with(|| XlsxFieldInfo {
+                        name: field_name.clone(),
+                        field_type: infer_field_type(&field_name),
+                        cell_refs: Vec::new(),
+                        count: 0,
+                        source: "xxxx".to_string(),
+                    });
 
                 entry.cell_refs.push(full_ref.clone());
                 entry.count += 1;

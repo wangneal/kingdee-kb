@@ -3,7 +3,9 @@ use tauri::State;
 
 use crate::app_state::AppState;
 use crate::services::deliverable_recipes::DeliverableRecipe;
-use crate::services::doc_generator::{GeneratedDoc, GenerateDocRequest, RecipeDocRequest, RecipeDocResult};
+use crate::services::doc_generator::{
+    GenerateDocRequest, GeneratedDoc, RecipeDocRequest, RecipeDocResult,
+};
 use crate::services::smart_completion::{SmartFillRequest, SmartFillResult};
 use crate::services::template_docx::FieldInfo;
 use crate::services::template_scanner::TemplateInfo;
@@ -135,7 +137,42 @@ pub async fn generate_doc(
     state: State<'_, AppState>,
     request: GenerateDocRequest,
 ) -> Result<GeneratedDoc, String> {
-    crate::services::doc_generator::generate_document(request, &state.llm).await
+    let template_path = request.template_path.clone();
+    let project = request
+        .project_name
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+    let user_field_count = request.fields.len() as i64;
+    let schema_field_count = request
+        .schema_fields
+        .as_ref()
+        .map(|fields| fields.len() as i64)
+        .unwrap_or(0);
+    let input_json = serde_json::to_string(&request).unwrap_or_else(|_| "{}".to_string());
+
+    let result = crate::services::doc_generator::generate_document(request, &state.llm).await?;
+
+    let template_name = std::path::Path::new(&template_path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("generated_document");
+    {
+        let store = state
+            .products
+            .lock()
+            .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+        store.create(
+            &template_path,
+            template_name,
+            &project,
+            &result.output_path,
+            user_field_count.max(schema_field_count),
+            result.ai_fields.len() as i64,
+            &input_json,
+        )?;
+    }
+
+    Ok(result)
 }
 
 /// 使用交付物配方生成文档（配方感知生成）。
@@ -147,8 +184,8 @@ pub async fn generate_recipe_doc_cmd(
     let recipe_id = request.recipe_id.clone();
     let project = request.project_name.clone().unwrap_or_default();
     let user_field_count = request.fields.len() as i64;
-    let schema_fields_json: String = serde_json::to_string(&request.schema_fields)
-        .unwrap_or_else(|_| "[]".to_string());
+    let schema_fields_json: String =
+        serde_json::to_string(&request.schema_fields).unwrap_or_else(|_| "[]".to_string());
 
     let result = crate::services::doc_generator::generate_recipe_doc(
         request,
@@ -168,7 +205,10 @@ pub async fn generate_recipe_doc_cmd(
     .unwrap_or_else(|_| "{}".to_string());
 
     {
-        let store = state.products.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+        let store = state
+            .products
+            .lock()
+            .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
         let _ = store.create(
             &recipe_id,
             &result.recipe_name,
@@ -253,7 +293,10 @@ pub async fn generate_from_meeting(
 
 /// 智能填充：使用 hybrid_search + LLM 进行 KB 辅助字段填充
 #[tauri::command]
-pub async fn smart_fill(state: State<'_, AppState>, request: SmartFillRequest) -> Result<SmartFillResult, String> {
+pub async fn smart_fill(
+    state: State<'_, AppState>,
+    request: SmartFillRequest,
+) -> Result<SmartFillResult, String> {
     crate::services::smart_completion::smart_fill(
         request,
         &state.llm,

@@ -40,6 +40,7 @@ pub async fn save_chat_memory(
     vector_index: &Arc<Mutex<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
     bm25: &Arc<Mutex<BM25Service>>,
+    project: Option<&str>,
 ) {
     // --- Semantic quality check: skip trivial conversations ---
     // Use LLM to judge whether the conversation contains substantive project
@@ -92,7 +93,10 @@ pub async fn save_chat_memory(
         .collect::<Vec<_>>()
         .join("");
     if trimmed.is_empty() {
-        eprintln!("[Memory] Skipping — LLM returned empty template (no project info in conversation): {}", extract_title(conversation));
+        eprintln!(
+            "[Memory] Skipping — LLM returned empty template (no project info in conversation): {}",
+            extract_title(conversation)
+        );
         return;
     }
 
@@ -103,15 +107,19 @@ pub async fn save_chat_memory(
     // 4. Check for duplicate by semantic similarity — skip if too similar to recent memory
     let title = format!("记忆: {}", extract_title(conversation));
     if is_duplicate_memory(&title, &memory_text, embedding, vector_index, metadata) {
-        eprintln!("[Memory] Skipping — similar memory already exists: {}", title);
+        eprintln!(
+            "[Memory] Skipping — similar memory already exists: {}",
+            title
+        );
         return;
     }
 
     // 5. Ingest into knowledge base for future RAG search
+    let project_name = project.unwrap_or("记忆库");
     let _ = ingest_text(
         &memory_text,
         &title,
-        "记忆库",
+        project_name,
         embedding,
         vector_index,
         metadata,
@@ -134,12 +142,16 @@ pub async fn save_chat_memory(
 async fn is_substantive_conversation(conversation: &[ChatMessage], llm: &LLMService) -> bool {
     // --- Fallback heuristic (LLM not configured) ---
     if !llm.is_configured() {
-        let user_chars: usize = conversation.iter()
+        let user_chars: usize = conversation
+            .iter()
             .filter(|m| m.role == "user")
             .map(|m| m.content.chars().count())
             .sum();
         if user_chars < 5 {
-            eprintln!("[Memory] LLM not configured, heuristic: user content too short ({} chars)", user_chars);
+            eprintln!(
+                "[Memory] LLM not configured, heuristic: user content too short ({} chars)",
+                user_chars
+            );
             return false;
         }
         return true;
@@ -149,7 +161,9 @@ async fn is_substantive_conversation(conversation: &[ChatMessage], llm: &LLMServ
     // Build a compact transcript (truncate long messages to save tokens).
     let mut transcript = String::new();
     for msg in conversation {
-        if transcript.len() > 2000 { break; }
+        if transcript.len() > 2000 {
+            break;
+        }
         let content = if msg.content.len() > 300 {
             format!("{}...", &msg.content[..300])
         } else {
@@ -167,13 +181,14 @@ async fn is_substantive_conversation(conversation: &[ChatMessage], llm: &LLMServ
          对话内容：\n\
          {}\n\
          \n\
-         请只回答 YES 或 NO，不要其他内容。", 
+         请只回答 YES 或 NO，不要其他内容。",
         transcript
     );
 
-    let messages = vec![
-        ChatMessage { role: "user".to_string(), content: prompt },
-    ];
+    let messages = vec![ChatMessage {
+        role: "user".to_string(),
+        content: prompt,
+    }];
 
     match llm.get_config() {
         Ok(config) => match llm.chat_completion(&messages, &config).await {
@@ -181,12 +196,18 @@ async fn is_substantive_conversation(conversation: &[ChatMessage], llm: &LLMServ
                 let answer = response.trim().to_uppercase();
                 let is_yes = answer.contains("YES") && !answer.contains("NO");
                 if !is_yes {
-                    eprintln!("[Memory] LLM judged conversation as non-substantive: {}", response.trim());
+                    eprintln!(
+                        "[Memory] LLM judged conversation as non-substantive: {}",
+                        response.trim()
+                    );
                 }
                 is_yes
             }
             Err(e) => {
-                eprintln!("[Memory] LLM quality check failed ({}), defaulting to save", e);
+                eprintln!(
+                    "[Memory] LLM quality check failed ({}), defaulting to save",
+                    e
+                );
                 true // on error, default to saving rather than losing data
             }
         },
@@ -342,7 +363,7 @@ fn cleanup_stale_memories(
             for chunk in &chunks {
                 let _ = meta.delete_chunk_by_vector_key(chunk.vector_key);
             }
-            let _ = meta.delete_document(doc.id);
+            let _ = meta.delete_document(doc.id, None);
 
             chunks // return chunks for progress logging
         }; // both locks dropped together
@@ -362,10 +383,7 @@ fn cleanup_stale_memories(
 }
 
 /// Call LLM to extract structured project memory from conversation.
-async fn extract_memory(
-    conversation: &[ChatMessage],
-    llm: &LLMService,
-) -> Result<String, String> {
+async fn extract_memory(conversation: &[ChatMessage], llm: &LLMService) -> Result<String, String> {
     // Build conversation text (truncated for token budget)
     let conversation_text: String = conversation
         .iter()
@@ -441,8 +459,14 @@ mod tests {
     #[test]
     fn test_extract_title_from_user_message() {
         let msgs = vec![
-            ChatMessage { role: "user".to_string(), content: "项目A的预算情况如何".to_string() },
-            ChatMessage { role: "assistant".to_string(), content: "项目A的预算是100万".to_string() },
+            ChatMessage {
+                role: "user".to_string(),
+                content: "项目A的预算情况如何".to_string(),
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: "项目A的预算是100万".to_string(),
+            },
         ];
         let title = extract_title(&msgs);
         assert_eq!(title, "项目A的预算情况如何");
@@ -451,28 +475,39 @@ mod tests {
     #[test]
     fn test_extract_title_truncates_long() {
         let long = "项目A的预算情况如何项目A的预算情况如何项目A的预算情况如何项目A的预算情况如何项目A的预算情况如何";
-        let msgs = vec![
-            ChatMessage { role: "user".to_string(), content: long.to_string() },
-        ];
+        let msgs = vec![ChatMessage {
+            role: "user".to_string(),
+            content: long.to_string(),
+        }];
         let title = extract_title(&msgs);
         // Title should not be the full input (it should be truncated or cleaned)
         assert!(!title.is_empty(), "title should not be empty");
-        assert!(title.starts_with("项目A的预算情况如何"), "title should start with the first user message");
+        assert!(
+            title.starts_with("项目A的预算情况如何"),
+            "title should start with the first user message"
+        );
     }
 
     #[test]
     fn test_extract_title_fallback() {
-        let msgs = vec![
-            ChatMessage { role: "assistant".to_string(), content: "回复内容".to_string() },
-        ];
+        let msgs = vec![ChatMessage {
+            role: "assistant".to_string(),
+            content: "回复内容".to_string(),
+        }];
         assert_eq!(extract_title(&msgs), "未命名对话");
     }
 
     #[test]
     fn test_extract_title_empty_user() {
         let msgs = vec![
-            ChatMessage { role: "user".to_string(), content: "   ".to_string() },
-            ChatMessage { role: "user".to_string(), content: "实际的问题".to_string() },
+            ChatMessage {
+                role: "user".to_string(),
+                content: "   ".to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: "实际的问题".to_string(),
+            },
         ];
         assert_eq!(extract_title(&msgs), "实际的问题");
     }

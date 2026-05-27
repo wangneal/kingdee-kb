@@ -1,9 +1,11 @@
 use tauri::State;
 
 use crate::app_state::AppState;
-use crate::services::question_recommend::{RecommendRequest, RecommendedQuestion, FollowUpRequest, FollowUpResult};
+use crate::services::question_recommend::{
+    FollowUpRequest, FollowUpResult, RecommendRequest, RecommendedQuestion,
+};
 use crate::services::research_outline::Edition;
-use crate::services::research_session::{ResearchSession, QARecord, SessionDetail};
+use crate::services::research_session::{QARecord, ResearchSession, SessionDetail};
 use crate::services::smart_completion::SmartFillResult;
 
 /// 获取当前研究版本
@@ -16,14 +18,16 @@ pub fn get_current_edition(state: State<'_, AppState>) -> Result<String, String>
 /// 切换研究版本
 #[tauri::command]
 pub fn set_edition(state: State<'_, AppState>, edition: String) -> Result<(), String> {
-    let edition = Edition::from_str(&edition)
-        .ok_or_else(|| format!("Invalid edition: {}", edition))?;
+    let edition =
+        Edition::from_str(&edition).ok_or_else(|| format!("Invalid edition: {}", edition))?;
     state.edition_config.set(&edition)
 }
 
 /// 列出当前版本的所有已导入研究模块
 #[tauri::command]
-pub fn list_research_modules(state: State<'_, AppState>) -> Result<Vec<(i64, String, String)>, String> {
+pub fn list_research_modules(
+    state: State<'_, AppState>,
+) -> Result<Vec<(i64, String, String)>, String> {
     let edition = state.edition_config.current();
     state.research_indexer.list_outlines(&edition)
 }
@@ -32,14 +36,20 @@ pub fn list_research_modules(state: State<'_, AppState>) -> Result<Vec<(i64, Str
 #[tauri::command]
 pub fn import_research_outlines(state: State<'_, AppState>, dir: String) -> Result<String, String> {
     let edition = state.edition_config.current();
-    let result = state.research_indexer.import_directory(std::path::Path::new(&dir), edition)?;
+    let result = state
+        .research_indexer
+        .import_directory(std::path::Path::new(&dir), edition)?;
     let mut summary = format!(
         "导入成功: {} 个模块, {} 个问题\n跳过: {} 个文件",
         result.imported, result.total_questions, result.skipped
     );
     if !result.errors.is_empty() {
         let error_list: Vec<&str> = result.errors.iter().take(3).map(|s| s.as_str()).collect();
-        summary.push_str(&format!("\n错误 (前{}个): {}", error_list.len(), error_list.join("; ")));
+        summary.push_str(&format!(
+            "\n错误 (前{}个): {}",
+            error_list.len(),
+            error_list.join("; ")
+        ));
     }
     if result.imported == 0 && !result.errors.is_empty() {
         return Err(format!("导入失败: {}", result.errors.join("; ")));
@@ -114,18 +124,34 @@ pub fn create_research_session(
     module_code: String,
     interviewee: String,
     session_date: String,
+    project: Option<String>,
 ) -> Result<i64, String> {
-    state.research_session_store
-        .create_session(&title, &edition, &module_code, &interviewee, &session_date)
+    let project = project.unwrap_or_else(|| "default".to_string());
+    state.research_session_store.create_session(
+        &title,
+        &edition,
+        &module_code,
+        &interviewee,
+        &session_date,
+        &project,
+    )
 }
 
 #[tauri::command]
-pub fn list_research_sessions(state: State<'_, AppState>) -> Result<Vec<ResearchSession>, String> {
-    state.research_session_store.list_sessions()
+pub fn list_research_sessions(
+    state: State<'_, AppState>,
+    project: Option<String>,
+) -> Result<Vec<ResearchSession>, String> {
+    state
+        .research_session_store
+        .list_sessions(project.as_deref())
 }
 
 #[tauri::command]
-pub fn get_research_session(state: State<'_, AppState>, session_id: i64) -> Result<Option<SessionDetail>, String> {
+pub fn get_research_session(
+    state: State<'_, AppState>,
+    session_id: i64,
+) -> Result<Option<SessionDetail>, String> {
     state.research_session_store.get_session_detail(session_id)
 }
 
@@ -138,8 +164,13 @@ pub fn update_research_session(
     session_date: String,
     status: String,
 ) -> Result<(), String> {
-    state.research_session_store
-        .update_session(session_id, &title, &interviewee, &session_date, &status)
+    state.research_session_store.update_session(
+        session_id,
+        &title,
+        &interviewee,
+        &session_date,
+        &status,
+    )
 }
 
 #[tauri::command]
@@ -157,8 +188,14 @@ pub fn add_qa_record(
     notes: String,
     sort_order: i32,
 ) -> Result<i64, String> {
-    state.research_session_store
-        .add_record(session_id, question_id, &question_text, &answer_text, &notes, sort_order)
+    state.research_session_store.add_record(
+        session_id,
+        question_id,
+        &question_text,
+        &answer_text,
+        &notes,
+        sort_order,
+    )
 }
 
 #[tauri::command]
@@ -168,7 +205,9 @@ pub fn update_qa_record(
     answer_text: String,
     notes: String,
 ) -> Result<(), String> {
-    state.research_session_store.update_record(record_id, &answer_text, &notes)
+    state
+        .research_session_store
+        .update_record(record_id, &answer_text, &notes)
 }
 
 #[tauri::command]
@@ -177,7 +216,10 @@ pub fn delete_qa_record(state: State<'_, AppState>, record_id: i64) -> Result<()
 }
 
 #[tauri::command]
-pub fn get_session_records(state: State<'_, AppState>, session_id: i64) -> Result<Vec<QARecord>, String> {
+pub fn get_session_records(
+    state: State<'_, AppState>,
+    session_id: i64,
+) -> Result<Vec<QARecord>, String> {
     state.research_session_store.get_records(session_id)
 }
 
@@ -187,7 +229,10 @@ pub fn export_session_csv(state: State<'_, AppState>, session_id: i64) -> Result
 }
 
 #[tauri::command]
-pub fn export_session_markdown(state: State<'_, AppState>, session_id: i64) -> Result<String, String> {
+pub fn export_session_markdown(
+    state: State<'_, AppState>,
+    session_id: i64,
+) -> Result<String, String> {
     state.research_session_store.export_markdown(session_id)
 }
 
@@ -197,5 +242,7 @@ pub fn reorder_qa_records(
     session_id: i64,
     record_ids: Vec<i64>,
 ) -> Result<(), String> {
-    state.research_session_store.reorder_records(session_id, &record_ids)
+    state
+        .research_session_store
+        .reorder_records(session_id, &record_ids)
 }

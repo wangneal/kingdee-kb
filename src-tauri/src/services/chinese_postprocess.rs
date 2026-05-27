@@ -10,17 +10,15 @@ use std::sync::LazyLock;
 /// Common Chinese sentence-ending keywords that imply specific punctuation
 // SAFE: hardcoded regex pattern — CJK question keywords
 static QUESTION_KEYWORDS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(吗|呢|吧|啊|么|谁|什么|怎么|哪|多少|几|为什么|如何|是不是|能不能|有没有)").unwrap()
+    Regex::new(r"(吗|呢|吧|啊|么|谁|什么|怎么|哪|多少|几|为什么|如何|是不是|能不能|有没有)")
+        .unwrap()
 });
 
 // SAFE: hardcoded regex pattern — removes spaces between CJK characters
-static RE_CJK_SPACE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"([\u4e00-\u9fff])\s+([\u4e00-\u9fff])").unwrap()
-});
+static RE_CJK_SPACE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"([\u4e00-\u9fff])\s+([\u4e00-\u9fff])").unwrap());
 // SAFE: hardcoded regex pattern — collapses multiple spaces into one
-static RE_MULTI_SPACE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"  +").unwrap()
-});
+static RE_MULTI_SPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"  +").unwrap());
 
 /// Duplicate phrase pattern — same 2-4 char sequence repeated immediately
 /// NOTE: Rust's regex crate does NOT support backreferences, so we use
@@ -181,7 +179,8 @@ fn restore_punctuation(text: &str) -> String {
 /// Chinese speech often produces many short fragments. Merging them
 /// makes the text more readable while preserving meaning.
 fn merge_short_sentences(text: &str) -> String {
-    let sentences: Vec<&str> = text.split(|c| c == '。' || c == '？' || c == '！' || c == '；')
+    let sentences: Vec<&str> = text
+        .split(|c| c == '。' || c == '？' || c == '！' || c == '；')
         .filter(|s| !s.trim().is_empty())
         .collect();
 
@@ -252,11 +251,14 @@ fn clean_whitespace(text: &str) -> String {
 // --- Helpers ---
 
 fn is_cjk_punctuation(ch: char) -> bool {
-    matches!(ch, '，'|'。'|'？'|'！'|'；'|'：'|'、'|'…'|'—'|'\u{201C}'|'\u{201D}')
+    matches!(
+        ch,
+        '，' | '。' | '？' | '！' | '；' | '：' | '、' | '…' | '—' | '\u{201C}' | '\u{201D}'
+    )
 }
 
 fn is_ascii_punctuation(ch: char) -> bool {
-    matches!(ch, '.'|','|'?'|'!'|';'|':')
+    matches!(ch, '.' | ',' | '?' | '!' | ';' | ':')
 }
 
 /// Check if we're at a natural sentence boundary.
@@ -297,7 +299,9 @@ fn is_clause_break(chars: &[char], i: usize, len: usize) -> bool {
     if is_cjk_char(next) {
         // Look back to find last punctuation
         let recent = chars[..=i].iter().rev().take(12);
-        let since_punct = recent.take_while(|&&c| !is_cjk_punctuation(c) && !is_ascii_punctuation(c)).count();
+        let since_punct = recent
+            .take_while(|&&c| !is_cjk_punctuation(c) && !is_ascii_punctuation(c))
+            .count();
         return since_punct >= 8;
     }
 
@@ -305,11 +309,24 @@ fn is_clause_break(chars: &[char], i: usize, len: usize) -> bool {
 }
 
 fn is_conjunction(ch: char) -> bool {
-    matches!(ch, '但'|'而'|'所'|'如'|'因'|'虽'|'否')
+    matches!(ch, '但' | '而' | '所' | '如' | '因' | '虽' | '否')
 }
 
 fn is_two_char_conjunction(s: &str) -> bool {
-    matches!(s, "但是"|"而且"|"所以"|"如果"|"因为"|"虽然"|"不过"|"然后"|"接着"|"或者"|"还是")
+    matches!(
+        s,
+        "但是"
+            | "而且"
+            | "所以"
+            | "如果"
+            | "因为"
+            | "虽然"
+            | "不过"
+            | "然后"
+            | "接着"
+            | "或者"
+            | "还是"
+    )
 }
 
 fn is_cjk_char(ch: char) -> bool {
@@ -317,7 +334,13 @@ fn is_cjk_char(ch: char) -> bool {
 }
 
 fn get_recent_text(text: &str, n: usize) -> String {
-    text.chars().rev().take(n).collect::<Vec<_>>().into_iter().rev().collect()
+    text.chars()
+        .rev()
+        .take(n)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
 }
 
 #[cfg(test)]

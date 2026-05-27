@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::app_state::AppState;
 
@@ -34,16 +34,25 @@ pub fn ensure_data_dir() -> Result<PathBuf, String> {
 
 /// 递归复制目录及其所有内容
 pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
-    fs::create_dir_all(dst).map_err(|e| format!("Failed to create dir {}: {}", dst.display(), e))?;
-    for entry in fs::read_dir(src).map_err(|e| format!("Failed to read dir {}: {}", src.display(), e))? {
+    fs::create_dir_all(dst)
+        .map_err(|e| format!("Failed to create dir {}: {}", dst.display(), e))?;
+    for entry in
+        fs::read_dir(src).map_err(|e| format!("Failed to read dir {}: {}", src.display(), e))?
+    {
         let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
         if src_path.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
-            fs::copy(&src_path, &dst_path)
-                .map_err(|e| format!("Failed to copy {} to {}: {}", src_path.display(), dst_path.display(), e))?;
+            fs::copy(&src_path, &dst_path).map_err(|e| {
+                format!(
+                    "Failed to copy {} to {}: {}",
+                    src_path.display(),
+                    dst_path.display(),
+                    e
+                )
+            })?;
         }
     }
     Ok(())
@@ -120,8 +129,7 @@ pub async fn set_complete(
 /// 使用 PowerShell 将内容写入文件（UTF-8 BOM 编码）
 fn write_file_via_powershell(path: &Path, content: &str) -> Result<(), String> {
     let temp_path = path.with_extension("tmp");
-    std::fs::write(&temp_path, content)
-        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+    std::fs::write(&temp_path, content).map_err(|e| format!("Failed to write temp file: {}", e))?;
 
     let ps_script = format!(
         "$c = Get-Content -Path '{}' -Raw -Encoding UTF8; [System.IO.File]::WriteAllText('{}', $c, [System.Text.UTF8Encoding]::new($true))",
@@ -146,10 +154,7 @@ fn write_file_via_powershell(path: &Path, content: &str) -> Result<(), String> {
 
 /// 将任意内容导出到文件（UTF-8 BOM 编码）
 #[tauri::command]
-pub async fn export_report(
-    content: String,
-    file_path: String,
-) -> Result<String, String> {
+pub async fn export_report(content: String, file_path: String) -> Result<String, String> {
     let path = PathBuf::from(&file_path);
     write_file_via_powershell(&path, &content)?;
     Ok(file_path)
@@ -173,48 +178,9 @@ pub async fn setup_backend(app: AppHandle) -> Result<(), String> {
         }
     }
 
-    // 异步自动加载缓存的嵌入模型（后台加载，不阻塞前端启动）
-    let app_clone = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let state = app_clone.state::<AppState>();
-        let mm_arc = state.model_manager.clone();
-        let emb_arc = state.embedding.clone();
-        drop(state);
-
-        let model = {
-            let mut mm = match mm_arc.lock() {
-                Ok(g) => g,
-                Err(e) => {
-                    eprintln!("Auto-load: model_manager lock error: {}", e);
-                    return;
-                }
-            };
-            if let Err(e) = mm.init() {
-                eprintln!("Auto-load embedding model init failed: {}", e);
-                return;
-            }
-            match mm.take_model() {
-                Some(m) => m,
-                None => {
-                    eprintln!("Auto-load: model initialized but take_model returned None");
-                    return;
-                }
-            }
-        };
-
-        {
-            let mut emb = match emb_arc.lock() {
-                Ok(g) => g,
-                Err(e) => {
-                    eprintln!("Auto-load: embedding lock error: {}", e);
-                    return;
-                }
-            };
-            emb.set_model(model);
-            println!("Embedding model auto-loaded from local cache!");
-            let _ = app_clone.emit("model-ready", ());
-        }
-    });
+    // 嵌入模型改为"首次使用时懒加载"，不占用启动时间。
+    // 当用户第一次执行搜索或入库时，模型会自动加载。
+    println!("Embedding model will be loaded on first use (lazy load).");
 
     // 确保模板目录存在，如果为空则同步内置模板
     let template_dir = data_dir.join("templates");

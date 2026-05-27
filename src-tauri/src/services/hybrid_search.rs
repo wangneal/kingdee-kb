@@ -69,10 +69,7 @@ struct ResolvedChunk {
 /// it appears. Vector results get `VECTOR_WEIGHT=2.0`, BM25 gets `BM25_WEIGHT=1.0`.
 ///
 /// Returns a vec of `(chunk_id, fused_score)` sorted descending by score.
-fn rrf_fuse(
-    vector_results: &[ResolvedChunk],
-    bm25_results: &[ResolvedChunk],
-) -> Vec<(i64, f32)> {
+fn rrf_fuse(vector_results: &[ResolvedChunk], bm25_results: &[ResolvedChunk]) -> Vec<(i64, f32)> {
     let mut scores: HashMap<i64, f32> = HashMap::new();
 
     // Vector results (weighted: VECTOR_WEIGHT / (RRF_K + rank))
@@ -133,17 +130,17 @@ pub fn hybrid_search(
             let vector_keys: Vec<i64> = vector_raw.iter().map(|r| r.key as i64).collect();
             let chunks = meta.get_chunks_by_vector_keys(&vector_keys)?;
 
-// fetch all documents (eliminates N+1 query)
+            // fetch all documents (eliminates N+1 query)
             let doc_ids: Vec<i64> = chunks.iter().map(|c| c.document_id).collect();
             let doc_map = meta.get_documents_by_ids(&doc_ids)?;
 
             chunks
-                        .into_iter()
-                        .filter_map(|c| {
-                            let (title, project) = doc_map
-                                .get(&c.document_id)
-                                .map(|d| (d.title.clone(), d.project.clone()))
-                                .unwrap_or_else(|| (String::new(), "default".to_string()));
+                .into_iter()
+                .filter_map(|c| {
+                    let (title, project) = doc_map
+                        .get(&c.document_id)
+                        .map(|d| (d.title.clone(), d.project.clone()))
+                        .unwrap_or_else(|| (String::new(), "default".to_string()));
 
                     if let Some(pid) = project_id {
                         if project != pid {
@@ -254,9 +251,7 @@ fn build_results(
         };
 
         // Pick metadata from whichever retriever has it
-        let resolved = vector_map
-            .get(chunk_id)
-            .or_else(|| bm25_map.get(chunk_id));
+        let resolved = vector_map.get(chunk_id).or_else(|| bm25_map.get(chunk_id));
 
         if let Some(r) = resolved {
             let document_id = if r.document_id != 0 {
@@ -285,10 +280,7 @@ fn build_results(
 ///
 /// OpenClaw-inspired MMR-lite: prevents the search from returning chunks
 /// all from the same document, ensuring broader coverage across the KB.
-fn diversify_by_title(
-    results: Vec<HybridSearchResult>,
-    top_k: usize,
-) -> Vec<HybridSearchResult> {
+fn diversify_by_title(results: Vec<HybridSearchResult>, top_k: usize) -> Vec<HybridSearchResult> {
     let mut per_title: std::collections::HashMap<String, Vec<HybridSearchResult>> =
         std::collections::HashMap::new();
     for r in results {
@@ -297,7 +289,11 @@ fn diversify_by_title(
 
     // Sort each title group by score descending, then interleave
     for list in per_title.values_mut() {
-        list.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        list.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
     let mut diversified = Vec::with_capacity(top_k);

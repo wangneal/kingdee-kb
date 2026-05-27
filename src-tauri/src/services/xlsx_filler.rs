@@ -23,7 +23,9 @@ pub fn fill_xlsx(
     let mut book = umya_spreadsheet::reader::xlsx::read(template_path)
         .map_err(|e| format!("Failed to read xlsx {}: {}", template_path.display(), e))?;
 
-    let re = Regex::new(r"\{([^}]+)\}").map_err(|e| format!("Regex error: {}", e))?;
+    let brace_re = Regex::new(r"\{([^}]+)\}").map_err(|e| format!("Regex error: {}", e))?;
+    let xxxx_re = Regex::new(r"XXXX([\u4e00-\u9fff][\u4e00-\u9fff\w/（）()\-]{0,19})")
+        .map_err(|e| format!("Regex error: {}", e))?;
     let mut total_replaced = 0usize;
 
     let sheet_count = book.get_sheet_count();
@@ -47,20 +49,33 @@ pub fn fill_xlsx(
             let cell = sheet.get_cell_mut((col_num, row_num));
 
             let cell_value = cell.get_value().to_string();
-            if cell_value.is_empty() || !cell_value.contains('{') {
+            if cell_value.is_empty() {
                 continue;
             }
 
             let mut replaced_value = cell_value.clone();
             let mut cell_count = 0usize;
 
-            replaced_value = re
+            replaced_value = brace_re
                 .replace_all(&replaced_value, |caps: &regex::Captures| {
                     let field_name = &caps[1];
-                    match fields.get(field_name) {
+                    match get_field_value(fields, field_name) {
                         Some(value) => {
                             cell_count += 1;
-                            value.clone()
+                            value
+                        }
+                        None => caps[0].to_string(),
+                    }
+                })
+                .to_string();
+
+            replaced_value = xxxx_re
+                .replace_all(&replaced_value, |caps: &regex::Captures| {
+                    let field_name = &caps[1];
+                    match get_field_value(fields, field_name) {
+                        Some(value) => {
+                            cell_count += 1;
+                            value
                         }
                         None => caps[0].to_string(),
                     }
@@ -80,9 +95,40 @@ pub fn fill_xlsx(
     Ok(total_replaced)
 }
 
+fn get_field_value(fields: &HashMap<String, String>, name: &str) -> Option<String> {
+    let normalized = normalize_field_name(name);
+    fields
+        .get(name)
+        .or_else(|| fields.get(name.trim()))
+        .or_else(|| fields.get(&normalized))
+        .cloned()
+}
+
+fn normalize_field_name(name: &str) -> String {
+    name.trim()
+        .trim_matches('《')
+        .trim_matches('》')
+        .trim_matches('«')
+        .trim_matches('»')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_get_field_value_normalizes_wrappers() {
+        let mut fields = HashMap::new();
+        fields.insert("项目名称".to_string(), "罗孚项目".to_string());
+
+        assert_eq!(
+            get_field_value(&fields, "《项目名称》"),
+            Some("罗孚项目".to_string())
+        );
+    }
 
     #[test]
     fn test_fill_xlsx_basic() {

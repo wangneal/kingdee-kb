@@ -36,8 +36,8 @@ pub struct PptxFieldInfo {
 /// 4. Apply regex `\{([^}]+)\}` on each slide's merged text to find placeholders
 /// 5. Return deduplicated field list with slide index and context
 pub fn extract_pptx_fields(file_path: &Path) -> Result<Vec<PptxFieldInfo>, String> {
-    let file =
-        File::open(file_path).map_err(|e| format!("Failed to open {}: {}", file_path.display(), e))?;
+    let file = File::open(file_path)
+        .map_err(|e| format!("Failed to open {}: {}", file_path.display(), e))?;
 
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("Failed to read pptx zip: {}", e))?;
@@ -47,10 +47,17 @@ pub fn extract_pptx_fields(file_path: &Path) -> Result<Vec<PptxFieldInfo>, Strin
     // Collect all slide file names sorted
     let mut slide_names: Vec<String> = Vec::new();
     for i in 0..archive.len() {
-        let entry = archive.by_index(i).map_err(|e| format!("ZIP index error: {}", e))?;
+        let entry = archive
+            .by_index(i)
+            .map_err(|e| format!("ZIP index error: {}", e))?;
         let name = entry.name().to_string();
         // Match ppt/slides/slideN.xml (not slide layouts, not notes, not masters)
-        if name.starts_with("ppt/slides/slide") && name.ends_with(".xml") && !name.contains("notes") && !name.contains("layout") && !name.contains("master") {
+        if name.starts_with("ppt/slides/slide")
+            && name.ends_with(".xml")
+            && !name.contains("notes")
+            && !name.contains("layout")
+            && !name.contains("master")
+        {
             slide_names.push(name);
         }
     }
@@ -99,7 +106,9 @@ pub fn extract_pptx_fields(file_path: &Path) -> Result<Vec<PptxFieldInfo>, Strin
                 ctx.trim().to_string()
             };
 
-            let entry = fields.entry(field_name.clone()).or_insert_with(|| (slide_num, context.clone(), 0));
+            let entry = fields
+                .entry(field_name.clone())
+                .or_insert_with(|| (slide_num, context.clone(), 0));
             entry.2 += 1;
             // Keep the first slide occurrence as primary
         }

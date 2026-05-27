@@ -9,18 +9,14 @@ use crate::services::vector_index::SearchResult;
 
 /// 获取当前模型状态（就绪/未就绪）。
 #[tauri::command]
-pub async fn get_model_status(
-    state: State<'_, AppState>,
-) -> Result<bool, String> {
+pub async fn get_model_status(state: State<'_, AppState>) -> Result<bool, String> {
     let emb = state.embedding.lock().map_err(|e| e.to_string())?;
     Ok(emb.is_ready())
 }
 
 /// 初始化嵌入模型（首次调用时下载）。
 #[tauri::command]
-pub async fn init_model(
-    state: State<'_, AppState>,
-) -> Result<bool, String> {
+pub async fn init_model(state: State<'_, AppState>) -> Result<bool, String> {
     let download_progress = state.download_progress.clone();
     download_progress.store(0, Ordering::Relaxed);
     let stop = Arc::new(AtomicBool::new(false));
@@ -43,7 +39,8 @@ pub async fn init_model(
             download_progress.store(100, Ordering::Relaxed);
             let model = {
                 let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
-                mm.take_model().ok_or("Model initialized but no model returned")?
+                mm.take_model()
+                    .ok_or("Model initialized but no model returned")?
             };
             let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
             emb.set_model(model);
@@ -58,9 +55,7 @@ pub async fn init_model(
 
 /// 获取嵌入模型的下载进度（0–100）。
 #[tauri::command]
-pub async fn get_download_progress(
-    state: State<'_, AppState>,
-) -> Result<u32, String> {
+pub async fn get_download_progress(state: State<'_, AppState>) -> Result<u32, String> {
     Ok(state.download_progress.load(Ordering::Relaxed))
 }
 
@@ -86,7 +81,8 @@ pub async fn set_embedding_model_config(
 
     let model = {
         let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
-        mm.take_model().ok_or("Model initialized but no model returned")?
+        mm.take_model()
+            .ok_or("Model initialized but no model returned")?
     };
     let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
     emb.set_model(model);
@@ -94,10 +90,7 @@ pub async fn set_embedding_model_config(
 }
 
 #[tauri::command]
-pub async fn embed_text(
-    state: State<'_, AppState>,
-    text: String,
-) -> Result<Vec<f32>, String> {
+pub async fn embed_text(state: State<'_, AppState>, text: String) -> Result<Vec<f32>, String> {
     let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
     emb.embed_text(&text)
 }
@@ -126,18 +119,14 @@ pub async fn search_similar(
 
 /// 从磁盘加载向量索引
 #[tauri::command]
-pub async fn load_index(
-    state: State<'_, AppState>,
-) -> Result<usize, String> {
+pub async fn load_index(state: State<'_, AppState>) -> Result<usize, String> {
     let index = state.vector_index.lock().map_err(|e| e.to_string())?;
     Ok(index.len())
 }
 
 /// 获取向量索引统计信息
 #[tauri::command]
-pub async fn get_index_stats(
-    state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
+pub async fn get_index_stats(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let index = state.vector_index.lock().map_err(|e| e.to_string())?;
     let stats = index.stats();
     serde_json::to_value(stats).map_err(|e| format!("Serialization error: {}", e))
@@ -147,7 +136,8 @@ pub async fn get_index_stats(
 #[tauri::command]
 pub async fn get_knowledge_stats(
     state: State<'_, AppState>,
+    project: Option<String>,
 ) -> Result<KnowledgeStats, String> {
     let meta = state.metadata.lock().map_err(|e| e.to_string())?;
-    meta.get_stats()
+    meta.get_stats(project.as_deref())
 }

@@ -40,9 +40,9 @@ impl WhisperModelSize {
     /// Approximate model file size in bytes
     pub fn expected_size(&self) -> u64 {
         match self {
-            Self::Tiny => 75_000_000,    // ~75MB
-            Self::Base => 142_000_000,   // ~142MB
-            Self::Small => 466_000_000,  // ~466MB
+            Self::Tiny => 75_000_000,   // ~75MB
+            Self::Base => 142_000_000,  // ~142MB
+            Self::Small => 466_000_000, // ~466MB
         }
     }
 
@@ -89,9 +89,7 @@ pub fn ensure_model(model_dir: &Path, model_size: &str) -> Result<PathBuf, Strin
 
     // Check if already downloaded and valid
     if model_path.exists() {
-        let file_size = std::fs::metadata(&model_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let file_size = std::fs::metadata(&model_path).map(|m| m.len()).unwrap_or(0);
 
         // Validate file size is reasonable (at least 50% of expected)
         let min_size = size.expected_size() / 2;
@@ -124,21 +122,25 @@ pub fn ensure_model(model_dir: &Path, model_size: &str) -> Result<PathBuf, Strin
         // exe is at target/debug/kingdee-kb.exe or target/release/kingdee-kb.exe
         // models/ is at project root: ../../models/ggml-{size}.bin (dev) or bundled alongside exe
         let exe_dir = exe_path.parent().unwrap_or(Path::new("."));
-        
+
         // Try multiple locations for bundled model
         let bundled_candidates = vec![
-            exe_dir.join("..").join("..").join("models").join(format!("ggml-{}.bin", size.as_str())),
-            exe_dir.join("models").join(format!("ggml-{}.bin", size.as_str())),
+            exe_dir
+                .join("..")
+                .join("..")
+                .join("models")
+                .join(format!("ggml-{}.bin", size.as_str())),
+            exe_dir
+                .join("models")
+                .join(format!("ggml-{}.bin", size.as_str())),
             // Also try relative to CWD for dev mode
             PathBuf::from("models").join(format!("ggml-{}.bin", size.as_str())),
         ];
-        
+
         for bundled_path in &bundled_candidates {
             if let Ok(canonical) = bundled_path.canonicalize() {
-                let file_size = std::fs::metadata(&canonical)
-                    .map(|m| m.len())
-                    .unwrap_or(0);
-                    
+                let file_size = std::fs::metadata(&canonical).map(|m| m.len()).unwrap_or(0);
+
                 if file_size >= size.expected_size() / 2 {
                     eprintln!(
                         "[ModelDownloader] Copying bundled model from {} ({} bytes)",
@@ -178,7 +180,8 @@ fn download_model(size: &WhisperModelSize, target_path: &Path) -> Result<(), Str
         .call()
         .map_err(|e| format!("Failed to start model download: {}", e))?;
 
-    let content_length = response.headers()
+    let content_length = response
+        .headers()
         .get("content-length")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok())
@@ -238,9 +241,7 @@ fn download_model(size: &WhisperModelSize, target_path: &Path) -> Result<(), Str
         .map_err(|e| format!("Failed to flush model file: {}", e))?;
 
     // Validate download
-    let file_size = std::fs::metadata(target_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let file_size = std::fs::metadata(target_path).map(|m| m.len()).unwrap_or(0);
 
     if file_size < size.expected_size() / 2 {
         return Err(format!(

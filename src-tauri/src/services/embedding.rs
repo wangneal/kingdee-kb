@@ -1,4 +1,4 @@
-﻿//! Embedding service: text 鈫?vector conversion via fastembed-rs
+//! Embedding service: text 鈫?vector conversion via fastembed-rs
 //!
 //! Uses bge-small-zh-v1.5 (512-dim) for Chinese text embeddings.
 //! Model is auto-downloaded on first use to `~/.cache/huggingface/hub/`.
@@ -7,11 +7,13 @@
 //!   - Setting HF_ENDPOINT=https://hf-mirror.com (may not support range requests)
 //!   - Or pre-downloading model files to ~/.cache/huggingface/
 
-use fastembed::{EmbeddingModel, InitOptions, InitOptionsUserDefined, TextEmbedding, UserDefinedEmbeddingModel};
+use fastembed::{
+    EmbeddingModel, InitOptions, InitOptionsUserDefined, TextEmbedding, UserDefinedEmbeddingModel,
+};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,8 +26,8 @@ use std::time::Duration;
 /// with "Header Content-Range is missing". This is normal 鈥?the fallback
 /// mirror will be tried next.
 const HF_MIRRORS: &[Option<&str>] = &[
-    Some("https://hf-mirror.com"),           // Official HF Chinese mirror (fast, no Range)
-    None,                                      // Default (huggingface.co)
+    Some("https://hf-mirror.com"), // Official HF Chinese mirror (fast, no Range)
+    None,                          // Default (huggingface.co)
 ];
 
 /// Expected total download size for bge-small-zh-v1.5 (model + tokenizer + config).
@@ -47,7 +49,10 @@ pub fn start_download_progress_polling(
         return;
     };
 
-    eprintln!("[ModelManager] Starting progress polling for {:?}", cache_dir);
+    eprintln!(
+        "[ModelManager] Starting progress polling for {:?}",
+        cache_dir
+    );
 
     std::thread::spawn(move || {
         while !stop.load(Ordering::Relaxed) {
@@ -151,8 +156,7 @@ impl ModelManager {
     fn load_embedding_config(path: &PathBuf) -> Result<EmbeddingModelConfig, String> {
         let data = std::fs::read_to_string(path)
             .map_err(|e| format!("Read embedding config failed: {}", e))?;
-        serde_json::from_str(&data)
-            .map_err(|e| format!("Parse embedding config failed: {}", e))
+        serde_json::from_str(&data).map_err(|e| format!("Parse embedding config failed: {}", e))
     }
 
     fn save_embedding_config(&self) -> Result<(), String> {
@@ -200,7 +204,10 @@ impl ModelManager {
             .map_err(|e| format!("Failed to create model directory: {}", e))?;
 
         if let Some(custom_dir) = self.custom_model_dir.clone() {
-            eprintln!("[ModelManager] Loading custom embedding model from {:?}", custom_dir);
+            eprintln!(
+                "[ModelManager] Loading custom embedding model from {:?}",
+                custom_dir
+            );
             match Self::load_user_defined_from_dir(&custom_dir) {
                 Ok(text_emb) => {
                     eprintln!("[ModelManager] Custom embedding model loaded!");
@@ -215,7 +222,10 @@ impl ModelManager {
         }
 
         if let Some(base_dir) = Self::bundled_bge_model_dir() {
-            eprintln!("[ModelManager] Loading bundled embedding model from {:?}", base_dir);
+            eprintln!(
+                "[ModelManager] Loading bundled embedding model from {:?}",
+                base_dir
+            );
             match Self::load_user_defined_from_dir(&base_dir) {
                 Ok(text_emb) => {
                     eprintln!("[ModelManager] Bundled embedding model loaded!");
@@ -238,14 +248,20 @@ impl ModelManager {
         for model in &[EmbeddingModel::BGESmallZHV15, EmbeddingModel::AllMiniLML6V2] {
             match Self::load_user_defined_from_cache(model) {
                 Ok(Some(text_emb)) => {
-                    eprintln!("[ModelManager] Successfully loaded {:?} from local files!", model);
+                    eprintln!(
+                        "[ModelManager] Successfully loaded {:?} from local files!",
+                        model
+                    );
                     self.model = Some(text_emb);
                     self.is_ready = true;
                     return Ok(());
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    eprintln!("[ModelManager] Local UserDefined load failed for {:?}: {}", model, e);
+                    eprintln!(
+                        "[ModelManager] Local UserDefined load failed for {:?}: {}",
+                        model, e
+                    );
                 }
             }
         }
@@ -256,13 +272,15 @@ impl ModelManager {
                 eprintln!("[ModelManager] BGE model unavailable, trying default model...");
                 Self::try_init_with_mirrors(EmbeddingModel::AllMiniLML6V2)
             })
-            .map_err(|e| format!(
-                "Failed to initialize any embedding model: {}\n\
+            .map_err(|e| {
+                format!(
+                    "Failed to initialize any embedding model: {}\n\
                  Hint: The first download may take a few minutes. \
                  Try setting HF_ENDPOINT=https://hf-mirror.com in your environment, \
                  or pre-download model files to ~/.cache/huggingface/.",
-                e
-            ))?;
+                    e
+                )
+            })?;
 
         self.model = Some(model);
         self.is_ready = true;
@@ -288,7 +306,10 @@ impl ModelManager {
                     url
                 }
                 None => {
-                    eprintln!("[ModelManager] Trying mirror {}: default (huggingface.co)", i + 1);
+                    eprintln!(
+                        "[ModelManager] Trying mirror {}: default (huggingface.co)",
+                        i + 1
+                    );
                     match &original_hf_endpoint {
                         Some(val) => std::env::set_var("HF_ENDPOINT", val),
                         None => std::env::remove_var("HF_ENDPOINT"),
@@ -400,7 +421,7 @@ impl ModelManager {
         };
         let base_url = "https://hf-mirror.com";
 
-// Different models store ONNX files in different locations on HF.
+        // Different models store ONNX files in different locations on HF.
         // BGE: Xenova repo uses onnx/model.onnx
         // MiniLM: sentence-transformers uses onnx/model.onnx (also has root model.onnx in qdrant variant)
         //
@@ -424,8 +445,16 @@ impl ModelManager {
         let files: &[(&str, &[&str], &[&str])] = &[
             ("config.json", &["config.json"], &["config.json"]),
             ("tokenizer.json", &["tokenizer.json"], &["tokenizer.json"]),
-            ("tokenizer_config.json", &["tokenizer_config.json"], &["tokenizer_config.json"]),
-            ("special_tokens_map.json", &["special_tokens_map.json"], &["special_tokens_map.json"]),
+            (
+                "tokenizer_config.json",
+                &["tokenizer_config.json"],
+                &["tokenizer_config.json"],
+            ),
+            (
+                "special_tokens_map.json",
+                &["special_tokens_map.json"],
+                &["special_tokens_map.json"],
+            ),
             ("model.onnx", onnx_source_paths, onnx_dest_paths),
         ];
 
@@ -451,7 +480,11 @@ impl ModelManager {
                 // Stream download in chunks to avoid ureq's 10MB limit
                 match download_file_chunked(&url) {
                     Ok(data) => {
-                        eprintln!("[ModelManager]   downloaded {} ({} bytes)", name, data.len());
+                        eprintln!(
+                            "[ModelManager]   downloaded {} ({} bytes)",
+                            name,
+                            data.len()
+                        );
                         body = Some(data);
                         break;
                     }
@@ -615,7 +648,9 @@ impl ModelManager {
             .map_err(|e| format!("UserDefined load from {:?} failed: {}", base_dir, e))
     }
 
-    fn load_user_defined_from_cache(model: &EmbeddingModel) -> Result<Option<TextEmbedding>, String> {
+    fn load_user_defined_from_cache(
+        model: &EmbeddingModel,
+    ) -> Result<Option<TextEmbedding>, String> {
         let Some(cache_dir) = model_hf_cache_dir(model) else {
             return Ok(None);
         };
@@ -650,7 +685,10 @@ impl ModelManager {
                 continue;
             }
 
-            eprintln!("[ModelManager] Loading {:?} from local files at {:?}", model, base_dir);
+            eprintln!(
+                "[ModelManager] Loading {:?} from local files at {:?}",
+                model, base_dir
+            );
 
             return Self::load_user_defined_from_dir(&base_dir).map(Some);
         }
@@ -861,8 +899,8 @@ mod tests {
     fn test_load_bundled_bge_user_defined() {
         let dir = ModelManager::bundled_bge_model_dir()
             .expect("bundled BGE model resource directory should exist");
-        let mut model = ModelManager::load_user_defined_from_dir(&dir)
-            .expect("bundled BGE model should load");
+        let mut model =
+            ModelManager::load_user_defined_from_dir(&dir).expect("bundled BGE model should load");
         let embeddings = model.embed(vec!["测试"], None).expect("embed should work");
         assert_eq!(embeddings[0].len(), 512);
     }
@@ -880,7 +918,7 @@ mod tests {
         let model_dir = tmp.join("models");
         std::fs::create_dir_all(&model_dir).expect("create model dir");
 
-        // Files to download from qdrant ONNX repo  
+        // Files to download from qdrant ONNX repo
         let base_url = "https://hf-mirror.com/qdrant/all-MiniLM-L6-v2-onnx/resolve/main";
         let files: &[(&str, &[&str])] = &[
             ("config.json", &["config.json"]),
@@ -917,10 +955,13 @@ mod tests {
         // Load model directly from downloaded bytes
         println!("\n  Loading via UserDefinedEmbeddingModel...");
         let onnx_bytes = std::fs::read(model_dir.join("model.onnx")).expect("read model.onnx");
-        let tokenizer_bytes = std::fs::read(model_dir.join("tokenizer.json")).expect("read tokenizer");
+        let tokenizer_bytes =
+            std::fs::read(model_dir.join("tokenizer.json")).expect("read tokenizer");
         let config_bytes = std::fs::read(model_dir.join("config.json")).expect("read config");
-        let special_map_bytes = std::fs::read(model_dir.join("special_tokens_map.json")).expect("read special map");
-        let tok_config_bytes = std::fs::read(model_dir.join("tokenizer_config.json")).expect("read tokenizer config");
+        let special_map_bytes =
+            std::fs::read(model_dir.join("special_tokens_map.json")).expect("read special map");
+        let tok_config_bytes =
+            std::fs::read(model_dir.join("tokenizer_config.json")).expect("read tokenizer config");
 
         let user_model = UserDefinedEmbeddingModel::new(
             onnx_bytes,

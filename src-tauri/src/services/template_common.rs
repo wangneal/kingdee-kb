@@ -3,7 +3,6 @@
 //! 集中管理 template_docx、template_xlsx、template_pptx 共用的逻辑，
 //! 消除代码重复，确保行为一致。
 
-
 /// 推断字段类型（date / number / text）
 ///
 /// 合并了 docx、xlsx、pptx 三份实现的关键词列表，确保同一字段名在不同模板类型中
@@ -128,10 +127,7 @@ pub fn assemble_kb_context(
     context.push_str("以下是从知识库中检索到的相关内容：\n\n");
 
     for (i, result) in results.iter().enumerate() {
-        let section = result
-            .section_path
-            .as_deref()
-            .unwrap_or("（无章节信息）");
+        let section = result.section_path.as_deref().unwrap_or("（无章节信息）");
         context.push_str(&format!(
             "【来源 {}】{} | {}\n{}\n\n",
             i + 1,
@@ -189,28 +185,19 @@ mod tests {
     #[test]
     fn test_extract_json_from_response_markdown_block() {
         let response = "这是分析结果：\n```json\n{\"key\": \"value\"}\n```\n以上是结果。";
-        assert_eq!(
-            extract_json_from_response(response),
-            r#"{"key": "value"}"#
-        );
+        assert_eq!(extract_json_from_response(response), r#"{"key": "value"}"#);
     }
 
     #[test]
     fn test_extract_json_from_response_with_text() {
         let response = "根据分析，结果如下：{\"key\": \"value\"}，请参考。";
-        assert_eq!(
-            extract_json_from_response(response),
-            r#"{"key": "value"}"#
-        );
+        assert_eq!(extract_json_from_response(response), r#"{"key": "value"}"#);
     }
 
     #[test]
     fn test_extract_json_from_response_array() {
         let response = "结果：[1, 2, 3] 完成。";
-        assert_eq!(
-            extract_json_from_response(response),
-            "[1, 2, 3]"
-        );
+        assert_eq!(extract_json_from_response(response), "[1, 2, 3]");
     }
 
     #[test]

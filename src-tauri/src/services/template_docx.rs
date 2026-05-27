@@ -44,22 +44,40 @@ fn default_source() -> String {
 /// 4. Extract fields from multiple formats: `{name}`, `XXXX名称`, SDT controls
 /// 5. Return deduplicated field list with context
 pub fn extract_docx_fields(file_path: &Path) -> Result<Vec<FieldInfo>, String> {
-    let file =
-        File::open(file_path).map_err(|e| format!("Failed to open {}: {}", file_path.display(), e))?;
+    let file = File::open(file_path)
+        .map_err(|e| format!("Failed to open {}: {}", file_path.display(), e))?;
 
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip: {}", e))?;
 
-    // Read word/document.xml
     let mut document_xml = String::new();
-    archive
-        .by_name("word/document.xml")
-        .map_err(|e| format!("document.xml not found: {}", e))?
-        .read_to_string(&mut document_xml)
-        .map_err(|e| format!("Failed to read document.xml: {}", e))?;
+    let mut xml_parts = Vec::new();
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("Failed to read zip entry: {}", e))?;
+        let name = entry.name().to_string();
+        if !is_word_text_part(&name) {
+            continue;
+        }
+        let mut xml = String::new();
+        entry
+            .read_to_string(&mut xml)
+            .map_err(|e| format!("Failed to read {}: {}", name, e))?;
+        if name == "word/document.xml" {
+            document_xml = xml.clone();
+        }
+        xml_parts.push(xml);
+    }
+
+    if document_xml.is_empty() {
+        return Err("document.xml not found".to_string());
+    }
+
+    let all_xml = xml_parts.join("\n");
 
     // Extract all text content, handling split runs
-    let merged_text = merge_runs(&document_xml)?;
+    let merged_text = merge_runs(&all_xml)?;
 
     // Collect fields from all formats
     let mut fields: BTreeMap<String, (usize, String, String)> = BTreeMap::new();
@@ -71,7 +89,10 @@ pub fn extract_docx_fields(file_path: &Path) -> Result<Vec<FieldInfo>, String> {
     extract_xxxx_fields(&merged_text, &mut fields);
 
     // 3. SDT content controls with alias/tag/title
-    extract_sdt_fields(&document_xml, &mut fields);
+    extract_sdt_fields(&all_xml, &mut fields);
+
+    // 4. Word form fields / merge fields
+    extract_word_field_codes(&all_xml, &mut fields);
 
     let result: Vec<FieldInfo> = fields
         .into_iter()
@@ -87,11 +108,17 @@ pub fn extract_docx_fields(file_path: &Path) -> Result<Vec<FieldInfo>, String> {
     Ok(result)
 }
 
+fn is_word_text_part(name: &str) -> bool {
+    name == "word/document.xml"
+        || name.starts_with("word/header")
+        || name.starts_with("word/footer")
+        || name.starts_with("word/footnotes")
+        || name.starts_with("word/endnotes")
+        || name.starts_with("word/comments")
+}
+
 /// Extract `{field_name}` brace-style placeholders.
-fn extract_brace_fields(
-    merged_text: &str,
-    fields: &mut BTreeMap<String, (usize, String, String)>,
-) {
+fn extract_brace_fields(merged_text: &str, fields: &mut BTreeMap<String, (usize, String, String)>) {
     let re = Regex::new(r"\{([^}]+)\}").unwrap();
 
     for cap in re.captures_iter(merged_text) {
@@ -99,9 +126,15 @@ fn extract_brace_fields(
         if field_name.is_empty() {
             continue;
         }
-        let context = extract_context(merged_text, cap.get(0).map_or(0, |m| m.start()), cap.get(0).map_or(0, |m| m.len()));
+        let context = extract_context(
+            merged_text,
+            cap.get(0).map_or(0, |m| m.start()),
+            cap.get(0).map_or(0, |m| m.len()),
+        );
 
-        let entry = fields.entry(field_name).or_insert((0, context, "brace".to_string()));
+        let entry = fields
+            .entry(field_name)
+            .or_insert((0, context, "brace".to_string()));
         entry.0 += 1;
     }
 }
@@ -115,10 +148,7 @@ fn extract_brace_fields(
 ///   - "XXXX客户名称" → field "客户名称"
 ///   - "XXXX项目风险跟踪记录表" → field "项目风险跟踪记录表" (but too long, likely a title)
 ///   - "XXXX系统" → field "系统"
-fn extract_xxxx_fields(
-    merged_text: &str,
-    fields: &mut BTreeMap<String, (usize, String, String)>,
-) {
+fn extract_xxxx_fields(merged_text: &str, fields: &mut BTreeMap<String, (usize, String, String)>) {
     // Match XXXX followed by 1-20 Chinese/word characters (the field name)
     let re = Regex::new(r"XXXX([\u4e00-\u9fff][\u4e00-\u9fff\w/（）()\-]{0,19})").unwrap();
 
@@ -134,9 +164,15 @@ fn extract_xxxx_fields(
             continue;
         }
 
-        let context = extract_context(merged_text, cap.get(0).map_or(0, |m| m.start()), cap.get(0).map_or(0, |m| m.len()));
+        let context = extract_context(
+            merged_text,
+            cap.get(0).map_or(0, |m| m.start()),
+            cap.get(0).map_or(0, |m| m.len()),
+        );
 
-        let entry = fields.entry(field_name).or_insert((0, context, "xxxx".to_string()));
+        let entry = fields
+            .entry(field_name)
+            .or_insert((0, context, "xxxx".to_string()));
         entry.0 += 1;
     }
 }
@@ -145,10 +181,7 @@ fn extract_xxxx_fields(
 ///
 /// Note: In real Kingdee templates, SDT blocks are typically used for TOC (table of contents)
 /// rather than form fields, so this extractor often returns nothing useful.
-fn extract_sdt_fields(
-    document_xml: &str,
-    fields: &mut BTreeMap<String, (usize, String, String)>,
-) {
+fn extract_sdt_fields(document_xml: &str, fields: &mut BTreeMap<String, (usize, String, String)>) {
     // Match SDT alias: <w:alias w:val="..."/>
     let alias_re = Regex::new(r#"<w:alias[^>]*w:val="([^"]+)""#).unwrap();
     for cap in alias_re.captures_iter(document_xml) {
@@ -179,6 +212,74 @@ fn extract_sdt_fields(
             fields.insert(name, (1, "SDT title".to_string(), "sdt".to_string()));
         }
     }
+}
+
+fn extract_word_field_codes(
+    document_xml: &str,
+    fields: &mut BTreeMap<String, (usize, String, String)>,
+) {
+    let form_name_re = Regex::new(r#"<w:ffData\b(?s:.*?)<w:name[^>]*w:val="([^"]+)""#).unwrap();
+    for cap in form_name_re.captures_iter(document_xml) {
+        let name = normalize_field_name(&cap[1]);
+        if should_keep_field_name(&name) {
+            let entry = fields.entry(name).or_insert((
+                0,
+                "Word form field".to_string(),
+                "form".to_string(),
+            ));
+            entry.0 += 1;
+        }
+    }
+
+    let instr_re = Regex::new(r#"<w:instrText[^>]*>(?s:.*?)</w:instrText>"#).unwrap();
+    let text_tag_re = Regex::new(r"<[^>]+>").unwrap();
+    let merge_re = Regex::new(r#"MERGEFIELD\s+["']?([^"'\s\\]+)"#).unwrap();
+    for cap in instr_re.captures_iter(document_xml) {
+        let raw = text_tag_re.replace_all(&cap[0], "");
+        let decoded = decode_xml_entities(&raw);
+        for merge in merge_re.captures_iter(&decoded) {
+            let name = normalize_field_name(&merge[1]);
+            if should_keep_field_name(&name) {
+                let entry = fields.entry(name).or_insert((
+                    0,
+                    "MERGEFIELD".to_string(),
+                    "mergefield".to_string(),
+                ));
+                entry.0 += 1;
+            }
+        }
+    }
+}
+
+fn normalize_field_name(value: &str) -> String {
+    decode_xml_entities(value)
+        .trim()
+        .trim_matches(|c| matches!(c, '"' | '\'' | '«' | '»' | '《' | '》'))
+        .trim()
+        .to_string()
+}
+
+fn should_keep_field_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "toc" | "hyperlink" | "page" | "numPages" | "ref"
+    ) {
+        return false;
+    }
+    name.chars().count() <= 40
+}
+
+fn decode_xml_entities(value: &str) -> String {
+    value
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 /// Merge text runs from document.xml to handle Word's split-run problem.
