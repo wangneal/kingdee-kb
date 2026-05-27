@@ -67,6 +67,12 @@ export default function Wizard() {
         setTemplate(tpl);
 
         // Load schema
+        console.log("[Wizard] Calling getTemplateSchema with:", {
+          template_id: tpl.id,
+          template_name: tpl.name,
+          file_path: tpl.file_path,
+          phase: tpl.phase,
+        });
         const schemaData = await getTemplateSchema(
           tpl.id,
           tpl.name,

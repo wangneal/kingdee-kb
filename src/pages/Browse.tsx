@@ -119,7 +119,7 @@ export default function Browse() {
   const handleDelete = async (doc: DocumentMeta) => {
     if (!confirm(`确定删除文档「${doc.title}」？`)) return;
     try {
-      await deleteDocument(doc.id);
+      await deleteDocument(doc.id, doc.project);
       setDocuments((prev) => prev.filter((d) => d.id !== doc.id));
       if (selectedDoc?.id === doc.id) setSelectedDoc(null);
     } catch (e) {
@@ -154,7 +154,16 @@ export default function Browse() {
     setBatchDeleting(true);
     try {
       const ids = Array.from(selectedDocs);
-      await deleteDocumentsBatch(ids);
+      const selectedByProject = new Map<string, number[]>();
+      for (const doc of documents) {
+        if (!selectedDocs.has(doc.id)) continue;
+        const group = selectedByProject.get(doc.project) ?? [];
+        group.push(doc.id);
+        selectedByProject.set(doc.project, group);
+      }
+      for (const [project, projectIds] of selectedByProject) {
+        await deleteDocumentsBatch(projectIds, project);
+      }
       setSelectedDocs(new Set());
       if (selectedDoc !== null && ids.includes(selectedDoc.id)) {
         setSelectedDoc(null);
@@ -306,7 +315,7 @@ export default function Browse() {
             </div>
           </div>
         ) : (
-          <div className="mx-auto max-w-6xl p-6">
+          <div className="p-6">
             {/* Document header */}
             <div className="mb-6">
               <h1 className="text-lg font-semibold text-neutral-800">

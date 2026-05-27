@@ -28,6 +28,13 @@ export interface IngestionResult {
   vector_count: number;
 }
 
+export interface ExtractedFileText {
+  file_path: string;
+  title: string;
+  text: string;
+  char_count: number;
+}
+
 export interface FileError {
   path: string;
   error: string;
@@ -149,6 +156,10 @@ export async function ingestFile(
   return invoke("ingest_file", { filePath, project });
 }
 
+export async function extractFileText(filePath: string): Promise<ExtractedFileText> {
+  return invoke("extract_file_text", { filePath });
+}
+
 export async function ingestDirectory(
   dirPath: string,
   project: string
@@ -166,17 +177,17 @@ export async function getDocumentChunks(documentId: number): Promise<ChunkMeta[]
   return invoke("get_document_chunks", { documentId });
 }
 
-export async function getStats(): Promise<KnowledgeStats> {
-  return invoke("get_stats");
+export async function getStats(project?: string): Promise<KnowledgeStats> {
+  return invoke("get_stats", { project: project ?? null });
 }
 
-export async function deleteDocument(documentId: number): Promise<void> {
-  return invoke("delete_document", { documentId });
+export async function deleteDocument(documentId: number, project?: string): Promise<void> {
+  return invoke("delete_document", { documentId, project: project ?? null });
 }
 
 /** Batch-delete multiple documents (and their chunks) in a single transaction */
-export async function deleteDocumentsBatch(documentIds: number[]): Promise<number> {
-  return invoke("delete_documents_batch", { documentIds });
+export async function deleteDocumentsBatch(documentIds: number[], project?: string): Promise<number> {
+  return invoke("delete_documents_batch", { documentIds, project: project ?? null });
 }
 
 // ── Embedding model commands ──────────────────────────────────────────────────
@@ -300,9 +311,10 @@ export function listenChatEvents(
 
 /** Save chat conversation to memory: archive + extract → ingest into KB. */
 export async function saveChatMemory(
-  conversation: ChatMessage[]
+  conversation: ChatMessage[],
+  project?: string,
 ): Promise<void> {
-  return invoke("save_chat_memory", { conversation });
+  return invoke("save_chat_memory", { conversation, project: project ?? null });
 }
 
 // ── Phase 9/10/11/12/13: Template & Wizard Types ────────────────────────────
@@ -420,7 +432,7 @@ export async function scanTemplates(templateDir?: string): Promise<TemplateInfo[
 }
 
 export async function extractTemplateFields(filePath: string): Promise<FieldInfo[]> {
-  return invoke("extract_template_fields", { filePath });
+  return invoke("extract_template_fields", { file_path: filePath });
 }
 
 export async function getTemplateSchema(
@@ -431,11 +443,11 @@ export async function getTemplateSchema(
   writeSidecar?: boolean
 ): Promise<TemplateSchema> {
   return invoke("get_template_schema", {
-    templateId,
-    templateName,
-    filePath,
+    template_id: templateId,
+    template_name: templateName,
+    file_path: filePath,
     phase,
-    writeSidecar: writeSidecar ?? false,
+    write_sidecar: writeSidecar ?? false,
   });
 }
 
@@ -448,19 +460,19 @@ export async function generateDoc(request: GenerateDocRequest): Promise<Generate
 }
 
 export async function getDeliverableRecipe(templateId: string): Promise<DeliverableRecipe> {
-  return invoke("get_deliverable_recipe", { templateId });
+  return invoke("get_deliverable_recipe", { template_id: templateId });
 }
 
 export async function listProducts(project?: string): Promise<ProductMeta[]> {
   return invoke("list_products", { project: project ?? null });
 }
 
-export async function exportProduct(id: number, targetDir: string): Promise<string> {
-  return invoke("export_product", { id, targetDir });
+export async function exportProduct(id: number, targetDir: string, project?: string): Promise<string> {
+  return invoke("export_product", { id, targetDir, project: project ?? null });
 }
 
-export async function deleteProduct(id: number): Promise<void> {
-  return invoke("delete_product", { id });
+export async function deleteProduct(id: number, project?: string): Promise<void> {
+  return invoke("delete_product", { id, project: project ?? null });
 }
 
 // ── Phase 13: Research Session Management ─────────────────────────────────
@@ -473,6 +485,7 @@ export interface ResearchSession {
   interviewee: string;
   session_date: string;
   status: string;
+  project: string;
   created_at: string;
   updated_at: string;
 }
@@ -499,6 +512,7 @@ export async function createResearchSession(
   moduleCode: string,
   interviewee: string,
   sessionDate: string,
+  project?: string,
 ): Promise<number> {
   return invoke("create_research_session", {
     title,
@@ -506,11 +520,12 @@ export async function createResearchSession(
     moduleCode,
     interviewee,
     sessionDate,
+    project: project ?? null,
   });
 }
 
-export async function listResearchSessions(): Promise<ResearchSession[]> {
-  return invoke("list_research_sessions");
+export async function listResearchSessions(project?: string): Promise<ResearchSession[]> {
+  return invoke("list_research_sessions", { project: project ?? null });
 }
 
 export async function getResearchSession(sessionId: number): Promise<SessionDetail | null> {
@@ -697,16 +712,22 @@ function nextSessionId(): string {
   return crypto.randomUUID();
 }
 
-export async function reactChat(
+/**
+ * Agent 对话入口：发送消息给 rig agent，通过 SSE 事件流返回结果。
+ * 前端应先调用 listenReActEvents() 监听事件，再调用此函数。
+ */
+export async function agentChat(
   message: string,
   systemExtra?: string,
   sessionId?: string,
+  projectId?: string,
 ): Promise<string> {
   const sid = sessionId || nextSessionId();
-  await invoke("react_chat", {
+  await invoke("agent_chat", {
     message,
     systemExtra: systemExtra ?? "",
     sessionId: sid,
+    projectId: projectId ?? null,
   });
   return sid;
 }
@@ -715,10 +736,12 @@ export async function reactChat(
 export async function answerQuestion(
   questionId: string,
   answer: string,
+  projectId?: string,
 ): Promise<void> {
   return invoke("answer_question", {
     questionId,
     answer,
+    projectId: projectId ?? null,
   });
 }
 

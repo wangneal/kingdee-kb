@@ -16,7 +16,7 @@ import {
   generateRiskReport,
   generateDefenseScript,
   analyzeFitGap,
-  reactChat,
+  agentChat,
   listenReActEvents,
   exportReport,
   listRiskProjects,
@@ -38,6 +38,8 @@ export default function RiskControl() {
   const [showNewProject, setShowNewProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [newClientName, setNewClientName] = useState("");
+  const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? null;
+  const selectedKbProject = selectedProject?.kb_project || selectedProject?.name;
 
   const tabs: { key: Tab; label: string; icon: typeof Shield }[] = [
     { key: "scope", label: "需求蔓延警报", icon: AlertTriangle },
@@ -67,7 +69,7 @@ export default function RiskControl() {
         const result = await desensitizeText(safeClientName);
         safeClientName = result.safe_text;
       }
-      const id = await createRiskProject(newProjectName.trim(), safeClientName || undefined);
+      const id = await createRiskProject(newProjectName.trim(), safeClientName || undefined, newProjectName.trim());
       setNewProjectName("");
       setNewClientName("");
       setShowNewProject(false);
@@ -156,7 +158,7 @@ export default function RiskControl() {
         {tab === "scope" && <ScopeTab projectId={selectedProjectId} />}
         {tab === "health" && <HealthTab projectId={selectedProjectId} />}
         {tab === "scripts" && <ScriptsTab projectId={selectedProjectId} />}
-        {tab === "analysis" && <AnalysisTab projectId={selectedProjectId} />}
+        {tab === "analysis" && <AnalysisTab projectId={selectedProjectId} kbProject={selectedKbProject} />}
         {tab === "backup" && <BackupTab />}
       </div>
     </div>
@@ -237,7 +239,7 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+      <div className="space-y-6">
       {/* 范围检查 */}
       <div className="rounded-lg border border-neutral-200 bg-white p-4">
         <h2 className="mb-3 text-sm font-semibold text-neutral-700">检查新需求是否超范围</h2>
@@ -391,7 +393,7 @@ function HealthTab({ projectId }: { projectId: number | null }) {
   }
 
   return (
-    <div className="mx-auto max-w-3xl">
+    <div>
       {loading ? <div className="flex justify-center pt-10"><Loader2 className="h-5 w-5 animate-spin text-neutral-400" /></div> :
       health ? (
         <div className="space-y-4">
@@ -517,7 +519,7 @@ function ScriptsTab({ projectId }: { projectId: number | null }) {
   };
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4">
+      <div className="space-y-4">
       <div className="rounded-lg border border-neutral-200 bg-white p-4">
         <h2 className="mb-3 text-sm font-semibold text-neutral-700">生成防身话术</h2>
         <div className="space-y-3">
@@ -620,7 +622,7 @@ function BackupTab() {
   };
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+      <div className="space-y-6">
       <div className="rounded-lg border border-neutral-200 bg-white p-4">
         <h2 className="mb-4 text-sm font-semibold text-neutral-700">整库备份与恢复</h2>
         <div className="flex gap-4">
@@ -690,8 +692,7 @@ interface ChatMsg {
   loading?: boolean;
 }
 
-function AnalysisTab({ projectId }: { projectId: number | null }) {
-  void projectId;
+function AnalysisTab({ projectId, kbProject }: { projectId: number | null; kbProject?: string }) {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -742,7 +743,7 @@ function AnalysisTab({ projectId }: { projectId: number | null }) {
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text || loading || projectId === null) return;
     setInput("");
 
     const newMsg: ChatMsg = { id: `m${Date.now()}`, role: "user", content: text };
@@ -752,19 +753,20 @@ function AnalysisTab({ projectId }: { projectId: number | null }) {
 
     setLoading(true);
     try {
-      // Generate session ID first before calling reactChat
+      // Generate session ID first before calling agentChat
       const sid = `risk_${Date.now()}`;
       sessionRef.current = sid;
-      await reactChat(
+      await agentChat(
         text,
         "你是在 KingdeeKB 双轨风险把控舱中的风控专家。分析以下问题时，你可以：\n" +
-        "1) 使用 search_knowledge 搜索知识库中的风险案例和最佳实践\n" +
+        "1) 使用 search-knowledge 搜索知识库中的风险案例和最佳实践\n" +
         "2) 使用 check_scope_creep 检查新需求是否超范围\n" +
         "3) 使用 get_project_health 获取项目健康评分\n" +
         "4) 使用 analyze_fit_gap 做差异分析\n" +
         "5) 使用 generate_defense_script 生成应对话术\n" +
         "给出专业、简洁、可执行的回答。",
-        sid
+        sid,
+        kbProject
       );
     } catch {
       setLoading(false);
@@ -774,10 +776,10 @@ function AnalysisTab({ projectId }: { projectId: number | null }) {
         return next;
       });
     }
-  }, [input, loading]);
+  }, [input, loading, projectId, kbProject]);
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col" style={{ height: "calc(100vh - 12rem)" }}>
+      <div className="flex flex-col" style={{ height: "calc(100vh - 12rem)" }}>
       {/* Chat messages */}
       <div className="flex-1 space-y-3 overflow-y-auto rounded-lg border border-neutral-200 bg-white p-4">
         {messages.length === 0 && (
@@ -817,7 +819,7 @@ function AnalysisTab({ projectId }: { projectId: number | null }) {
           className="flex-1 rounded-lg border border-neutral-200 px-3 py-2 text-xs outline-none focus:border-amber-500"
           disabled={loading}
         />
-        <button type="button" onClick={handleSend} disabled={loading || !input.trim()}
+        <button type="button" onClick={handleSend} disabled={loading || !input.trim() || projectId === null}
           className="flex items-center gap-1 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50">
           {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
           发送

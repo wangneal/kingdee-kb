@@ -33,7 +33,7 @@ import {
   startWhisperRecording,
   stopWhisperRecording,
   getWhisperStatus,
-  reactChat,
+  agentChat,
   listenReActEvents,
   type WhisperStatus,
   listAsrProviders,
@@ -146,8 +146,10 @@ export default function ResearchAssistant() {
                     </button>
                   </div>
                   <div className="flex flex-wrap gap-1.5 text-[10px] text-neutral-500">
-                    <span className="rounded bg-neutral-100 px-1.5 py-0.5">{s.edition}</span>
-                    <span className="rounded bg-neutral-100 px-1.5 py-0.5">{s.module_code}</span>
+                    <span className="rounded bg-neutral-100 px-1.5 py-0.5">{s.edition === "enterprise" ? "企业版" : "旗舰版"}</span>
+                    {s.module_code && (
+                      <span className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-600">{s.module_code}</span>
+                    )}
                     {s.status === "completed" && (
                       <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700">已完成</span>
                     )}
@@ -218,7 +220,7 @@ function NewSessionForm({ onCreated, onCancel }: { onCreated: (id: number) => vo
         <h1 className="text-base font-semibold text-neutral-800">新建调研会话</h1>
       </div>
       <div className="flex-1 overflow-y-auto p-6">
-        <div className="mx-auto max-w-lg space-y-4">
+        <div className="space-y-4">
           <div>
             <label className="mb-1 block text-xs font-medium text-neutral-600">会话标题 *</label>
             <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="如：BOS 基础平台调研" className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20" />
@@ -232,8 +234,13 @@ function NewSessionForm({ onCreated, onCancel }: { onCreated: (id: number) => vo
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-neutral-600">模块编码</label>
-              <input value={moduleCode} onChange={(e) => setModuleCode(e.target.value)} placeholder="如：BOS" className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20" />
+              <label className="mb-1 block text-xs font-medium text-neutral-600">调研模块</label>
+              <input
+                value={moduleCode}
+                onChange={(e) => setModuleCode(e.target.value)}
+                placeholder="如：采购、销售、库存、财务..."
+                className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20"
+              />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -318,10 +325,10 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
     setNewAnswer("");
     const context = `当前调研：${session.title}（${session.edition}/${session.module_code}）\n已有记录：${records.map((r) => `Q: ${r.question_text}`).join("\n")}`;
     try {
-      // Generate session ID first before calling reactChat
+      // Generate session ID first before calling agentChat
       const sid = `research_${Date.now()}`;
       aiSessionRef.current = sid;
-      await reactChat(`请回答以下调研问题，基于知识库中的金蝶ERP实施经验：\n\n问题：${newQuestion}\n\n背景：${context}`, `你是一个金蝶ERP实施顾问，正在辅助一个调研访谈。请基于知识库给出专业的回答。回答要具体、可操作，包含系统配置路径或单据类型。不确定的写[待确认]。`, sid);
+      await agentChat(`请回答以下调研问题，基于知识库中的金蝶ERP实施经验：\n\n问题：${newQuestion}\n\n背景：${context}`, `你是一个金蝶ERP实施顾问，正在辅助一个调研访谈。请基于知识库给出专业的回答。回答要具体、可操作，包含系统配置路径或单据类型。不确定的写[待确认]。`, sid);
     } catch (err) {
       setAiLoading(false);
     }
