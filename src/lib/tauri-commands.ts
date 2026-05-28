@@ -207,8 +207,18 @@ export async function getDownloadProgress(): Promise<number> {
 
 // ── LLM / RAG command wrappers ───────────────────────────────────────────────
 
+export type EmbeddingProviderType = 'local' | 'openai' | 'siliconflow' | 'zhipu' | 'dashscope' | 'cohere';
+
 export interface EmbeddingModelConfig {
   custom_model_dir?: string | null;
+}
+
+/** Online embedding provider configuration (stored in frontend localStorage) */
+export interface EmbeddingProviderConfig {
+  provider: EmbeddingProviderType;
+  api_key: string;
+  base_url: string;
+  model_name: string;
 }
 
 export async function getEmbeddingModelConfig(): Promise<EmbeddingModelConfig> {
@@ -700,13 +710,13 @@ export interface ClarificationPayload {
 }
 
 export type ReActEvent =
-  | { type: "thinking"; session_id: string; content: string }
-  | { type: "tool_call"; session_id: string; name: string; args: string }
-  | { type: "tool_result"; session_id: string; name: string; result: string }
-  | { type: "text_delta"; session_id: string; content: string }
-  | { type: "error"; session_id: string; message: string }
-  | { type: "done"; session_id: string }
-  | { type: "clarification"; session_id: string; payload: ClarificationPayload };
+  | { type: "thinking"; session_id: string; sessionId?: string; content: string }
+  | { type: "tool_call"; session_id: string; sessionId?: string; name: string; args: string }
+  | { type: "tool_result"; session_id: string; sessionId?: string; name: string; result: string }
+  | { type: "text_delta"; session_id: string; sessionId?: string; content: string }
+  | { type: "error"; session_id: string; sessionId?: string; message: string }
+  | { type: "done"; session_id: string; sessionId?: string }
+  | { type: "clarification"; session_id: string; sessionId?: string; payload: ClarificationPayload };
 
 function nextSessionId(): string {
   return crypto.randomUUID();
@@ -756,7 +766,7 @@ export async function listenReActEvents(
   const { listen } = await import("@tauri-apps/api/event");
   const unlisten = await listen<ReActEvent>("react-event", (event) => {
     // Check session_id in both snake_case and camelCase (Tauri v2 may convert)
-    const eventSessionId = event.payload.session_id || (event.payload as any).sessionId;
+    const eventSessionId = event.payload.session_id || event.payload.sessionId;
     if (sessionId && eventSessionId !== sessionId) return;
     handler(event.payload);
   });

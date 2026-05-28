@@ -3,7 +3,10 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::app_state::AppState;
-use crate::services::embedding::{start_download_progress_polling, EmbeddingModelConfig};
+use crate::services::embedding::{
+    start_download_progress_polling, EmbeddingModelConfig, EmbeddingProvider, ProviderInfo,
+    RemoteEmbeddingConfig,
+};
 use crate::services::metadata::KnowledgeStats;
 use crate::services::vector_index::SearchResult;
 
@@ -27,29 +30,30 @@ pub async fn init_model(state: State<'_, AppState>) -> Result<bool, String> {
         stop,
     );
 
-    let result = {
+    let model_result: Result<_, String> = {
         let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
-        mm.init()
+        match mm.init() {
+            Ok(()) => {
+                stop_clone.store(true, Ordering::Relaxed);
+                download_progress.store(100, Ordering::Relaxed);
+                mm.take_model()
+                    .ok_or_else(|| "Model initialized but no model returned".to_string())
+            }
+            Err(e) => {
+                stop_clone.store(true, Ordering::Relaxed);
+                download_progress.store(0, Ordering::Relaxed);
+                Err(e)
+            }
+        }
     };
 
-    stop_clone.store(true, Ordering::Relaxed);
-
-    match result {
-        Ok(()) => {
-            download_progress.store(100, Ordering::Relaxed);
-            let model = {
-                let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
-                mm.take_model()
-                    .ok_or("Model initialized but no model returned")?
-            };
+    match model_result {
+        Ok(model) => {
             let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
             emb.set_model(model);
             Ok(true)
         }
-        Err(e) => {
-            download_progress.store(0, Ordering::Relaxed);
-            Err(e)
-        }
+        Err(e) => Err(e),
     }
 }
 
@@ -72,27 +76,75 @@ pub async fn get_embedding_model_config(
 pub async fn set_embedding_model_config(
     state: State<'_, AppState>,
     custom_model_dir: Option<String>,
+    provider: Option<EmbeddingProvider>,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    model_name: Option<String>,
 ) -> Result<bool, String> {
-    {
-        let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
-        mm.set_custom_model_dir(custom_model_dir)?;
-        mm.init()?;
+    // 判断是否为远程提供商配置
+    let is_remote = provider
+        .as_ref()
+        .is_some_and(|p| *p != EmbeddingProvider::Local);
+
+    if is_remote {
+        // 远程模式：配置在线 Embedding 提供商
+        let provider = provider.unwrap();
+        let provider_info = EmbeddingProvider::all_providers()
+            .into_iter()
+            .find(|p| p.provider == provider);
+
+        let remote_config = RemoteEmbeddingConfig {
+            provider: provider.clone(),
+            api_key: api_key.unwrap_or_default(),
+            base_url: base_url
+                .or_else(|| provider_info.as_ref().and_then(|p| p.default_base_url.clone()))
+                .unwrap_or_default(),
+            model_name: model_name
+                .or_else(|| provider_info.as_ref().and_then(|p| p.default_model.clone()))
+                .unwrap_or_default(),
+        };
+
+        {
+            let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
+            mm.set_remote_config(Some(remote_config.clone()))?;
+        }
+
+        // 同步配置到 EmbeddingService
+        let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
+        emb.set_remote_config(Some(remote_config));
+    } else {
+        // 本地模式：配置本地 ONNX 模型
+        let model = {
+            let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
+            mm.set_remote_config(None)?; // 清除远程配置
+            mm.set_custom_model_dir(custom_model_dir)?;
+            mm.init()?;
+            mm.take_model()
+                .ok_or("Model initialized but no model returned")?
+        };
+        let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
+        emb.set_model(model);
     }
 
-    let model = {
-        let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
-        mm.take_model()
-            .ok_or("Model initialized but no model returned")?
-    };
-    let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
-    emb.set_model(model);
     Ok(true)
 }
 
 #[tauri::command]
 pub async fn embed_text(state: State<'_, AppState>, text: String) -> Result<Vec<f32>, String> {
-    let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
-    emb.embed_text(&text)
+    // 检查是否为远程模式
+    let remote_config = {
+        let emb = state.embedding.lock().map_err(|e| e.to_string())?;
+        emb.remote_config().cloned()
+    };
+
+    if let Some(config) = remote_config {
+        // 远程模式：调用在线 Embedding API
+        crate::services::embedding::remote_embed(&config, &text).await
+    } else {
+        // 本地模式：使用本地 ONNX 模型
+        let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
+        emb.embed_text(&text)
+    }
 }
 
 /// 批量嵌入多个文本
@@ -101,9 +153,22 @@ pub async fn embed_batch(
     state: State<'_, AppState>,
     texts: Vec<String>,
 ) -> Result<Vec<Vec<f32>>, String> {
-    let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
-    let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-    emb.embed_batch(&refs)
+    // 检查是否为远程模式
+    let remote_config = {
+        let emb = state.embedding.lock().map_err(|e| e.to_string())?;
+        emb.remote_config().cloned()
+    };
+
+    if let Some(config) = remote_config {
+        // 远程模式：调用在线 Embedding API
+        let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        crate::services::embedding::remote_embed_batch(&config, &refs).await
+    } else {
+        // 本地模式：使用本地 ONNX 模型
+        let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
+        let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        emb.embed_batch(&refs)
+    }
 }
 
 /// 在 HNSW 索引中搜索相似向量
@@ -140,4 +205,10 @@ pub async fn get_knowledge_stats(
 ) -> Result<KnowledgeStats, String> {
     let meta = state.metadata.lock().map_err(|e| e.to_string())?;
     meta.get_stats(project.as_deref())
+}
+
+/// 获取所有可用的 Embedding 提供商列表
+#[tauri::command]
+pub async fn get_available_providers() -> Result<Vec<ProviderInfo>, String> {
+    Ok(EmbeddingProvider::all_providers())
 }

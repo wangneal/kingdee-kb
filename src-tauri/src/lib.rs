@@ -128,6 +128,7 @@ pub fn run() {
             commands::embedding::load_index,
             commands::embedding::get_index_stats,
             commands::embedding::get_knowledge_stats,
+            commands::embedding::get_available_providers,
             // Phase 3: Ingestion Pipeline
             commands::ingestion::ingest_text,
             commands::ingestion::ingest_file,

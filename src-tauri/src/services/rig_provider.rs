@@ -253,7 +253,7 @@ mod tests {
     use rig_core::client::CompletionClient;
     use rig_core::streaming::StreamingPrompt;
     use serde::Deserialize;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use crate::services::bm25_service::BM25Service;
     use crate::services::embedding::EmbeddingService;

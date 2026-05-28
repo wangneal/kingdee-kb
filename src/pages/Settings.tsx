@@ -37,6 +37,8 @@ import {
   type LLMConfig,
   type KnowledgeStats,
   type EmbeddingModelConfig,
+  type EmbeddingProviderType,
+  type EmbeddingProviderConfig,
 addSensitiveKeyword,
 listSensitiveKeywords,
 removeSensitiveKeyword,
@@ -71,6 +73,25 @@ const LOCAL_PRESETS: { label: string; base_url: string; model: string }[] = [
   { label: "llama.cpp server", base_url: "http://localhost:8080/v1", model: "qwen2.5-7b-q4" },
 ];
 
+/** Embedding provider definitions — label, default base URL, and recommended models */
+const EMBEDDING_PROVIDERS: Record<EmbeddingProviderType, { label: string; baseUrl: string; models: string[] }> = {
+  local: { label: '本地模型', baseUrl: '', models: [] },
+  siliconflow: { label: '硅基流动', baseUrl: 'https://api.siliconflow.cn/v1', models: ['BAAI/bge-m3', 'BAAI/bge-large-zh-v1.5'] },
+  openai: { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', models: ['text-embedding-3-small', 'text-embedding-3-large'] },
+  zhipu: { label: '智谱 AI', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', models: ['embedding-3'] },
+  dashscope: { label: '阿里灵积', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: ['text-embedding-v3', 'text-embedding-v2'] },
+  cohere: { label: 'Cohere', baseUrl: 'https://api.cohere.com/v2', models: ['embed-multilingual-v3.0', 'embed-english-v3.0'] },
+};
+
+const DEFAULT_EMBEDDING_PROVIDER_CONFIG: EmbeddingProviderConfig = {
+  provider: 'local',
+  api_key: '',
+  base_url: '',
+  model_name: '',
+};
+
+const EMBEDDING_PROVIDER_STORAGE_KEY = 'kingdeekb_embedding_provider_config';
+
 const DEFAULT_CONFIG: LLMConfig = {
   provider: "openai",
   api_key: "",
@@ -104,8 +125,14 @@ export default function Settings() {
   const [embeddingConfig, setEmbeddingConfig] =
     useState<EmbeddingModelConfig>({});
   const [embeddingConfigSaving, setEmbeddingConfigSaving] = useState(false);
+  const [embeddingProviderConfig, setEmbeddingProviderConfig] =
+    useState<EmbeddingProviderConfig>(DEFAULT_EMBEDDING_PROVIDER_CONFIG);
+  const [embeddingProviderSaving, setEmbeddingProviderSaving] = useState(false);
+  const [embeddingProviderSaveMsg, setEmbeddingProviderSaveMsg] = useState<string | null>(null);
+  const [showEmbeddingApiKey, setShowEmbeddingApiKey] = useState(false);
   const [keywordInput, setKeywordInput] = useState("");
   const [keywords, setKeywords] = useState<string[]>([]);
+  const [keywordError, setKeywordError] = useState<string | null>(null);
 
   // ASR config state
   const [asrConfigStatus, setAsrConfigStatus] = useState<AsrConfigStatus | null>(null);
@@ -142,6 +169,15 @@ export default function Settings() {
       setConfigured(configured);
       setStats(s);
       setEmbeddingConfig(embeddingCfg);
+
+      // Load online embedding provider config from localStorage
+      try {
+        const stored = localStorage.getItem(EMBEDDING_PROVIDER_STORAGE_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored) as EmbeddingProviderConfig;
+          setEmbeddingProviderConfig({ ...DEFAULT_EMBEDDING_PROVIDER_CONFIG, ...parsed });
+        }
+      } catch { /* ignore parse errors */ }
     });
 
     // Poll model status until ready or timeout
@@ -300,6 +336,38 @@ export default function Settings() {
       setEmbeddingConfigSaving(false);
     }
   }, []);
+
+  const handleEmbeddingProviderChange = useCallback((provider: EmbeddingProviderType) => {
+    const defaults = EMBEDDING_PROVIDERS[provider];
+    setEmbeddingProviderConfig((prev) => ({
+      ...prev,
+      provider,
+      // Auto-fill base_url only if it still matches the previous provider default
+      base_url: prev.base_url === EMBEDDING_PROVIDERS[prev.provider]?.baseUrl || prev.base_url === ''
+        ? defaults.baseUrl
+        : prev.base_url,
+      // Auto-fill model_name only if it was one of the previous provider's models
+      model_name: EMBEDDING_PROVIDERS[prev.provider]?.models.includes(prev.model_name) || prev.model_name === ''
+        ? (defaults.models[0] ?? '')
+        : prev.model_name,
+    }));
+  }, []);
+
+  const handleSaveEmbeddingProviderConfig = useCallback(async () => {
+    setEmbeddingProviderSaving(true);
+    setEmbeddingProviderSaveMsg(null);
+    try {
+      // Don't persist API key to localStorage — security risk
+      const { api_key: _, ...safeConfig } = embeddingProviderConfig;
+      localStorage.setItem(EMBEDDING_PROVIDER_STORAGE_KEY, JSON.stringify(safeConfig));
+      setEmbeddingProviderSaveMsg("配置已保存");
+      setTimeout(() => setEmbeddingProviderSaveMsg(null), 3000);
+    } catch (err) {
+      setEmbeddingProviderSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setEmbeddingProviderSaving(false);
+    }
+  }, [embeddingProviderConfig]);
 
   if (loading) {
     return (
@@ -587,7 +655,7 @@ export default function Settings() {
                 Embedding 模型
               </h2>
               <p className="mt-0.5 text-xs text-neutral-400">
-                向量嵌入模型，用于语义搜索（首次初始化需下载模型文件）
+                向量嵌入模型，支持本地 ONNX 模型或在线 API 服务
               </p>
             </div>
             <span
@@ -608,113 +676,263 @@ export default function Settings() {
         </div>
 
         <div className="p-5">
-          <p className="mb-3 text-sm text-neutral-500">
-            {modelReady
-              ? "模型已加载，知识库导入和语义搜索功能可用。"
-              : initializing
-                ? `正在下载模型（${downloadProgress}%）... 首次下载约 90MB，请耐心等待`
-                : "模型尚未初始化。首次初始化需要从 HuggingFace 下载模型文件（约 90MB）。"}
-          </p>
-
-          {/* Progress bar during download */}
-          {initializing && (
-            <div className="mb-3">
-              <div className="h-2 w-full overflow-hidden rounded-full bg-neutral-100">
-                <div
-                  className="h-full rounded-full bg-[#1A6BD8] transition-all duration-300 ease-out"
-                  style={{ width: `${Math.max(downloadProgress, 2)}%` }}
-                />
-              </div>
-              <p className="mt-1 text-xs text-neutral-400">
-                {downloadProgress < 100
-                  ? `${downloadProgress}%`
-                  : "加载中..."}
-              </p>
+          {/* Provider selector */}
+          <div className="mb-4">
+            <div className="mb-1.5 flex items-center gap-2">
+              <ArrowLeftRight className="h-4 w-4 text-neutral-400" />
+              <span className="text-sm font-medium text-neutral-700">模式</span>
             </div>
+            <select
+              value={embeddingProviderConfig.provider}
+              onChange={(e) => handleEmbeddingProviderChange(e.target.value as EmbeddingProviderType)}
+              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+            >
+              {(Object.keys(EMBEDDING_PROVIDERS) as EmbeddingProviderType[]).map((key) => (
+                <option key={key} value={key}>
+                  {EMBEDDING_PROVIDERS[key].label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Local model UI */}
+          {embeddingProviderConfig.provider === 'local' && (
+            <>
+              <p className="mb-3 text-sm text-neutral-500">
+                {modelReady
+                  ? "模型已加载，知识库导入和语义搜索功能可用。"
+                  : initializing
+                    ? `正在下载模型（${downloadProgress}%）... 首次下载约 90MB，请耐心等待`
+                    : "模型尚未初始化。首次初始化需要从 HuggingFace 下载模型文件（约 90MB）。"}
+              </p>
+
+              {/* Progress bar during download */}
+              {initializing && (
+                <div className="mb-3">
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-neutral-100">
+                    <div
+                      className="h-full rounded-full bg-[#1A6BD8] transition-all duration-300 ease-out"
+                      style={{ width: `${Math.max(downloadProgress, 2)}%` }}
+                    />
+                  </div>
+                  <p className="mt-1 text-xs text-neutral-400">
+                    {downloadProgress < 100
+                      ? `${downloadProgress}%`
+                      : "加载中..."}
+                  </p>
+                </div>
+              )}
+
+              <div className="mb-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={embeddingConfig.custom_model_dir ?? ""}
+                    onChange={(e) =>
+                      setEmbeddingConfig({ custom_model_dir: e.target.value })
+                    }
+                    placeholder="默认使用内置 BGE 模型；可选择本地 ONNX 模型目录"
+                    className="flex-1 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleChooseEmbeddingDir}
+                    className="rounded-lg border border-neutral-200 p-2 text-neutral-500 hover:bg-neutral-50"
+                    title="选择目录"
+                  >
+                    <FolderOpen className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleResetEmbeddingConfig}
+                    disabled={embeddingConfigSaving}
+                    className="rounded-lg border border-neutral-200 p-2 text-neutral-500 hover:bg-neutral-50 disabled:opacity-50"
+                    title="使用内置模型"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                  </button>
+                </div>
+                <p className="text-xs text-neutral-400">
+                  目录需包含 model.onnx、tokenizer.json；config.json、tokenizer_config.json、special_tokens_map.json 可选。
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleSaveEmbeddingConfig}
+                  disabled={embeddingConfigSaving}
+                  className="flex items-center gap-1.5 rounded-lg border border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
+                >
+                  {embeddingConfigSaving ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Save className="h-4 w-4" />
+                  )}
+                  保存模型设置
+                </button>
+                <button
+                  type="button"
+                  onClick={handleInitModel}
+                  disabled={initializing || modelReady}
+                  className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
+                >
+                  {initializing ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
+                  )}
+                  {initializing
+                    ? "下载模型中..."
+                    : modelReady
+                      ? "已初始化"
+                      : "初始化模型"}
+                </button>
+
+                {initResult && (
+                  <span
+                    className={`text-xs ${
+                      initResult.ok ? "text-green-600" : "text-red-600"
+                    }`}
+                  >
+                    {initResult.msg}
+                  </span>
+                )}
+              </div>
+
+              {!modelReady && !initializing && (
+                <div className="mt-3 flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  未初始化时，AI 对话将无法使用知识库语义搜索，仅使用关键词匹配和 LLM 自身能力
+                </div>
+              )}
+            </>
           )}
 
-          <div className="mb-3 space-y-2">
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={embeddingConfig.custom_model_dir ?? ""}
-                onChange={(e) =>
-                  setEmbeddingConfig({ custom_model_dir: e.target.value })
-                }
-                placeholder="默认使用内置 BGE 模型；可选择本地 ONNX 模型目录"
-                className="flex-1 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-              />
-              <button
-                type="button"
-                onClick={handleChooseEmbeddingDir}
-                className="rounded-lg border border-neutral-200 p-2 text-neutral-500 hover:bg-neutral-50"
-                title="选择目录"
-              >
-                <FolderOpen className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                onClick={handleResetEmbeddingConfig}
-                disabled={embeddingConfigSaving}
-                className="rounded-lg border border-neutral-200 p-2 text-neutral-500 hover:bg-neutral-50 disabled:opacity-50"
-                title="使用内置模型"
-              >
-                <RotateCcw className="h-4 w-4" />
-              </button>
-            </div>
-            <p className="text-xs text-neutral-400">
-              目录需包含 model.onnx、tokenizer.json；config.json、tokenizer_config.json、special_tokens_map.json 可选。
-            </p>
-          </div>
+          {/* Online provider UI */}
+          {embeddingProviderConfig.provider !== 'local' && (
+            <>
+              <p className="mb-3 text-sm text-neutral-500">
+                使用 {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].label} 在线 Embedding 服务。
+                请填写 API Key 和模型配置后保存。
+              </p>
 
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={handleSaveEmbeddingConfig}
-              disabled={embeddingConfigSaving}
-              className="flex items-center gap-1.5 rounded-lg border border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
-            >
-              {embeddingConfigSaving ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Save className="h-4 w-4" />
-              )}
-              保存模型设置
-            </button>
-            <button
-              type="button"
-              onClick={handleInitModel}
-              disabled={initializing || modelReady}
-              className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
-            >
-              {initializing ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="h-4 w-4" />
-              )}
-              {initializing
-                ? "下载模型中..."
-                : modelReady
-                  ? "已初始化"
-                  : "初始化模型"}
-            </button>
+              <div className="space-y-3">
+                {/* Base URL */}
+                <div>
+                  <div className="mb-1.5 flex items-center gap-2">
+                    <Server className="h-4 w-4 text-neutral-400" />
+                    <span className="text-sm font-medium text-neutral-700">API Base URL</span>
+                  </div>
+                  <input
+                    type="text"
+                    value={embeddingProviderConfig.base_url}
+                    onChange={(e) =>
+                      setEmbeddingProviderConfig((c) => ({ ...c, base_url: e.target.value }))
+                    }
+                    placeholder={EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].baseUrl}
+                    className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+                  />
+                </div>
 
-            {initResult && (
-              <span
-                className={`text-xs ${
-                  initResult.ok ? "text-green-600" : "text-red-600"
-                }`}
-              >
-                {initResult.msg}
-              </span>
-            )}
-          </div>
+                {/* API Key */}
+                <div>
+                  <div className="mb-1.5 flex items-center gap-2">
+                    <Key className="h-4 w-4 text-neutral-400" />
+                    <span className="text-sm font-medium text-neutral-700">API Key</span>
+                  </div>
+                  <div className="relative flex items-center">
+                    <input
+                      type={showEmbeddingApiKey ? "text" : "password"}
+                      value={embeddingProviderConfig.api_key}
+                      onChange={(e) =>
+                        setEmbeddingProviderConfig((c) => ({ ...c, api_key: e.target.value }))
+                      }
+                      placeholder="输入 API Key..."
+                      className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 pr-10 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowEmbeddingApiKey((v) => !v)}
+                      className="absolute right-2 text-neutral-400 hover:text-neutral-600 transition-colors"
+                      tabIndex={-1}
+                      aria-label={showEmbeddingApiKey ? "隐藏 API Key" : "显示 API Key"}
+                    >
+                      {showEmbeddingApiKey ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                </div>
 
-          {!modelReady && !initializing && (
-            <div className="mt-3 flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
-              <AlertTriangle className="h-3.5 w-3.5" />
-              未初始化时，AI 对话将无法使用知识库语义搜索，仅使用关键词匹配和 LLM 自身能力
-            </div>
+                {/* Model Name */}
+                <div>
+                  <div className="mb-1.5 flex items-center gap-2">
+                    <Cpu className="h-4 w-4 text-neutral-400" />
+                    <span className="text-sm font-medium text-neutral-700">模型名称</span>
+                  </div>
+                  <input
+                    type="text"
+                    list={`embedding-models-${embeddingProviderConfig.provider}`}
+                    value={embeddingProviderConfig.model_name}
+                    onChange={(e) =>
+                      setEmbeddingProviderConfig((c) => ({ ...c, model_name: e.target.value }))
+                    }
+                    placeholder="选择或输入模型名称"
+                    className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+                  />
+                  <datalist id={`embedding-models-${embeddingProviderConfig.provider}`}>
+                    {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].models.map((m) => (
+                      <option key={m} value={m} />
+                    ))}
+                  </datalist>
+                </div>
+
+                {/* Model preset buttons */}
+                {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].models.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].models.map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() =>
+                          setEmbeddingProviderConfig((c) => ({ ...c, model_name: m }))
+                        }
+                        className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                          embeddingProviderConfig.model_name === m
+                            ? "bg-[#1A6BD8] text-white"
+                            : "bg-neutral-100 text-neutral-600 hover:bg-neutral-200"
+                        }`}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Save button */}
+              <div className="mt-4 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleSaveEmbeddingProviderConfig}
+                  disabled={embeddingProviderSaving}
+                  className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
+                >
+                  {embeddingProviderSaving ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Save className="h-4 w-4" />
+                  )}
+                  保存配置
+                </button>
+                {embeddingProviderSaveMsg && (
+                  <span className="text-xs text-neutral-500">{embeddingProviderSaveMsg}</span>
+                )}
+              </div>
+            </>
           )}
         </div>
       </section>
@@ -798,7 +1016,7 @@ export default function Settings() {
                   setKeywordInput("");
                   const kw = await listSensitiveKeywords();
                   setKeywords(kw);
-                } catch (e) { alert(String(e)); }
+                } catch (e) { setKeywordError(String(e)); setTimeout(() => setKeywordError(null), 5000); }
               }}
               className="flex items-center gap-1 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700"
             >
@@ -814,12 +1032,13 @@ export default function Settings() {
                     try {
                       await removeSensitiveKeyword(kw);
                       setKeywords(await listSensitiveKeywords());
-                    } catch (e) { alert(String(e)); }
+                    } catch (e) { setKeywordError(String(e)); setTimeout(() => setKeywordError(null), 5000); }
                   }} className="text-amber-400 hover:text-red-500">&times;</button>
                 </span>
               ))}
             </div>
           )}
+          {keywordError && <p className="text-xs text-red-600 mt-1">{keywordError}</p>}
         </div>
       </section>
 

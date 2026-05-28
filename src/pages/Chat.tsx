@@ -55,9 +55,8 @@ interface ChatAttachment {
   error?: string;
 }
 
-let msgIdCounter = 0;
 function nextId(): string {
-  return `msg_${++msgIdCounter}_${Date.now()}`;
+  return crypto.randomUUID();
 }
 
 const CHAT_STORAGE_KEY = "kingdee_kb_chat_history";
@@ -130,7 +129,7 @@ export default function Chat() {
     let cancelled = false;
     listenReActEvents((event) => {
       // Check session_id in both snake_case and camelCase (Tauri v2 may convert)
-      const eventSessionId = event.session_id || (event as any).sessionId;
+      const eventSessionId = event.session_id || event.sessionId;
       if (eventSessionId !== currentSessionId.current) return;
       switch (event.type) {
         case "thinking":

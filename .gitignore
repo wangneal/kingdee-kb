@@ -36,6 +36,14 @@ npm-debug.log*
 # Local data (user-specific)
 .kingdee-kb/
 
+# Testing
+test-results/
+playwright-report/
+
 # Planning docs are tracked per config.json (commit_docs: true)
 SPEC.md
 task-summary-*.md
+
+# Playwright test output
+test-results/
+playwright-report/

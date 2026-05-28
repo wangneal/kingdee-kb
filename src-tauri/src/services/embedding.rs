@@ -17,6 +17,109 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+// ─── 在线 Embedding 提供商 ───
+
+/// Embedding 提供商类型 — 决定使用本地模型还是在线 API
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum EmbeddingProvider {
+    /// 本地 ONNX 模型（fastembed-rs）
+    #[serde(rename = "local")]
+    Local,
+    /// OpenAI
+    #[serde(rename = "openai")]
+    OpenAI,
+    /// 硅基流动 (SiliconFlow)
+    #[serde(rename = "siliconflow")]
+    SiliconFlow,
+    /// 智谱 (Zhipu)
+    #[serde(rename = "zhipu")]
+    Zhipu,
+    /// 阿里灵积 (DashScope)
+    #[serde(rename = "dashscope")]
+    DashScope,
+    /// Cohere
+    #[serde(rename = "cohere")]
+    Cohere,
+}
+
+impl EmbeddingProvider {
+    /// 返回所有可用的提供商列表（含默认配置）
+    pub fn all_providers() -> Vec<ProviderInfo> {
+        vec![
+            ProviderInfo {
+                provider: EmbeddingProvider::Local,
+                name: "本地模型".to_string(),
+                description: "使用本地 ONNX 模型（BGE/MiniLM），无需网络".to_string(),
+                default_base_url: None,
+                default_model: Some("bge-small-zh-v1.5".to_string()),
+                requires_api_key: false,
+            },
+            ProviderInfo {
+                provider: EmbeddingProvider::OpenAI,
+                name: "OpenAI".to_string(),
+                description: "text-embedding-3-small/large, ada-002".to_string(),
+                default_base_url: Some("https://api.openai.com/v1".to_string()),
+                default_model: Some("text-embedding-3-small".to_string()),
+                requires_api_key: true,
+            },
+            ProviderInfo {
+                provider: EmbeddingProvider::SiliconFlow,
+                name: "硅基流动 (SiliconFlow)".to_string(),
+                description: "BGE-M3, BGE-large-zh 等国产模型".to_string(),
+                default_base_url: Some("https://api.siliconflow.cn/v1".to_string()),
+                default_model: Some("BAAI/bge-m3".to_string()),
+                requires_api_key: true,
+            },
+            ProviderInfo {
+                provider: EmbeddingProvider::Zhipu,
+                name: "智谱 (Zhipu)".to_string(),
+                description: "embedding-3 模型".to_string(),
+                default_base_url: Some("https://open.bigmodel.cn/api/paas/v4".to_string()),
+                default_model: Some("embedding-3".to_string()),
+                requires_api_key: true,
+            },
+            ProviderInfo {
+                provider: EmbeddingProvider::DashScope,
+                name: "阿里灵积 (DashScope)".to_string(),
+                description: "text-embedding-v3/v2 模型".to_string(),
+                default_base_url: Some(
+                    "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
+                ),
+                default_model: Some("text-embedding-v3".to_string()),
+                requires_api_key: true,
+            },
+            ProviderInfo {
+                provider: EmbeddingProvider::Cohere,
+                name: "Cohere".to_string(),
+                description: "embed-multilingual-v3.0 等多语言模型".to_string(),
+                default_base_url: Some("https://api.cohere.com/v2".to_string()),
+                default_model: Some("embed-multilingual-v3.0".to_string()),
+                requires_api_key: true,
+            },
+        ]
+    }
+}
+
+/// 提供商信息（用于前端展示）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderInfo {
+    pub provider: EmbeddingProvider,
+    pub name: String,
+    pub description: String,
+    pub default_base_url: Option<String>,
+    pub default_model: Option<String>,
+    pub requires_api_key: bool,
+}
+
+/// 在线 Embedding 远程配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteEmbeddingConfig {
+    pub provider: EmbeddingProvider,
+    pub api_key: String,
+    pub base_url: String,
+    pub model_name: String,
+}
+
 /// HuggingFace mirror list, ordered by likely speed in China.
 /// `hf-hub` (used internally by fastembed) reads the `HF_ENDPOINT` env var
 /// to determine which mirror to download from.
@@ -34,6 +137,10 @@ const HF_MIRRORS: &[Option<&str>] = &[
 /// Used for progress estimation.
 const EXPECTED_MODEL_BYTES: u64 = 95_000_000;
 
+const DEFAULT_BGE_DIMENSION: usize = 512;
+const DEFAULT_MINILM_DIMENSION: usize = 384;
+const DEFAULT_REMOTE_DIMENSION: usize = 1024;
+
 /// Start a background polling thread that estimates model download progress
 /// by scanning the HuggingFace cache directory.
 ///
@@ -45,14 +152,11 @@ pub fn start_download_progress_polling(
     stop: Arc<AtomicBool>,
 ) {
     let Some(cache_dir) = model_hf_cache_dir(model) else {
-        eprintln!("[ModelManager] Cannot determine HF cache dir, progress unavailable");
+        tracing::warn!("Cannot determine HF cache dir, progress unavailable");
         return;
     };
 
-    eprintln!(
-        "[ModelManager] Starting progress polling for {:?}",
-        cache_dir
-    );
+    tracing::info!("Starting progress polling for {:?}", cache_dir);
 
     std::thread::spawn(move || {
         while !stop.load(Ordering::Relaxed) {
@@ -128,11 +232,22 @@ pub struct ModelManager {
     custom_model_dir: Option<PathBuf>,
     model: Option<TextEmbedding>,
     is_ready: bool,
+    /// 在线 Embedding 配置（持久化到磁盘）
+    remote_config: Option<RemoteEmbeddingConfig>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EmbeddingModelConfig {
+    /// 自定义本地模型目录（仅 Local 提供商使用）
     pub custom_model_dir: Option<String>,
+    /// Embedding 提供商（None 表示使用默认的 Local）
+    pub provider: Option<EmbeddingProvider>,
+    /// 在线 API 密钥（仅在线提供商需要）
+    pub api_key: Option<String>,
+    /// 在线 API 基础 URL（为空时使用提供商默认值）
+    pub base_url: Option<String>,
+    /// 在线模型名称（为空时使用提供商默认值）
+    pub model_name: Option<String>,
 }
 
 impl ModelManager {
@@ -144,12 +259,39 @@ impl ModelManager {
             .unwrap_or_else(|| model_dir.clone());
         let config_path = data_dir.join("embedding_config.json");
         let config = Self::load_embedding_config(&config_path).unwrap_or_default();
+
+        // 构建远程配置（如果有）
+        let remote_config = match config.provider {
+            Some(ref provider) if *provider != EmbeddingProvider::Local => {
+                let provider_info = EmbeddingProvider::all_providers()
+                    .into_iter()
+                    .find(|p| p.provider == *provider);
+
+                Some(RemoteEmbeddingConfig {
+                    provider: provider.clone(),
+                    api_key: config.api_key.clone().unwrap_or_default(),
+                    base_url: config
+                        .base_url
+                        .clone()
+                        .or_else(|| provider_info.as_ref().and_then(|p| p.default_base_url.clone()))
+                        .unwrap_or_default(),
+                    model_name: config
+                        .model_name
+                        .clone()
+                        .or_else(|| provider_info.as_ref().and_then(|p| p.default_model.clone()))
+                        .unwrap_or_default(),
+                })
+            }
+            _ => None,
+        };
+
         Self {
             model_dir,
             config_path,
             custom_model_dir: config.custom_model_dir.map(PathBuf::from),
             model: None,
-            is_ready: false,
+            is_ready: remote_config.is_some(), // 远程模式立即就绪
+            remote_config,
         }
     }
 
@@ -173,6 +315,10 @@ impl ModelManager {
                 .custom_model_dir
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string()),
+            provider: self.remote_config.as_ref().map(|c| c.provider.clone()),
+            api_key: self.remote_config.as_ref().map(|c| c.api_key.clone()),
+            base_url: self.remote_config.as_ref().map(|c| c.base_url.clone()),
+            model_name: self.remote_config.as_ref().map(|c| c.model_name.clone()),
         }
     }
 
@@ -190,6 +336,26 @@ impl ModelManager {
         self.save_embedding_config()
     }
 
+    /// 设置在线 Embedding 提供商配置
+    ///
+    /// 传入 None 切换回本地模式。
+    pub fn set_remote_config(&mut self, config: Option<RemoteEmbeddingConfig>) -> Result<(), String> {
+        if config.is_some() {
+            // 切换到远程模式时，释放本地模型
+            self.model = None;
+            self.is_ready = true; // 远程模式立即就绪
+        } else {
+            self.is_ready = false; // 切换回本地模式需要重新初始化
+        }
+        self.remote_config = config;
+        self.save_embedding_config()
+    }
+
+    /// 获取当前远程配置（如果有）
+    pub fn remote_config(&self) -> Option<&RemoteEmbeddingConfig> {
+        self.remote_config.as_ref()
+    }
+
     /// Initialize the embedding model (downloads on first use).
     ///
     /// Tries multiple HuggingFace mirrors in sequence. If the model is already
@@ -200,41 +366,41 @@ impl ModelManager {
             return Ok(());
         }
 
+        // 远程模式不需要初始化本地模型
+        if self.remote_config.is_some() {
+            self.is_ready = true;
+            return Ok(());
+        }
+
         std::fs::create_dir_all(&self.model_dir)
             .map_err(|e| format!("Failed to create model directory: {}", e))?;
 
         if let Some(custom_dir) = self.custom_model_dir.clone() {
-            eprintln!(
-                "[ModelManager] Loading custom embedding model from {:?}",
-                custom_dir
-            );
+            tracing::info!("Loading custom embedding model from {:?}", custom_dir);
             match Self::load_user_defined_from_dir(&custom_dir) {
                 Ok(text_emb) => {
-                    eprintln!("[ModelManager] Custom embedding model loaded!");
+                    tracing::info!("Custom embedding model loaded!");
                     self.model = Some(text_emb);
                     self.is_ready = true;
                     return Ok(());
                 }
                 Err(e) => {
-                    eprintln!("[ModelManager] Custom model load failed: {}", e);
+                    tracing::warn!("Custom model load failed: {}", e);
                 }
             }
         }
 
         if let Some(base_dir) = Self::bundled_bge_model_dir() {
-            eprintln!(
-                "[ModelManager] Loading bundled embedding model from {:?}",
-                base_dir
-            );
+            tracing::info!("Loading bundled embedding model from {:?}", base_dir);
             match Self::load_user_defined_from_dir(&base_dir) {
                 Ok(text_emb) => {
-                    eprintln!("[ModelManager] Bundled embedding model loaded!");
+                    tracing::info!("Bundled embedding model loaded!");
                     self.model = Some(text_emb);
                     self.is_ready = true;
                     return Ok(());
                 }
                 Err(e) => {
-                    eprintln!("[ModelManager] Bundled model load failed: {}", e);
+                    tracing::warn!("Bundled model load failed: {}", e);
                 }
             }
         }
@@ -244,24 +410,18 @@ impl ModelManager {
         // it directly without any network access. This handles the case where
         // the user has a cached model but is currently offline or behind a
         // firewall that blocks HuggingFace.
-        eprintln!("[ModelManager] Checking for locally cached model...");
+        tracing::info!("Checking for locally cached model...");
         for model in &[EmbeddingModel::BGESmallZHV15, EmbeddingModel::AllMiniLML6V2] {
             match Self::load_user_defined_from_cache(model) {
                 Ok(Some(text_emb)) => {
-                    eprintln!(
-                        "[ModelManager] Successfully loaded {:?} from local files!",
-                        model
-                    );
+                    tracing::info!("Successfully loaded {:?} from local files!", model);
                     self.model = Some(text_emb);
                     self.is_ready = true;
                     return Ok(());
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    eprintln!(
-                        "[ModelManager] Local UserDefined load failed for {:?}: {}",
-                        model, e
-                    );
+                    tracing::warn!("Local UserDefined load failed for {:?}: {}", model, e);
                 }
             }
         }
@@ -269,7 +429,7 @@ impl ModelManager {
         // Step 1: Try downloading from mirrors (network required)
         let model = Self::try_init_with_mirrors(EmbeddingModel::BGESmallZHV15)
             .or_else(|_| {
-                eprintln!("[ModelManager] BGE model unavailable, trying default model...");
+                tracing::warn!("BGE model unavailable, trying default model...");
                 Self::try_init_with_mirrors(EmbeddingModel::AllMiniLML6V2)
             })
             .map_err(|e| {
@@ -301,15 +461,12 @@ impl ModelManager {
             // Set HF_ENDPOINT for this mirror
             let label = match mirror {
                 Some(url) => {
-                    eprintln!("[ModelManager] Trying mirror {}: {}", i + 1, url);
+                    tracing::info!("Trying mirror {}: {}", i + 1, url);
                     std::env::set_var("HF_ENDPOINT", url);
                     url
                 }
                 None => {
-                    eprintln!(
-                        "[ModelManager] Trying mirror {}: default (huggingface.co)",
-                        i + 1
-                    );
+                    tracing::info!("Trying mirror {}: default (huggingface.co)", i + 1);
                     match &original_hf_endpoint {
                         Some(val) => std::env::set_var("HF_ENDPOINT", val),
                         None => std::env::remove_var("HF_ENDPOINT"),
@@ -327,20 +484,20 @@ impl ModelManager {
                 }
                 Err(e) => {
                     last_err = format!("{} failed: {}", label, e);
-                    eprintln!("[ModelManager] Mirror {}: {} failed: {}", i + 1, label, e);
+                    tracing::warn!("Mirror {}: {} failed: {}", i + 1, label, e);
 
                     // Check if model files were actually cached despite the error.
                     // hf-mirror.com may successfully download the file but fail
                     // hf-hub's Content-Range validation. In that case the blob
                     // files are on disk and usable 鈥?no need to re-download.
                     if Self::has_cached_model_files(&model) {
-                        eprintln!(
-                            "[ModelManager] Model files found in cache despite error. \
+                        tracing::info!(
+                            "Model files found in cache despite error. \
                              Retrying with local UserDefined loader..."
                         );
                         match Self::load_user_defined_from_cache(&model) {
                             Ok(Some(text_emb)) => {
-                                eprintln!("[ModelManager] Successfully loaded from local cache!");
+                                tracing::info!("Successfully loaded from local cache!");
                                 return Ok(text_emb);
                             }
                             Ok(None) => {
@@ -348,7 +505,7 @@ impl ModelManager {
                                     "cached blobs present ({}) but complete local files were not found",
                                     label
                                 );
-                                eprintln!("[ModelManager] {}", msg);
+                                tracing::warn!("{}", msg);
                                 last_err = msg;
                             }
                             Err(e2) => {
@@ -356,14 +513,12 @@ impl ModelManager {
                                     "cached files present ({}) but UserDefined reload failed: {}",
                                     label, e2
                                 );
-                                eprintln!("[ModelManager] {}", msg);
+                                tracing::warn!("{}", msg);
                                 last_err = msg;
                             }
                         }
                     } else {
-                        eprintln!(
-                            "[ModelManager] No cached files found. Clearing partial cache..."
-                        );
+                        tracing::info!("No cached files found. Clearing partial cache...");
                         if let Some(cache_dir) = model_hf_cache_dir(&model) {
                             let _ = std::fs::remove_dir_all(&cache_dir);
                         }
@@ -378,21 +533,21 @@ impl ModelManager {
         // Last resort: try downloading model files directly using plain HTTP
         // from the first mirror (bypasses hf-hub's Content-Range requirement).
         // Then load using `try_new_from_user_defined` which bypasses hf-hub entirely.
-        eprintln!("[ModelManager] All mirrors failed. Trying direct HTTP download...");
+        tracing::warn!("All mirrors failed. Trying direct HTTP download...");
         if Self::download_model_direct(&model) {
-            eprintln!("[ModelManager] Direct download succeeded, loading via UserDefined...");
+            tracing::info!("Direct download succeeded, loading via UserDefined...");
             match Self::load_user_defined_from_cache(&model) {
                 Ok(Some(text_emb)) => {
-                    eprintln!("[ModelManager] Model loaded via UserDefined!");
+                    tracing::info!("Model loaded via UserDefined!");
                     return Ok(text_emb);
                 }
                 Ok(None) => {
                     last_err = "downloaded files not found in local cache".to_string();
-                    eprintln!("[ModelManager] {}", last_err);
+                    tracing::error!("{}", last_err);
                 }
                 Err(e) => {
                     last_err = format!("UserDefined load failed: {}", e);
-                    eprintln!("[ModelManager] {}", last_err);
+                    tracing::error!("{}", last_err);
                 }
             }
         }
@@ -458,7 +613,7 @@ impl ModelManager {
             ("model.onnx", onnx_source_paths, onnx_dest_paths),
         ];
 
-        eprintln!("[ModelManager] Direct download to {:?}", cache_dir);
+        tracing::info!("Direct download to {:?}", cache_dir);
         let snapshots_dir = cache_dir.join("snapshots").join("main");
         let _ = std::fs::create_dir_all(&snapshots_dir);
 
@@ -476,24 +631,20 @@ impl ModelManager {
             let mut body: Option<Vec<u8>> = None;
             for src in *source_paths {
                 let url = format!("{}/{}/resolve/main/{}", base_url, repo_id, src);
-                eprintln!("[ModelManager]   trying {} from {} ...", name, src);
+                tracing::info!("  trying {} from {} ...", name, src);
                 // Stream download in chunks to avoid ureq's 10MB limit
                 match download_file_chunked(&url) {
                     Ok(data) => {
-                        eprintln!(
-                            "[ModelManager]   downloaded {} ({} bytes)",
-                            name,
-                            data.len()
-                        );
+                        tracing::info!("  downloaded {} ({} bytes)", name, data.len());
                         body = Some(data);
                         break;
                     }
-                    Err(e) => eprintln!("[ModelManager]     failed: {}", e),
+                    Err(e) => tracing::warn!("    failed: {}", e),
                 }
             }
 
             let Some(data) = body else {
-                eprintln!("[ModelManager]   FAILED {} (all sources exhausted)", name);
+                tracing::error!("  FAILED {} (all sources exhausted)", name);
                 all_success = false;
                 continue;
             };
@@ -504,9 +655,9 @@ impl ModelManager {
                     let _ = std::fs::create_dir_all(parent);
                 }
                 if let Err(e) = std::fs::write(&full_path, &data) {
-                    eprintln!("[ModelManager]     write to {} failed: {}", dest, e);
+                    tracing::error!("    write to {} failed: {}", dest, e);
                 } else {
-                    eprintln!("[ModelManager]   saved to {}", dest);
+                    tracing::info!("  saved to {}", dest);
                 }
                 // Also save to snapshots/{commit_hash}/ for hf-hub
                 let commit_path = snapshots_commit_dir.join(dest);
@@ -524,59 +675,27 @@ impl ModelManager {
                         let _ = std::fs::create_dir_all(parent);
                     }
                     if let Err(e) = std::fs::write(&blob_path, &data) {
-                        eprintln!("[ModelManager]     blob write failed: {}", e);
+                        tracing::error!("    blob write failed: {}", e);
                     } else {
-                        eprintln!("[ModelManager]   blob saved");
+                        tracing::info!("  blob saved");
                     }
                 }
                 // Replace snapshot file with hardlink to blob
                 let _ = std::fs::remove_file(&full_path);
                 if let Err(e) = std::fs::hard_link(&blob_path, &full_path) {
                     // Hardlink failed (cross-device, etc.) 鈥?just re-copy
-                    eprintln!("[ModelManager]     hardlink failed (non-fatal): {}", e);
+                    tracing::warn!("    hardlink failed (non-fatal): {}", e);
                     let _ = std::fs::write(&full_path, &data);
                 } else {
-                    eprintln!("[ModelManager]   hardlinked to blob");
+                    tracing::info!("  hardlinked to blob");
                 }
             }
         }
         all_success
     }
-}
 
-/// Compute SHA256 hex digest of data (for hf-hub blob naming).
-fn sha2_hex(data: &[u8]) -> String {
-    use sha2::Digest;
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(data);
-    format!("{:x}", hasher.finalize())
-}
+    // ─── Model discovery & loading ───
 
-/// Download a file from URL, reading in chunks to bypass any response size limits.
-pub fn download_file_chunked(url: &str) -> Result<Vec<u8>, String> {
-    let response = ureq::get(url)
-        .call()
-        .map_err(|e| format!("HTTP error: {}", e))?;
-
-    let mut body = response.into_body();
-    let mut reader = body.as_reader();
-    let mut data = Vec::new();
-    let mut buf = [0u8; 65536];
-    loop {
-        match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => data.extend_from_slice(&buf[..n]),
-            Err(e) => return Err(format!("read error: {}", e)),
-        }
-    }
-    Ok(data)
-}
-
-/// Check whether the HuggingFace cache has all model files for `model`.
-///
-/// Looks for at least 3 blob files (config.json, tokenizer.json, model.onnx/safetensors)
-/// with non-zero size in the `blobs/` directory of the HF cache.
-impl ModelManager {
     fn bundled_bge_model_dir() -> Option<PathBuf> {
         let relative = PathBuf::from("resources")
             .join("models")
@@ -685,10 +804,7 @@ impl ModelManager {
                 continue;
             }
 
-            eprintln!(
-                "[ModelManager] Loading {:?} from local files at {:?}",
-                model, base_dir
-            );
+            tracing::info!("Loading {:?} from local files at {:?}", model, base_dir);
 
             return Self::load_user_defined_from_dir(&base_dir).map(Some);
         }
@@ -731,19 +847,7 @@ impl ModelManager {
         model_hf_cache_dir(model)
     }
 
-    /// Initialize from local model files (bypasses HuggingFace download)
-    pub fn init_from_local(
-        &mut self,
-        onnx_path: &str,
-        tokenizer_path: &str,
-        config_path: &str,
-    ) -> Result<(), String> {
-        // NOTE: fastembed-rs v5 supports try_new_from_user_defined for local models
-        // This will be used when model files are pre-bundled or pre-downloaded
-        // For now, this is a placeholder for the future implementation
-        let _ = (onnx_path, tokenizer_path, config_path);
-        Err("Local model loading not yet implemented. Use init() with network access.".to_string())
-    }
+    // ─── Accessors ───
 
     /// Check if the model is ready for inference
     pub fn is_ready(&self) -> bool {
@@ -768,10 +872,46 @@ impl ModelManager {
     }
 }
 
+/// Compute SHA256 hex digest of data (for hf-hub blob naming).
+fn sha2_hex(data: &[u8]) -> String {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
+}
+
+/// Download a file from URL, reading in chunks to bypass any response size limits.
+pub fn download_file_chunked(url: &str) -> Result<Vec<u8>, String> {
+    let response = ureq::get(url)
+        .call()
+        .map_err(|e| format!("HTTP error: {}", e))?;
+
+    let mut body = response.into_body();
+    let mut reader = body.as_reader();
+    let mut data = Vec::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => data.extend_from_slice(&buf[..n]),
+            Err(e) => return Err(format!("read error: {}", e)),
+        }
+    }
+    Ok(data)
+}
+
 /// Embedding service for text vectorization
+///
+/// 支持两种模式：
+/// - Local: 使用本地 ONNX 模型（fastembed-rs）
+/// - Remote: 调用在线 Embedding API（OpenAI 兼容格式）
 pub struct EmbeddingService {
-    /// Optional: if None, the service cannot embed text
+    /// 本地模型（fastembed）— 仅在 Local 模式下使用
     model: Option<TextEmbedding>,
+    /// 在线 Embedding 配置（None = 本地模式）
+    remote_config: Option<RemoteEmbeddingConfig>,
+    /// HTTP 客户端（用于远程调用）
+    client: Option<reqwest::Client>,
     /// Cached embedding dimension (detected via probe embed on model injection)
     /// bge-small-zh-v1.5 = 512, all-MiniLM-L6-v2 = 384
     cached_dimension: usize,
@@ -787,7 +927,7 @@ fn probe_dimension(model: &mut TextEmbedding) -> usize {
         .ok()
         .and_then(|v| v.into_iter().next())
         .map(|v| v.len())
-        .unwrap_or(512) // default to BGE dimension if probe fails
+        .unwrap_or(DEFAULT_BGE_DIMENSION) // default to BGE dimension if probe fails
 }
 
 impl EmbeddingService {
@@ -796,6 +936,8 @@ impl EmbeddingService {
         let dim = probe_dimension(&mut model);
         Self {
             model: Some(model),
+            remote_config: None,
+            client: None,
             cached_dimension: dim,
             batch_size: 64,
         }
@@ -805,13 +947,43 @@ impl EmbeddingService {
     pub fn empty() -> Self {
         Self {
             model: None,
-            cached_dimension: 512, // default to BGE dimension
+            remote_config: None,
+            client: None,
+            cached_dimension: DEFAULT_BGE_DIMENSION, // default to BGE dimension
             batch_size: 64,
         }
     }
 
-    /// Embed a single text 鈫?512-dim (or 384-dim for all-MiniLM) vector
+    /// 配置在线 Embedding 提供商
+    pub fn set_remote_config(&mut self, config: Option<RemoteEmbeddingConfig>) {
+        if config.is_some() {
+            // 切换到远程模式时，释放本地模型
+            self.model = None;
+            self.client = Some(reqwest::Client::new());
+            // 远程模型维度因提供商而异，默认 1024（BGE-M3）
+            self.cached_dimension = DEFAULT_REMOTE_DIMENSION;
+        } else {
+            self.client = None;
+        }
+        self.remote_config = config;
+    }
+
+    /// 获取当前远程配置（如果有）
+    pub fn remote_config(&self) -> Option<&RemoteEmbeddingConfig> {
+        self.remote_config.as_ref()
+    }
+
+    /// 是否为远程模式
+    pub fn is_remote(&self) -> bool {
+        self.remote_config.is_some()
+    }
+
+    /// Embed a single text — 本地模式同步调用，远程模式需使用 embed_text_remote
     pub fn embed_text(&mut self, text: &str) -> Result<Vec<f32>, String> {
+        if self.remote_config.is_some() {
+            return Err("Remote embedding mode: use embed_text_remote() instead".to_string());
+        }
+
         let model = self
             .model
             .as_mut()
@@ -827,8 +999,12 @@ impl EmbeddingService {
             .ok_or("No embedding returned".to_string())
     }
 
-    /// Batch embed multiple texts
+    /// Batch embed multiple texts — 本地模式
     pub fn embed_batch(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
+        if self.remote_config.is_some() {
+            return Err("Remote embedding mode: use embed_batch_remote() instead".to_string());
+        }
+
         let model = self
             .model
             .as_mut()
@@ -849,22 +1025,147 @@ impl EmbeddingService {
 
     /// Check if the service is ready
     pub fn is_ready(&self) -> bool {
-        self.model.is_some()
+        self.model.is_some() || self.remote_config.is_some()
     }
 
     /// Inject an initialized model into this service.
     /// Called by `init_model` command after ModelManager downloads the model.
     /// Also probes the model to detect its embedding dimension.
     pub fn set_model(&mut self, mut model: TextEmbedding) {
+        // 切换到本地模式时清除远程配置
+        self.remote_config = None;
+        self.client = None;
         self.cached_dimension = probe_dimension(&mut model);
         self.model = Some(model);
     }
 
     /// Get the embedding dimension (detected via probe embed)
-    /// bge-small-zh-v1.5: 512, all-MiniLM-L6-v2: 384
+    /// bge-small-zh-v1.5: 512, all-MiniLM-L6-v2: 384, BGE-M3: 1024
     pub fn dimension(&self) -> usize {
         self.cached_dimension
     }
+}
+
+// ─── 远程 Embedding API 调用（异步） ───
+
+/// 在线 Embedding API 响应结构（OpenAI 兼容格式）
+#[derive(Debug, Deserialize)]
+struct EmbeddingApiResponse {
+    data: Vec<EmbeddingData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmbeddingData {
+    embedding: Vec<f32>,
+}
+
+/// 调用在线 Embedding API（OpenAI 兼容格式）
+///
+/// 所有支持的提供商（OpenAI、SiliconFlow、Zhipu、DashScope）都使用相同的 API 格式：
+/// POST {base_url}/embeddings
+/// Cohere 使用 v2 兼容格式。
+pub async fn remote_embed(config: &RemoteEmbeddingConfig, text: &str) -> Result<Vec<f32>, String> {
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/embeddings",
+        config.base_url.trim_end_matches('/')
+    );
+
+    let body = serde_json::json!({
+        "model": config.model_name,
+        "input": [text]
+    });
+
+    let response = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", config.api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Remote embedding request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<unreadable>".to_string());
+        return Err(format!(
+            "Remote embedding API error ({}): {}",
+            status, body_text
+        ));
+    }
+
+    let json: EmbeddingApiResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse embedding response: {}", e))?;
+
+    json.data
+        .into_iter()
+        .next()
+        .map(|d| d.embedding)
+        .ok_or("No embedding data in response".to_string())
+}
+
+/// 批量调用在线 Embedding API（OpenAI 兼容格式）
+///
+/// 一次请求嵌入多个文本，减少网络开销。
+pub async fn remote_embed_batch(
+    config: &RemoteEmbeddingConfig,
+    texts: &[&str],
+) -> Result<Vec<Vec<f32>>, String> {
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/embeddings",
+        config.base_url.trim_end_matches('/')
+    );
+
+    let body = serde_json::json!({
+        "model": config.model_name,
+        "input": texts
+    });
+
+    let response = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", config.api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Remote batch embedding request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<unreadable>".to_string());
+        return Err(format!(
+            "Remote embedding API error ({}): {}",
+            status, body_text
+        ));
+    }
+
+    let json: EmbeddingApiResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse embedding response: {}", e))?;
+
+    // 按 index 排序以保证顺序正确
+    let mut results: Vec<Option<Vec<f32>>> = vec![None; texts.len()];
+    for (i, data) in json.data.into_iter().enumerate() {
+        if i < results.len() {
+            results[i] = Some(data.embedding);
+        }
+    }
+
+    results
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| v.ok_or_else(|| format!("Missing embedding for index {}", i)))
+        .collect()
 }
 
 /// Compute cosine similarity between two vectors
