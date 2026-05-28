@@ -7,11 +7,15 @@ import {
   Trash2,
   Tag,
   Hash,
+  CheckSquare,
+  Square,
+  XSquare,
 } from "lucide-react";
 import {
   listDocuments,
   getDocumentChunks,
   deleteDocument,
+  deleteDocumentsBatch,
   type DocumentMeta,
   type ChunkMeta,
 } from "../lib/tauri-commands";
@@ -21,13 +25,29 @@ interface ProjectGroup {
   documents: DocumentMeta[];
 }
 
+/** Parse the tags field: stored as JSON array string like `["tag1","tag2"]` in SQLite. */
+function parseTags(tags: string): string[] {
+  try {
+    const parsed = JSON.parse(tags);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((t): t is string => typeof t === "string" && t.length > 0);
+    }
+  } catch {
+    // Not valid JSON — treat as plain text
+  }
+  // Fallback: return as single-element array if non-empty
+  return tags.trim().length > 0 ? [tags.trim()] : [];
+}
+
 export default function Browse() {
   const [documents, setDocuments] = useState<DocumentMeta[]>([]);
   const [selectedDoc, setSelectedDoc] = useState<DocumentMeta | null>(null);
+  const [selectedDocs, setSelectedDocs] = useState<Set<number>>(new Set());
   const [chunks, setChunks] = useState<ChunkMeta[]>([]);
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [tagFilter, setTagFilter] = useState("");
+  const [batchDeleting, setBatchDeleting] = useState(false);
 
   // Group documents by project
   const projectGroups = useMemo<ProjectGroup[]>(() => {
@@ -99,11 +119,64 @@ export default function Browse() {
   const handleDelete = async (doc: DocumentMeta) => {
     if (!confirm(`确定删除文档「${doc.title}」？`)) return;
     try {
-      await deleteDocument(doc.id);
+      await deleteDocument(doc.id, doc.project);
       setDocuments((prev) => prev.filter((d) => d.id !== doc.id));
       if (selectedDoc?.id === doc.id) setSelectedDoc(null);
     } catch (e) {
       console.error("Delete failed:", e);
+    }
+  };
+
+  /** Toggle a single document in/out of the selection set */
+  const toggleDocSelection = (id: number) => {
+    setSelectedDocs((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  /** Select / deselect all visible documents */
+  const toggleSelectAll = () => {
+    if (selectedDocs.size === documents.length) {
+      setSelectedDocs(new Set());
+    } else {
+      setSelectedDocs(new Set(documents.map((d) => d.id)));
+    }
+  };
+
+  /** Batch-delete all selected documents */
+  const handleBatchDelete = async () => {
+    if (selectedDocs.size === 0) return;
+    const count = selectedDocs.size;
+    if (!confirm(`确定要删除选中的 ${count} 个文档吗？此操作不可撤销。`)) return;
+    setBatchDeleting(true);
+    try {
+      const ids = Array.from(selectedDocs);
+      const selectedByProject = new Map<string, number[]>();
+      for (const doc of documents) {
+        if (!selectedDocs.has(doc.id)) continue;
+        const group = selectedByProject.get(doc.project) ?? [];
+        group.push(doc.id);
+        selectedByProject.set(doc.project, group);
+      }
+      for (const [project, projectIds] of selectedByProject) {
+        await deleteDocumentsBatch(projectIds, project);
+      }
+      setSelectedDocs(new Set());
+      if (selectedDoc !== null && ids.includes(selectedDoc.id)) {
+        setSelectedDoc(null);
+        setChunks([]);
+      }
+      // Reload document list
+      const docs = await listDocuments();
+      setDocuments(docs);
+    } catch (err) {
+      console.error("Batch delete failed:", err);
+      alert("批量删除失败：" + err);
+    } finally {
+      setBatchDeleting(false);
     }
   };
 
@@ -112,7 +185,47 @@ export default function Browse() {
       {/* Left panel - Document tree */}
       <div className="w-72 shrink-0 border-r border-neutral-200 bg-white overflow-auto">
         <div className="sticky top-0 border-b border-neutral-100 bg-white px-4 py-3">
-          <h2 className="text-sm font-semibold text-neutral-700">知识库</h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-neutral-700">知识库</h2>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={toggleSelectAll}
+                className="text-neutral-400 hover:text-neutral-600"
+                title={selectedDocs.size === documents.length ? "取消全选" : "全选"}
+              >
+                {selectedDocs.size === documents.length && documents.length > 0 ? (
+                  <CheckSquare size={15} className="text-blue-500" />
+                ) : (
+                  <Square size={15} />
+                )}
+              </button>
+              {selectedDocs.size > 0 && (
+                <>
+                  <span className="text-xs text-blue-600 font-medium">
+                    已选 {selectedDocs.size}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleBatchDelete}
+                    disabled={batchDeleting}
+                    className="text-red-400 hover:text-red-600 disabled:opacity-50"
+                    title="批量删除"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedDocs(new Set())}
+                    className="text-neutral-400 hover:text-neutral-600"
+                    title="取消选择"
+                  >
+                    <XSquare size={15} />
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
           <p className="text-xs text-neutral-400 mt-0.5">
             {documents.length} 篇文档
           </p>
@@ -146,17 +259,30 @@ export default function Browse() {
                 {expandedProjects.has(project) && (
                   <div className="ml-3">
                     {docs.map((doc) => (
-                      <button
-                        type="button"
+                      <div
                         key={doc.id}
-                        onClick={() => setSelectedDoc(doc)}
-                        className={`group flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors ${
+                        className={`group flex items-center gap-1.5 px-2 py-1.5 rounded-lg cursor-pointer text-sm transition-colors ${
                           selectedDoc?.id === doc.id
-                            ? "bg-[#1A6BD8]/10 text-[#1A6BD8]"
-                            : "text-neutral-600 hover:bg-neutral-50"
+                            ? "bg-blue-50 text-blue-700 font-medium"
+                            : "hover:bg-slate-100 text-slate-600"
                         }`}
+                        onClick={() => setSelectedDoc(doc)}
                       >
-                        <FileText className="h-3.5 w-3.5 shrink-0" />
+                        {/* checkbox */}
+                        <span
+                          className="flex-shrink-0"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleDocSelection(doc.id);
+                          }}
+                        >
+                          {selectedDocs.has(doc.id) ? (
+                            <CheckSquare size={15} className="text-blue-500" />
+                          ) : (
+                            <Square size={15} className="text-slate-300 hover:text-slate-500" />
+                          )}
+                        </span>
+                        <FileText size={14} className="flex-shrink-0" />
                         <span className="truncate flex-1">{doc.title}</span>
                         <button
                           type="button"
@@ -169,7 +295,7 @@ export default function Browse() {
                         >
                           <Trash2 className="h-3 w-3" />
                         </button>
-                      </button>
+                      </div>
                     ))}
                   </div>
                 )}
@@ -189,7 +315,7 @@ export default function Browse() {
             </div>
           </div>
         ) : (
-          <div className="mx-auto max-w-6xl p-6">
+          <div className="p-6">
             {/* Document header */}
             <div className="mb-6">
               <h1 className="text-lg font-semibold text-neutral-800">
@@ -244,11 +370,11 @@ export default function Browse() {
                         {chunk.section_path}
                       </span>
                     )}
-                    {chunk.tags && (
-                      <span className="rounded bg-[#1A6BD8]/10 px-1.5 py-0.5 text-[#1A6BD8]">
-                        {chunk.tags}
+                    {chunk.tags && parseTags(chunk.tags).map((tag) => (
+                      <span key={tag} className="rounded bg-[#1A6BD8]/10 px-1.5 py-0.5 text-[#1A6BD8]">
+                        {tag}
                       </span>
-                    )}
+                    ))}
                     {chunk.line_no != null && (
                       <span>L{chunk.line_no}</span>
                     )}

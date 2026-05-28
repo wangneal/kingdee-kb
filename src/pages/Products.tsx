@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   AlertCircle,
 } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   listProducts,
   exportProduct,
@@ -88,7 +89,7 @@ export default function Products() {
     setExporting(exportDialog.id);
     setExportResult(null);
     try {
-      const result = await exportProduct(exportDialog.id, exportDir.trim());
+      const result = await exportProduct(exportDialog.id, exportDir.trim(), exportDialog.project);
       setExportResult(result);
     } catch (e) {
       console.error("Export failed:", e);
@@ -107,7 +108,7 @@ export default function Products() {
       return;
     setDeleting(product.id);
     try {
-      await deleteProduct(product.id);
+      await deleteProduct(product.id, product.project);
       setProducts((prev) => prev.filter((p) => p.id !== product.id));
       if (expandedProduct === product.id) setExpandedProduct(null);
     } catch (e) {
@@ -300,14 +301,27 @@ export default function Products() {
             >
               导出目标目录
             </label>
-            <input
-              id="export-dir"
-              type="text"
-              value={exportDir}
-              onChange={(e) => setExportDir(e.target.value)}
-              placeholder="例如: C:\Users\...\导出目录"
-              className="w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-            />
+            <div className="flex gap-2">
+              <input
+                id="export-dir"
+                type="text"
+                value={exportDir}
+                onChange={(e) => setExportDir(e.target.value)}
+                placeholder="点击右侧按钮选择文件夹"
+                className="flex-1 rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  const selected = await open({ directory: true });
+                  if (selected) setExportDir(selected);
+                }}
+                className="flex items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-600 hover:bg-neutral-50 transition-colors"
+              >
+                <FolderOpen className="h-4 w-4" />
+                选择
+              </button>
+            </div>
 
             {exportResult && (
               <div

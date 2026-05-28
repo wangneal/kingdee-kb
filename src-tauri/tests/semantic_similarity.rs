@@ -28,9 +28,7 @@ fn init_model() -> TextEmbedding {
 }
 
 fn compute_similarity(model: &mut TextEmbedding, a: &str, b: &str) -> f32 {
-    let embeddings = model
-        .embed(vec![a, b], None)
-        .expect("Embedding failed");
+    let embeddings = model.embed(vec![a, b], None).expect("Embedding failed");
     cosine_similarity(&embeddings[0], &embeddings[1])
 }
 
@@ -61,7 +59,9 @@ fn test_chinese_semantic_similarity() {
         assert!(
             sim >= 0.7,
             "Related texts \"{}\" vs \"{}\" cosine similarity {:.4} < 0.7",
-            a, b, sim
+            a,
+            b,
+            sim
         );
     }
 
@@ -71,7 +71,9 @@ fn test_chinese_semantic_similarity() {
         assert!(
             sim < 0.5,
             "Unrelated texts \"{}\" vs \"{}\" cosine similarity {:.4} >= 0.5",
-            a, b, sim
+            a,
+            b,
+            sim
         );
     }
 

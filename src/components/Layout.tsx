@@ -2,7 +2,7 @@ import { NavLink, Outlet } from "react-router-dom";
 import { useEffect, useRef } from "react";
 import { BookOpen, Search, Upload, Settings, LayoutDashboard, MessageSquare, FileEdit, Package, ClipboardList, ShieldAlert } from "lucide-react";
 import Spotlight from "./Spotlight";
-import { reactChat, listenReActEvents } from "../lib/tauri-commands";
+import { agentChat, listenReActEvents } from "../lib/tauri-commands";
 
 const LS_KEY_QUESTION = "kb_sidebar_question";
 const LS_KEY_ANSWER = "kb_sidebar_answer";
@@ -26,8 +26,13 @@ export default function Layout() {
 
   // Sidebar localStorage bridge: poll for questions from Tencent Meeting sidebar
   useEffect(() => {
-    const p = listenReActEvents((event) => {
-      if (event.session_id !== sideSessionRef.current) return;
+    let cancelled = false;
+    let unsub: (() => void) | null = null;
+
+    listenReActEvents((event) => {
+      // Support both snake_case and camelCase (Tauri v2 may convert)
+      const eventSessionId = event.session_id || (event as any).sessionId;
+      if (eventSessionId !== sideSessionRef.current) return;
       if (event.type === "text_delta") {
         sideAnswerRef.current += event.content;
       }
@@ -43,6 +48,9 @@ export default function Layout() {
         sideAnswerRef.current = "";
         sideSessionRef.current = null;
       }
+    }).then((fn) => {
+      if (cancelled) { fn(); return; }
+      unsub = fn;
     });
 
     const interval = setInterval(() => {
@@ -53,14 +61,16 @@ export default function Layout() {
         if (!q.text || !q.id) return;
         localStorage.removeItem(LS_KEY_QUESTION);
         sideAnswerRef.current = "";
-        reactChat(q.text, "你是一个金蝶ERP实施顾问。请给出专业、简洁的回答。").then(sid => {
-          sideSessionRef.current = sid;
-        });
+        // Generate session ID first before calling agentChat
+        const sid = `layout_${Date.now()}`;
+        sideSessionRef.current = sid;
+        agentChat(q.text, "你是一个金蝶ERP实施顾问。请给出专业、简洁的回答。", sid);
       } catch(e) { /* poll error */ }
     }, 2000);
 
     return () => {
-      p.then((fn) => fn());
+      cancelled = true;
+      unsub?.();
       clearInterval(interval);
     };
   }, []);

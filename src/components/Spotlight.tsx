@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Search, Loader2, Send, X } from "lucide-react";
-import { reactChat, listenReActEvents } from "../lib/tauri-commands";
+import { agentChat, listenReActEvents } from "../lib/tauri-commands";
 
 export default function Spotlight() {
   const [visible, setVisible] = useState(false);
@@ -49,8 +49,11 @@ export default function Spotlight() {
 
   // Listen for ReAct events (filtered by session)
   useEffect(() => {
-    const p = listenReActEvents((event) => {
-      if (event.session_id !== spotSessionRef.current) return;
+    let cancelled = false;
+    listenReActEvents((event) => {
+      // Support both snake_case and camelCase (Tauri v2 may convert)
+      const eventSessionId = event.session_id || (event as any).sessionId;
+      if (eventSessionId !== spotSessionRef.current) return;
       if (event.type === "text_delta") {
         resultRef.current += event.content;
         setResult(resultRef.current);
@@ -59,8 +62,10 @@ export default function Spotlight() {
         setLoading(false);
         spotSessionRef.current = null;
       }
+    }).then((fn) => {
+      if (cancelled) { fn(); return; }
     });
-    return () => { p.then((fn) => fn()); };
+    return () => { cancelled = true; };
   }, []);
 
   const handleSubmit = useCallback(async () => {
@@ -70,8 +75,10 @@ export default function Spotlight() {
     setResult("");
     resultRef.current = "";
     try {
-      const sid = await reactChat(text);
+      // Generate session ID first before calling agentChat
+      const sid = `spot_${Date.now()}`;
       spotSessionRef.current = sid;
+      await agentChat(text, undefined, sid);
     }
     catch { setLoading(false); }
   }, [input, loading]);

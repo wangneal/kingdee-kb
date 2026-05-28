@@ -10,27 +10,21 @@ use std::sync::LazyLock;
 const CODE_BLOCK_PLACEHOLDER: &str = "\x00CODEBLOCK_";
 
 // Pre-compiled regexes (compiled once, reused across calls)
-static RE_CODE_FENCE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^```[^\n]*\n[\s\S]*?^```").unwrap()
-});
-static RE_IMAGE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"!\[([^\]]*)\]\([^)]*\)").unwrap()
-});
-static RE_LINK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[([^\]]+)\]\([^)]*\)").unwrap()
-});
-static RE_HTML_TAG: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"<[^>]+>").unwrap()
-});
-static RE_MULTI_NEWLINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\n{3,}").unwrap()
-});
-static RE_MULTI_SPACE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[^\S\n]+").unwrap()
-});
-static RE_TRAILING_SPACE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)\s+$").unwrap()
-});
+// SAFE: hardcoded regex patterns verified at code review — guaranteed valid
+static RE_CODE_FENCE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^```[^\n]*\n[\s\S]*?^```").unwrap());
+// SAFE: hardcoded regex pattern for Markdown image syntax
+static RE_IMAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!\[([^\]]*)\]\([^)]*\)").unwrap());
+// SAFE: hardcoded regex pattern for Markdown link syntax
+static RE_LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\([^)]*\)").unwrap());
+// SAFE: hardcoded regex pattern for HTML tags
+static RE_HTML_TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
+// SAFE: hardcoded regex pattern for multiple newlines
+static RE_MULTI_NEWLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n{3,}").unwrap());
+// SAFE: hardcoded regex pattern for non-newline whitespace
+static RE_MULTI_SPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\S\n]+").unwrap());
+// SAFE: hardcoded regex pattern for trailing whitespace
+static RE_TRAILING_SPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)\s+$").unwrap());
 
 /// Clean raw text for ingestion.
 ///
@@ -125,7 +119,8 @@ mod tests {
 
     #[test]
     fn test_clean_code_blocks_preserved() {
-        let input = "Text before\n\n```rust\nfn main() {\n    println!(\"hi\");\n}\n```\n\nText after";
+        let input =
+            "Text before\n\n```rust\nfn main() {\n    println!(\"hi\");\n}\n```\n\nText after";
         let result = clean_text(input);
         assert!(result.contains("```rust"));
         assert!(result.contains("println!(\"hi\");"));

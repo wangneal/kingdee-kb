@@ -1,5 +1,12 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
+
+// SAFE: hardcoded regex patterns — documented outline structure formats
+static RE_SECTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+\s+(.+)").unwrap());
+static RE_CATEGORY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+\.\d+\s+(.+)").unwrap());
+static RE_QUESTION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(\d+\.\d+\.\d+)\s+(.+)").unwrap());
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -21,8 +28,8 @@ impl Edition {
             "enterprise" => Some(Edition::Enterprise),
             "flagship" => Some(Edition::Flagship),
             _ => None,
+        }
     }
-}
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,7 +92,9 @@ impl ResearchOutline {
 }
 
 pub fn parse_doc_file(filepath: &std::path::Path) -> Result<String, String> {
-    let path_str = filepath.to_str().ok_or("Invalid file path: non-UTF-8 characters")?;
+    let path_str = filepath
+        .to_str()
+        .ok_or("Invalid file path: non-UTF-8 characters")?;
     let escaped = path_str.replace('\'', "''");
     let script = format!(
         concat!(
@@ -146,9 +155,9 @@ pub fn parse_outline_text(
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     let lines: Vec<String> = normalized.lines().map(clean_line).collect();
 
-    let section_re = Regex::new(r"^\d+\s+(.+)").unwrap();
-    let cat_re = Regex::new(r"^\d+\.\d+\s+(.+)").unwrap();
-    let q_re = Regex::new(r"^(\d+\.\d+\.\d+)\s+(.+)").unwrap();
+    let section_re = &RE_SECTION;
+    let cat_re = &RE_CATEGORY;
+    let q_re = &RE_QUESTION;
 
     let mut sections: Vec<Section> = Vec::new();
     let mut raw_questions: Vec<(String, String, String)> = Vec::new();
@@ -160,18 +169,52 @@ pub fn parse_outline_text(
             continue;
         }
         if let Some(caps) = section_re.captures(trimmed) {
-            sections.push(Section { name: caps.get(1).unwrap().as_str().trim().to_string(), categories: Vec::new() });
+            sections.push(Section {
+                name: caps
+                    .get(1)
+                    .map(|m| m.as_str().trim().to_string())
+                    .unwrap_or_default(),
+                categories: Vec::new(),
+            });
         } else if let Some(caps) = cat_re.captures(trimmed) {
             if let Some(s) = sections.last_mut() {
-                s.categories.push(Category { name: caps.get(1).unwrap().as_str().trim().to_string(), questions: Vec::new() });
+                s.categories.push(Category {
+                    name: caps
+                        .get(1)
+                        .map(|m| m.as_str().trim().to_string())
+                        .unwrap_or_default(),
+                    questions: Vec::new(),
+                });
             } else {
-                sections.push(Section { name: String::new(), categories: vec![Category { name: caps.get(1).unwrap().as_str().trim().to_string(), questions: Vec::new() }] });
+                sections.push(Section {
+                    name: String::new(),
+                    categories: vec![Category {
+                        name: caps
+                            .get(1)
+                            .map(|m| m.as_str().trim().to_string())
+                            .unwrap_or_default(),
+                        questions: Vec::new(),
+                    }],
+                });
             }
         } else if let Some(caps) = q_re.captures(trimmed) {
-            let full_prefix = caps.get(1).unwrap().as_str().to_string();
-            let q_text = caps.get(2).unwrap().as_str().trim().to_string();
+            let full_prefix = caps
+                .get(1)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            let q_text = caps
+                .get(2)
+                .map(|m| m.as_str().trim().to_string())
+                .unwrap_or_default();
             let section_part = full_prefix.split('.').next().unwrap_or("1").to_string();
-            let cat_part: String = full_prefix.rsplit('.').skip(1).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(".");
+            let cat_part: String = full_prefix
+                .rsplit('.')
+                .skip(1)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join(".");
             raw_questions.push((section_part, cat_part, q_text));
         } else {
             labels.push(trimmed.to_string());
@@ -188,18 +231,24 @@ pub fn parse_outline_text(
 
         let mut label_iter = labels.into_iter();
         let first_label = label_iter.next().filter(|l| l.len() > 2);
-        if first_label.is_some() {
-            sections.push(Section { name: first_label.unwrap(), categories: Vec::new() });
-        } else {
-            sections.push(Section { name: String::new(), categories: Vec::new() });
-        }
+        sections.push(Section {
+            name: first_label.unwrap_or_default(),
+            categories: Vec::new(),
+        });
 
         for cp in &unique_cats {
             let cat_name = label_iter.next().unwrap_or_else(|| {
                 let parts: Vec<&str> = cp.split('.').collect();
-                if parts.len() >= 2 { format!("类别{}", parts[1]) } else { String::new() }
+                if parts.len() >= 2 {
+                    format!("类别{}", parts[1])
+                } else {
+                    String::new()
+                }
             });
-            sections[0].categories.push(Category { name: cat_name, questions: Vec::new() });
+            sections[0].categories.push(Category {
+                name: cat_name,
+                questions: Vec::new(),
+            });
         }
 
         for (_, cat_part, q_text) in &raw_questions {
@@ -214,11 +263,16 @@ pub fn parse_outline_text(
         for (sec_part, cat_part, q_text) in &raw_questions {
             let sec_idx = sec_part.parse::<usize>().unwrap_or(1).saturating_sub(1);
             if sec_idx < sections.len() {
-                let cat_num_in_sec: usize = cat_part.rsplit('.').next()
+                let cat_num_in_sec: usize = cat_part
+                    .rsplit('.')
+                    .next()
                     .and_then(|s| s.parse::<usize>().ok())
-                    .unwrap_or(1).saturating_sub(1);
+                    .unwrap_or(1)
+                    .saturating_sub(1);
                 if cat_num_in_sec < sections[sec_idx].categories.len() {
-                    sections[sec_idx].categories[cat_num_in_sec].questions.push(q_text.clone());
+                    sections[sec_idx].categories[cat_num_in_sec]
+                        .questions
+                        .push(q_text.clone());
                 }
             }
         }
@@ -276,22 +330,16 @@ mod tests {
                         },
                         Category {
                             name: "微服务".to_string(),
-                            questions: vec![
-                                "服务注册发现机制？".to_string(),
-                            ],
+                            questions: vec!["服务注册发现机制？".to_string()],
                         },
                     ],
                 },
                 Section {
                     name: "安全".to_string(),
-                    categories: vec![
-                        Category {
-                            name: "认证".to_string(),
-                            questions: vec![
-                                "支持的认证方式？".to_string(),
-                            ],
-                        },
-                    ],
+                    categories: vec![Category {
+                        name: "认证".to_string(),
+                        questions: vec!["支持的认证方式？".to_string()],
+                    }],
                 },
             ],
         }
@@ -392,9 +440,18 @@ mod tests {
 
     #[test]
     fn test_try_parse_section_header() {
-        assert_eq!(try_parse_section_header("1 业务概况"), Some("业务概况".to_string()));
-        assert_eq!(try_parse_section_header("2 技术架构"), Some("技术架构".to_string()));
-        assert_eq!(try_parse_section_header("10 安全"), Some("安全".to_string()));
+        assert_eq!(
+            try_parse_section_header("1 业务概况"),
+            Some("业务概况".to_string())
+        );
+        assert_eq!(
+            try_parse_section_header("2 技术架构"),
+            Some("技术架构".to_string())
+        );
+        assert_eq!(
+            try_parse_section_header("10 安全"),
+            Some("安全".to_string())
+        );
         assert_eq!(try_parse_section_header("  1  带空格的章节"), None);
         assert_eq!(try_parse_section_header("1.1 分类"), None);
         assert_eq!(try_parse_section_header("无序文本"), None);
@@ -403,9 +460,18 @@ mod tests {
 
     #[test]
     fn test_try_parse_category_header() {
-        assert_eq!(try_parse_category_header("1.1 组织人员"), Some("组织人员".to_string()));
-        assert_eq!(try_parse_category_header("2.3 数据存储"), Some("数据存储".to_string()));
-        assert_eq!(try_parse_category_header("10.20 安全策略"), Some("安全策略".to_string()));
+        assert_eq!(
+            try_parse_category_header("1.1 组织人员"),
+            Some("组织人员".to_string())
+        );
+        assert_eq!(
+            try_parse_category_header("2.3 数据存储"),
+            Some("数据存储".to_string())
+        );
+        assert_eq!(
+            try_parse_category_header("10.20 安全策略"),
+            Some("安全策略".to_string())
+        );
         assert_eq!(try_parse_category_header("1 章节"), None);
         assert_eq!(try_parse_category_header("1.1.1 问题"), None);
         assert_eq!(try_parse_category_header(""), None);
@@ -433,13 +499,27 @@ mod tests {
     #[test]
     fn test_parse_module_info() {
         let result = parse_module_info("ECW2107_调研提纲_总账_财务_V1.0.doc");
-        assert_eq!(result, Some(("ECW2107".to_string(), "总账".to_string(), "财务".to_string())));
+        assert_eq!(
+            result,
+            Some((
+                "ECW2107".to_string(),
+                "总账".to_string(),
+                "财务".to_string()
+            ))
+        );
     }
 
     #[test]
     fn test_parse_module_info_with_long_version() {
         let result = parse_module_info("BOS123_调研提纲_基础平台_公有云_V10.20.doc");
-        assert_eq!(result, Some(("BOS123".to_string(), "基础平台".to_string(), "公有云".to_string())));
+        assert_eq!(
+            result,
+            Some((
+                "BOS123".to_string(),
+                "基础平台".to_string(),
+                "公有云".to_string()
+            ))
+        );
     }
 
     #[test]
@@ -537,12 +617,13 @@ mod tests {
 
     #[test]
     fn test_parse_doc_file_real() {
-        let candidate_paths = [
-            r"E:\工作资料\项目资料\企业版调研提纲\企业版",
-        ];
+        let candidate_paths = [r"E:\工作资料\项目资料\企业版调研提纲\企业版"];
         let dir = std::path::Path::new(candidate_paths[0]);
         if !dir.exists() {
-            eprintln!("Skipping test_parse_doc_file_real: directory not found at {:?}", dir);
+            eprintln!(
+                "Skipping test_parse_doc_file_real: directory not found at {:?}",
+                dir
+            );
             return;
         }
         let entries: Vec<_> = match std::fs::read_dir(dir) {
@@ -570,7 +651,11 @@ mod tests {
             assert!(!text.trim().is_empty(), "Empty content from {:?}", path);
             let filename = path.file_name().unwrap().to_str().unwrap_or("");
             let info = parse_module_info(filename);
-            assert!(info.is_some(), "Cannot parse module info from filename: {}", filename);
+            assert!(
+                info.is_some(),
+                "Cannot parse module info from filename: {}",
+                filename
+            );
             let (code, mod_name, cloud) = info.unwrap();
             let outline = parse_outline_text(
                 &text,
@@ -580,10 +665,7 @@ mod tests {
                 &cloud,
                 filename,
             );
-            eprintln!(
-                "Sections: {}",
-                outline.sections.len()
-            );
+            eprintln!("Sections: {}", outline.sections.len());
             let flat = outline.flatten();
             eprintln!(
                 "OK: {} → {} sections, {} questions",

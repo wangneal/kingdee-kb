@@ -47,6 +47,7 @@ pub struct ResearchSession {
     pub interviewee: String,
     pub session_date: String,
     pub status: String,
+    pub project: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -90,8 +91,21 @@ impl ResearchSessionStore {
         Ok(store)
     }
 
+    /// Create an in-memory store (for fallback when DB is corrupted).
+    pub fn new_in_memory() -> Result<Self, String> {
+        let conn = Connection::open_in_memory()
+            .map_err(|e| format!("Failed to create in-memory research session DB: {}", e))?;
+        let store = Self {
+            conn: Mutex::new(conn),
+        };
+        store.init_tables()?;
+        Ok(store)
+    }
+
     fn init_tables(&self) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+        // Step 1: Create tables (without index on project yet)
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS research_sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,6 +115,7 @@ impl ResearchSessionStore {
                 interviewee TEXT DEFAULT '',
                 session_date TEXT DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'in_progress',
+                project TEXT NOT NULL DEFAULT 'default',
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             );
@@ -115,12 +130,31 @@ impl ResearchSessionStore {
                 sort_order INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY (session_id) REFERENCES research_sessions(id) ON DELETE CASCADE
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_qa_session ON session_qa_records(session_id);
-            CREATE INDEX IF NOT EXISTS idx_sessions_module ON research_sessions(module_code);",
+            );",
         )
-        .map_err(|e| format!("Failed to init session tables: {}", e))
+        .map_err(|e| format!("Failed to init session tables: {}", e))?;
+
+        // Step 2: Migration — add project column if missing (for old DBs)
+        let has_project = conn
+            .prepare("SELECT project FROM research_sessions LIMIT 0")
+            .is_ok();
+        if !has_project {
+            conn.execute(
+                "ALTER TABLE research_sessions ADD COLUMN project TEXT NOT NULL DEFAULT 'default'",
+                [],
+            )
+            .map_err(|e| format!("Failed to add project column: {}", e))?;
+        }
+
+        // Step 3: Create indexes (now safe because project column exists)
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_qa_session ON session_qa_records(session_id);
+             CREATE INDEX IF NOT EXISTS idx_sessions_module ON research_sessions(module_code);
+             CREATE INDEX IF NOT EXISTS idx_sessions_project ON research_sessions(project);",
+        )
+        .map_err(|e| format!("Failed to create session indexes: {}", e))?;
+
+        Ok(())
     }
 
     // ─── Session CRUD ───
@@ -133,29 +167,41 @@ impl ResearchSessionStore {
         module_code: &str,
         interviewee: &str,
         session_date: &str,
+        project: &str,
     ) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         conn.execute(
-            "INSERT INTO research_sessions (title, edition, module_code, interviewee, session_date)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![title, edition, module_code, interviewee, session_date],
+            "INSERT INTO research_sessions (title, edition, module_code, interviewee, session_date, project)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![title, edition, module_code, interviewee, session_date, project],
         )
         .map_err(|e| format!("Failed to create session: {}", e))?;
         Ok(conn.last_insert_rowid())
     }
 
-    /// List all sessions, newest first.
-    pub fn list_sessions(&self) -> Result<Vec<ResearchSession>, String> {
+    /// List all sessions, newest first. Optionally filter by project.
+    pub fn list_sessions(&self, project: Option<&str>) -> Result<Vec<ResearchSession>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, title, edition, module_code, interviewee, session_date, status, created_at, updated_at
+        let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match project {
+            Some(p) => (
+                "SELECT id, title, edition, module_code, interviewee, session_date, status, project, created_at, updated_at
+                 FROM research_sessions WHERE project = ?1 ORDER BY updated_at DESC",
+                vec![Box::new(p.to_string())],
+            ),
+            None => (
+                "SELECT id, title, edition, module_code, interviewee, session_date, status, project, created_at, updated_at
                  FROM research_sessions ORDER BY updated_at DESC",
-            )
+                vec![],
+            ),
+        };
+        let mut stmt = conn
+            .prepare(sql)
             .map_err(|e| format!("Failed to prepare list: {}", e))?;
 
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(params_refs.as_slice(), |row| {
                 Ok(ResearchSession {
                     id: row.get(0)?,
                     title: row.get(1)?,
@@ -164,8 +210,9 @@ impl ResearchSessionStore {
                     interviewee: row.get(4)?,
                     session_date: row.get(5)?,
                     status: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
+                    project: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
                 })
             })
             .map_err(|e| format!("Failed to query sessions: {}", e))?;
@@ -182,7 +229,7 @@ impl ResearchSessionStore {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, title, edition, module_code, interviewee, session_date, status, created_at, updated_at
+                "SELECT id, title, edition, module_code, interviewee, session_date, status, project, created_at, updated_at
                  FROM research_sessions WHERE id = ?1",
             )
             .map_err(|e| format!("Failed to prepare get_session: {}", e))?;
@@ -197,14 +244,17 @@ impl ResearchSessionStore {
                     interviewee: row.get(4)?,
                     session_date: row.get(5)?,
                     status: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
+                    project: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
                 })
             })
             .map_err(|e| format!("Failed to query session: {}", e))?;
 
         match rows.next() {
-            Some(row) => Ok(Some(row.map_err(|e| format!("Failed to read session: {}", e))?)),
+            Some(row) => Ok(Some(
+                row.map_err(|e| format!("Failed to read session: {}", e))?,
+            )),
             None => Ok(None),
         }
     }
@@ -251,11 +301,8 @@ impl ResearchSessionStore {
             params![id],
         )
         .map_err(|e| format!("Failed to delete session records: {}", e))?;
-        conn.execute(
-            "DELETE FROM research_sessions WHERE id = ?1",
-            params![id],
-        )
-        .map_err(|e| format!("Failed to delete session: {}", e))?;
+        conn.execute("DELETE FROM research_sessions WHERE id = ?1", params![id])
+            .map_err(|e| format!("Failed to delete session: {}", e))?;
         Ok(())
     }
 
@@ -314,12 +361,7 @@ impl ResearchSessionStore {
     }
 
     /// Update a Q&A record.
-    pub fn update_record(
-        &self,
-        id: i64,
-        answer_text: &str,
-        notes: &str,
-    ) -> Result<(), String> {
+    pub fn update_record(&self, id: i64, answer_text: &str, notes: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         let affected = conn
             .execute(
@@ -406,21 +448,29 @@ mod tests {
     fn test_create_and_list_session() {
         let store = new_store();
         let id = store
-            .create_session("测试会话", "enterprise", "BOS", "张三", "2026-05-24")
+            .create_session(
+                "测试会话",
+                "enterprise",
+                "BOS",
+                "张三",
+                "2026-05-24",
+                "default",
+            )
             .unwrap();
         assert!(id > 0);
 
-        let sessions = store.list_sessions().unwrap();
+        let sessions = store.list_sessions(None).unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].title, "测试会话");
         assert_eq!(sessions[0].edition, "enterprise");
+        assert_eq!(sessions[0].project, "default");
     }
 
     #[test]
     fn test_session_detail_empty() {
         let store = new_store();
         let id = store
-            .create_session("空会话", "enterprise", "BOS", "", "")
+            .create_session("空会话", "enterprise", "BOS", "", "", "default")
             .unwrap();
         let detail = store.get_session_detail(id).unwrap().unwrap();
         assert_eq!(detail.records.len(), 0);
@@ -429,9 +479,13 @@ mod tests {
     #[test]
     fn test_crud_records() {
         let store = new_store();
-        let sid = store.create_session("CRUD测试", "enterprise", "BOS", "李四", "").unwrap();
+        let sid = store
+            .create_session("CRUD测试", "enterprise", "BOS", "李四", "", "default")
+            .unwrap();
 
-        let rid = store.add_record(sid, None, "问题1？", "回答1", "备注1", 0).unwrap();
+        let rid = store
+            .add_record(sid, None, "问题1？", "回答1", "备注1", 0)
+            .unwrap();
         assert!(rid > 0);
 
         let records = store.get_records(sid).unwrap();
@@ -451,10 +505,21 @@ mod tests {
     fn test_export_csv_and_markdown() {
         let store = new_store();
         let sid = store
-            .create_session("导出测试", "enterprise", "CM", "王五", "2026-05-24")
+            .create_session(
+                "导出测试",
+                "enterprise",
+                "CM",
+                "王五",
+                "2026-05-24",
+                "default",
+            )
             .unwrap();
-        store.add_record(sid, None, "问题1", "答案1", "", 0).unwrap();
-        store.add_record(sid, None, "问题2", "答案2", "备注2", 1).unwrap();
+        store
+            .add_record(sid, None, "问题1", "答案1", "", 0)
+            .unwrap();
+        store
+            .add_record(sid, None, "问题2", "答案2", "备注2", 1)
+            .unwrap();
 
         let csv = store.export_csv(sid).unwrap();
         assert!(csv.contains("问题1"));
@@ -469,7 +534,9 @@ mod tests {
     #[test]
     fn test_delete_session_cascades() {
         let store = new_store();
-        let sid = store.create_session("删除测试", "enterprise", "BOS", "", "").unwrap();
+        let sid = store
+            .create_session("删除测试", "enterprise", "BOS", "", "", "default")
+            .unwrap();
         store.add_record(sid, None, "问题", "答案", "", 0).unwrap();
 
         store.delete_session(sid).unwrap();
@@ -478,5 +545,30 @@ mod tests {
 
         let records = store.get_records(sid).unwrap();
         assert_eq!(records.len(), 0);
+    }
+
+    #[test]
+    fn test_list_sessions_filter_by_project() {
+        let store = new_store();
+        store
+            .create_session("会话A", "enterprise", "BOS", "", "", "project_a")
+            .unwrap();
+        store
+            .create_session("会话B", "enterprise", "BOS", "", "", "project_b")
+            .unwrap();
+        store
+            .create_session("会话C", "enterprise", "BOS", "", "", "project_a")
+            .unwrap();
+
+        let all = store.list_sessions(None).unwrap();
+        assert_eq!(all.len(), 3);
+
+        let filtered = store.list_sessions(Some("project_a")).unwrap();
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|s| s.project == "project_a"));
+
+        let filtered_b = store.list_sessions(Some("project_b")).unwrap();
+        assert_eq!(filtered_b.len(), 1);
+        assert_eq!(filtered_b[0].title, "会话B");
     }
 }

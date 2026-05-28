@@ -1,7 +1,11 @@
 //! Xlsx field placeholder extractor
 //!
-//! Parses .xlsx files to find `{field_name}` placeholders in cells,
-//! extracting field names with their cell references (sheet, row, col).
+//! Parses .xlsx files to find field placeholders in cells.
+//! Supports two Kingdee template formats:
+//!   1. `{field_name}` — brace-style placeholders
+//!   2. `XXXX字段名` — Kingdee XXXX-style placeholders
+//!
+//! Extracts field names with their cell references (sheet, row, col).
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -19,20 +23,28 @@ pub struct XlsxFieldInfo {
     pub cell_refs: Vec<String>,
     /// Number of occurrences
     pub count: usize,
+    /// Source format: "brace", "xxxx"
+    #[serde(default = "default_source")]
+    pub source: String,
 }
 
-/// Extract all `{field_name}` placeholders from an .xlsx file.
+fn default_source() -> String {
+    "brace".to_string()
+}
+
+/// Extract all field placeholders from an .xlsx file.
 ///
 /// Strategy:
 /// 1. Read workbook with umya-spreadsheet
 /// 2. Iterate all sheets and cells
-/// 3. Apply regex `\{([^}]+)\}` on each cell value
+/// 3. Apply regex patterns for `{name}` and `XXXX名称` on each cell value
 /// 4. Return deduplicated field list with cell references
 pub fn extract_xlsx_fields(file_path: &Path) -> Result<Vec<XlsxFieldInfo>, String> {
     let book = umya_spreadsheet::reader::xlsx::read(file_path)
         .map_err(|e| format!("Failed to read xlsx {}: {}", file_path.display(), e))?;
 
-    let re = Regex::new(r"\{([^}]+)\}").map_err(|e| format!("Regex error: {}", e))?;
+    let brace_re = Regex::new(r"\{([^}]+)\}").map_err(|e| format!("Regex error: {}", e))?;
+    let xxxx_re = Regex::new(r"XXXX([\u4e00-\u9fff][\u4e00-\u9fff\w/（）()\-]{0,19})").unwrap();
 
     let mut fields: BTreeMap<String, XlsxFieldInfo> = BTreeMap::new();
 
@@ -57,23 +69,55 @@ pub fn extract_xlsx_fields(file_path: &Path) -> Result<Vec<XlsxFieldInfo>, Strin
             let col_num = *coord.get_col_num();
             let row_num = *coord.get_row_num();
             let cell_ref = format!("{}{}", col_to_letter(col_num), row_num);
+            let full_ref = format!("{}!{}", sheet_name, cell_ref);
 
-            // Check for {field_name} patterns in cell value
-            for cap in re.captures_iter(&cell_value) {
-                let field_name = cap[1].to_string();
-                let full_ref = format!("{}!{}", sheet_name, cell_ref);
+            // 1. Brace-style: {field_name}
+            for cap in brace_re.captures_iter(&cell_value) {
+                let field_name = cap[1].trim().to_string();
+                if field_name.is_empty() {
+                    continue;
+                }
+                let entry = fields
+                    .entry(field_name.clone())
+                    .or_insert_with(|| XlsxFieldInfo {
+                        name: field_name.clone(),
+                        field_type: infer_field_type(&field_name),
+                        cell_refs: Vec::new(),
+                        count: 0,
+                        source: "brace".to_string(),
+                    });
 
-                let entry =
-                    fields
-                        .entry(field_name.clone())
-                        .or_insert_with(|| XlsxFieldInfo {
-                            name: field_name.clone(),
-                            field_type: infer_field_type(&field_name),
-                            cell_refs: Vec::new(),
-                            count: 0,
-                        });
+                entry.cell_refs.push(full_ref.clone());
+                entry.count += 1;
+            }
 
-                entry.cell_refs.push(full_ref);
+            // 2. Kingdee XXXX-style: XXXX字段名
+            for cap in xxxx_re.captures_iter(&cell_value) {
+                let field_name = cap[1].trim().to_string();
+                // Filter: skip empty, too long (>30 bytes / >10 chars), or already found via brace
+                if field_name.is_empty() || field_name.len() > 30 || field_name.chars().count() > 10
+                {
+                    continue;
+                }
+                if fields.contains_key(&field_name) {
+                    // Already exists, just add cell ref
+                    if let Some(entry) = fields.get_mut(&field_name) {
+                        entry.cell_refs.push(full_ref.clone());
+                        entry.count += 1;
+                    }
+                    continue;
+                }
+                let entry = fields
+                    .entry(field_name.clone())
+                    .or_insert_with(|| XlsxFieldInfo {
+                        name: field_name.clone(),
+                        field_type: infer_field_type(&field_name),
+                        cell_refs: Vec::new(),
+                        count: 0,
+                        source: "xxxx".to_string(),
+                    });
+
+                entry.cell_refs.push(full_ref.clone());
                 entry.count += 1;
             }
         }

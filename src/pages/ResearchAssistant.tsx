@@ -33,9 +33,13 @@ import {
   startWhisperRecording,
   stopWhisperRecording,
   getWhisperStatus,
-  reactChat,
+  agentChat,
   listenReActEvents,
   type WhisperStatus,
+  listAsrProviders,
+  type AsrProviderInfo,
+  getAsrConfigStatus,
+  type AsrConfigStatus,
 } from "../lib/tauri-commands";
 
 export default function ResearchAssistant() {
@@ -46,10 +50,6 @@ export default function ResearchAssistant() {
   const [error, setError] = useState<string | null>(null);
 
   // Load sessions on mount
-  useEffect(() => {
-    refreshList();
-  }, []);
-
   const refreshList = useCallback(async () => {
     setLoading(true);
     try {
@@ -60,6 +60,10 @@ export default function ResearchAssistant() {
     }
     setLoading(false);
   }, []);
+
+  useEffect(() => {
+    refreshList();
+  }, [refreshList]);
 
   const openSession = useCallback(async (id: number) => {
     setLoading(true);
@@ -142,8 +146,10 @@ export default function ResearchAssistant() {
                     </button>
                   </div>
                   <div className="flex flex-wrap gap-1.5 text-[10px] text-neutral-500">
-                    <span className="rounded bg-neutral-100 px-1.5 py-0.5">{s.edition}</span>
-                    <span className="rounded bg-neutral-100 px-1.5 py-0.5">{s.module_code}</span>
+                    <span className="rounded bg-neutral-100 px-1.5 py-0.5">{s.edition === "enterprise" ? "企业版" : "旗舰版"}</span>
+                    {s.module_code && (
+                      <span className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-600">{s.module_code}</span>
+                    )}
                     {s.status === "completed" && (
                       <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700">已完成</span>
                     )}
@@ -214,7 +220,7 @@ function NewSessionForm({ onCreated, onCancel }: { onCreated: (id: number) => vo
         <h1 className="text-base font-semibold text-neutral-800">新建调研会话</h1>
       </div>
       <div className="flex-1 overflow-y-auto p-6">
-        <div className="mx-auto max-w-lg space-y-4">
+        <div className="space-y-4">
           <div>
             <label className="mb-1 block text-xs font-medium text-neutral-600">会话标题 *</label>
             <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="如：BOS 基础平台调研" className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20" />
@@ -228,8 +234,13 @@ function NewSessionForm({ onCreated, onCancel }: { onCreated: (id: number) => vo
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-neutral-600">模块编码</label>
-              <input value={moduleCode} onChange={(e) => setModuleCode(e.target.value)} placeholder="如：BOS" className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20" />
+              <label className="mb-1 block text-xs font-medium text-neutral-600">调研模块</label>
+              <input
+                value={moduleCode}
+                onChange={(e) => setModuleCode(e.target.value)}
+                placeholder="如：采购、销售、库存、财务..."
+                className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20"
+              />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -262,6 +273,9 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
   const [recording, setRecording] = useState(false);
   const [whisperStatus, setWhisperStatus] = useState<WhisperStatus | null>(null);
   const [loadingWhisper, setLoadingWhisper] = useState(false);
+  const [asrProviders, setAsrProviders] = useState<AsrProviderInfo[]>([]);
+  const [selectedAsrProvider, setSelectedAsrProvider] = useState<string>("whisper");
+  const [_asrConfigStatus, setAsrConfigStatus] = useState<AsrConfigStatus | null>(null);
   const [newQuestion, setNewQuestion] = useState("");
   const [newAnswer, setNewAnswer] = useState("");
   const [editingRecord, setEditingRecord] = useState<number | null>(null);
@@ -269,15 +283,23 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
   const [aiLoading, setAiLoading] = useState(false);
   const aiAnswerRef = useRef("");
   const aiSessionRef = useRef<string | null>(null);
+  const unsubRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    getWhisperStatus().then(setWhisperStatus).catch(() => {});
+    getWhisperStatus().then(setWhisperStatus).catch((err) => {
+      console.error("获取 Whisper 状态失败:", err);
+    });
+    listAsrProviders().then(setAsrProviders).catch(console.error);
+    getAsrConfigStatus().then(setAsrConfigStatus).catch(console.error);
   }, []);
 
   // Subscribe to ReAct events for AI assist (filtered by session)
   useEffect(() => {
-    const p = listenReActEvents((event) => {
-      if (event.session_id !== aiSessionRef.current) return;
+    let cancelled = false;
+    listenReActEvents((event) => {
+      // Support both snake_case and camelCase (Tauri v2 may convert)
+      const eventSessionId = event.session_id || (event as any).sessionId;
+      if (eventSessionId !== aiSessionRef.current) return;
       if (event.type === "text_delta") {
         aiAnswerRef.current += event.content;
         setNewAnswer(aiAnswerRef.current);
@@ -286,8 +308,14 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
         setAiLoading(false);
         aiSessionRef.current = null;
       }
+    }).then((fn) => {
+      if (cancelled) { fn(); return; }
+      unsubRef.current = fn;
     });
-    return () => { p.then((fn) => fn()); };
+    return () => {
+      cancelled = true;
+      unsubRef.current?.();
+    };
   }, []);
 
   const handleAIAssist = async () => {
@@ -297,8 +325,10 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
     setNewAnswer("");
     const context = `当前调研：${session.title}（${session.edition}/${session.module_code}）\n已有记录：${records.map((r) => `Q: ${r.question_text}`).join("\n")}`;
     try {
-      const sid = await reactChat(`请回答以下调研问题，基于知识库中的金蝶ERP实施经验：\n\n问题：${newQuestion}\n\n背景：${context}`, `你是一个金蝶ERP实施顾问，正在辅助一个调研访谈。请基于知识库给出专业的回答。回答要具体、可操作，包含系统配置路径或单据类型。不确定的写[待确认]。`);
+      // Generate session ID first before calling agentChat
+      const sid = `research_${Date.now()}`;
       aiSessionRef.current = sid;
+      await agentChat(`请回答以下调研问题，基于知识库中的金蝶ERP实施经验：\n\n问题：${newQuestion}\n\n背景：${context}`, `你是一个金蝶ERP实施顾问，正在辅助一个调研访谈。请基于知识库给出专业的回答。回答要具体、可操作，包含系统配置路径或单据类型。不确定的写[待确认]。`, sid);
     } catch (err) {
       setAiLoading(false);
     }
@@ -495,10 +525,30 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
             <div className="mb-2 flex items-center gap-2">
               <Mic className="h-4 w-4 text-[#1A6BD8]" />
               <span className="text-xs font-semibold text-neutral-700">语音输入</span>
-              {whisperStatus && !whisperStatus.model_loaded && (
-                <span className="text-[10px] text-amber-600">（模型未加载）</span>
+            </div>
+            {/* ASR Provider selector */}
+            <div className="mb-2">
+              <select
+                value={selectedAsrProvider}
+                onChange={(e) => setSelectedAsrProvider(e.target.value)}
+                className="w-full rounded border border-neutral-200 px-2 py-1 text-[10px] text-neutral-600 outline-none focus:border-[#1A6BD8]"
+              >
+                {asrProviders.map((p) => (
+                  <option key={p.type} value={p.type}>
+                    {p.name} {p.type === "whisper" ? (whisperStatus?.model_loaded ? "✓" : "⚠") : ""}
+                  </option>
+                ))}
+              </select>
+              {/* Provider description */}
+              {asrProviders.find(p => p.type === selectedAsrProvider) && (
+                <p className="text-[10px] text-neutral-400 mt-0.5">
+                  {asrProviders.find(p => p.type === selectedAsrProvider)?.description}
+                </p>
               )}
             </div>
+            {whisperStatus && !whisperStatus.model_loaded && selectedAsrProvider === "whisper" && (
+              <span className="text-[10px] text-amber-600">（模型未加载）</span>
+            )}
             {loadingWhisper ? (
               <div className="flex items-center gap-2 text-xs text-neutral-500">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />

@@ -48,6 +48,7 @@ reqwest-eventsource = "0.6"
 ureq = "3"
 tiktoken-rs = "0.6"
 futures-util = "0.3"
+bytes = "1"
 
 # Phase 9: Template Parsing Engine
 walkdir = "2"
@@ -55,11 +56,27 @@ zip = "2"
 quick-xml = "0.36"
 umya-spreadsheet = "2"
 serde_yaml = "0.9"
+pdf-extract = "0.7"
+calamine = "0.26"
 
 # Phase 12: Whisper Voice Recognition
 whisper-rs = { version = "0.16", features = [] }
 cpal = "0.15"
 hound = "3"
+
+# Phase 12b: Online ASR Providers (Tencent/Xfyun)
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+hmac = "0.12"
+sha1 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
+urlencoding = "2"
+rand = "0.8"
+
+# Phase 14: Video Transcription (audio extraction from video)
+ffmpeg-sidecar = "2"
 
 # Global Shortcut (OS-level Alt+Space)
 tauri-plugin-global-shortcut = "2"
@@ -67,3 +84,7 @@ tauri-plugin-global-shortcut = "2"
 # ReAct Agent
 async-trait = "0.1"
 
+# rig AI framework
+rig-core = "0.37"
+thiserror = "2"
+futures = "0.3.32"

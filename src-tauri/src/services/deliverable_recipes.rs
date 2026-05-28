@@ -69,7 +69,9 @@ pub fn all_recipes() -> Vec<DeliverableRecipe> {
 ///
 /// Returns `None` if no recipe matches the given template ID.
 pub fn get_recipe_by_template_id(template_id: &str) -> Option<DeliverableRecipe> {
-    all_recipes().into_iter().find(|r| r.template_id == template_id)
+    all_recipes()
+        .into_iter()
+        .find(|r| r.template_id == template_id)
 }
 
 /// Look up a recipe by name (partial match).

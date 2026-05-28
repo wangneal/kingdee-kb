@@ -23,9 +23,26 @@ export interface IngestionResult {
   document_id: number;
   title: string;
   sha256: string;
+  is_duplicate: boolean;
   chunk_count: number;
   vector_count: number;
-  project: string;
+}
+
+export interface ExtractedFileText {
+  file_path: string;
+  title: string;
+  text: string;
+  char_count: number;
+}
+
+export interface FileError {
+  path: string;
+  error: string;
+}
+
+export interface DirectoryIngestionResult {
+  imported: IngestionResult[];
+  errors: FileError[];
 }
 
 export interface IngestionProgress {
@@ -97,6 +114,8 @@ export interface RAGResponse {
 }
 
 // ── Tauri command wrappers ───────────────────────────────────────────────────
+// NOTE: Tauri v2 invoke() does NOT auto-convert camelCase↔snake_case.
+// All parameter keys MUST match the Rust function parameter names exactly (snake_case).
 
 export async function hybridSearch(
   query: string,
@@ -137,10 +156,14 @@ export async function ingestFile(
   return invoke("ingest_file", { filePath, project });
 }
 
+export async function extractFileText(filePath: string): Promise<ExtractedFileText> {
+  return invoke("extract_file_text", { filePath });
+}
+
 export async function ingestDirectory(
   dirPath: string,
   project: string
-): Promise<IngestionResult[]> {
+): Promise<DirectoryIngestionResult> {
   return invoke("ingest_directory", { dirPath, project });
 }
 
@@ -154,12 +177,17 @@ export async function getDocumentChunks(documentId: number): Promise<ChunkMeta[]
   return invoke("get_document_chunks", { documentId });
 }
 
-export async function getStats(): Promise<KnowledgeStats> {
-  return invoke("get_stats");
+export async function getStats(project?: string): Promise<KnowledgeStats> {
+  return invoke("get_stats", { project: project ?? null });
 }
 
-export async function deleteDocument(documentId: number): Promise<void> {
-  return invoke("delete_document", { documentId });
+export async function deleteDocument(documentId: number, project?: string): Promise<void> {
+  return invoke("delete_document", { documentId, project: project ?? null });
+}
+
+/** Batch-delete multiple documents (and their chunks) in a single transaction */
+export async function deleteDocumentsBatch(documentIds: number[], project?: string): Promise<number> {
+  return invoke("delete_documents_batch", { documentIds, project: project ?? null });
 }
 
 // ── Embedding model commands ──────────────────────────────────────────────────
@@ -178,6 +206,22 @@ export async function getDownloadProgress(): Promise<number> {
 }
 
 // ── LLM / RAG command wrappers ───────────────────────────────────────────────
+
+export interface EmbeddingModelConfig {
+  custom_model_dir?: string | null;
+}
+
+export async function getEmbeddingModelConfig(): Promise<EmbeddingModelConfig> {
+  return invoke("get_embedding_model_config");
+}
+
+export async function setEmbeddingModelConfig(
+  customModelDir?: string | null
+): Promise<boolean> {
+  return invoke("set_embedding_model_config", {
+    custom_model_dir: customModelDir ?? null,
+  });
+}
 
 export async function setLLMConfig(config: LLMConfig): Promise<void> {
   return invoke("set_llm_config", { config });
@@ -236,7 +280,7 @@ export async function startChatStream(
   projectId?: string,
   conversationHistory?: ChatMessage[]
 ): Promise<void> {
-  return invoke("start_chat_stream", {
+    return invoke("start_chat_stream", {
     query,
     projectId: projectId ?? null,
     conversationHistory: conversationHistory ?? null,
@@ -267,9 +311,10 @@ export function listenChatEvents(
 
 /** Save chat conversation to memory: archive + extract → ingest into KB. */
 export async function saveChatMemory(
-  conversation: ChatMessage[]
+  conversation: ChatMessage[],
+  project?: string,
 ): Promise<void> {
-  return invoke("save_chat_memory", { conversation });
+  return invoke("save_chat_memory", { conversation, project: project ?? null });
 }
 
 // ── Phase 9/10/11/12/13: Template & Wizard Types ────────────────────────────
@@ -383,11 +428,11 @@ export interface ProductMeta {
 // ── Phase 9+ command wrappers ────────────────────────────────────────────────
 
 export async function scanTemplates(templateDir?: string): Promise<TemplateInfo[]> {
-  return invoke("scan_templates", { templateDir: templateDir ?? null });
+  return invoke("scan_templates", { template_dir: templateDir ?? null });
 }
 
 export async function extractTemplateFields(filePath: string): Promise<FieldInfo[]> {
-  return invoke("extract_template_fields", { filePath });
+  return invoke("extract_template_fields", { file_path: filePath });
 }
 
 export async function getTemplateSchema(
@@ -398,11 +443,11 @@ export async function getTemplateSchema(
   writeSidecar?: boolean
 ): Promise<TemplateSchema> {
   return invoke("get_template_schema", {
-    templateId,
-    templateName,
-    filePath,
+    template_id: templateId,
+    template_name: templateName,
+    file_path: filePath,
     phase,
-    writeSidecar: writeSidecar ?? false,
+    write_sidecar: writeSidecar ?? false,
   });
 }
 
@@ -415,19 +460,19 @@ export async function generateDoc(request: GenerateDocRequest): Promise<Generate
 }
 
 export async function getDeliverableRecipe(templateId: string): Promise<DeliverableRecipe> {
-  return invoke("get_deliverable_recipe", { templateId });
+  return invoke("get_deliverable_recipe", { template_id: templateId });
 }
 
 export async function listProducts(project?: string): Promise<ProductMeta[]> {
   return invoke("list_products", { project: project ?? null });
 }
 
-export async function exportProduct(id: number, targetDir: string): Promise<string> {
-  return invoke("export_product", { id, targetDir });
+export async function exportProduct(id: number, targetDir: string, project?: string): Promise<string> {
+  return invoke("export_product", { id, targetDir, project: project ?? null });
 }
 
-export async function deleteProduct(id: number): Promise<void> {
-  return invoke("delete_product", { id });
+export async function deleteProduct(id: number, project?: string): Promise<void> {
+  return invoke("delete_product", { id, project: project ?? null });
 }
 
 // ── Phase 13: Research Session Management ─────────────────────────────────
@@ -440,6 +485,7 @@ export interface ResearchSession {
   interviewee: string;
   session_date: string;
   status: string;
+  project: string;
   created_at: string;
   updated_at: string;
 }
@@ -466,6 +512,7 @@ export async function createResearchSession(
   moduleCode: string,
   interviewee: string,
   sessionDate: string,
+  project?: string,
 ): Promise<number> {
   return invoke("create_research_session", {
     title,
@@ -473,11 +520,12 @@ export async function createResearchSession(
     moduleCode,
     interviewee,
     sessionDate,
+    project: project ?? null,
   });
 }
 
-export async function listResearchSessions(): Promise<ResearchSession[]> {
-  return invoke("list_research_sessions");
+export async function listResearchSessions(project?: string): Promise<ResearchSession[]> {
+  return invoke("list_research_sessions", { project: project ?? null });
 }
 
 export async function getResearchSession(sessionId: number): Promise<SessionDetail | null> {
@@ -615,70 +663,10 @@ export interface ProjectHealthScore {
   alert_count: number;
 }
 
-export interface DefenseScriptRequest {
-  scenario: string;
-  context: string;
-  tone: string;
-}
-
-export interface ScriptItem {
-  phase: string;
-  content: string;
-  tip: string;
-}
-
-export interface DefenseScriptResult {
-  scenario_label: string;
-  scripts: ScriptItem[];
-}
-
-export async function addScopeItem(
-  category: string,
-  description: string,
-  isInScope: boolean,
-  detail: string,
-): Promise<number> {
-  return invoke("add_scope_item", { category, description, isInScope, detail });
-}
-
-export async function listScopeItems(): Promise<ContractScopeItem[]> {
-  return invoke("list_scope_items");
-}
-
-export async function deleteScopeItem(itemId: number): Promise<void> {
-  return invoke("delete_scope_item", { itemId });
-}
-
-export async function checkScopeCreep(requirement: string): Promise<ScopeCreepResult> {
-  return invoke("check_scope_creep", { requirement });
-}
-
-export async function recordHealthMetric(
-  indicatorType: string,
-  value: number,
-  notes: string,
-): Promise<number> {
-  return invoke("record_health_metric", { indicatorType, value, notes });
-}
-
-export async function getProjectHealth(): Promise<ProjectHealthScore> {
-  return invoke("get_project_health");
-}
-
-export async function generateRiskReport(context: string): Promise<string> {
-  return invoke("generate_risk_report", { context });
-}
-
-export async function generateDefenseScript(
-  request: DefenseScriptRequest,
-): Promise<DefenseScriptResult> {
-  return invoke("generate_defense_script", { request });
-}
-
 // ── P2: 蓝图提炼 / Fit-Gap / 脱敏 ──────────────────────────────────────
 
 export async function extractBlueprint(researchContext: string): Promise<string> {
-  return invoke("extract_blueprint", { researchContext });
+  return invoke("extract_blueprint", { research_context: researchContext });
 }
 
 export async function analyzeFitGap(requirements: string): Promise<string> {
@@ -697,7 +685,19 @@ export async function listSensitiveKeywords(): Promise<string[]> {
   return invoke("list_sensitive_keywords");
 }
 
+export async function removeSensitiveKeyword(keyword: string): Promise<boolean> {
+  return invoke("remove_sensitive_keyword", { keyword });
+}
+
 // ── ReAct Agent ──────────────────────────────────────────────────────────
+
+/** Clarification payload sent from backend when agent uses the question tool */
+export interface ClarificationPayload {
+  question_id: string;
+  prompt: string;
+  mode: "single_choice" | "multi_choice" | "free_input";
+  options: string[];
+}
 
 export type ReActEvent =
   | { type: "thinking"; session_id: string; content: string }
@@ -705,24 +705,44 @@ export type ReActEvent =
   | { type: "tool_result"; session_id: string; name: string; result: string }
   | { type: "text_delta"; session_id: string; content: string }
   | { type: "error"; session_id: string; message: string }
-  | { type: "done"; session_id: string };
+  | { type: "done"; session_id: string }
+  | { type: "clarification"; session_id: string; payload: ClarificationPayload };
 
-let reactSessionCounter = 0;
 function nextSessionId(): string {
-  return `session_${++reactSessionCounter}_${Date.now()}`;
+  return crypto.randomUUID();
 }
 
-export async function reactChat(
+/**
+ * Agent 对话入口：发送消息给 rig agent，通过 SSE 事件流返回结果。
+ * 前端应先调用 listenReActEvents() 监听事件，再调用此函数。
+ */
+export async function agentChat(
   message: string,
   systemExtra?: string,
+  sessionId?: string,
+  projectId?: string,
 ): Promise<string> {
-  const sessionId = nextSessionId();
-  await invoke("react_chat", {
+  const sid = sessionId || nextSessionId();
+  await invoke("agent_chat", {
     message,
     systemExtra: systemExtra ?? "",
-    sessionId,
+    sessionId: sid,
+    projectId: projectId ?? null,
   });
-  return sessionId;
+  return sid;
+}
+
+/** Answer a pending clarification question (resolves the blocked question tool) */
+export async function answerQuestion(
+  questionId: string,
+  answer: string,
+  projectId?: string,
+): Promise<void> {
+  return invoke("answer_question", {
+    questionId,
+    answer,
+    projectId: projectId ?? null,
+  });
 }
 
 /**
@@ -735,7 +755,9 @@ export async function listenReActEvents(
 ): Promise<() => void> {
   const { listen } = await import("@tauri-apps/api/event");
   const unlisten = await listen<ReActEvent>("react-event", (event) => {
-    if (sessionId && event.payload.session_id !== sessionId) return;
+    // Check session_id in both snake_case and camelCase (Tauri v2 may convert)
+    const eventSessionId = event.payload.session_id || (event.payload as any).sessionId;
+    if (sessionId && eventSessionId !== sessionId) return;
     handler(event.payload);
   });
   return unlisten;
@@ -746,4 +768,322 @@ export async function listenReActEvents(
 /** Export content to a file with UTF-8 BOM encoding (uses PowerShell to avoid Chinese encoding issues) */
 export async function exportReport(content: string, filePath: string): Promise<string> {
   return invoke("export_report", { content, filePath });
+}
+
+// ── Phase 14: Video Transcription ───────────────────────────────────────
+
+export interface VideoTranscriptionSegment {
+  start_ms: number;
+  end_ms: number;
+  text: string;
+}
+
+export interface VideoTranscriptionResult {
+  video_path: string;
+  text: string;
+  segments: VideoTranscriptionSegment[];
+  confidence: number;
+  extraction_time_ms: number;
+  transcription_time_ms: number;
+  duration_secs: number;
+}
+
+export interface MeetingMinutesResult {
+  minutes: string;
+  generation_time_ms: number;
+}
+
+export interface VideoPipelineResult {
+  transcription: VideoTranscriptionResult;
+  ingestion_document_id: number | null;
+  meeting_minutes: MeetingMinutesResult | null;
+}
+
+/** Transcribe audio from a video file via Whisper. Requires loaded Whisper model. */
+export async function transcribeVideoFile(
+  videoPath: string,
+): Promise<VideoTranscriptionResult> {
+  return invoke("transcribe_video_file", { video_path: videoPath });
+}
+
+/** Full video pipeline: transcribe → ingest into KB → optional meeting minutes. */
+export async function transcribeAndIngestVideo(
+  videoPath: string,
+  project: string,
+  generateMinutes: boolean,
+): Promise<VideoPipelineResult> {
+  return invoke("transcribe_and_ingest_video", {
+    video_path: videoPath,
+    project,
+    generate_minutes: generateMinutes,
+  });
+}
+
+/** Generate meeting minutes from an existing transcript. */
+export async function generateMeetingMinutesFromTranscript(
+  transcript: string,
+): Promise<MeetingMinutesResult> {
+  return invoke("generate_meeting_minutes_from_transcript", { transcript });
+}
+
+/** Video processing progress event payload */
+export interface VideoProgressEvent {
+  step: "extracting" | "transcribing" | "ingesting" | "generating_minutes" | "done";
+  progress: number;
+  message: string;
+}
+
+/** Listen for video processing progress events. Returns unlisten function. */
+export function listenVideoProgress(
+  handler: (event: VideoProgressEvent) => void,
+): Promise<() => void> {
+  return listen<VideoProgressEvent>("video_progress", (e) => handler(e.payload));
+}
+
+// ─── Risk Control Types (P1: 双轨风险把控舱) ───
+
+export interface RiskProject {
+  id: number;
+  name: string;
+  client_name: string;
+  kb_project: string;
+  contract_doc_id: number | null;
+  sow_doc_id: number | null;
+  created_at: string;
+}
+
+export interface ContractScopeItem {
+  id: number;
+  category: string;
+  description: string;
+  is_in_scope: boolean;
+  detail: string;
+  created_at: string;
+}
+
+export interface ScopeCreepResult {
+  risk_level: string;
+  risk_label: string;
+  explanation: string;
+  matched_items: string[];
+  suggestion: string;
+}
+
+export interface ProjectHealthScore {
+  overall_score: number;
+  risk_level: string;
+  dimensions: HealthDimension[];
+  trend: string;
+  alert_count: number;
+}
+
+export interface HealthDimension {
+  name: string;
+  score: number;
+  weight: number;
+  detail: string;
+}
+
+export interface CandidateScopeItem {
+  category: string;
+  description: string;
+  is_in_scope: boolean;
+  detail: string;
+  confidence: number;
+}
+
+export interface DefenseScriptRequest {
+  scenario: string;
+  context?: string;
+  tone?: string;
+}
+
+export interface DefenseScriptResult {
+  scenario_label: string;
+  scripts: ScriptItem[];
+}
+
+export interface ScriptItem {
+  phase: string;
+  content: string;
+  tip: string;
+}
+
+export interface ImportDbResult {
+  db_size_bytes: number;
+  risk_project_count: number;
+  scope_item_count: number;
+  metric_count: number;
+}
+
+// ─── Risk Control API ───
+
+// 项目
+export async function createRiskProject(
+  name: string,
+  clientName?: string,
+  kbProject?: string
+): Promise<number> {
+  return invoke("create_risk_project", {
+    name,
+    client_name: clientName ?? "",
+    kb_project: kbProject ?? "",
+  });
+}
+
+export async function listRiskProjects(): Promise<RiskProject[]> {
+  return invoke("list_risk_projects");
+}
+
+export async function deleteRiskProject(projectId: number): Promise<void> {
+  return invoke("delete_risk_project", { project_id: projectId });
+}
+
+// 合同范围
+export async function listScopeItems(projectId: number): Promise<ContractScopeItem[]> {
+  return invoke("list_scope_items", { project_id: projectId });
+}
+
+export async function addScopeItem(
+  projectId: number,
+  category: string,
+  description: string,
+  isInScope: boolean,
+  detail: string
+): Promise<number> {
+  return invoke("add_scope_item", {
+    project_id: projectId,
+    category,
+    description,
+    is_in_scope: isInScope,
+    detail,
+  });
+}
+
+export async function deleteScopeItem(itemId: number): Promise<void> {
+  return invoke("delete_scope_item", { item_id: itemId });
+}
+
+// 需求蔓延检查
+export async function checkScopeCreep(
+  projectId: number,
+  requirement: string
+): Promise<ScopeCreepResult> {
+  return invoke("check_scope_creep", { project_id: projectId, requirement });
+}
+
+// 项目健康度
+export async function getProjectHealth(projectId: number): Promise<ProjectHealthScore> {
+  return invoke("get_project_health", { project_id: projectId });
+}
+
+export async function recordHealthMetric(
+  projectId: number,
+  indicatorType: string,
+  value: number,
+  notes: string
+): Promise<number> {
+  return invoke("record_health_metric", {
+    project_id: projectId,
+    indicator_type: indicatorType,
+    value,
+    notes,
+  });
+}
+
+// 健康风险报告
+export async function generateRiskReport(projectId: number, context: string): Promise<string> {
+  return invoke("generate_risk_report", { project_id: projectId, context });
+}
+
+// 防身话术
+export async function generateDefenseScript(
+  request: DefenseScriptRequest
+): Promise<DefenseScriptResult> {
+  return invoke("generate_defense_script", { request });
+}
+
+// 文档范围提取
+export async function extractScopeFromDocument(
+  projectId: number,
+  docId: number
+): Promise<CandidateScopeItem[]> {
+  return invoke("extract_scope_from_document", {
+    project_id: projectId,
+    doc_id: docId,
+  });
+}
+
+export async function confirmScopeItems(
+  projectId: number,
+  items: CandidateScopeItem[]
+): Promise<number> {
+  return invoke("confirm_scope_items", { project_id: projectId, items });
+}
+
+// 整库备份
+export async function exportDatabase(targetPath: string): Promise<void> {
+  return invoke("export_database", { target_path: targetPath });
+}
+
+export async function importDatabase(backupPath: string): Promise<ImportDbResult> {
+  return invoke("import_database", { backup_path: backupPath });
+}
+
+// ─── Phase 12b: 在线 ASR Provider ───
+
+export interface AsrProviderInfo {
+  type: string;
+  name: string;
+  description: string;
+  supports_streaming: boolean;
+  supports_file: boolean;
+}
+
+export interface AsrResult {
+  text: string;
+  is_final: boolean;
+  confidence: number;
+  processing_time_ms: number;
+  segments: Array<{ start_ms: number; end_ms: number; text: string }> | null;
+}
+
+export interface AsrConfigStatus {
+  tencent_configured: boolean;
+  xfyun_configured: boolean;
+}
+
+/** 获取所有可用的 ASR Provider 列表 */
+export async function listAsrProviders(): Promise<AsrProviderInfo[]> {
+  return invoke("list_asr_providers");
+}
+
+/** 使用指定 Provider 识别音频文件（PCM f32 格式） */
+export async function recognizeAudioWithProvider(
+  providerType: string,
+  audioData: number[],
+  language?: string
+): Promise<AsrResult> {
+  return invoke("recognize_audio_with_provider", {
+    provider_type: providerType,
+    audio_data: audioData,
+    language: language ?? null,
+  });
+}
+
+/** 保存在线 ASR 配置（腾讯/讯飞） */
+export async function saveAsrConfig(config: {
+  tencent_secret_id?: string;
+  tencent_secret_key?: string;
+  tencent_app_id?: number;
+  xfyun_app_id?: string;
+  xfyun_api_key?: string;
+  xfyun_api_secret?: string;
+}): Promise<void> {
+  return invoke("save_asr_config", config);
+}
+
+/** 获取当前 ASR 配置状态 */
+export async function getAsrConfigStatus(): Promise<AsrConfigStatus> {
+  return invoke("get_asr_config_status");
 }

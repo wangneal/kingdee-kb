@@ -80,7 +80,11 @@ impl WhisperService {
     ///
     /// `model_dir` is the app data directory (e.g. ~/.kingdee-kb/).
     /// Model file is at `{model_dir}/models/whisper/ggml-{model_size}.bin`.
-    pub fn load_model(&mut self, model_dir: &std::path::Path, model_size: &str) -> Result<(), String> {
+    pub fn load_model(
+        &mut self,
+        model_dir: &std::path::Path,
+        model_size: &str,
+    ) -> Result<(), String> {
         let model_path = model_dir
             .join("models")
             .join("whisper")
@@ -108,7 +112,10 @@ impl WhisperService {
         self.model_size = model_size.to_string();
         self.language = "zh".to_string();
 
-        eprintln!("[WhisperService] Model '{}' loaded successfully", model_size);
+        eprintln!(
+            "[WhisperService] Model '{}' loaded successfully",
+            model_size
+        );
         Ok(())
     }
 
@@ -149,11 +156,13 @@ impl WhisperService {
         params.set_single_segment(false); // Get all segments
 
         // Create a fresh state for this transcription
-        let mut state = ctx.create_state()
+        let mut state = ctx
+            .create_state()
             .map_err(|e| format!("Failed to create whisper state: {}", e))?;
 
         // Run transcription
-        state.full(params, pcm_f32)
+        state
+            .full(params, pcm_f32)
             .map_err(|e| format!("Whisper transcription failed: {}", e))?;
 
         // Collect segments using whisper-rs 0.16 API
@@ -165,11 +174,13 @@ impl WhisperService {
 
         for i in 0..n_segments {
             // whisper-rs 0.16: use get_segment() instead of full_get_segment_text/t0/t1
-            let seg = state.get_segment(i)
+            let seg = state
+                .get_segment(i)
                 .ok_or_else(|| format!("Failed to get segment {}", i))?;
 
             // Use to_str_lossy() — the 0.16 API has no .text() method
-            let text = seg.to_str_lossy()
+            let text = seg
+                .to_str_lossy()
                 .map_err(|e| format!("Failed to get segment {} text: {}", i, e))?
                 .to_string();
 

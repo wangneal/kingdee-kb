@@ -1,4 +1,4 @@
-﻿//! Question recommendation engine — semantic matching + edition filter + context accumulation
+//! Question recommendation engine — semantic matching + edition filter + context accumulation
 //!
 //! Recommends relevant research questions based on the current conversation topic.
 //! Uses hybrid_search (vector + BM25) against the research_questions index, with
@@ -135,12 +135,18 @@ pub fn recommend_questions(
     }
 
     // Step 5: Score candidates by text similarity to search results
-    let search_texts: Vec<String> = search_results.iter().take(10).map(|r| r.content.clone()).collect();
+    let search_texts: Vec<String> = search_results
+        .iter()
+        .take(10)
+        .map(|r| r.content.clone())
+        .collect();
     let mut scored: Vec<(i64, FlatQuestion, f32)> = Vec::new();
 
     for (id, fq) in &candidates {
-        let candidate_text = format!("{} {} {} {}",
-            fq.module_name, fq.section, fq.category, fq.question_text);
+        let candidate_text = format!(
+            "{} {} {} {}",
+            fq.module_name, fq.section, fq.category, fq.question_text
+        );
         let mut best_score: f32 = 0.0;
         for st in &search_texts {
             let sim = text_similarity(&candidate_text, st);
@@ -158,18 +164,24 @@ pub fn recommend_questions(
     let deduped = deduplicate_by_similarity(scored, 0.8);
 
     // Step 7: Build results
-    let results: Vec<RecommendedQuestion> = deduped.into_iter().take(top_k).map(|(id, fq, score)| {
-        RecommendedQuestion {
+    let results: Vec<RecommendedQuestion> = deduped
+        .into_iter()
+        .take(top_k)
+        .map(|(id, fq, score)| RecommendedQuestion {
             question_id: id,
             question_text: fq.question_text,
             module_name: fq.module_name,
             section: fq.section,
             category: fq.category,
             score,
-            source: if score > 0.0 { "hybrid".to_string() } else { "db".to_string() },
+            source: if score > 0.0 {
+                "hybrid".to_string()
+            } else {
+                "db".to_string()
+            },
             is_answered: false,
-        }
-    }).collect();
+        })
+        .collect();
 
     Ok(results)
 }
@@ -198,8 +210,10 @@ fn fallback_recommend_by_edition(
     candidates: &[(i64, FlatQuestion)],
     top_k: usize,
 ) -> Result<Vec<RecommendedQuestion>, String> {
-    let results: Vec<RecommendedQuestion> = candidates.iter().take(top_k).map(|(id, fq)| {
-        RecommendedQuestion {
+    let results: Vec<RecommendedQuestion> = candidates
+        .iter()
+        .take(top_k)
+        .map(|(id, fq)| RecommendedQuestion {
             question_id: *id,
             question_text: fq.question_text.clone(),
             module_name: fq.module_name.clone(),
@@ -208,8 +222,8 @@ fn fallback_recommend_by_edition(
             score: 0.0,
             source: "db".to_string(),
             is_answered: false,
-        }
-    }).collect();
+        })
+        .collect();
 
     Ok(results)
 }
@@ -272,7 +286,8 @@ fn build_bigrams(text: &str) -> HashSet<String> {
         return HashSet::new();
     }
 
-    chars.windows(2)
+    chars
+        .windows(2)
         .map(|w| w.iter().collect::<String>())
         .collect()
 }
@@ -328,8 +343,14 @@ pub async fn generate_followup_questions(
     // Step 4: Call LLM
     let config = llm.get_config()?;
     let messages = vec![
-        ChatMessage { role: "system".to_string(), content: system_prompt },
-        ChatMessage { role: "user".to_string(), content: user_prompt },
+        ChatMessage {
+            role: "system".to_string(),
+            content: system_prompt,
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: user_prompt,
+        },
     ];
 
     let llm_response = llm.chat_completion(&messages, &config).await;
@@ -344,7 +365,10 @@ pub async fn generate_followup_questions(
             })
         }
         Err(e) => {
-            eprintln!("[QuestionRecommend] Follow-up question LLM call failed (non-fatal): {}", e);
+            eprintln!(
+                "[QuestionRecommend] Follow-up question LLM call failed (non-fatal): {}",
+                e
+            );
             Ok(FollowUpResult {
                 followup_questions: Vec::new(),
                 kb_sources,
@@ -400,7 +424,8 @@ pub async fn smart_fill_for_question(
 根据提供的知识库内容，回答调研问题。
 请基于知识库中的真实信息回答，如果知识库中没有相关信息，
 可以根据金蝶ERP实施经验给出合理的参考回答。
-回答应当简洁专业,直接给出答案内容。".to_string();
+回答应当简洁专业,直接给出答案内容。"
+        .to_string();
 
     // Build user prompt with question + KB context
     let mut user_prompt = format!("问题: {}\n\n", question_text);
@@ -420,7 +445,9 @@ pub async fn smart_fill_for_question(
             let section = result.section_path.as_deref().unwrap_or("无章节");
             user_prompt.push_str(&format!(
                 "[来源: {} | {}]\n{}\n\n",
-                result.title, section, truncate_str(&result.content, 300)
+                result.title,
+                section,
+                truncate_str(&result.content, 300)
             ));
         }
     }
@@ -430,8 +457,14 @@ pub async fn smart_fill_for_question(
     // Step 4: Call LLM
     let config = llm.get_config()?;
     let messages = vec![
-        ChatMessage { role: "system".to_string(), content: system_prompt },
-        ChatMessage { role: "user".to_string(), content: user_prompt },
+        ChatMessage {
+            role: "system".to_string(),
+            content: system_prompt,
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: user_prompt,
+        },
     ];
 
     let llm_response = llm.chat_completion(&messages, &config).await;
@@ -446,7 +479,10 @@ pub async fn smart_fill_for_question(
             }
         }
         Err(e) => {
-            eprintln!("[QuestionRecommend] Smart fill LLM call failed (non-fatal) for question '{}': {}", question_text, e);
+            eprintln!(
+                "[QuestionRecommend] Smart fill LLM call failed (non-fatal) for question '{}': {}",
+                question_text, e
+            );
             missing_fields.push(question_text.to_string());
         }
     }
@@ -513,12 +549,15 @@ fn search_kb_for_followup(
         ));
     }
 
-    let kb_sources: Vec<KBSource> = search_results.iter().map(|r| KBSource {
-        title: r.title.clone(),
-        section_path: r.section_path.clone(),
-        content_snippet: truncate_str(&r.content, 200),
-        score: r.score,
-    }).collect();
+    let kb_sources: Vec<KBSource> = search_results
+        .iter()
+        .map(|r| KBSource {
+            title: r.title.clone(),
+            section_path: r.section_path.clone(),
+            content_snippet: truncate_str(&r.content, 200),
+            score: r.score,
+        })
+        .collect();
 
     (context, kb_sources)
 }
@@ -539,10 +578,7 @@ fn build_followup_system_prompt(module_name: &Option<&str>) -> String {
 }
 
 /// Build user prompt for follow-up question generation.
-fn build_followup_user_prompt(
-    answered_qa: &[(String, String)],
-    kb_context: &str,
-) -> String {
+fn build_followup_user_prompt(answered_qa: &[(String, String)], kb_context: &str) -> String {
     let mut prompt = "已回答的问题:\n".to_string();
 
     for (i, (question, answer)) in answered_qa.iter().enumerate() {
@@ -612,7 +648,9 @@ fn find_matching_question(
     indexer: &ResearchIndexer,
 ) -> Option<FlatQuestion> {
     // Get all questions for this edition, then find best text match
-    let all_questions = indexer.get_questions_by_edition(edition).unwrap_or_default();
+    let all_questions = indexer
+        .get_questions_by_edition(edition)
+        .unwrap_or_default();
 
     let mut best_match: Option<FlatQuestion> = None;
     let mut best_score: f32 = 0.0;
@@ -651,12 +689,15 @@ fn assemble_kb_context_for_fill(
     )
     .unwrap_or_default(); // KB search failure is non-fatal
 
-    let kb_sources: Vec<KBSource> = search_results.iter().map(|r| KBSource {
-        title: r.title.clone(),
-        section_path: r.section_path.clone(),
-        content_snippet: truncate_str(&r.content, 200),
-        score: r.score,
-    }).collect();
+    let kb_sources: Vec<KBSource> = search_results
+        .iter()
+        .map(|r| KBSource {
+            title: r.title.clone(),
+            section_path: r.section_path.clone(),
+            content_snippet: truncate_str(&r.content, 200),
+            score: r.score,
+        })
+        .collect();
 
     (search_results, kb_sources)
 }
@@ -665,4 +706,3 @@ fn assemble_kb_context_for_fill(
 fn truncate_snippet(text: &str, max_chars: usize) -> String {
     truncate_str(text, max_chars)
 }
-

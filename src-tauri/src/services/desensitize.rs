@@ -42,14 +42,14 @@ impl Desensitizer {
             custom_keywords: Mutex::new(Vec::new()),
             amount_re: Regex::new(r"[¥￥]?\d{1,3}(?:,\d{3})*(?:\.\d+)?(?:万?元)?(?:人民币)?")
                 .expect("Invalid amount regex"),
-            id_re: Regex::new(r"\b[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b")
-                .expect("Invalid ID regex"),
-            phone_re: Regex::new(r"\b1[3-9]\d{9}\b")
-                .expect("Invalid phone regex"),
+            id_re: Regex::new(
+                r"\b[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b",
+            )
+            .expect("Invalid ID regex"),
+            phone_re: Regex::new(r"\b1[3-9]\d{9}\b").expect("Invalid phone regex"),
             email_re: Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
                 .expect("Invalid email regex"),
-            bank_re: Regex::new(r"\b\d{16,19}\b")
-                .expect("Invalid bank card regex"),
+            bank_re: Regex::new(r"\b\d{16,19}\b").expect("Invalid bank card regex"),
         }
     }
 
@@ -71,13 +71,27 @@ impl Desensitizer {
 
     /// 获取当前敏感词列表
     pub fn get_keywords(&self) -> Vec<String> {
-        self.custom_keywords.lock().map(|kw| kw.clone()).unwrap_or_default()
+        self.custom_keywords
+            .lock()
+            .map(|kw| kw.clone())
+            .unwrap_or_default()
     }
 
     /// 清除自定义敏感词
     pub fn clear_keywords(&self) {
         if let Ok(mut kw) = self.custom_keywords.lock() {
             kw.clear();
+        }
+    }
+
+    /// 删除指定的自定义敏感词
+    pub fn remove_keyword(&self, keyword: &str) -> bool {
+        if let Ok(mut kw) = self.custom_keywords.lock() {
+            let before = kw.len();
+            kw.retain(|k| k != keyword);
+            kw.len() < before
+        } else {
+            false
         }
     }
 
@@ -92,7 +106,9 @@ impl Desensitizer {
             let mut sorted = keywords.clone();
             sorted.sort_by(|a, b| b.len().cmp(&a.len()));
             for keyword in &sorted {
-                if keyword.len() < 2 { continue; }
+                if keyword.len() < 2 {
+                    continue;
+                }
                 let placeholder = format!("[$$_NAME_{}]", counter);
                 let count = safe_text.matches(keyword).count();
                 if count > 0 {
@@ -110,7 +126,9 @@ impl Desensitizer {
             let placeholder = format!("[$$_ID_{}]", counter);
             new_text.push_str(&safe_text[last_end..cap.start()]);
             new_text.push_str(&placeholder);
-            mapping.entry(placeholder).or_insert_with(|| cap.as_str().to_string());
+            mapping
+                .entry(placeholder)
+                .or_insert_with(|| cap.as_str().to_string());
             last_end = cap.end();
             counter += 1;
         }
@@ -122,11 +140,15 @@ impl Desensitizer {
         let mut last_end = 0;
         for cap in self.phone_re.find_iter(&safe_text) {
             // 跳过银行卡号匹配范围内的手机号
-            if self.bank_re.is_match(cap.as_str()) { continue; }
+            if self.bank_re.is_match(cap.as_str()) {
+                continue;
+            }
             let placeholder = format!("[$$_PHONE_{}]", counter);
             new_text.push_str(&safe_text[last_end..cap.start()]);
             new_text.push_str(&placeholder);
-            mapping.entry(placeholder).or_insert_with(|| cap.as_str().to_string());
+            mapping
+                .entry(placeholder)
+                .or_insert_with(|| cap.as_str().to_string());
             last_end = cap.end();
             counter += 1;
         }
@@ -140,7 +162,9 @@ impl Desensitizer {
             let placeholder = format!("[$$_EMAIL_{}]", counter);
             new_text.push_str(&safe_text[last_end..cap.start()]);
             new_text.push_str(&placeholder);
-            mapping.entry(placeholder).or_insert_with(|| cap.as_str().to_string());
+            mapping
+                .entry(placeholder)
+                .or_insert_with(|| cap.as_str().to_string());
             last_end = cap.end();
             counter += 1;
         }
@@ -154,7 +178,9 @@ impl Desensitizer {
             let placeholder = format!("[$$_AMT_{}]", counter);
             new_text.push_str(&safe_text[last_end..cap.start()]);
             new_text.push_str(&placeholder);
-            mapping.entry(placeholder).or_insert_with(|| cap.as_str().to_string());
+            mapping
+                .entry(placeholder)
+                .or_insert_with(|| cap.as_str().to_string());
             last_end = cap.end();
             counter += 1;
         }
@@ -168,7 +194,8 @@ impl Desensitizer {
     pub fn restore(&self, text: &str, mapping: &HashMap<String, String>) -> String {
         let mut result = text.to_string();
         // 按占位符长度降序替换，避免部分匹配
-        let mut pairs: Vec<(String, String)> = mapping.iter()
+        let mut pairs: Vec<(String, String)> = mapping
+            .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         pairs.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
@@ -193,7 +220,11 @@ mod tests {
     fn test_desensitize_phone() {
         let d = Desensitizer::new();
         let result = d.desensitize("请联系手机 13800138000 确认。");
-        assert!(!result.safe_text.contains("13800138000"), "safe_text: {}", result.safe_text);
+        assert!(
+            !result.safe_text.contains("13800138000"),
+            "safe_text: {}",
+            result.safe_text
+        );
         assert!(result.mapping.values().any(|v| v == "13800138000"));
     }
 
@@ -202,7 +233,11 @@ mod tests {
         let d = Desensitizer::new();
         let id = "110101199001011234";
         let result = d.desensitize(&format!("身份证号：{}", id));
-        assert!(!result.safe_text.contains(id), "safe_text: {}", result.safe_text);
+        assert!(
+            !result.safe_text.contains(id),
+            "safe_text: {}",
+            result.safe_text
+        );
         assert!(result.mapping.values().any(|v| v == id));
     }
 
@@ -210,7 +245,11 @@ mod tests {
     fn test_desensitize_email() {
         let d = Desensitizer::new();
         let result = d.desensitize("邮箱是 ceo@company.com。");
-        assert!(!result.safe_text.contains("ceo@company.com"), "safe_text: {}", result.safe_text);
+        assert!(
+            !result.safe_text.contains("ceo@company.com"),
+            "safe_text: {}",
+            result.safe_text
+        );
         assert!(result.mapping.values().any(|v| v == "ceo@company.com"));
     }
 
@@ -218,7 +257,11 @@ mod tests {
     fn test_desensitize_amount() {
         let d = Desensitizer::new();
         let result = d.desensitize("合同金额 1,234,567.89 元。");
-        assert!(!result.safe_text.contains("1,234,567.89"), "safe_text: {}", result.safe_text);
+        assert!(
+            !result.safe_text.contains("1,234,567.89"),
+            "safe_text: {}",
+            result.safe_text
+        );
     }
 
     #[test]
@@ -226,7 +269,11 @@ mod tests {
         let d = Desensitizer::new();
         d.add_keyword("张三丰");
         let result = d.desensitize("财务总监张三丰确认了此事。");
-        assert!(!result.safe_text.contains("张三丰"), "safe_text: {}", result.safe_text);
+        assert!(
+            !result.safe_text.contains("张三丰"),
+            "safe_text: {}",
+            result.safe_text
+        );
         assert!(result.mapping.len() >= 1, "mapping: {:?}", result.mapping);
     }
 
@@ -249,14 +296,26 @@ mod tests {
     fn test_roundtrip_preserves_meaning() {
         let d = Desensitizer::new();
         d.add_keyword("王明");
-        let original = "请联系财务总监王明（手机13800138000，邮箱 ming@corp.com）确认付款金额500,000元。";
+        let original =
+            "请联系财务总监王明（手机13800138000，邮箱 ming@corp.com）确认付款金额500,000元。";
         let result = d.desensitize(original);
-        assert!(!result.safe_text.contains("13800138000"), "safe_text: {}", result.safe_text);
-        assert!(!result.safe_text.contains("ming@corp.com"), "safe_text: {}", result.safe_text);
-        assert!(!result.safe_text.contains("王明"), "safe_text: {}", result.safe_text);
+        assert!(
+            !result.safe_text.contains("13800138000"),
+            "safe_text: {}",
+            result.safe_text
+        );
+        assert!(
+            !result.safe_text.contains("ming@corp.com"),
+            "safe_text: {}",
+            result.safe_text
+        );
+        assert!(
+            !result.safe_text.contains("王明"),
+            "safe_text: {}",
+            result.safe_text
+        );
     }
 
-    #[test]
     #[test]
     fn test_multiple_keywords() {
         let d = Desensitizer::new();
@@ -269,7 +328,15 @@ mod tests {
         eprintln!("mapping: {:?}", result.mapping);
         eprintln!("李总 count in safe_text: {}", count_li);
         eprintln!("张经理 count in safe_text: {}", count_zhang);
-        assert!(count_li == 0, "李总 should be replaced: safe_text={:?}", result.safe_text);
-        assert!(count_zhang == 0, "张经理 should be replaced: safe_text={:?}", result.safe_text);
+        assert!(
+            count_li == 0,
+            "李总 should be replaced: safe_text={:?}",
+            result.safe_text
+        );
+        assert!(
+            count_zhang == 0,
+            "张经理 should be replaced: safe_text={:?}",
+            result.safe_text
+        );
     }
 }

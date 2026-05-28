@@ -1,18 +1,29 @@
-﻿import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, type Dispatch, type SetStateAction } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   Send,
   Trash2,
   Loader2,
   AlertCircle,
   Brain,
+  Paperclip,
+  X,
+  FileText,
+  Image as ImageIcon,
 } from "lucide-react";
 import {
   isLLMConfigured,
-  reactChat,
+  agentChat,
+  extractFileText,
+  ingestFile,
   listenReActEvents,
+  answerQuestion,
+  saveChatMemory,
   type ReActEvent,
+  type ClarificationPayload,
 } from "../lib/tauri-commands";
 
 interface DisplayMessage {
@@ -22,11 +33,26 @@ interface DisplayMessage {
   streaming?: boolean;
   error?: boolean;
   reactTrace?: ReActEvent[];
+  clarification?: ClarificationPayload;
+  /** true after the user has answered this clarification question */
+  clarificationAnswered?: boolean;
 }
 
 interface ReActTrace {
   thinking: string;
   toolCalls: { name: string; args: string; result: string }[];
+}
+
+interface ChatAttachment {
+  id: string;
+  path: string;
+  name: string;
+  kind: "document" | "image" | "unsupported";
+  status: "ready" | "ingesting" | "parsed" | "ingested" | "error";
+  documentId?: number;
+  extractedText?: string;
+  charCount?: number;
+  error?: string;
 }
 
 let msgIdCounter = 0;
@@ -35,6 +61,23 @@ function nextId(): string {
 }
 
 const CHAT_STORAGE_KEY = "kingdee_kb_chat_history";
+const MAX_STORED_MESSAGES = 500;
+const CHAT_ATTACHMENT_PROJECT = "chat-attachments";
+const MAX_ATTACHMENT_PROMPT_CHARS = 12000;
+const DOCUMENT_EXTENSIONS = new Set([
+  "md",
+  "txt",
+  "text",
+  "markdown",
+  "html",
+  "htm",
+  "pdf",
+  "doc",
+  "docx",
+  "xlsx",
+  "xls",
+]);
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "bmp", "gif"]);
 
 function loadChatHistory(): DisplayMessage[] {
   try {
@@ -50,7 +93,10 @@ function loadChatHistory(): DisplayMessage[] {
 function saveChatHistory(messages: DisplayMessage[]) {
   try {
     const clean = messages.map((m) => ({ ...m, streaming: false }));
-    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(clean));
+    const trimmed = clean.length > MAX_STORED_MESSAGES
+      ? clean.slice(clean.length - MAX_STORED_MESSAGES)
+      : clean;
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(trimmed));
   } catch {
     // ignore
   }
@@ -59,7 +105,9 @@ function saveChatHistory(messages: DisplayMessage[]) {
 export default function Chat() {
   const [messages, setMessages] = useState<DisplayMessage[]>(loadChatHistory);
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [loading, setLoading] = useState(false);
+  const [attaching, setAttaching] = useState(false);
   const [llmReady, setLlmReady] = useState<boolean | null>(null);
   const [currentTrace, setCurrentTrace] = useState<ReActTrace>({
     thinking: "",
@@ -79,8 +127,11 @@ export default function Chat() {
 
   // Subscribe to ReAct events (filtered by session)
   useEffect(() => {
+    let cancelled = false;
     listenReActEvents((event) => {
-      if (event.session_id !== currentSessionId.current) return;
+      // Check session_id in both snake_case and camelCase (Tauri v2 may convert)
+      const eventSessionId = event.session_id || (event as any).sessionId;
+      if (eventSessionId !== currentSessionId.current) return;
       switch (event.type) {
         case "thinking":
           setCurrentTrace((prev) => ({ ...prev, thinking: prev.thinking + event.content }));
@@ -113,15 +164,52 @@ export default function Chat() {
                 { ...last, content: last.content + event.content },
               ];
             }
-            return prev;
+            return [
+              ...prev,
+              {
+                id: nextId(),
+                role: "assistant",
+                content: event.content,
+                streaming: true,
+              },
+            ];
           });
           break;
         case "done":
-          setMessages((prev) =>
-            prev.map((m) =>
+          setMessages((prev) => {
+            const updated = prev.map((m) =>
               m.streaming ? { ...m, streaming: false, reactTrace: undefined } : m
-            )
-          );
+            );
+            // Save conversation to memory after chat completes (non-blocking)
+            const conversation = updated
+              .filter((m) => !m.error)
+              .map((m) => ({ role: m.role, content: m.content }));
+            saveChatMemory(conversation).catch((e) =>
+              console.warn("[Chat] Failed to save chat memory:", e)
+            );
+            return updated;
+          });
+          setCurrentTrace({ thinking: "", toolCalls: [] });
+          setLoading(false);
+          break;
+        case "clarification":
+          setMessages((prev) => {
+            const clarPayload = event.payload;
+            const last = prev[prev.length - 1];
+            const clarMsg: DisplayMessage = {
+              id: nextId(),
+              role: "assistant",
+              content: clarPayload.prompt,
+              clarification: clarPayload,
+            };
+            if (last && last.role === "assistant" && last.streaming) {
+              return [
+                ...prev.slice(0, -1),
+                { ...last, streaming: false, ...clarMsg },
+              ];
+            }
+            return [...prev, clarMsg];
+          });
           setCurrentTrace({ thinking: "", toolCalls: [] });
           setLoading(false);
           break;
@@ -138,9 +226,11 @@ export default function Chat() {
           break;
       }
     }).then((unsub) => {
+      if (cancelled) { unsub(); return; }
       unsubRef.current = unsub;
     });
     return () => {
+      cancelled = true;
       currentSessionId.current = null;
       unsubRef.current?.();
     };
@@ -155,9 +245,19 @@ export default function Chat() {
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    if (!text || loading) return;
+    if ((!text && attachments.length === 0) || loading || attaching) return;
 
-    const userMsg: DisplayMessage = { id: nextId(), role: "user", content: text };
+    setAttaching(true);
+    const preparedAttachments = await prepareAttachmentsForSend(attachments, setAttachments);
+    setAttaching(false);
+
+    const attachmentPrompt = buildAttachmentPrompt(preparedAttachments);
+    const outboundText = [text, attachmentPrompt].filter(Boolean).join("\n\n");
+    const visibleText = [text || "请分析附件", buildAttachmentDisplay(preparedAttachments)]
+      .filter(Boolean)
+      .join("\n\n");
+
+    const userMsg: DisplayMessage = { id: nextId(), role: "user", content: visibleText };
     const assistantId = nextId();
     const assistantMsg: DisplayMessage = {
       id: assistantId,
@@ -168,12 +268,16 @@ export default function Chat() {
 
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setInput("");
+    setAttachments([]);
     setLoading(true);
     setCurrentTrace({ thinking: "", toolCalls: [] });
 
     try {
-      const sid = await reactChat(text);
+      // Generate session ID first and set it before calling agentChat
+      // because events may arrive before agentChat returns
+      const sid = nextId();
       currentSessionId.current = sid;
+      await agentChat(outboundText, undefined, sid);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       setMessages((prev) =>
@@ -185,7 +289,96 @@ export default function Chat() {
       );
       setLoading(false);
     }
-  }, [input, loading]);
+  }, [input, attachments, loading, attaching]);
+
+  const handleAttach = useCallback(async () => {
+    if (loading || attaching) return;
+    try {
+      const selected = await open({
+        multiple: true,
+        directory: false,
+        filters: [
+          {
+            name: "文档和图片",
+            extensions: [
+              "md",
+              "txt",
+              "pdf",
+              "doc",
+              "docx",
+              "xlsx",
+              "xls",
+              "html",
+              "htm",
+              "png",
+              "jpg",
+              "jpeg",
+              "webp",
+              "bmp",
+              "gif",
+            ],
+          },
+        ],
+      });
+      if (!selected) return;
+
+      const paths = Array.isArray(selected) ? selected : [selected];
+      const next = paths.map(createAttachment);
+      setAttachments((prev) => [...prev, ...next]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextId(),
+          role: "assistant",
+          content: `附件选择失败：${String(err)}`,
+          error: true,
+        },
+      ]);
+    }
+  }, [loading, attaching]);
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
+  }, []);
+
+  // Answer a pending clarification question (resolves the blocked question tool)
+  const handleClarify = useCallback(async (questionId: string, answer: string) => {
+    // 1. Mark the clarification as answered (disables UI)
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.clarification?.question_id === questionId
+          ? { ...m, clarificationAnswered: true }
+          : m
+      )
+    );
+
+    // 2. Add user's answer as a visible message
+    const answerMsg: DisplayMessage = {
+      id: nextId(),
+      role: "user",
+      content: answer,
+    };
+    const assistantMsg: DisplayMessage = {
+      id: nextId(),
+      role: "assistant",
+      content: "",
+      streaming: true,
+    };
+    setMessages((prev) => [...prev, answerMsg, assistantMsg]);
+
+    // 3. Show loading state (agent is processing the answer)
+    setLoading(true);
+    setCurrentTrace({ thinking: "", toolCalls: [] });
+
+    // 4. Send answer to backend
+    try {
+      await answerQuestion(questionId, answer);
+    } catch (err) {
+      console.error("[Chat] Failed to answer question:", err);
+      setLoading(false);
+    }
+  }, []);
 
   // Save to localStorage debounced
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -248,7 +441,7 @@ export default function Chat() {
             </div>
           ) : (
             messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} />
+              <MessageBubble key={msg.id} message={msg} onClarify={handleClarify} />
             ))
           )}
 
@@ -280,13 +473,37 @@ export default function Chat() {
       {/* Input bar */}
       <div className="border-t border-neutral-200 bg-white p-4">
         <div className="mx-auto max-w-3xl">
+          {attachments.length > 0 && (
+            <div className="mb-3 flex flex-wrap gap-2">
+              {attachments.map((attachment) => (
+                <AttachmentChip
+                  key={attachment.id}
+                  attachment={attachment}
+                  onRemove={() => removeAttachment(attachment.id)}
+                />
+              ))}
+            </div>
+          )}
           <div className="flex items-end gap-2">
+            <button
+              type="button"
+              onClick={handleAttach}
+              disabled={loading || attaching}
+              title="添加附件"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {attaching ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Paperclip className="h-4 w-4" />
+              )}
+            </button>
             <textarea
               ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="输入问题，Agent 将自动调用工具来回答..."
+              placeholder="输入问题，或先添加文档/图片附件..."
               rows={1}
               disabled={loading}
               className="flex-1 resize-none rounded-lg border border-neutral-200 bg-white px-4 py-2.5 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 disabled:opacity-50"
@@ -294,7 +511,7 @@ export default function Chat() {
             <button
               type="button"
               onClick={handleSend}
-              disabled={loading || !input.trim()}
+              disabled={loading || attaching || (!input.trim() && attachments.length === 0)}
               className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {loading ? (
@@ -310,10 +527,234 @@ export default function Chat() {
   );
 }
 
+function createAttachment(path: string): ChatAttachment {
+  const name = path.split(/[\\/]/).pop() || path;
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  const kind = DOCUMENT_EXTENSIONS.has(ext)
+    ? "document"
+    : IMAGE_EXTENSIONS.has(ext)
+      ? "image"
+      : "unsupported";
+  return {
+    id: nextId(),
+    path,
+    name,
+    kind,
+    status: kind === "document" ? "ready" : "ingested",
+    error:
+      kind === "image"
+        ? "图片内容需要多模态模型解析；当前 AI 只能看到文件名和路径。"
+        : kind === "unsupported"
+          ? "当前格式暂不支持内容解析。"
+          : undefined,
+  };
+}
+
+async function prepareAttachmentsForSend(
+  attachments: ChatAttachment[],
+  setAttachments: Dispatch<SetStateAction<ChatAttachment[]>>
+): Promise<ChatAttachment[]> {
+  const prepared = [...attachments];
+
+  for (let i = 0; i < prepared.length; i++) {
+    const attachment = prepared[i];
+    if (
+      attachment.kind !== "document" ||
+      attachment.extractedText ||
+      attachment.status === "error"
+    ) {
+      continue;
+    }
+
+    setAttachments((prev) =>
+      prev.map((a) =>
+        a.id === attachment.id ? { ...a, status: "ingesting", error: undefined } : a
+      )
+    );
+
+    try {
+      const extracted = await extractFileText(attachment.path);
+      prepared[i] = {
+        ...attachment,
+        status: "parsed",
+        extractedText: extracted.text,
+        charCount: extracted.char_count,
+      };
+      setAttachments((prev) =>
+        prev.map((a) => (a.id === attachment.id ? prepared[i] : a))
+      );
+
+      try {
+        const result = await ingestFile(attachment.path, CHAT_ATTACHMENT_PROJECT);
+        prepared[i] = {
+          ...prepared[i],
+          status: "ingested",
+          documentId: result.document_id,
+          error: undefined,
+        };
+        setAttachments((prev) =>
+          prev.map((a) => (a.id === attachment.id ? prepared[i] : a))
+        );
+      } catch (ingestErr) {
+        prepared[i] = {
+          ...prepared[i],
+          status: "parsed",
+          error: `已解析，入库失败：${String(ingestErr)}`,
+        };
+        setAttachments((prev) =>
+          prev.map((a) => (a.id === attachment.id ? prepared[i] : a))
+        );
+      }
+    } catch (err) {
+      prepared[i] = {
+        ...attachment,
+        status: "error",
+        error: normalizeAttachmentError(String(err), attachment.name),
+      };
+      setAttachments((prev) =>
+        prev.map((a) => (a.id === attachment.id ? prepared[i] : a))
+      );
+    }
+  }
+
+  return prepared;
+}
+
+function normalizeAttachmentError(error: string, filename: string): string {
+  const ext = filename.split(".").pop()?.toLowerCase();
+  if (ext === "pdf") {
+    return `PDF 文本解析失败：${error}。如果这是扫描件或图片型 PDF，需要 OCR/多模态模型；如果是加密 PDF，请先另存为可复制文本的 PDF。`;
+  }
+  if (ext === "doc") {
+    return `DOC 文本解析失败：${error}。.doc 需要本机安装 Microsoft Word 才能解析。`;
+  }
+  return error;
+}
+
+function buildAttachmentDisplay(attachments: ChatAttachment[]): string {
+  if (attachments.length === 0) return "";
+  return [
+    "附件：",
+    ...attachments.map((a) => {
+      const status = a.status === "ingested" && a.documentId
+        ? `已入库 #${a.documentId}`
+        : a.status === "parsed"
+          ? (a.error ?? "已解析")
+        : a.error
+          ? a.error
+          : a.status;
+      return `- ${a.name}（${status}）`;
+    }),
+  ].join("\n");
+}
+
+function buildAttachmentPrompt(attachments: ChatAttachment[]): string {
+  if (attachments.length === 0) return "";
+  const documents = attachments.filter((a) =>
+    a.kind === "document" &&
+    (a.status === "parsed" || a.status === "ingested") &&
+    Boolean(a.extractedText)
+  );
+  const images = attachments.filter((a) => a.kind === "image");
+  const failed = attachments.filter((a) => a.status === "error" || a.kind === "unsupported");
+  const lines = ["【本轮附件】"];
+
+  if (documents.length > 0) {
+    lines.push("以下文档已解析。优先基于摘录回答；如果摘录不足，再调用 search-knowledge 检索这些附件内容：");
+    for (const doc of documents) {
+      const fullText = doc.extractedText ?? "";
+      const excerpt = truncateForPrompt(fullText, MAX_ATTACHMENT_PROMPT_CHARS);
+      const omitted = Math.max(0, (doc.charCount ?? fullText.length) - excerpt.length);
+      lines.push(`\n--- 附件：${doc.name} ---`);
+      lines.push(`document_id=${doc.documentId ?? "unknown"}，project=${CHAT_ATTACHMENT_PROJECT}，字符数=${doc.charCount ?? fullText.length}`);
+      lines.push(excerpt || "（未提取到文本）");
+      if (omitted > 0) {
+        lines.push(`（后续还有约 ${omitted} 字未直接放入上下文，可用 search-knowledge 继续检索）`);
+      }
+    }
+  }
+  if (images.length > 0) {
+    lines.push("以下图片已作为附件上传，但图片内容需要多模态模型解析；当前只能看到文件名和路径，不要声称已读取图片内容：");
+    for (const image of images) {
+      lines.push(`- ${image.name}，path=${image.path}`);
+    }
+  }
+  if (failed.length > 0) {
+    lines.push("以下附件未成功解析，回答时不要声称已读取其内容：");
+    for (const item of failed) {
+      lines.push(`- ${item.name}，原因：${item.error ?? "不支持"}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function truncateForPrompt(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}\n\n[附件内容过长，已截断]`;
+}
+
+function AttachmentChip({
+  attachment,
+  onRemove,
+}: {
+  attachment: ChatAttachment;
+  onRemove: () => void;
+}) {
+  const preview = attachment.kind === "image" ? convertFileSrc(attachment.path) : undefined;
+  const statusText =
+    attachment.status === "ingesting"
+      ? "入库中"
+      : attachment.status === "parsed"
+        ? "已解析"
+      : attachment.status === "ingested"
+        ? attachment.kind === "image"
+          ? "图片"
+          : "已入库"
+        : attachment.status === "error"
+          ? "失败"
+          : "待入库";
+
+  return (
+    <div className="group flex max-w-[260px] items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-2">
+      {preview ? (
+        <img src={preview} alt="" className="h-8 w-8 rounded object-cover" />
+      ) : attachment.kind === "document" ? (
+        <FileText className="h-4 w-4 shrink-0 text-amber-600" />
+      ) : (
+        <ImageIcon className="h-4 w-4 shrink-0 text-neutral-500" />
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-xs font-medium text-neutral-700">{attachment.name}</div>
+        <div className={`text-[10px] ${
+          attachment.status === "error" || attachment.kind === "unsupported"
+            ? "text-red-500"
+            : "text-neutral-400"
+        }`}>
+          {statusText}
+        </div>
+      </div>
+      {attachment.status === "ingesting" ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-neutral-400" />
+      ) : (
+        <button
+          type="button"
+          onClick={onRemove}
+          title="移除附件"
+          className="rounded p-1 text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ── Message Bubble Component ──────────────────────────────────────────────
 
-function MessageBubble({ message }: { message: DisplayMessage }) {
+function MessageBubble({ message, onClarify }: { message: DisplayMessage; onClarify: (questionId: string, answer: string) => void }) {
   const isUser = message.role === "user";
+  const [freeInput, setFreeInput] = useState("");
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -348,8 +789,121 @@ function MessageBubble({ message }: { message: DisplayMessage }) {
               )}
             </div>
           )}
+
+          {/* Clarification options */}
+          {message.clarification && !message.clarificationAnswered && (
+            <div className="mt-3 border-t border-neutral-100 pt-3 space-y-2">
+              {/* Single choice: clickable buttons */}
+              {message.clarification.mode === "single_choice" && (
+                <div className="flex flex-wrap gap-2">
+                  {message.clarification.options.map((opt) => (
+                    <button
+                      key={opt}
+                      type="button"
+                      onClick={() => onClarify(message.clarification!.question_id, opt)}
+                      className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100 transition-colors"
+                    >
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Multi choice: checkboxes + confirm */}
+              {message.clarification.mode === "multi_choice" && (
+                <MultiChoiceOptions
+                  options={message.clarification.options}
+                  questionId={message.clarification.question_id}
+                  onConfirm={onClarify}
+                />
+              )}
+
+              {/* Free input: text box + submit */}
+              {message.clarification.mode === "free_input" && (
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={freeInput}
+                    onChange={(e) => setFreeInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && freeInput.trim()) {
+                        onClarify(message.clarification!.question_id, freeInput.trim());
+                        setFreeInput("");
+                      }
+                    }}
+                    placeholder="输入你的回答..."
+                    className="flex-1 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs outline-none focus:border-amber-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (freeInput.trim()) {
+                        onClarify(message.clarification!.question_id, freeInput.trim());
+                        setFreeInput("");
+                      }
+                    }}
+                    disabled={!freeInput.trim()}
+                    className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors"
+                  >
+                    发送
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Multi-choice checkbox group with confirm button */
+function MultiChoiceOptions({
+  options,
+  questionId,
+  onConfirm,
+}: {
+  options: string[];
+  questionId: string;
+  onConfirm: (questionId: string, answer: string) => void;
+}) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const toggle = (opt: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(opt)) next.delete(opt);
+      else next.add(opt);
+      return next;
+    });
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2">
+        {options.map((opt) => (
+          <button
+            key={opt}
+            type="button"
+            onClick={() => toggle(opt)}
+            className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+              selected.has(opt)
+                ? "border-amber-500 bg-amber-100 text-amber-800"
+                : "border-neutral-200 bg-white text-neutral-600 hover:border-amber-200"
+            }`}
+          >
+            {selected.has(opt) ? "✓ " : ""}{opt}
+          </button>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={() => onConfirm(questionId, Array.from(selected).join(", "))}
+        disabled={selected.size === 0}
+        className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors"
+      >
+        确认选择 ({selected.size})
+      </button>
     </div>
   );
 }

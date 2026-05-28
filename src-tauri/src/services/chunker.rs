@@ -72,7 +72,12 @@ pub fn recursive_chunk(text: &str, meta: &ChunkInputMeta) -> Vec<Chunk> {
 
     for section in sections {
         let section_path = section.heading.as_ref().map(|h| h.clone());
-        let section_chunks = chunk_section(&section.content, meta, section_path.as_deref(), section.offset);
+        let section_chunks = chunk_section(
+            &section.content,
+            meta,
+            section_path.as_deref(),
+            section.offset,
+        );
 
         for mut chunk in section_chunks {
             if let Some(ref heading) = section.heading {
@@ -164,7 +169,10 @@ fn chunk_section(
     section_path: Option<&str>,
     base_offset: usize,
 ) -> Vec<Chunk> {
-    let paragraphs: Vec<&str> = text.split("\n\n").filter(|p| !p.trim().is_empty()).collect();
+    let paragraphs: Vec<&str> = text
+        .split("\n\n")
+        .filter(|p| !p.trim().is_empty())
+        .collect();
     let mut chunks = Vec::new();
 
     let mut current_text = String::new();
@@ -197,7 +205,8 @@ fn chunk_section(
 
             // If paragraph itself is too large, split by sentences
             if para_trimmed.len() > TARGET_CHUNK_CHARS {
-                let sentence_chunks = split_by_sentences(para_trimmed, meta, section_path, current_offset);
+                let sentence_chunks =
+                    split_by_sentences(para_trimmed, meta, section_path, current_offset);
                 let para_end = current_offset + para_trimmed.len();
                 chunks.extend(sentence_chunks);
                 current_offset = para_end;
@@ -326,7 +335,12 @@ fn merge_small_chunks(chunks: &mut Vec<Chunk>) {
             // Try to merge with next chunk
             if i + 1 < chunks.len() {
                 let separator = "\n\n";
-                let merged_content = format!("{}{}{}", chunks[i].content, separator, chunks[i + 1].content);
+                let merged_content = format!(
+                    "{}{}{}",
+                    chunks[i].content,
+                    separator,
+                    chunks[i + 1].content
+                );
 
                 if merged_content.len() <= MAX_CHUNK_CHARS {
                     chunks[i].content = merged_content;
@@ -338,7 +352,12 @@ fn merge_small_chunks(chunks: &mut Vec<Chunk>) {
             // If can't merge forward, try merging with previous
             if i > 0 {
                 let separator = "\n\n";
-                let merged_content = format!("{}{}{}", chunks[i - 1].content, separator, chunks[i].content);
+                let merged_content = format!(
+                    "{}{}{}",
+                    chunks[i - 1].content,
+                    separator,
+                    chunks[i].content
+                );
 
                 if merged_content.len() <= MAX_CHUNK_CHARS {
                     chunks[i - 1].content = merged_content;
@@ -430,9 +449,14 @@ mod tests {
         let text = "前言内容，这里是一段较长的文字用于测试分块功能，需要足够长才能避免被合并。\n\n## 第一章\n\n第一章的内容，这里是一段较长的文字用于测试分块功能，需要足够长才能避免被合并。\n\n## 第二章\n\n第二章的内容，这里是一段较长的文字用于测试分块功能，需要足够长才能避免被合并。";
         let chunks = recursive_chunk(text, &test_meta());
         // Should have at least 2 chunks (one per section after heading)
-        assert!(chunks.len() >= 2, "Expected >= 2 chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() >= 2,
+            "Expected >= 2 chunks, got {}",
+            chunks.len()
+        );
         // Check section paths are extracted
-        let headings: Vec<Option<&String>> = chunks.iter().map(|c| c.metadata.heading.as_ref()).collect();
+        let headings: Vec<Option<&String>> =
+            chunks.iter().map(|c| c.metadata.heading.as_ref()).collect();
         assert!(headings.iter().any(|h| h.is_some()));
     }
 
@@ -440,7 +464,10 @@ mod tests {
     fn test_chunk_paragraph_split() {
         let mut text = String::new();
         for i in 0..10 {
-            text.push_str(&format!("这是第{}段落，包含足够的文字来进行分块测试。每个段落都有一定的长度。\n\n", i));
+            text.push_str(&format!(
+                "这是第{}段落，包含足够的文字来进行分块测试。每个段落都有一定的长度。\n\n",
+                i
+            ));
         }
         let chunks = recursive_chunk(&text, &test_meta());
         assert!(chunks.len() > 1);
@@ -493,7 +520,11 @@ mod tests {
         assert!(chunks.len() > 1);
         // All chunks should have reasonable size
         for chunk in &chunks {
-            assert!(chunk.content.len() >= 10, "Chunk too small: {}", chunk.content.len());
+            assert!(
+                chunk.content.len() >= 10,
+                "Chunk too small: {}",
+                chunk.content.len()
+            );
             // After merge, chunks should be within reasonable bounds
             // (may exceed MAX_CHUNK_CHARS if a single sentence is very long, which is acceptable)
         }

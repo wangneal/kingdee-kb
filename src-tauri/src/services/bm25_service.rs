@@ -1,9 +1,9 @@
-//! BM25 full-text search service using tantivy + jieba-rs
+//! BM25 全文搜索服务，使用 tantivy + jieba-rs
 //!
-//! Provides Chinese-aware full-text search via tantivy's BM25 scoring
-//! with jieba `cut_for_search` tokenization.
+//! 通过 tantivy 的 BM25 评分和 jieba `cut_for_search` 分词，
+//! 提供中文感知的全文搜索。
 //!
-//! Index persisted to `~/.kingdee-kb/bm25_index/`.
+//! 索引持久化到 `~/.kingdee-kb/bm25_index/`。
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -17,15 +17,97 @@ use jieba_rs::Jieba;
 
 // ─── Jieba Tokenizer for tantivy ───
 
-/// Tokenizer that uses jieba `cut_for_search` for Chinese text segmentation
+/// 使用 jieba `cut_for_search` 进行中文文本分词的分词器
 pub struct JiebaTokenizer {
     jieba: Arc<Jieba>,
 }
 
+/// 金蝶/ERP 领域专业术语 — 确保这些词不被 jieba 误拆分
+const KINGDEE_DOMAIN_WORDS: &[(&str, usize)] = &[
+    // 财务会计
+    ("科目", 10),
+    ("凭证", 10),
+    ("核算", 10),
+    ("辅助核算", 15),
+    ("损益", 10),
+    ("资产负债", 12),
+    ("应收应付", 12),
+    ("应收账款", 12),
+    ("应付账款", 12),
+    ("余额", 10),
+    ("借方", 10),
+    ("贷方", 10),
+    ("总账", 10),
+    ("明细账", 10),
+    ("日记账", 10),
+    ("试算平衡", 12),
+    ("结转", 10),
+    ("折旧", 10),
+    ("摊销", 10),
+    ("计提", 10),
+    ("成本核算", 12),
+    ("存货核算", 12),
+    ("固定资产", 12),
+    // 金蝶平台
+    ("苍穹", 10),
+    ("金蝶苍穹", 15),
+    ("表单插件", 12),
+    ("工作流", 10),
+    ("基础资料", 12),
+    ("动态表单", 12),
+    ("单据", 10),
+    ("单据转换", 12),
+    ("操作插件", 12),
+    ("报表插件", 12),
+    ("菜单", 10),
+    ("权限", 10),
+    ("组织架构", 12),
+    ("角色权限", 12),
+    ("数据权限", 12),
+    ("业务对象", 12),
+    ("实体", 10),
+    ("字段", 10),
+    ("分录", 10),
+    ("树形分录", 12),
+    ("审批流程", 12),
+    ("消息中心", 12),
+    // 供应链
+    ("采购订单", 12),
+    ("销售订单", 12),
+    ("入库单", 10),
+    ("出库单", 10),
+    ("库存调拨", 12),
+    ("物料", 10),
+    ("供应商", 10),
+    ("客户", 10),
+    ("BOM", 5),
+    ("供应链", 10),
+    ("物料清单", 12),
+    // 其他 ERP
+    ("ERP", 5),
+    ("财务报表", 12),
+    ("利润表", 10),
+    ("现金流量", 12),
+    ("多核算维度", 15),
+    ("核算维度", 12),
+    ("预算管理", 12),
+    ("资金管理", 12),
+    ("银企互联", 12),
+    ("税务", 10),
+    ("增值税", 10),
+    ("发票", 10),
+    ("报销", 10),
+];
+
 impl JiebaTokenizer {
-    pub fn with_default_dict() -> Self {
+    /// Create a JiebaTokenizer with the default dict + Kingdee domain words
+    pub fn with_domain_dict() -> Self {
+        let mut jieba = Jieba::new();
+        for (word, freq) in KINGDEE_DOMAIN_WORDS {
+            jieba.add_word(word, Some(*freq), None);
+        }
         Self {
-            jieba: Arc::new(Jieba::new()),
+            jieba: Arc::new(jieba),
         }
     }
 }
@@ -38,7 +120,7 @@ impl Clone for JiebaTokenizer {
     }
 }
 
-/// Token stream from jieba cut_for_search
+/// jieba cut_for_search 的 token 流
 pub struct JiebaTokenStream {
     token: tantivy::tokenizer::Token,
     tokens: Vec<(usize, usize, String)>, // (byte_offset_from, byte_offset_to, text)
@@ -98,7 +180,7 @@ impl tantivy::tokenizer::Tokenizer for JiebaTokenizer {
 
 // ─── BM25 Search Result ───
 
-/// A result from BM25 search
+/// BM25 搜索结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BM25SearchResult {
     /// Chunk ID from the metadata store
@@ -117,7 +199,7 @@ pub struct BM25SearchResult {
 
 // ─── BM25 Service ───
 
-/// BM25 full-text search service backed by tantivy with jieba tokenization
+/// 基于 tantivy 和 jieba 分词的 BM25 全文搜索服务
 pub struct BM25Service {
     index: Index,
     reader: IndexReader,
@@ -192,10 +274,10 @@ impl BM25Service {
                 .map_err(|e| format!("Failed to create BM25 index: {}", e))?
         };
 
-        // Register tokenizers
+        // Register tokenizers (jieba with Kingdee domain dict + raw)
         index
             .tokenizers()
-            .register("jieba", JiebaTokenizer::with_default_dict());
+            .register("jieba", JiebaTokenizer::with_domain_dict());
         index
             .tokenizers()
             .register("raw", tantivy::tokenizer::RawTokenizer::default());
@@ -278,21 +360,24 @@ impl BM25Service {
 
     /// Remove a chunk from the index by its chunk_id
     pub fn remove_chunk(&self, chunk_id: i64) -> Result<(), String> {
-        let writer = self.writer.lock().map_err(|e| e.to_string())?;        let term = tantivy::Term::from_field_i64(self.field_chunk_id, chunk_id);
+        let writer = self.writer.lock().map_err(|e| e.to_string())?;
+        let term = tantivy::Term::from_field_i64(self.field_chunk_id, chunk_id);
         writer.delete_term(term);
         Ok(())
     }
 
     /// Remove all chunks for a project
     pub fn remove_project(&self, project: &str) -> Result<(), String> {
-        let writer = self.writer.lock().map_err(|e| e.to_string())?;        let term = tantivy::Term::from_field_text(self.field_project, project);
+        let writer = self.writer.lock().map_err(|e| e.to_string())?;
+        let term = tantivy::Term::from_field_text(self.field_project, project);
         writer.delete_term(term);
         Ok(())
     }
 
     /// Commit pending changes and reload the reader
     pub fn commit(&self) -> Result<(), String> {
-        let mut writer = self.writer.lock().map_err(|e| e.to_string())?;        writer
+        let mut writer = self.writer.lock().map_err(|e| e.to_string())?;
+        writer
             .commit()
             .map_err(|e| format!("Failed to commit BM25 index: {}", e))?;
         drop(writer);
@@ -484,7 +569,10 @@ mod tests {
 
         // Search in wrong project
         let results_b = service.search("工作流", Some("project_b"), 10).unwrap();
-        assert!(results_b.is_empty(), "Should not find '工作流' in project_b");
+        assert!(
+            results_b.is_empty(),
+            "Should not find '工作流' in project_b"
+        );
     }
 
     #[test]

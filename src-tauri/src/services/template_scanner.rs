@@ -1,6 +1,6 @@
 //! Template directory scanner
 //!
-//! Scans 实施方法论V10.0交付物模板/ directory and builds a registry
+//! 扫描 templates/ 目录并构建注册表
 //! of all templates organized by the 8 implementation phases.
 
 use serde::{Deserialize, Serialize};
@@ -53,8 +53,13 @@ pub struct TemplateInfo {
 pub fn scan_templates(root_dir: &Path) -> Result<Vec<TemplateInfo>, String> {
     if !root_dir.exists() {
         // Auto-create the templates directory so the app can start cleanly
-        std::fs::create_dir_all(root_dir)
-            .map_err(|e| format!("Failed to create template directory {}: {}", root_dir.display(), e))?;
+        std::fs::create_dir_all(root_dir).map_err(|e| {
+            format!(
+                "Failed to create template directory {}: {}",
+                root_dir.display(),
+                e
+            )
+        })?;
         return Ok(Vec::new());
     }
 
