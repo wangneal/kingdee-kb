@@ -459,72 +459,14 @@ pub async fn generate_recipe_doc(
         .unwrap_or("")
         .to_lowercase();
 
-    // ── Step 3.5: Handle empty-field templates (like investigation_report) ──
-    // When template has no fillable fields, generate full document content via LLM
+    // ── Step 3.5: Reject templates without fillable fields ──
+    // Do not write Markdown/plain text to a .docx/.xlsx path. That creates an
+    // invalid Office file and hides template/schema problems from the caller.
     if schema_fields.is_empty() {
-        eprintln!(
-            "[DocGenerator] Template has no fillable fields, generating full content via LLM"
-        );
-
-        // Build KB context for the LLM
-        let search_query = format!(
-            "{} {}",
-            request.project_name.as_deref().unwrap_or(""),
-            recipe_name
-        );
-        let search_results = hybrid_search::hybrid_search(
-            &search_query,
-            request
-                .project_id
-                .as_deref()
-                .or(request.project_name.as_deref()),
-            RECIPE_KB_TOP_K,
-            embedding,
-            vector_index,
-            bm25,
-            metadata,
-        )
-        .unwrap_or_default();
-
-        let kb_context = if !search_results.is_empty() {
-            assemble_kb_context(&search_results, RECIPE_KB_MAX_TOKENS)
-        } else {
-            String::new()
-        };
-
-        // Call LLM to generate full document content
-        let full_content = generate_full_document_content(
-            llm,
-            &system_prompt,
-            &kb_context,
-            &request.project_name,
-            &request.context,
-            &recipe_name,
-        )
-        .await
-        .map_err(|e| format!("LLM full document generation failed: {}", e))?;
-
-        // Write content to output file
-        let output_path_buf = PathBuf::from(&request.output_path);
-        std::fs::write(&output_path_buf, &full_content)
-            .map_err(|e| format!("Failed to write output file: {}", e))?;
-
-        let doc = GeneratedDoc {
-            output_path: request.output_path.clone(),
-            fields_filled: 1,
-            user_fields: vec![],
-            ai_fields: vec!["full_content".to_string()],
-            missing_fields: vec![],
-            missing_fields_detail: vec![],
-        };
-
-        let kb_sources: Vec<KbSource> = vec![];
-
-        return Ok(RecipeDocResult {
-            doc,
-            recipe_name,
-            kb_sources,
-        });
+        return Err(format!(
+            "模板没有可识别的可填字段，已停止生成以避免写出无效 Office 文件。请检查模板占位符或选择包含可填字段的模板: {}",
+            request.template_path
+        ));
     }
 
     // ── Step 4: Start with user-provided fields ──
@@ -912,10 +854,7 @@ async fn generate_full_document_content(
         user_prompt.push_str(&format!("知识库检索到的相关内容：\n{}\n\n", kb_context));
     }
 
-    user_prompt.push_str(&format!(
-        "请生成完整的{}文档内容。\n\n",
-        recipe_name
-    ));
+    user_prompt.push_str(&format!("请生成完整的{}文档内容。\n\n", recipe_name));
 
     if let Some(ctx) = context {
         user_prompt.push_str(&format!("补充信息:\n{}\n\n", ctx));

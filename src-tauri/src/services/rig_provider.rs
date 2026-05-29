@@ -260,8 +260,9 @@ mod tests {
     use crate::services::llm_service::LLMService;
     use crate::services::metadata::MetadataStore;
     use crate::services::product_store::ProductStore;
-    use crate::services::risk_control::RiskControlStore;
     use crate::services::rig_tool::all_rig_tools;
+    use crate::services::risk_control::RiskControlStore;
+    use crate::services::skill_manager::SkillManager;
     use crate::services::vector_index::VectorIndex;
 
     #[derive(Debug, Deserialize)]
@@ -365,8 +366,12 @@ mod tests {
                 .completions_api();
 
             let tmp = tempfile::tempdir().expect("tempdir");
-            let (embedding, vector_index, bm25, metadata, products, risk_store) = test_tool_deps(tmp.path());
+            let (embedding, vector_index, bm25, metadata, products, risk_store) =
+                test_tool_deps(tmp.path());
             let llm = LLMService::new(tmp.path());
+            let skill_manager = Arc::new(std::sync::Mutex::new(SkillManager::new(
+                tmp.path().join("skills"),
+            )));
 
             let mut stream = client
                 .agent(&config.model)
@@ -380,6 +385,8 @@ mod tests {
                     metadata,
                     products,
                     risk_store,
+                    skill_manager,
+                    None,
                 ))
                 .max_tokens(32)
                 .temperature(0.0)

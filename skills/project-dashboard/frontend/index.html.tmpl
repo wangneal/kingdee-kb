@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{PROJECT_NAME}} · 项目控制台</title>
+<style>
+{{TOKENS_CSS}}
+</style>
+<style>
+{{COMPONENTS_CSS}}
+</style>
+<style>
+{{LAYOUT_CSS}}
+</style>
+</head>
+<body x-data="dashboard()">
+<div class="k-app">
+
+  <!-- ============== 数据时效横幅 ============== -->
+  <div class="k-stale" x-show="staleDays >= 3" style="display:none;"
+       x-text="'⚠ 本看板为 ' + staleDays + ' 天前的快照（生成于 ' + generated_at + '），数据可能已过时，建议重新生成：/project-dashboard'"></div>
+
+  <!-- ============== HEADER ============== -->
+  <header class="k-header">
+    <div class="k-brand">
+      <img src="data:image/png;base64,{{LOGO_BASE64}}" alt="logo" onerror="this.style.display='none'">
+      <span>{{PROJECT_NAME}}</span>
+    </div>
+    <div class="k-divider"></div>
+    <div class="k-meta">
+      <span><b>{{PRODUCT_TYPE}}</b></span>
+      <span>PM <b>{{PM_NAME}}</b></span>
+      <span class="k-mono">D+{{DAY_N}}</span>
+    </div>
+    <div class="k-spacer"></div>
+    <div class="k-confidential">{{CONFIDENTIAL}}</div>
+  </header>
+
+  <div class="k-main">
+
+    <!-- ============== SIDEBAR ============== -->
+    <aside class="k-sidebar">
+      <h2 class="k-sb-title">Skill 调用台</h2>
+
+      <!-- 一级:常用 -->
+      <div class="k-sb-group">
+        <div class="k-sb-group-label" :class="{open: open.usual}" @click="toggle('usual')">
+          <span class="k-sb-caret" x-text="open.usual ? '▾' : '▸'"></span>
+          <span>常用</span>
+          <span class="k-sb-count" x-text="skills.usual.length"></span>
+        </div>
+        <div class="k-sb-body" x-show="open.usual" x-transition>
+          <template x-for="s in skills.usual" :key="s.name">
+            <div class="k-skill" @click="copyCmd(s.trigger)">
+              <span class="k-skill-icon" x-text="s.icon"></span>
+              <span class="k-skill-label" x-text="s.label"></span>
+              <span class="k-skill-arrow">↵</span>
+            </div>
+          </template>
+          <div class="k-sb-empty" x-show="!skills.usual.length">暂无使用记录</div>
+        </div>
+      </div>
+
+      <!-- 一级:本阶段推荐 -->
+      <div class="k-sb-group">
+        <div class="k-sb-group-label" :class="{open: open.phase}" @click="toggle('phase')">
+          <span class="k-sb-caret" x-text="open.phase ? '▾' : '▸'"></span>
+          <span>本阶段推荐</span>
+          <span class="k-sb-count" x-text="skills.current_phase.length"></span>
+        </div>
+        <div class="k-sb-body" x-show="open.phase" x-transition>
+          <template x-for="s in skills.current_phase" :key="'cp-'+s.name">
+            <div class="k-skill" @click="copyCmd(s.trigger)">
+              <span class="k-skill-icon" x-text="s.icon"></span>
+              <span class="k-skill-label" x-text="s.label"></span>
+              <span class="k-skill-arrow">↵</span>
+            </div>
+          </template>
+          <div class="k-sb-empty" x-show="!skills.current_phase.length">本阶段无推荐</div>
+        </div>
+      </div>
+
+      <!-- 一级:全量(二级按分类折叠) -->
+      <div class="k-sb-group">
+        <div class="k-sb-group-label" :class="{open: open.all}" @click="toggle('all')">
+          <span class="k-sb-caret" x-text="open.all ? '▾' : '▸'"></span>
+          <span>全量</span>
+        </div>
+        <div class="k-sb-body" x-show="open.all" x-transition>
+          <template x-for="(group, cat) in skills.all" :key="cat">
+            <div>
+              <div class="k-sb-cat" :class="{open: open['cat-'+cat]}" @click="toggle('cat-'+cat)">
+                <span class="k-sb-caret" x-text="open['cat-'+cat] ? '▾' : '▸'"></span>
+                <span x-text="cat"></span>
+                <span class="k-sb-count" x-text="group.length"></span>
+              </div>
+              <div class="k-sb-body" x-show="open['cat-'+cat]" x-transition>
+                <template x-for="s in group" :key="cat+'-'+s.name">
+                  <div class="k-skill" @click="copyCmd(s.trigger)">
+                    <span class="k-skill-icon" x-text="s.icon"></span>
+                    <span class="k-skill-label" x-text="s.label"></span>
+                    <span class="k-skill-arrow">↵</span>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ============== MAIN CONTENT ============== -->
+    <main class="k-content">
+
+      <!-- ─── Layer 0 · 决策带 ─── -->
+      <section class="k-layer-0">
+
+        <!-- 健康度 -->
+        <div class="k-health" :data-rag="health.rag">
+          <div class="k-health-top">
+            <div>
+              <div class="k-eyebrow">项目健康度</div>
+              <div style="display:flex;align-items:baseline;gap:8px;margin-top:6px;">
+                <span class="k-health-score" x-text="health.score"></span>
+                <span class="k-health-suffix">/100</span>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
+              <span class="k-health-rag" :class="health.rag"
+                    x-text="health.rag==='green' ? '健康' : (health.rag==='yellow' ? '关注' : '告警')"></span>
+              <span class="k-health-est" x-show="health.estimated && health.estimated.length"
+                    x-text="health.estimated.length + ' 项估算'"></span>
+            </div>
+          </div>
+
+          <div class="k-health-bars">
+            <template x-for="key in ['schedule','cost','quality','risk','scope','comm']" :key="key">
+              <div class="k-bar">
+                <span class="k-bar-name"
+                      x-text="({schedule:'进度',cost:'成本',quality:'质量',risk:'风险',scope:'范围',comm:'协同'})[key]"></span>
+                <div class="k-bar-track">
+                  <div class="k-bar-fill"
+                       :class="health.subscores[key] >= 80 ? 'sage' : (health.subscores[key] >= 60 ? 'amber' : 'rust')"
+                       :style="'width:' + (health.subscores[key] || 0) + '%'"></div>
+                </div>
+                <span class="k-bar-num" x-text="health.subscores[key]"></span>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- 今日聚焦 -->
+        <div class="k-focus">
+          <div class="k-focus-head">
+            <div class="k-focus-title">今日聚焦</div>
+            <div class="k-focus-sub" x-text="'Top ' + Math.min(3, anomalies_top3.length)"></div>
+          </div>
+          <div class="k-focus-list">
+            <template x-for="(a, idx) in anomalies_top3" :key="a.id">
+              <div class="k-focus-row">
+                <div class="k-focus-idx" x-text="String(idx+1).padStart(2,'0')"></div>
+                <div class="k-focus-body">
+                  <div class="k-focus-line">
+                    <span class="k-focus-sev" :class="a.severity"
+                          x-text="a.severity==='high' ? '紧急' : '注意'"></span>
+                    <span class="k-focus-name" x-text="a.title"></span>
+                  </div>
+                  <div class="k-focus-detail" x-text="a.detail"></div>
+                </div>
+                <button class="k-btn" @click="copyCmd(a.action_cmd)" x-text="a.action_label"></button>
+              </div>
+            </template>
+          </div>
+          <div class="k-focus-empty" x-show="!anomalies_top3.length">
+            今天无紧急事项 · 一切照轨道运行
+          </div>
+        </div>
+
+        <!-- 里程碑 -->
+        <div class="k-milestone">
+          <div>
+            <div class="k-mi-eyebrow">下一里程碑</div>
+            <div class="k-mi-days" x-text="next_milestone.days"></div>
+            <div class="k-mi-name" x-text="next_milestone.name"></div>
+          </div>
+          <div class="k-mi-foot" x-text="'生成 · ' + generated_at"></div>
+        </div>
+
+      </section>
+
+      <!-- ─── Layer 1 · PMP 五大基线 ─── -->
+      <section>
+        <div class="k-section-title">
+          <span class="k-section-name">基线 · Baselines</span>
+          <span class="k-section-sub">PMP 五维度</span>
+          <span class="k-section-rule"></span>
+        </div>
+        <div class="k-layer-1">
+          <template x-for="b in baselines" :key="b.id">
+            <article class="k-baseline" :data-baseline="b.id">
+              <div class="k-bl-top">
+                <span class="k-bl-glyph"
+                      x-text="({scope:'S',schedule:'T',quality:'Q',risk:'R',cost:'$'})[b.id]"></span>
+                <span class="k-bl-label" x-text="b.label"></span>
+              </div>
+              <div class="k-bl-value" x-text="b.value"></div>
+              <div class="k-bl-sub" x-text="b.sub"></div>
+              <div class="k-bl-foot">
+                <span class="k-rag" :class="b.rag"
+                      x-text="b.rag==='green' ? '正常' : (b.rag==='yellow' ? '关注' : '告警')"></span>
+                <span class="k-bl-est" x-show="b.estimated">估算</span>
+              </div>
+            </article>
+          </template>
+        </div>
+      </section>
+
+      <!-- ─── 趋势 · Trend (F1) ─── -->
+      <section x-show="trend.count >= 1" style="display:none;">
+        <div class="k-section-title">
+          <span class="k-section-name">趋势 · Trend</span>
+          <span class="k-section-sub" x-text="'健康度 + 五基线 · 近 ' + trend.count + ' 次快照'"></span>
+          <span class="k-section-rule"></span>
+        </div>
+        <div class="k-trend" x-show="trend.count >= 2">
+          <template x-for="s in trendSeries" :key="s.label">
+            <div class="k-trend-cell">
+              <div class="k-trend-head">
+                <span class="k-trend-label" x-text="s.label"></span>
+                <span class="k-trend-now" x-text="s.values.length ? s.values[s.values.length-1] : '—'"></span>
+              </div>
+              <svg class="k-trend-spark" viewBox="0 0 100 24" preserveAspectRatio="none">
+                <polyline :points="spark(s.values)" fill="none" stroke="currentColor" stroke-width="1.6"/>
+              </svg>
+            </div>
+          </template>
+        </div>
+        <div class="k-empty" x-show="trend.count < 2"
+             x-text="'趋势数据积累中 — 已有 ' + trend.count + ' 次快照，再生成 1 次看板后显示走势'"></div>
+      </section>
+
+      <!-- ─── Layer 2 · 交付物 + 协同 ─── -->
+      <section class="k-layer-2">
+
+        <!-- 交付物矩阵 -->
+        <div class="k-deliv">
+          <div class="k-section-title" style="margin-bottom:var(--sp-3);">
+            <span class="k-section-name">交付物</span>
+            <span class="k-section-sub">按阶段 · 点击缺失项 → 复制补齐命令</span>
+            <span class="k-section-rule"></span>
+          </div>
+          <div class="k-deliv-cols">
+            <template x-for="phase in deliverables" :key="phase.name">
+              <div>
+                <div class="k-deliv-col-head">
+                  <span x-text="phase.name"></span>
+                  <span class="k-deliv-count" x-text="phase.cells.length"></span>
+                </div>
+                <div class="k-deliv-list">
+                  <template x-for="cell in phase.cells" :key="phase.name+'-'+cell.name">
+                    <div class="k-deliv-cell" :data-status="cell.status"
+                         :title="cell.name + ' · ' + cell.status"
+                         @click="cell.status==='missing' && copyCmd(cell.cmd)">
+                      <span class="k-deliv-icon"
+                            x-text="cell.status==='done'?'✓':(cell.status==='missing'?'!':(cell.status==='pending'?'·':'○'))"></span>
+                      <span class="k-deliv-name" x-text="cell.name"></span>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </div>
+          <div class="k-empty" x-show="!deliverables.length">
+            暂无交付物数据 — 完成各阶段必选清单后显示
+          </div>
+        </div>
+
+        <!-- 右栏:干系人 + 会议 -->
+        <div class="k-layer-2-right">
+
+          <div class="k-stakeholders">
+            <div class="k-section-title" style="margin-bottom:var(--sp-3);">
+              <span class="k-section-name" style="font-size:var(--fs-h2);">协同中心</span>
+              <span class="k-section-rule"></span>
+            </div>
+            <div class="k-stake-list">
+              <template x-for="p in stakeholders" :key="p.name">
+                <div class="k-stake-row" :class="{ stale: p.stale_days > 14 }"
+                     @click="copyCmd('/stakeholder-comms 给' + p.name + '起草进度同步邮件')">
+                  <div class="k-stake-avatar" x-text="p.name.slice(0,1)"></div>
+                  <div class="k-stake-info">
+                    <div class="k-stake-name" x-text="p.name"></div>
+                    <div class="k-stake-role" x-text="p.role"></div>
+                  </div>
+                  <span class="k-stake-flag" x-show="p.stale_days > 14"
+                        x-text="p.stale_days + ' 天未沟通'"></span>
+                </div>
+              </template>
+              <div class="k-empty" x-show="!stakeholders.length">暂无干系人数据</div>
+            </div>
+          </div>
+
+          <div class="k-meetings">
+            <div class="k-section-title" style="margin-bottom:var(--sp-3);">
+              <span class="k-section-name" style="font-size:var(--fs-h2);">本周会议</span>
+              <span class="k-section-rule"></span>
+            </div>
+            <template x-for="m in meetings" :key="m.id">
+              <div class="k-meet-row">
+                <div class="k-meet-date" x-text="m.date"></div>
+                <div class="k-meet-body">
+                  <div class="k-meet-title" x-text="m.summary"></div>
+                  <div class="k-meet-people" x-text="m.participants.join(' · ')"></div>
+                </div>
+              </div>
+            </template>
+            <div class="k-empty" x-show="!meetings.length">
+              本周暂无会议记录 — 触发 /stakeholder-comms 录入
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ─── Footer ─── -->
+      <div class="k-footer">
+        <span>生成 <span class="k-footer-mono" x-text="generated_at"></span> · 套件 <span class="k-footer-mono">{{SUITE_VERSION}}</span></span>
+        <span>{{CONFIDENTIAL}} · CONFIDENTIAL</span>
+      </div>
+
+    </main>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="k-toast" x-show="toast" x-text="toast" x-transition style="display:none;"></div>
+
+<script>
+    const DASHBOARD_DATA = {{DATA_JSON}};
+    function dashboard() {
+      return {
+        ...DASHBOARD_DATA,
+        toast: '',
+        open: {},
+        toggle(k) { this.open[k] = !this.open[k]; },
+        get trendSeries() {
+          const t = this.trend || {}, b = t.baselines || {};
+          return [
+            { label: '健康度', values: t.health || [] },
+            { label: '范围',   values: b.scope || [] },
+            { label: '进度',   values: b.schedule || [] },
+            { label: '质量',   values: b.quality || [] },
+            { label: '风险',   values: b.risk || [] },
+            { label: '成本',   values: b.cost || [] },
+          ];
+        },
+        spark(arr) {
+          if (!arr || arr.length < 2) return '';
+          const n = arr.length, W = 100, H = 24, pad = 3;
+          const min = Math.min(...arr), max = Math.max(...arr), span = (max - min) || 1;
+          return arr.map((v, i) => {
+            const x = (i / (n - 1)) * W;
+            const y = (H - pad) - ((v - min) / span) * (H - 2 * pad);
+            return x.toFixed(1) + ',' + y.toFixed(1);
+          }).join(' ');
+        },
+        get staleDays() {
+          try {
+            const g = new Date(this.generated_at);
+            if (isNaN(g.getTime())) return 0;
+            const d = Math.floor((Date.now() - g.getTime()) / 86400000);
+            return d > 0 ? d : 0;
+          } catch (e) { return 0; }
+        },
+        copyCmd(c) {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(c).then(() => {
+              this.toast = '已复制 "' + c + '"，粘贴到 Claude Code 即可执行';
+              setTimeout(() => this.toast = '', 2000);
+            });
+          } else {
+            this.toast = '已复制: ' + c;
+            setTimeout(() => this.toast = '', 2000);
+          }
+        }
+      };
+    }
+  </script>
+
+<script>
+{{ALPINE_JS}}
+</script>
+</body>
+</html>

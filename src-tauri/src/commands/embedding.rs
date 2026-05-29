@@ -97,7 +97,11 @@ pub async fn set_embedding_model_config(
             provider: provider.clone(),
             api_key: api_key.unwrap_or_default(),
             base_url: base_url
-                .or_else(|| provider_info.as_ref().and_then(|p| p.default_base_url.clone()))
+                .or_else(|| {
+                    provider_info
+                        .as_ref()
+                        .and_then(|p| p.default_base_url.clone())
+                })
                 .unwrap_or_default(),
             model_name: model_name
                 .or_else(|| provider_info.as_ref().and_then(|p| p.default_model.clone()))

@@ -1,0 +1,226 @@
+{
+  "project": {
+    "name": "金蝶云星空ERP实施项目",
+    "product": "金蝶云·星空 8.2",
+    "pm_name": "张明远",
+    "customer_pm": "李雪梅",
+    "contract_amount": "¥2,800,000",
+    "contract_days": 320,
+    "start_date": "2026-01-10",
+    "planned_golive": "2026-09-15",
+    "day_number": 128
+  },
+  "phases": [
+    { "id": "01_启动", "name": "启动", "status": "completed", "plan_start": "2026-01-10", "plan_end": "2026-01-25", "actual_start": "2026-01-10", "actual_end": "2026-01-23" },
+    { "id": "02_需求", "name": "需求", "status": "completed", "plan_start": "2026-01-26", "plan_end": "2026-03-10", "actual_start": "2026-01-26", "actual_end": "2026-03-08" },
+    { "id": "03_方案", "name": "方案", "status": "in_progress", "plan_start": "2026-03-11", "plan_end": "2026-05-15", "actual_start": "2026-03-11", "actual_end": null },
+    { "id": "04_构建", "name": "构建", "status": "pending", "plan_start": "2026-05-16", "plan_end": "2026-07-10", "actual_start": null, "actual_end": null },
+    { "id": "05_测试", "name": "测试", "status": "pending", "plan_start": "2026-07-11", "plan_end": "2026-08-15", "actual_start": null, "actual_end": null },
+    { "id": "06_上线", "name": "上线", "status": "pending", "plan_start": "2026-08-16", "plan_end": "2026-09-15", "actual_start": null, "actual_end": null },
+    { "id": "07_验收", "name": "验收", "status": "pending", "plan_start": "2026-09-16", "plan_end": "2026-10-31", "actual_start": null, "actual_end": null }
+  ],
+  "milestones": [
+    { "id": "M1", "name": "启动会", "plan_date": "2026-01-15", "actual_date": "2026-01-15", "status": "done" },
+    { "id": "M2", "name": "需求评审通过", "plan_date": "2026-03-05", "actual_date": "2026-03-03", "status": "done" },
+    { "id": "M3", "name": "蓝图确认", "plan_date": "2026-05-10", "actual_date": null, "status": "pending" },
+    { "id": "M4", "name": "系统构建完成", "plan_date": "2026-07-05", "actual_date": null, "status": "pending" },
+    { "id": "M5", "name": "UAT启动", "plan_date": "2026-07-20", "actual_date": null, "status": "pending" },
+    { "id": "M6", "name": "上线切换", "plan_date": "2026-09-15", "actual_date": null, "status": "pending" }
+  ],
+  "health_score": {
+    "score": 72,
+    "rag": "yellow",
+    "trend": 3,
+    "subscores": {
+      "schedule": 76,
+      "cost": 82,
+      "quality": 78,
+      "risk": 55,
+      "scope": 85,
+      "comm": 60
+    }
+  },
+  "anomalies": [
+    {
+      "id": "ANOM-1",
+      "rule_id": "R-STALL",
+      "severity": "high",
+      "title": "风险 R-004 已停滞 5 天",
+      "detail": "需求边界争议未解决，最后更新 2026-05-12",
+      "action_label": "立即处理",
+      "action_cmd": "/risk-manager 更新 R-004",
+      "baseline": "risk"
+    },
+    {
+      "id": "ANOM-2",
+      "rule_id": "C-PENDING",
+      "severity": "high",
+      "title": "变更 PCR-003 待审批已 4 天",
+      "detail": "新增财务模块需求变更，提交 2026-05-13",
+      "action_label": "打开变更",
+      "action_cmd": "/change-manager 审批 PCR-003",
+      "baseline": "scope"
+    },
+    {
+      "id": "ANOM-3",
+      "rule_id": "D-DIVERGE",
+      "severity": "high",
+      "title": "近 3 天缺陷新增 > 关闭",
+      "detail": "新增 8 个缺陷 (P1×2 + P2×6)，关闭 3 个，收敛趋势异常",
+      "action_label": "查看详情",
+      "action_cmd": "/test-manager 查看缺陷收敛",
+      "baseline": "quality"
+    }
+  ],
+  "baselines": {
+    "scope": {
+      "spi": 0.92,
+      "rag": "yellow",
+      "total_deliverables": 87,
+      "completed": 42,
+      "active_changes": 2,
+      "pending_changes": 1
+    },
+    "schedule": {
+      "cpi": 0.88,
+      "rag": "yellow",
+      "completed_phases": 2,
+      "current_phase_idx": 2,
+      "days_behind": 3
+    },
+    "quality": {
+      "rag": "yellow",
+      "open_defects": 15,
+      "p0": 0,
+      "p1": 3,
+      "p2": 8,
+      "p3": 4,
+      "closed_this_week": 3,
+      "new_this_week": 5
+    },
+    "risk": {
+      "rag": "red",
+      "active_risks": 8,
+      "high": 2,
+      "medium": 4,
+      "low": 2,
+      "stalled_count": 1
+    },
+    "cost": {
+      "rag": "green",
+      "budget_days": 320,
+      "consumed_days": 138,
+      "consumption_rate": 0.43,
+      "approved_change_days": 12
+    }
+  },
+  "deliverables": [
+    { "phase": "01_启动", "name": "启动会纪要", "required": true, "status": "done", "signed_off": true },
+    { "phase": "01_启动", "name": "项目任命书", "required": true, "status": "done", "signed_off": true },
+    { "phase": "01_启动", "name": "启动会PPT", "required": true, "status": "done", "signed_off": false },
+    { "phase": "01_启动", "name": "实施主计划", "required": true, "status": "done", "signed_off": true },
+    { "phase": "01_启动", "name": "裁剪方案确认", "required": false, "status": "optional", "signed_off": false },
+    { "phase": "02_需求", "name": "需求调研计划", "required": true, "status": "done", "signed_off": true },
+    { "phase": "02_需求", "name": "需求调研问卷", "required": true, "status": "done", "signed_off": false },
+    { "phase": "02_需求", "name": "访谈纪要汇总", "required": true, "status": "done", "signed_off": true },
+    { "phase": "02_需求", "name": "需求矩阵", "required": true, "status": "done", "signed_off": true },
+    { "phase": "02_需求", "name": "需求规格说明书", "required": true, "status": "done", "signed_off": true },
+    { "phase": "02_需求", "name": "需求评审纪要", "required": true, "status": "done", "signed_off": true },
+    { "phase": "02_需求", "name": "客户签收确认", "required": true, "status": "done", "signed_off": true },
+    { "phase": "03_方案", "name": "业务蓝图方案", "required": true, "status": "done", "signed_off": true },
+    { "phase": "03_方案", "name": "系统架构设计", "required": true, "status": "done", "signed_off": false },
+    { "phase": "03_方案", "name": "接口规格说明书", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "03_方案", "name": "数据迁移方案", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "03_方案", "name": "权限矩阵设计", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "03_方案", "name": "开发需求规格", "required": false, "status": "optional", "signed_off": false },
+    { "phase": "04_构建", "name": "系统配置清单", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "04_构建", "name": "开发功能清单", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "04_构建", "name": "单元测试报告", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "04_构建", "name": "数据清洗脚本", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "04_构建", "name": "数据导入报告", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "05_测试", "name": "测试计划", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "05_测试", "name": "测试用例", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "05_测试", "name": "SIT测试报告", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "05_测试", "name": "UAT测试报告", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "06_上线", "name": "上线切换方案", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "06_上线", "name": "上线检查清单", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "06_上线", "name": "初始化清单", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "06_上线", "name": "生产环境配置", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "07_验收", "name": "验收报告", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "07_验收", "name": "项目总结报告", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "07_验收", "name": "交付物清单", "required": true, "status": "pending", "signed_off": false },
+    { "phase": "07_验收", "name": "运维交接文档", "required": true, "status": "pending", "signed_off": false }
+  ],
+  "stakeholders": [
+    { "name": "张明远", "role": "金蝶PM", "last_contact": "2026-05-17", "stale": false },
+    { "name": "李雪梅", "role": "客户PM", "last_contact": "2026-05-16", "stale": false },
+    { "name": "赵永强", "role": "客户IT负责人", "last_contact": "2026-04-28", "stale": true, "days_since": 19 },
+    { "name": "陈晓丽", "role": "财务总监", "last_contact": "2026-05-15", "stale": false },
+    { "name": "王建国", "role": "客户CEO", "last_contact": "2026-04-25", "stale": true, "days_since": 22 }
+  ],
+  "meetings": [
+    { "date": "2026-05-16", "title": "蓝图方案评审会", "participants": ["张明远", "李雪梅", "陈晓丽"], "summary": "评审财务模块蓝图方案，确认接口规格" },
+    { "date": "2026-05-13", "title": "需求变更讨论", "participants": ["张明远", "李雪梅", "赵永强"], "summary": "讨论新增报表需求的可行性和影响" },
+    { "date": "2026-05-09", "title": "周进度同步会", "participants": ["张明远", "李雪梅"], "summary": "同步本周进度，确认下周计划" }
+  ],
+  "skills": {
+    "usual": [
+      { "name": "weekly-report", "label": "生成周报", "trigger": "/weekly-report", "phase": ["all"], "category": "stage", "icon": "📊" },
+      { "name": "risk-manager", "label": "新增风险", "trigger": "/risk-manager 新增风险", "phase": ["all"], "category": "mgmt", "icon": "⚠" },
+      { "name": "stakeholder-comms", "label": "会议纪要", "trigger": "/stakeholder-comms", "phase": ["all"], "category": "stage", "icon": "📝" },
+      { "name": "change-manager", "label": "提变更", "trigger": "/change-manager 新增变更", "phase": ["all"], "category": "mgmt", "icon": "🔄" }
+    ],
+    "current_phase": [
+      { "name": "blueprint-tools", "label": "蓝图设计", "trigger": "/blueprint-tools", "phase": ["03_方案"], "category": "stage", "icon": "📐" },
+      { "name": "ux-flow-designer", "label": "流程图", "trigger": "/ux-flow-designer", "phase": ["03_方案"], "category": "tool", "icon": "🔀" },
+      { "name": "doc-tools", "label": "编辑文档", "trigger": "/doc-tools", "phase": ["all"], "category": "tool", "icon": "📄" },
+      { "name": "kingdee-ppt", "label": "做PPT", "trigger": "/kingdee-ppt", "phase": ["all"], "category": "tool", "icon": "🖥" }
+    ],
+    "all": {
+      "核心": [
+        { "name": "project-init", "label": "项目初始化", "trigger": "/project-init", "phase": ["01_启动"], "category": "core", "icon": "🚀" },
+        { "name": "project-sync", "label": "项目同步", "trigger": "/project-sync", "phase": ["all"], "category": "core", "icon": "🔄" },
+        { "name": "skill-updater", "label": "检查更新", "trigger": "/skill-updater", "phase": ["all"], "category": "core", "icon": "⬆" }
+      ],
+      "阶段": [
+        { "name": "kickoff-pack", "label": "启动包", "trigger": "/kickoff-pack", "phase": ["01_启动"], "category": "stage", "icon": "📦" },
+        { "name": "survey-assistant", "label": "需求调研", "trigger": "/survey-assistant", "phase": ["02_需求"], "category": "stage", "icon": "📋" },
+        { "name": "blueprint-tools", "label": "蓝图设计", "trigger": "/blueprint-tools", "phase": ["03_方案"], "category": "stage", "icon": "📐" },
+        { "name": "build-tracker", "label": "构建跟踪", "trigger": "/build-tracker", "phase": ["04_构建"], "category": "stage", "icon": "🔧" },
+        { "name": "test-manager", "label": "测试管理", "trigger": "/test-manager", "phase": ["05_测试"], "category": "stage", "icon": "🧪" },
+        { "name": "golive-pack", "label": "上线工具包", "trigger": "/golive-pack", "phase": ["06_上线"], "category": "stage", "icon": "🚢" },
+        { "name": "acceptance-pack", "label": "验收工具包", "trigger": "/acceptance-pack", "phase": ["07_验收"], "category": "stage", "icon": "✅" },
+        { "name": "weekly-report", "label": "周报", "trigger": "/weekly-report", "phase": ["all"], "category": "stage", "icon": "📊" },
+        { "name": "stakeholder-comms", "label": "干系人沟通", "trigger": "/stakeholder-comms", "phase": ["all"], "category": "stage", "icon": "📝" }
+      ],
+      "管理": [
+        { "name": "change-manager", "label": "变更管理", "trigger": "/change-manager", "phase": ["all"], "category": "mgmt", "icon": "🔄" },
+        { "name": "risk-manager", "label": "风险管理", "trigger": "/risk-manager", "phase": ["all"], "category": "mgmt", "icon": "⚠" },
+        { "name": "qa-root-cause-analysis", "label": "根因分析", "trigger": "/qa-root-cause-analysis", "phase": ["all"], "category": "mgmt", "icon": "🔍" }
+      ],
+      "工具": [
+        { "name": "openai-whisper", "label": "语音转文字", "trigger": "/openai-whisper", "phase": ["all"], "category": "tool", "icon": "🎙" },
+        { "name": "ux-flow-designer", "label": "流程图", "trigger": "/ux-flow-designer", "phase": ["all"], "category": "tool", "icon": "🔀" },
+        { "name": "claude-req-analysis", "label": "需求分析", "trigger": "/claude-req-analysis", "phase": ["all"], "category": "tool", "icon": "📖" },
+        { "name": "drafter-diagram", "label": "技术蓝图", "trigger": "/drafter-diagram", "phase": ["all"], "category": "tool", "icon": "🗺" },
+        { "name": "humanizer", "label": "去AI味", "trigger": "/humanizer", "phase": ["all"], "category": "tool", "icon": "✍" },
+        { "name": "doc-sanitizer", "label": "数据脱敏", "trigger": "/doc-sanitizer", "phase": ["all"], "category": "tool", "icon": "🔒" },
+        { "name": "doc-tools", "label": "文档工具", "trigger": "/doc-tools", "phase": ["all"], "category": "tool", "icon": "📄" },
+        { "name": "kingdee-ppt", "label": "PPT制作", "trigger": "/kingdee-ppt", "phase": ["all"], "category": "tool", "icon": "🖥" },
+        { "name": "project-dashboard", "label": "项目看板", "trigger": "/project-dashboard", "phase": ["all"], "category": "tool", "icon": "📈" },
+        { "name": "data-cleaner", "label": "数据清洗", "trigger": "/data-cleaner", "phase": ["all"], "category": "tool", "icon": "🧹" },
+        { "name": "data-auditor", "label": "数据审计", "trigger": "/data-auditor", "phase": ["all"], "category": "tool", "icon": "📊" },
+        { "name": "kdclub-ai-product-qa", "label": "产品问答", "trigger": "/kdclub-ai-product-qa", "phase": ["all"], "category": "tool", "icon": "💬" }
+      ]
+    }
+  },
+  "activity_log": [
+    { "ts": "2026-05-17T14:30:00", "skill": "risk-manager", "action": "新增 R-007 接口安全风险" },
+    { "ts": "2026-05-17T10:15:00", "skill": "blueprint-tools", "action": "更新业务蓝图方案 v3" },
+    { "ts": "2026-05-16T16:00:00", "skill": "stakeholder-comms", "action": "蓝图方案评审会纪要" },
+    { "ts": "2026-05-16T09:30:00", "skill": "change-manager", "action": "提交 PCR-003 新增财务模块需求" },
+    { "ts": "2026-05-15T11:00:00", "skill": "weekly-report", "action": "生成第20周双周滚动周报" }
+  ],
+  "generated_at": "2026-05-17T23:00:00",
+  "version": "3.0.0"
+}

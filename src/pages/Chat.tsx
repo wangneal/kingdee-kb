@@ -24,6 +24,7 @@ import {
   saveChatMemory,
   type ReActEvent,
   type ClarificationPayload,
+  type ChatMessage,
 } from "../lib/tauri-commands";
 
 interface DisplayMessage {
@@ -33,6 +34,7 @@ interface DisplayMessage {
   streaming?: boolean;
   error?: boolean;
   reactTrace?: ReActEvent[];
+  hiddenContext?: string;
   clarification?: ClarificationPayload;
   /** true after the user has answered this clarification question */
   clarificationAnswered?: boolean;
@@ -101,6 +103,51 @@ function saveChatHistory(messages: DisplayMessage[]) {
   }
 }
 
+function buildAgentHistory(messages: DisplayMessage[]): ChatMessage[] {
+  return messages
+    .filter((m) => !m.streaming && !m.error && !m.clarification)
+    .map((m) => {
+      const hidden = m.hiddenContext ? `\n\n【上一轮工具上下文】\n${m.hiddenContext}` : "";
+      return {
+        role: m.role,
+        content: `${m.content}${hidden}`.trim(),
+      };
+    })
+    .filter((m) => m.content.length > 0)
+    .slice(-12);
+}
+
+function summarizeToolResult(toolName: string, result: string): string {
+  if (!result.trim()) return "";
+  const important = result
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) =>
+      /输出目录|沙箱目录|生成|文件|路径|output|sandbox|\.pptx|\.docx|\.xlsx|\.html|\.pdf/i.test(line)
+    )
+    .join("\n");
+  const text = important || result;
+  const clipped = text.length > 2000 ? `${text.slice(0, 2000)}\n...[truncated]` : text;
+  return `工具 ${toolName} 结果摘要:\n${clipped}`;
+}
+
+function summarizeToolArgs(args: string): string {
+  if (!args.trim()) return "";
+  try {
+    const parsed = JSON.parse(args) as Record<string, unknown>;
+    const parts: string[] = [];
+    for (const key of ["skill_name", "script", "action", "name_or_query", "template_id", "project_name"]) {
+      const value = parsed[key];
+      if (typeof value === "string") parts.push(`${key}: ${value}`);
+    }
+    if (Array.isArray(parsed.args)) parts.push(`args: ${parsed.args.length} 项`);
+    if (Array.isArray(parsed.input_files)) parts.push(`input_files: ${parsed.input_files.length} 个文件`);
+    return parts.join("\n") || `参数 ${args.length} 字符`;
+  } catch {
+    return args.length > 240 ? `参数 ${args.length} 字符` : args;
+  }
+}
+
 export default function Chat() {
   const [messages, setMessages] = useState<DisplayMessage[]>(loadChatHistory);
   const [input, setInput] = useState("");
@@ -115,6 +162,7 @@ export default function Chat() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const currentSessionId = useRef<string | null>(null);
+  const latestToolName = useRef<string>("");
   const unsubRef = useRef<(() => void) | null>(null);
 
   // Check LLM on mount
@@ -136,6 +184,7 @@ export default function Chat() {
           setCurrentTrace((prev) => ({ ...prev, thinking: prev.thinking + event.content }));
           break;
         case "tool_call":
+          latestToolName.current = event.name;
           setCurrentTrace((prev) => ({
             ...prev,
             toolCalls: [
@@ -152,6 +201,21 @@ export default function Chat() {
               calls[calls.length - 1] = { ...last, result: event.result };
             }
             return { ...prev, toolCalls: calls };
+          });
+          setMessages((prev) => {
+            const lastMessage = prev[prev.length - 1];
+            if (!lastMessage || lastMessage.role !== "assistant" || !lastMessage.streaming) {
+              return prev;
+            }
+            const summary = summarizeToolResult(event.name || latestToolName.current || "tool", event.result);
+            if (!summary) return prev;
+            return [
+              ...prev.slice(0, -1),
+              {
+                ...lastMessage,
+                hiddenContext: [lastMessage.hiddenContext, summary].filter(Boolean).join("\n\n"),
+              },
+            ];
           });
           break;
         case "text_delta":
@@ -276,7 +340,8 @@ export default function Chat() {
       // because events may arrive before agentChat returns
       const sid = nextId();
       currentSessionId.current = sid;
-      await agentChat(outboundText, undefined, sid);
+      const history = buildAgentHistory(messages);
+      await agentChat(outboundText, sid, undefined, undefined, history);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       setMessages((prev) =>
@@ -288,7 +353,7 @@ export default function Chat() {
       );
       setLoading(false);
     }
-  }, [input, attachments, loading, attaching]);
+  }, [input, attachments, loading, attaching, messages]);
 
   const handleAttach = useCallback(async () => {
     if (loading || attaching) return;
@@ -454,12 +519,19 @@ export default function Chat() {
               )}
               {currentTrace.toolCalls.map((tc, i) => (
                 <div key={i}>
-                  <div className="rounded-t-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs font-medium text-amber-800">
-                    🔧 {tc.name}
-                  </div>
+                  <details className="rounded-lg border border-amber-200 bg-amber-50 text-xs" open={i === currentTrace.toolCalls.length - 1}>
+                    <summary className="cursor-pointer px-3 py-2 font-medium text-amber-800">
+                      🔧 {tc.name}
+                    </summary>
+                    {tc.args && (
+                      <pre className="max-h-60 overflow-auto border-t border-amber-200 bg-white/70 px-3 py-2 font-mono text-[11px] leading-relaxed text-amber-950 whitespace-pre-wrap break-words">
+                        {summarizeToolArgs(tc.args)}
+                      </pre>
+                    )}
+                  </details>
                   {tc.result && (
-                    <div className="rounded-b-lg bg-green-50 border border-green-200 px-3 py-2 text-xs text-green-700 border-t-0 whitespace-pre-wrap line-clamp-3">
-                      {tc.result}
+                    <div className="rounded-b-lg border border-green-200 border-t-0 bg-green-50 px-3 py-2 text-xs text-green-700">
+                      工具执行完成
                     </div>
                   )}
                 </div>

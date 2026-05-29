@@ -12,6 +12,7 @@ import Wizard from "./pages/Wizard";
 import Products from "./pages/Products";
 import ResearchAssistant from "./pages/ResearchAssistant";
 import RiskControl from "./pages/RiskControl";
+import Skills from "./pages/Skills";
 
 function App() {
   return (
@@ -24,6 +25,7 @@ function App() {
         <Route path="chat" element={<Chat />} />
         <Route path="research" element={<ResearchAssistant />} />
         <Route path="risk" element={<RiskControl />} />
+        <Route path="skills" element={<Skills />} />
         <Route path="import" element={<Import />} />
         <Route path="templates" element={<Templates />} />
         <Route path="wizard/:templateId" element={<Wizard />} />

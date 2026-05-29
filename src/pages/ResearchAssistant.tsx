@@ -328,7 +328,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       // Generate session ID first before calling agentChat
       const sid = `research_${Date.now()}`;
       aiSessionRef.current = sid;
-      await agentChat(`请回答以下调研问题，基于知识库中的金蝶ERP实施经验：\n\n问题：${newQuestion}\n\n背景：${context}`, `你是一个金蝶ERP实施顾问，正在辅助一个调研访谈。请基于知识库给出专业的回答。回答要具体、可操作，包含系统配置路径或单据类型。不确定的写[待确认]。`, sid);
+      await agentChat(`请回答以下调研问题，基于知识库中的金蝶ERP实施经验。回答要具体、可操作，包含系统配置路径或单据类型；不确定的写[待确认]。\n\n问题：${newQuestion}\n\n背景：${context}`, sid);
     } catch (err) {
       setAiLoading(false);
     }

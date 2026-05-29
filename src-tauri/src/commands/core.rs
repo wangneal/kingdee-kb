@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
 use crate::app_state::AppState;
+use crate::services::skill_manager::SkillManager;
 
 const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
 
@@ -23,7 +24,14 @@ pub fn ensure_data_dir() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
     let data_dir = home.join(".kingdee-kb");
 
-    let subdirs = ["knowledge", "index", "models", "bm25_index", "products"];
+    let subdirs = [
+        "knowledge",
+        "index",
+        "models",
+        "bm25_index",
+        "products",
+        "skills",
+    ];
     for subdir in subdirs {
         fs::create_dir_all(data_dir.join(subdir))
             .map_err(|e| format!("Failed to create {}: {}", subdir, e))?;
@@ -56,6 +64,53 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn dir_has_entries(path: &Path) -> bool {
+    path.read_dir()
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
+}
+
+fn seed_skills_dir(app: &AppHandle, data_dir: &Path) -> Result<PathBuf, String> {
+    let skills_dir = data_dir.join("skills");
+    fs::create_dir_all(&skills_dir).map_err(|e| {
+        format!(
+            "Failed to create skills dir {}: {}",
+            skills_dir.display(),
+            e
+        )
+    })?;
+
+    if dir_has_entries(&skills_dir) {
+        return Ok(skills_dir);
+    }
+
+    let mut candidates = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("skills"));
+    }
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(exe_dir.join("skills"));
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("skills"));
+        candidates.push(cwd.join("..").join("skills"));
+    }
+
+    if let Some(source) = candidates.into_iter().find(|path| path.exists()) {
+        match copy_dir_recursive(&source, &skills_dir) {
+            Ok(_) => println!(
+                "Copied built-in skills from {:?} to {:?}",
+                source, skills_dir
+            ),
+            Err(e) => eprintln!("Warning: failed to seed built-in skills: {}", e),
+        }
+    }
+
+    Ok(skills_dir)
 }
 
 /// 获取数据目录路径（供前端使用）
@@ -165,8 +220,16 @@ pub async fn setup_backend(app: AppHandle) -> Result<(), String> {
     let data_dir = ensure_data_dir()?;
     println!("Data directory initialized at: {:?}", data_dir);
 
+    // 初始化技能管理器。外部 skill 包先拷贝到用户数据目录，后续导入也写入同一位置。
+    let skills_dir = seed_skills_dir(&app, &data_dir)?;
+    let skill_manager = SkillManager::new(skills_dir);
+    println!(
+        "Skill manager initialized with {} skills",
+        skill_manager.count()
+    );
+
     // 初始化阶段 2 服务
-    match AppState::new(&data_dir) {
+    match AppState::new(&data_dir, skill_manager) {
         Ok(app_state) => {
             app.manage(app_state);
             println!("Phase 2 services initialized (embedding, vector index, metadata)");

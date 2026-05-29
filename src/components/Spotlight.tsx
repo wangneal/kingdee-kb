@@ -78,7 +78,7 @@ export default function Spotlight() {
       // Generate session ID first before calling agentChat
       const sid = `spot_${Date.now()}`;
       spotSessionRef.current = sid;
-      await agentChat(text, undefined, sid);
+      await agentChat(text, sid);
     }
     catch { setLoading(false); }
   }, [input, loading]);

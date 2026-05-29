@@ -1,0 +1,12 @@
+[
+  { "productId": 3, "name": "金蝶AI星瀚" },
+  { "productId": 93, "name": "金蝶AI套件" },
+  { "productId": 9, "name": "金蝶AI星辰" },
+  { "productId": 87, "name": "金蝶AI苍穹" },
+  { "productId": 1, "name": "金蝶AI星空企业版/标准版" },
+  { "productId": 11, "name": "EAS Cloud" },
+  { "productId": 16, "name": "S-HR Cloud" },
+  { "productId": 15, "name": "精斗云-云会计" },
+  { "productId": 98, "name": "精斗云-云进销存" },
+  { "productId": 38, "name": "账无忧" }
+]

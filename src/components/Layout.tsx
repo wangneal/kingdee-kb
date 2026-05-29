@@ -1,6 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useEffect, useRef } from "react";
-import { BookOpen, Search, Upload, Settings, LayoutDashboard, MessageSquare, FileEdit, Package, ClipboardList, ShieldAlert } from "lucide-react";
+import { BookOpen, Search, Upload, Settings, LayoutDashboard, MessageSquare, FileEdit, Package, ClipboardList, ShieldAlert, Zap } from "lucide-react";
 import Spotlight from "./Spotlight";
 import { agentChat, listenReActEvents } from "../lib/tauri-commands";
 
@@ -17,6 +17,7 @@ const navItems = [
   { to: "/templates", icon: FileEdit, label: "文档生成" },
   { to: "/products", icon: Package, label: "产物管理" },
   { to: "/import", icon: Upload, label: "导入" },
+  { to: "/skills", icon: Zap, label: "技能体系" },
   { to: "/settings", icon: Settings, label: "设置" },
 ];
 
@@ -64,7 +65,7 @@ export default function Layout() {
         // Generate session ID first before calling agentChat
         const sid = `layout_${Date.now()}`;
         sideSessionRef.current = sid;
-        agentChat(q.text, "你是一个金蝶ERP实施顾问。请给出专业、简洁的回答。", sid);
+        agentChat(q.text, sid);
       } catch(e) { /* poll error */ }
     }, 2000);
 

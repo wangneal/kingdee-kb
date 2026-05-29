@@ -18,6 +18,7 @@ use crate::services::research_indexer::ResearchIndexer;
 use crate::services::research_session::ResearchSessionStore;
 use crate::services::rig_agent::RigAgent;
 use crate::services::risk_control::RiskControlStore;
+use crate::services::skill_manager::SkillManager;
 use crate::services::vector_index::VectorIndex;
 use crate::services::whisper_service::WhisperService;
 use crate::AsrConfigStore;
@@ -66,11 +67,13 @@ pub struct AppState {
     pub audio_capture: Arc<Mutex<AudioCapture>>,
     /// 在线 ASR 配置（腾讯/讯飞）
     pub asr_config: Arc<Mutex<AsrConfigStore>>,
+    /// 技能管理器（SKILL.md 加载/搜索/匹配）
+    pub skill_manager: Arc<Mutex<SkillManager>>,
 }
 
 impl AppState {
     /// 使用给定的数据目录（~/.kingdee-kb/）初始化所有服务
-    pub fn new(data_dir: &std::path::Path) -> Result<Self, String> {
+    pub fn new(data_dir: &std::path::Path, skill_manager: SkillManager) -> Result<Self, String> {
         let model_dir = data_dir.join("models");
         let index_dir = data_dir.join("index");
         let db_path = data_dir.join("metadata.db");
@@ -121,7 +124,8 @@ impl AppState {
         let research_session_store = ResearchSessionStore::new(&db_path)?;
 
         // 初始化 RiskControlStore（共享 metadata.db）
-        let risk_control_store = Arc::new(tokio::sync::Mutex::new(RiskControlStore::new(&db_path)?));
+        let risk_control_store =
+            Arc::new(tokio::sync::Mutex::new(RiskControlStore::new(&db_path)?));
 
         let desensitizer = Desensitizer::new();
 
@@ -151,6 +155,7 @@ impl AppState {
             asr_config: Arc::new(Mutex::new(asr_config)),
             rig_agent: RigAgent,
             pending_questions,
+            skill_manager: Arc::new(Mutex::new(skill_manager)),
         })
     }
 
@@ -213,7 +218,7 @@ impl AppState {
                     RiskControlStore::new_in_memory()
                         .expect("Fatal: cannot create in-memory RiskControlStore")
                 }
-            }
+            },
         ));
 
         let desensitizer = Desensitizer::new();
@@ -243,6 +248,7 @@ impl AppState {
             whisper_service: Arc::new(Mutex::new(whisper_service)),
             audio_capture: Arc::new(Mutex::new(audio_capture)),
             asr_config: Arc::new(Mutex::new(AsrConfigStore::new(&db_path))),
+            skill_manager: Arc::new(Mutex::new(SkillManager::new(data_dir.join("skills")))),
         }
     }
 }

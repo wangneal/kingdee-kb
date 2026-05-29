@@ -273,7 +273,11 @@ impl ModelManager {
                     base_url: config
                         .base_url
                         .clone()
-                        .or_else(|| provider_info.as_ref().and_then(|p| p.default_base_url.clone()))
+                        .or_else(|| {
+                            provider_info
+                                .as_ref()
+                                .and_then(|p| p.default_base_url.clone())
+                        })
                         .unwrap_or_default(),
                     model_name: config
                         .model_name
@@ -339,7 +343,10 @@ impl ModelManager {
     /// 设置在线 Embedding 提供商配置
     ///
     /// 传入 None 切换回本地模式。
-    pub fn set_remote_config(&mut self, config: Option<RemoteEmbeddingConfig>) -> Result<(), String> {
+    pub fn set_remote_config(
+        &mut self,
+        config: Option<RemoteEmbeddingConfig>,
+    ) -> Result<(), String> {
         if config.is_some() {
             // 切换到远程模式时，释放本地模型
             self.model = None;
@@ -1066,10 +1073,7 @@ struct EmbeddingData {
 /// Cohere 使用 v2 兼容格式。
 pub async fn remote_embed(config: &RemoteEmbeddingConfig, text: &str) -> Result<Vec<f32>, String> {
     let client = reqwest::Client::new();
-    let url = format!(
-        "{}/embeddings",
-        config.base_url.trim_end_matches('/')
-    );
+    let url = format!("{}/embeddings", config.base_url.trim_end_matches('/'));
 
     let body = serde_json::json!({
         "model": config.model_name,
@@ -1117,10 +1121,7 @@ pub async fn remote_embed_batch(
     texts: &[&str],
 ) -> Result<Vec<Vec<f32>>, String> {
     let client = reqwest::Client::new();
-    let url = format!(
-        "{}/embeddings",
-        config.base_url.trim_end_matches('/')
-    );
+    let url = format!("{}/embeddings", config.base_url.trim_end_matches('/'));
 
     let body = serde_json::json!({
         "model": config.model_name,

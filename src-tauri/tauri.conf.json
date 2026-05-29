@@ -36,7 +36,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/models/bge-small-zh-v1.5/*"
+      "resources/models/bge-small-zh-v1.5/*",
+      "../skills/**/*"
     ],
     "windows": {
       "webviewInstallMode": {

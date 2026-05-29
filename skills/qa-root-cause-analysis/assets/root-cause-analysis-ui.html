@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>质量根因分析</title>
+<style>
+:root{--bg:#0f1117;--card:#1a1d27;--card-hover:#222636;--input:#161922;--accent:#c084fc;--accent-soft:rgba(192,132,252,.12);--text:#e4e6ed;--text2:#8b8fa3;--border:#2a2e3e;--success:#34d399;--warn:#fbbf24;--danger:#f87171;--radius:12px}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
+.header{background:var(--card);border-bottom:1px solid var(--border);padding:20px 24px;display:flex;align-items:center;gap:12px}
+.header-icon{width:38px;height:38px;background:var(--accent);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px}
+.header h2{font-size:17px;font-weight:700}
+.header-sub{font-size:12px;color:var(--text2)}
+.main{max-width:900px;margin:0 auto;padding:24px}
+.section{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px}
+.section-title{font-size:14px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.section-title::before{content:'';width:3px;height:14px;background:var(--accent);border-radius:2px}
+
+/* Method tabs */
+.method-tabs{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap}
+.method-tab{padding:10px 18px;border-radius:10px;background:var(--input);border:1px solid var(--border);cursor:pointer;transition:all .2s;font-size:13px;font-weight:600}
+.method-tab:hover{border-color:var(--accent)}
+.method-tab.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.method-tab .tab-icon{font-size:16px;margin-right:6px}
+
+/* Form elements */
+textarea{width:100%;background:var(--input);border:1px solid var(--border);border-radius:8px;padding:12px;color:var(--text);font-size:13px;resize:vertical;min-height:100px;font-family:inherit}
+textarea:focus{outline:none;border-color:var(--accent)}
+input[type="text"]{width:100%;background:var(--input);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-size:13px}
+input:focus{outline:none;border-color:var(--accent)}
+.form-group{margin-bottom:14px}
+.form-group label{display:block;font-size:12px;color:var(--text2);margin-bottom:6px;font-weight:600}
+.btn{padding:10px 20px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:all .2s}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{filter:brightness(1.15)}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)}
+.btn-outline:hover{border-color:var(--accent);color:var(--accent)}
+.actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
+
+/* Method panels */
+.method-panel{display:none}
+.method-panel.active{display:block}
+
+/* 5-Why chain */
+.why-chain{position:relative}
+.why-step{display:flex;gap:14px;margin-bottom:16px;align-items:flex-start}
+.why-num{width:36px;height:36px;border-radius:50%;background:var(--accent-soft);border:2px solid var(--accent);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;color:var(--accent);flex-shrink:0;position:relative}
+.why-num::after{content:'';position:absolute;top:36px;left:50%;width:2px;height:calc(100% + 16px);background:var(--border);transform:translateX(-50%)}
+.why-step:last-child .why-num::after{display:none}
+.why-content{flex:1}
+.why-content label{font-size:12px;color:var(--text2);margin-bottom:4px;display:block}
+.why-content textarea{min-height:60px}
+.add-why{width:100%;padding:10px;border:2px dashed var(--border);border-radius:8px;background:transparent;color:var(--text2);cursor:pointer;font-size:13px;transition:all .2s;margin-top:8px}
+.add-why:hover{border-color:var(--accent);color:var(--accent)}
+
+/* Fishbone */
+.fishbone-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.fishbone-dim{background:var(--input);border:1px solid var(--border);border-radius:10px;padding:14px}
+.fishbone-dim h4{font-size:13px;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.fishbone-dim textarea{min-height:60px;background:var(--card);font-size:12px}
+
+/* 8D Steps */
+.step-nav{display:flex;gap:4px;margin-bottom:20px;overflow-x:auto;padding-bottom:8px}
+.step-btn{padding:8px 14px;border-radius:8px;background:var(--input);border:1px solid var(--border);cursor:pointer;font-size:12px;font-weight:700;white-space:nowrap;transition:all .2s;color:var(--text2)}
+.step-btn:hover{border-color:var(--accent)}
+.step-btn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.step-btn.done{background:rgba(52,211,153,.1);border-color:var(--success);color:var(--success)}
+.step-content{display:none}
+.step-content.active{display:block}
+
+/* Result */
+.result-box{background:var(--input);border:1px solid var(--border);border-radius:10px;padding:16px;font-size:13px;line-height:1.8;white-space:pre-wrap;font-family:'Consolas',monospace;max-height:400px;overflow-y:auto;display:none}
+.result-box.visible{display:block}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-icon">&#128269;</div>
+  <div><h2>质量根因分析</h2><div class="header-sub">qa-root-cause-analysis</div></div>
+</div>
+
+<div class="main">
+  <!-- Method Selection -->
+  <div class="section">
+    <div class="section-title">选择分析方法</div>
+    <div class="method-tabs">
+      <div class="method-tab active" onclick="switchMethod('fiveWhy')"><span class="tab-icon">&#128270;</span>5-Why分析</div>
+      <div class="method-tab" onclick="switchMethod('fishbone')"><span class="tab-icon">&#128032;</span>鱼骨图</div>
+      <div class="method-tab" onclick="switchMethod('eightD')"><span class="tab-icon">&#128203;</span>8D报告</div>
+      <div class="method-tab" onclick="switchMethod('pareto')"><span class="tab-icon">&#128200;</span>Pareto分析</div>
+    </div>
+  </div>
+
+  <!-- Problem Description (shared) -->
+  <div class="section">
+    <div class="section-title">问题描述</div>
+    <div class="form-group">
+      <label>问题标题</label>
+      <input type="text" id="problemTitle" placeholder="例：生产环境支付接口高峰期频繁超时">
+    </div>
+    <div class="form-group">
+      <label>详细描述（包含影响范围、发生时间、频率等）</label>
+      <textarea id="problemDesc" placeholder="例：生产环境订单支付接口在每日 10:00-11:00、14:00-15:00 高峰期频繁超时（P95 > 10s），支付失败率达 15%，日均影响约 3000 笔订单。"></textarea>
+    </div>
+  </div>
+
+  <!-- 5-Why Panel -->
+  <div class="method-panel active" id="panel-fiveWhy">
+    <div class="section">
+      <div class="section-title">5-Why 递进分析</div>
+      <div class="why-chain" id="whyChain">
+        <div class="why-step">
+          <div class="why-num">1</div>
+          <div class="why-content">
+            <label>Why 1: 为什么问题会发生？</label>
+            <textarea placeholder="因为..." class="why-input"></textarea>
+          </div>
+        </div>
+        <div class="why-step">
+          <div class="why-num">2</div>
+          <div class="why-content">
+            <label>Why 2: 为什么上述原因会发生？</label>
+            <textarea placeholder="因为..." class="why-input"></textarea>
+          </div>
+        </div>
+        <div class="why-step">
+          <div class="why-num">3</div>
+          <div class="why-content">
+            <label>Why 3: 继续追问...</label>
+            <textarea placeholder="因为..." class="why-input"></textarea>
+          </div>
+        </div>
+        <div class="why-step">
+          <div class="why-num">4</div>
+          <div class="why-content">
+            <label>Why 4: 继续追问...</label>
+            <textarea placeholder="因为..." class="why-input"></textarea>
+          </div>
+        </div>
+        <div class="why-step">
+          <div class="why-num">5</div>
+          <div class="why-content">
+            <label>Why 5: 根本原因</label>
+            <textarea placeholder="根本原因是..." class="why-input"></textarea>
+          </div>
+        </div>
+      </div>
+      <button class="add-why" onclick="addWhyStep()">+ 添加更多 Why</button>
+    </div>
+  </div>
+
+  <!-- Fishbone Panel -->
+  <div class="method-panel" id="panel-fishbone">
+    <div class="section">
+      <div class="section-title">鱼骨图 - 六维度分析</div>
+      <div class="fishbone-grid">
+        <div class="fishbone-dim">
+          <h4><span>&#128100;</span> 人 (Man)</h4>
+          <textarea placeholder="人员技能、培训、操作、沟通等因素..."></textarea>
+        </div>
+        <div class="fishbone-dim">
+          <h4><span>&#128187;</span> 机 (Machine)</h4>
+          <textarea placeholder="工具、设备、环境、自动化等因素..."></textarea>
+        </div>
+        <div class="fishbone-dim">
+          <h4><span>&#128196;</span> 料 (Material)</h4>
+          <textarea placeholder="需求文档、测试数据、接口文档等因素..."></textarea>
+        </div>
+        <div class="fishbone-dim">
+          <h4><span>&#128736;</span> 法 (Method)</h4>
+          <textarea placeholder="流程、规范、审查、变更管理等因素..."></textarea>
+        </div>
+        <div class="fishbone-dim">
+          <h4><span>&#127758;</span> 环 (Environment)</h4>
+          <textarea placeholder="测试环境、网络、配置、依赖服务等因素..."></textarea>
+        </div>
+        <div class="fishbone-dim">
+          <h4><span>&#128207;</span> 测 (Measurement)</h4>
+          <textarea placeholder="验收标准、质量指标、监控告警等因素..."></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 8D Panel -->
+  <div class="method-panel" id="panel-eightD">
+    <div class="section">
+      <div class="section-title">8D 报告步骤</div>
+      <div class="step-nav">
+        <div class="step-btn active" onclick="switchStep(0)">D0 准备</div>
+        <div class="step-btn" onclick="switchStep(1)">D1 团队</div>
+        <div class="step-btn" onclick="switchStep(2)">D2 描述</div>
+        <div class="step-btn" onclick="switchStep(3)">D3 遏制</div>
+        <div class="step-btn" onclick="switchStep(4)">D4 根因</div>
+        <div class="step-btn" onclick="switchStep(5)">D5 纠正</div>
+        <div class="step-btn" onclick="switchStep(6)">D6 验证</div>
+        <div class="step-btn" onclick="switchStep(7)">D7 预防</div>
+      </div>
+      <div class="step-content active" id="step-0">
+        <div class="form-group"><label>报告编号</label><input type="text" placeholder="8D-2026-001"></div>
+        <div class="form-group"><label>紧急程度</label><input type="text" placeholder="高 / 中 / 低"></div>
+      </div>
+      <div class="step-content" id="step-1">
+        <div class="form-group"><label>团队组成（每行一人：角色 - 姓名 - 职责）</label><textarea placeholder="组长 - 张三 - 协调推进&#10;开发 - 李四 - 代码分析&#10;测试 - 王五 - 问题复现"></textarea></div>
+      </div>
+      <div class="step-content" id="step-2">
+        <div class="form-group"><label>5W2H 详细描述</label><textarea placeholder="What: 什么问题？&#10;When: 何时发生？&#10;Where: 在哪里？&#10;Who: 影响谁？&#10;Why: 为什么是问题？&#10;How: 如何发现？&#10;How much: 影响多大？" style="min-height:150px"></textarea></div>
+      </div>
+      <div class="step-content" id="step-3">
+        <div class="form-group"><label>临时遏制措施</label><textarea placeholder="描述临时修复/回滚/降级等紧急措施..."></textarea></div>
+      </div>
+      <div class="step-content" id="step-4">
+        <div class="form-group"><label>根本原因分析</label><textarea placeholder="列出可能原因及验证结果，确认根本原因..." style="min-height:120px"></textarea></div>
+      </div>
+      <div class="step-content" id="step-5">
+        <div class="form-group"><label>永久纠正措施</label><textarea placeholder="描述永久修复方案和流程改进方案..."></textarea></div>
+      </div>
+      <div class="step-content" id="step-6">
+        <div class="form-group"><label>实施与验证记录</label><textarea placeholder="记录措施实施情况和验证结果..."></textarea></div>
+      </div>
+      <div class="step-content" id="step-7">
+        <div class="form-group"><label>预防措施</label><textarea placeholder="描述横向扩展和流程改进措施..."></textarea></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pareto Panel -->
+  <div class="method-panel" id="panel-pareto">
+    <div class="section">
+      <div class="section-title">Pareto 数据输入</div>
+      <div class="form-group">
+        <label>缺陷分类数据（每行：类别名称, 数量）</label>
+        <textarea id="paretoData" placeholder="输入校验缺失, 45&#10;空指针异常, 30&#10;并发问题, 25&#10;接口参数错误, 20&#10;UI显示异常, 12&#10;性能问题, 10&#10;其他, 8" style="min-height:150px"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <!-- Actions -->
+  <div class="actions">
+    <button class="btn btn-outline" onclick="fillDemo()">&#128161; 填入示例</button>
+    <button class="btn btn-primary" onclick="submitAnalysis()">&#128269; 提交分析</button>
+  </div>
+
+  <!-- Result -->
+  <div class="result-box" id="resultBox"></div>
+</div>
+
+<script>
+let currentMethod = 'fiveWhy';
+let whyCount = 5;
+
+function switchMethod(method) {
+  currentMethod = method;
+  document.querySelectorAll('.method-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.method-panel').forEach(p => p.classList.remove('active'));
+  event.target.closest('.method-tab').classList.add('active');
+  document.getElementById('panel-' + method).classList.add('active');
+}
+
+function switchStep(idx) {
+  document.querySelectorAll('.step-btn').forEach((b,i) => {
+    b.classList.toggle('active', i === idx);
+  });
+  document.querySelectorAll('.step-content').forEach((c,i) => {
+    c.classList.toggle('active', i === idx);
+  });
+}
+
+function addWhyStep() {
+  whyCount++;
+  const chain = document.getElementById('whyChain');
+  const step = document.createElement('div');
+  step.className = 'why-step';
+  step.innerHTML = `
+    <div class="why-num">${whyCount}</div>
+    <div class="why-content">
+      <label>Why ${whyCount}: 继续追问...</label>
+      <textarea placeholder="因为..." class="why-input"></textarea>
+    </div>
+  `;
+  chain.appendChild(step);
+}
+
+function fillDemo() {
+  document.getElementById('problemTitle').value = '生产环境支付接口高峰期频繁超时';
+  document.getElementById('problemDesc').value = '生产环境订单支付接口在每日 10:00-11:00、14:00-15:00 高峰期频繁超时（P95 > 10s），支付失败率达 15%，日均影响约 3000 笔订单，预估日损失约 50 万元。';
+
+  if (currentMethod === 'fiveWhy') {
+    const inputs = document.querySelectorAll('.why-input');
+    const answers = [
+      '因为数据库查询响应时间超过 5 秒',
+      '因为订单表全表扫描，未命中索引',
+      '因为最近上线新增了按日期范围查询的逻辑，但未添加对应的复合索引',
+      '因为代码审查未覆盖 SQL 性能，且缺少慢查询自动检测',
+      '因为团队没有将数据库性能纳入 CI/CD 质量门禁'
+    ];
+    inputs.forEach((input, i) => { if (answers[i]) input.value = answers[i]; });
+  }
+}
+
+function submitAnalysis() {
+  const title = document.getElementById('problemTitle').value;
+  const desc = document.getElementById('problemDesc').value;
+  if (!title && !desc) { alert('请填写问题描述'); return; }
+
+  const methodNames = {fiveWhy:'5-Why分析', fishbone:'鱼骨图分析', eightD:'8D报告', pareto:'Pareto分析'};
+  let msg = `请使用 qa-root-cause-analysis 进行${methodNames[currentMethod]}：\n\n问题：${title}\n描述：${desc}`;
+
+  if (currentMethod === 'fiveWhy') {
+    const whys = Array.from(document.querySelectorAll('.why-input')).map((t,i) => `Why${i+1}: ${t.value}`).filter(w => !w.endsWith(': '));
+    if (whys.length) msg += '\n\n初步分析：\n' + whys.join('\n');
+  }
+
+  sendToQoder(msg);
+}
+
+function sendToQoder(msg) {
+  if (window.__qoder_send_message) {
+    window.__qoder_send_message(msg);
+  } else if (window.parent && window.parent.postMessage) {
+    window.parent.postMessage({ type: 'qoder-widget-message', message: msg }, '*');
+  }
+}
+</script>
+</body>
+</html>

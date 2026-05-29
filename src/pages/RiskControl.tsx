@@ -757,16 +757,10 @@ function AnalysisTab({ projectId, kbProject }: { projectId: number | null; kbPro
       const sid = `risk_${Date.now()}`;
       sessionRef.current = sid;
       await agentChat(
-        text,
-        "你是在 KingdeeKB 双轨风险把控舱中的风控专家。分析以下问题时，你可以：\n" +
-        "1) 使用 search-knowledge 搜索知识库中的风险案例和最佳实践\n" +
-        "2) 使用 check_scope_creep 检查新需求是否超范围\n" +
-        "3) 使用 get_project_health 获取项目健康评分\n" +
-        "4) 使用 analyze_fit_gap 做差异分析\n" +
-        "5) 使用 generate_defense_script 生成应对话术\n" +
-        "给出专业、简洁、可执行的回答。",
+        "请作为 KingdeeKB 双轨风险把控舱中的风控专家分析以下问题，必要时使用知识库搜索、范围蔓延检查、项目健康评分、差异分析或防身话术工具，并给出专业、简洁、可执行的回答。\n\n问题：" + text,
         sid,
-        kbProject
+        kbProject,
+        projectId
       );
     } catch {
       setLoading(false);

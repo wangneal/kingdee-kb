@@ -230,6 +230,14 @@ pub fn run() {
             commands::risk_blueprint::analyze_fit_gap,
             commands::risk_blueprint::agent_chat,
             commands::risk_blueprint::answer_question,
+            // Skill system
+            commands::skill::list_skills,
+            commands::skill::get_skill,
+            commands::skill::search_skills,
+            commands::skill::get_skill_stats,
+            commands::skill::rescan_skills,
+            commands::skill::match_skill,
+            commands::skill::import_skill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

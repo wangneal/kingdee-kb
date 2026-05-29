@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "glob": "^13.0.6",
+    "playwright": "^1.60.0",
+    "pptxgenjs": "^4.0.1"
+  }
+}

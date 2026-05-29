@@ -1,0 +1,62 @@
+/* ====================================================================
+   TOKENS_CSS — 设计令牌 (Tokens)
+   一套"编辑器风"暖纸调色板,取代金蝶深蓝+青;
+   状态色调低饱和度 → 更耐看、更专业、视觉权重更可控
+==================================================================== */
+:root {
+  /* 纸 / 卡 / 墨 */
+  --paper:        #F2EFE8;
+  --paper-2:      #ECE7DC;
+  --card:         #FFFFFF;
+  --card-tint:    #FBF9F2;
+  --ink:          #1B1813;
+  --ink-2:        #4F4A41;
+  --ink-3:        #8C857A;
+  --ink-4:        #B8B0A1;
+  --hairline:     rgba(27,24,19,0.08);
+  --hairline-2:   rgba(27,24,19,0.14);
+  --border:       #D9D2C3;
+  --border-soft:  #E8E2D3;
+
+  /* 单一品牌点 (signature)  — 哑金,只用于焦点/品牌/链接 */
+  --gold:         #97772E;
+  --gold-soft:    #B89554;
+  --gold-bg:      rgba(151,119,46,0.08);
+
+  /* 状态色 — 鼠尾草绿 / 麦穗琥珀 / 陶土红 */
+  --sage:         #4F7A3F;
+  --sage-bg:      #E6EBDB;
+  --amber:        #B07820;
+  --amber-bg:     #F2E5C9;
+  --rust:         #A8442A;
+  --rust-bg:      #F0DACE;
+
+  /* 五大基线特征色 (全部去饱和、同明度) */
+  --bl-scope:     #6B4F7A;   /* 蕴紫  */
+  --bl-schedule:  #97772E;   /* 哑金  */
+  --bl-quality:   #4F7A3F;   /* 鼠尾草*/
+  --bl-risk:      #A8442A;   /* 陶土  */
+  --bl-cost:      #B07820;   /* 琥珀  */
+
+  /* 字体 */
+  --font-ui:   -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei",
+               "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif;
+  --font-num:  "JetBrains Mono","IBM Plex Mono","SF Mono","Roboto Mono",
+               "DIN Alternate", Consolas, monospace;
+
+  /* 字号 — 适度放大,信息密度仍高,但每个层级"看得清" */
+  --fs-display: 64px;
+  --fs-h0:      28px;
+  --fs-h1:      18px;
+  --fs-h2:      15px;
+  --fs-body:    13px;
+  --fs-label:   12px;
+  --fs-tiny:    10.5px;
+
+  /* 间距 */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 28px; --sp-7: 40px; --sp-8: 56px;
+
+  /* 圆角 — 全局 3px,克制 */
+  --r-1: 2px; --r-2: 4px; --r-3: 8px;
+}

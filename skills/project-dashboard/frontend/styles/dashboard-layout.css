@@ -1,0 +1,60 @@
+/* ====================================================================
+   LAYOUT_CSS — 整页布局栅格
+==================================================================== */
+*{ box-sizing:border-box; }
+html,body{
+  margin:0; padding:0;
+  font-family:var(--font-ui);
+  font-size:var(--fs-body);
+  color:var(--ink);
+  background:var(--paper);
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+.k-app{ display:flex; flex-direction:column; min-height:100vh; }
+.k-main{ display:flex; flex:1; min-height:0; }
+.k-content{
+  flex:1; padding:var(--sp-6);
+  overflow-x:auto;
+  display:flex; flex-direction:column; gap:var(--sp-6);
+}
+
+/* 第0层 — 决策带 */
+.k-layer-0{
+  display:grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(0, 1.6fr) minmax(220px, .8fr);
+  gap:var(--sp-4);
+  align-items:stretch;
+}
+
+/* 第1层 — 基线 */
+.k-layer-1{
+  display:grid;
+  grid-template-columns:repeat(5, minmax(0,1fr));
+  gap:var(--sp-4);
+}
+
+/* 第2层 — 交付物 + 协同 */
+.k-layer-2{
+  display:grid;
+  grid-template-columns:minmax(0, 2fr) minmax(280px, 1fr);
+  gap:var(--sp-4);
+  align-items:start;
+}
+.k-layer-2-right{ display:flex; flex-direction:column; gap:var(--sp-4); }
+
+/* 响应式 */
+@media (max-width:1400px){
+  .k-layer-0{ grid-template-columns: minmax(320px,1fr) minmax(0,1.4fr) minmax(200px,.7fr); }
+}
+@media (max-width:1180px){
+  .k-layer-0{ grid-template-columns:1fr 1fr; }
+  .k-layer-0 > :nth-child(3){ grid-column:1 / -1; }
+  .k-layer-1{ grid-template-columns:repeat(3,1fr); }
+  .k-layer-2{ grid-template-columns:1fr; }
+}
+@media (max-width:760px){
+  .k-sidebar{ display:none; }
+  .k-layer-0{ grid-template-columns:1fr; }
+  .k-layer-1{ grid-template-columns:repeat(2,1fr); }
+}
