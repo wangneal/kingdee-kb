@@ -21,6 +21,9 @@ import {
   RotateCcw,
   Download,
   Upload,
+  Brain,
+  Plug,
+  Database,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -150,6 +153,7 @@ export default function Settings() {
   const [showKdclubToken, setShowKdclubToken] = useState(false);
   const [kdclubSaving, setKdclubSaving] = useState(false);
   const [kdclubSaveMsg, setKdclubSaveMsg] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"ai" | "integrations" | "data">("ai");
 
   // Load config, stats; poll model status (auto-load may still be async in progress)
   useEffect(() => {
@@ -398,8 +402,34 @@ export default function Settings() {
         <h1 className="text-lg font-semibold text-neutral-800">设置</h1>
       </div>
 
-      {/* LLM Configuration Card */}
-      <section className="mb-6 rounded-xl border border-neutral-200 bg-white">
+      {/* Tab Navigation */}
+      <div className="mb-6 flex gap-1 rounded-lg bg-neutral-100 p-1">
+        {([
+          { key: "ai" as const, label: "AI 模型", icon: Brain },
+          { key: "integrations" as const, label: "集成服务", icon: Plug },
+          { key: "data" as const, label: "数据管理", icon: Database },
+        ]).map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => setActiveTab(tab.key)}
+            className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              activeTab === tab.key
+                ? "bg-white text-[#1A6BD8] shadow-sm"
+                : "text-neutral-500 hover:text-neutral-700"
+            }`}
+          >
+            <tab.icon className="h-4 w-4" />
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* AI 模型 Tab */}
+      {activeTab === "ai" && (
+        <div className="space-y-6">
+          {/* LLM Configuration Card */}
+          <section className="rounded-xl border border-neutral-200 bg-white">
         <div className="border-b border-neutral-100 px-5 py-3">
           <h2 className="text-sm font-semibold text-neutral-700">
             LLM 配置
@@ -658,10 +688,10 @@ export default function Settings() {
             </div>
           )}
         </div>
-      </section>
+        </section>
 
-      {/* Embedding Model Card */}
-      <section className="mb-6 rounded-xl border border-neutral-200 bg-white">
+        {/* Embedding Model Card */}
+        <section className="rounded-xl border border-neutral-200 bg-white">
         <div className="border-b border-neutral-100 px-5 py-3">
           <div className="flex items-center justify-between">
             <div>
@@ -949,323 +979,335 @@ export default function Settings() {
             </>
           )}
         </div>
-      </section>
+        </section>
 
-      {/* Storage Stats Card */}
-      <section className="rounded-xl border border-neutral-200 bg-white">
-        <div className="flex items-center justify-between border-b border-neutral-100 px-5 py-3">
-          <div>
-            <h2 className="text-sm font-semibold text-neutral-700">
-              存储统计
-            </h2>
-            <p className="mt-0.5 text-xs text-neutral-400">
-              知识库当前数据概览
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={handleRefreshStats}
-            className="rounded-lg p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 transition-colors"
-            title="刷新"
-          >
-            <RefreshCw className="h-4 w-4" />
-          </button>
-        </div>
+        {/* Image Processing Card */}
+        <ImageProcessingCard />
+      </div>
+      )}
 
-        <div className="p-5">
-          {stats ? (
-            <div className="grid grid-cols-3 gap-4">
-              <StatCard
-                label="文档数"
-                value={stats.document_count}
-                icon={<HardDrive className="h-4 w-4 text-[#1A6BD8]" />}
-              />
-              <StatCard
-                label="分块数"
-                value={stats.chunk_count}
-                icon={<Hash className="h-4 w-4 text-[#1A6BD8]" />}
-              />
-              <StatCard
-                label="数据库"
-                value={stats.db_path.split(/[/\\]/).pop() || "—"}
-                icon={<Server className="h-4 w-4 text-[#1A6BD8]" />}
-                isText
-              />
+      {/* 集成服务 Tab */}
+      {activeTab === "integrations" && (
+        <div className="space-y-6">
+          {/* kdclub API Key Card */}
+          <section className="rounded-xl border border-neutral-200 bg-white">
+            <div className="border-b border-neutral-100 px-5 py-3">
+              <h2 className="text-sm font-semibold text-neutral-700">
+                金蝶云社区 API
+              </h2>
+              <p className="mt-0.5 text-xs text-neutral-400">
+                配置金蝶云社区 PAT Token，用于产品智能问答功能
+              </p>
             </div>
-          ) : (
-            <p className="text-sm text-neutral-400">无法加载统计数据</p>
-          )}
-        </div>
-      </section>
 
-      {/* Desensitization Config Card */}
-      <section className="mt-6 rounded-xl border border-neutral-200 bg-white">
-        <div className="border-b border-neutral-100 px-5 py-3">
-          <h2 className="text-sm font-semibold text-neutral-700">
-            数据脱敏配置
-          </h2>
-          <p className="mt-0.5 text-xs text-neutral-400">
-            管理敏感词库，发送给 LLM 前自动过滤
-          </p>
-        </div>
-        <div className="p-5">
-          <p className="mb-3 text-xs text-neutral-500">
-            当前内置规则：身份证号、手机号、邮箱、金额、银行卡号。
-            可添加自定义敏感词（如企业高管姓名、内部项目代号）。
-          </p>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={keywordInput}
-              onChange={(e) => setKeywordInput(e.target.value)}
-              placeholder="输入敏感词..."
-              className="flex-1 rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-amber-500"
-            />
-            <button
-              type="button"
-              onClick={async () => {
-                if (!keywordInput.trim()) return;
-                try {
-                  await addSensitiveKeyword(keywordInput.trim());
-                  setKeywordInput("");
-                  const kw = await listSensitiveKeywords();
-                  setKeywords(kw);
-                } catch (e) { setKeywordError(String(e)); setTimeout(() => setKeywordError(null), 5000); }
-              }}
-              className="flex items-center gap-1 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700"
-            >
-              <Plus className="h-3.5 w-3.5" /> 添加
-            </button>
-          </div>
-          {keywords.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {keywords.map((kw) => (
-                <span key={kw} className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-xs text-amber-700">
-                  {kw}
-                  <button type="button" onClick={async () => {
+            <div className="space-y-4 p-5">
+              <div>
+                <div className="mb-1.5 flex items-center gap-2">
+                  <Key className="h-4 w-4 text-neutral-400" />
+                  <span className="text-sm font-medium text-neutral-700">PAT Token</span>
+                </div>
+                <div className="relative flex items-center">
+                  <input
+                    type={showKdclubToken ? "text" : "password"}
+                    value={kdclubToken}
+                    onChange={(e) => setKdclubToken(e.target.value)}
+                    placeholder="kdt_xxxxxxxx..."
+                    className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 pr-10 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowKdclubToken((v) => !v)}
+                    className="absolute right-2 text-neutral-400 hover:text-neutral-600 transition-colors"
+                    tabIndex={-1}
+                    aria-label={showKdclubToken ? "隐藏 Token" : "显示 Token"}
+                  >
+                    {showKdclubToken ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+                <p className="mt-1.5 text-[10px] text-neutral-400">
+                  在金蝶云社区 → 个人设置 → 访问令牌 获取。格式如 <code className="bg-neutral-100 px-1 rounded">kdt_xxxxxxxx...</code>
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setKdclubSaving(true);
+                    setKdclubSaveMsg(null);
                     try {
-                      await removeSensitiveKeyword(kw);
-                      setKeywords(await listSensitiveKeywords());
-                    } catch (e) { setKeywordError(String(e)); setTimeout(() => setKeywordError(null), 5000); }
-                  }} className="text-amber-400 hover:text-red-500">&times;</button>
-                </span>
-              ))}
+                      // Save to localStorage (not to file for security)
+                      if (kdclubToken) {
+                        localStorage.setItem("kdclub_pat_token", kdclubToken);
+                      } else {
+                        localStorage.removeItem("kdclub_pat_token");
+                      }
+                      setKdclubSaveMsg("配置已保存");
+                      setTimeout(() => setKdclubSaveMsg(null), 3000);
+                    } catch (err) {
+                      setKdclubSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+                    }
+                    setKdclubSaving(false);
+                  }}
+                  disabled={kdclubSaving}
+                  className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
+                >
+                  {kdclubSaving ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Save className="h-4 w-4" />
+                  )}
+                  保存配置
+                </button>
+                {kdclubSaveMsg && (
+                  <span className="text-xs text-neutral-500">{kdclubSaveMsg}</span>
+                )}
+              </div>
             </div>
-          )}
-          {keywordError && <p className="text-xs text-red-600 mt-1">{keywordError}</p>}
-        </div>
-      </section>
+          </section>
 
-      {/* ASR Config Card */}
-      <section className="mt-6 rounded-xl border border-neutral-200 bg-white">
-        <div className="border-b border-neutral-100 px-5 py-3">
-          <h2 className="text-sm font-semibold text-neutral-700">
-            语音识别服务配置
-          </h2>
-          <p className="mt-0.5 text-xs text-neutral-400">
-            配置在线语音识别服务（腾讯/讯飞），用于替代本地 Whisper 模型
-          </p>
-        </div>
-        <div className="p-5 space-y-4">
-          {/* Tencent ASR */}
-          <div className="rounded-lg border border-neutral-200 p-4">
-            <h3 className="text-xs font-semibold text-neutral-700 mb-2">
-              腾讯云语音识别
-              {asrConfigStatus?.tencent_configured && (
-                <span className="ml-2 text-green-600">✓ 已配置</span>
-              )}
-            </h3>
-            <div className="grid grid-cols-3 gap-2">
-              <input
-                type="text"
-                placeholder="SecretId"
-                value={tencentSecretId}
-                onChange={(e) => setTencentSecretId(e.target.value)}
-                className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
-              />
-              <input
-                type="password"
-                placeholder="SecretKey"
-                value={tencentSecretKey}
-                onChange={(e) => setTencentSecretKey(e.target.value)}
-                className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
-              />
-              <input
-                type="text"
-                placeholder="AppId"
-                value={tencentAppId}
-                onChange={(e) => setTencentAppId(e.target.value)}
-                className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
-              />
+          {/* ASR Config Card */}
+          <section className="rounded-xl border border-neutral-200 bg-white">
+            <div className="border-b border-neutral-100 px-5 py-3">
+              <h2 className="text-sm font-semibold text-neutral-700">
+                语音识别服务配置
+              </h2>
+              <p className="mt-0.5 text-xs text-neutral-400">
+                配置在线语音识别服务（腾讯/讯飞），用于替代本地 Whisper 模型
+              </p>
             </div>
-            <p className="text-[10px] text-neutral-400 mt-1">
-              在腾讯云控制台 → API密钥管理 获取
-            </p>
-          </div>
+            <div className="p-5 space-y-4">
+              {/* Tencent ASR */}
+              <div className="rounded-lg border border-neutral-200 p-4">
+                <h3 className="text-xs font-semibold text-neutral-700 mb-2">
+                  腾讯云语音识别
+                  {asrConfigStatus?.tencent_configured && (
+                    <span className="ml-2 text-green-600">✓ 已配置</span>
+                  )}
+                </h3>
+                <div className="grid grid-cols-3 gap-2">
+                  <input
+                    type="text"
+                    placeholder="SecretId"
+                    value={tencentSecretId}
+                    onChange={(e) => setTencentSecretId(e.target.value)}
+                    className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+                  />
+                  <input
+                    type="password"
+                    placeholder="SecretKey"
+                    value={tencentSecretKey}
+                    onChange={(e) => setTencentSecretKey(e.target.value)}
+                    className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+                  />
+                  <input
+                    type="text"
+                    placeholder="AppId"
+                    value={tencentAppId}
+                    onChange={(e) => setTencentAppId(e.target.value)}
+                    className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+                  />
+                </div>
+                <p className="text-[10px] text-neutral-400 mt-1">
+                  在腾讯云控制台 → API密钥管理 获取
+                </p>
+              </div>
 
-          {/* Xfyun ASR */}
-          <div className="rounded-lg border border-neutral-200 p-4">
-            <h3 className="text-xs font-semibold text-neutral-700 mb-2">
-              讯飞语音听写
-              {asrConfigStatus?.xfyun_configured && (
-                <span className="ml-2 text-green-600">✓ 已配置</span>
-              )}
-            </h3>
-            <div className="grid grid-cols-3 gap-2">
-              <input
-                type="text"
-                placeholder="AppID"
-                value={xfyunAppId}
-                onChange={(e) => setXfyunAppId(e.target.value)}
-                className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
-              />
-              <input
-                type="text"
-                placeholder="APIKey"
-                value={xfyunApiKey}
-                onChange={(e) => setXfyunApiKey(e.target.value)}
-                className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
-              />
-              <input
-                type="password"
-                placeholder="APISecret"
-                value={xfyunApiSecret}
-                onChange={(e) => setXfyunApiSecret(e.target.value)}
-                className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
-              />
+              {/* Xfyun ASR */}
+              <div className="rounded-lg border border-neutral-200 p-4">
+                <h3 className="text-xs font-semibold text-neutral-700 mb-2">
+                  讯飞语音听写
+                  {asrConfigStatus?.xfyun_configured && (
+                    <span className="ml-2 text-green-600">✓ 已配置</span>
+                  )}
+                </h3>
+                <div className="grid grid-cols-3 gap-2">
+                  <input
+                    type="text"
+                    placeholder="AppID"
+                    value={xfyunAppId}
+                    onChange={(e) => setXfyunAppId(e.target.value)}
+                    className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+                  />
+                  <input
+                    type="text"
+                    placeholder="APIKey"
+                    value={xfyunApiKey}
+                    onChange={(e) => setXfyunApiKey(e.target.value)}
+                    className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+                  />
+                  <input
+                    type="password"
+                    placeholder="APISecret"
+                    value={xfyunApiSecret}
+                    onChange={(e) => setXfyunApiSecret(e.target.value)}
+                    className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+                  />
+                </div>
+                <p className="text-[10px] text-neutral-400 mt-1">
+                  在讯飞开放平台 → 我的应用 → 语音听写（流式版） 获取
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setAsrSaving(true);
+                    setAsrSaveMsg(null);
+                    try {
+                      await saveAsrConfig({
+                        tencent_secret_id: tencentSecretId || undefined,
+                        tencent_secret_key: tencentSecretKey || undefined,
+                        tencent_app_id: tencentAppId ? Number(tencentAppId) : undefined,
+                        xfyun_app_id: xfyunAppId || undefined,
+                        xfyun_api_key: xfyunApiKey || undefined,
+                        xfyun_api_secret: xfyunApiSecret || undefined,
+                      });
+                      const status = await getAsrConfigStatus();
+                      setAsrConfigStatus(status);
+                      setAsrSaveMsg("配置已保存");
+                      setTimeout(() => setAsrSaveMsg(null), 3000);
+                    } catch (err) {
+                      setAsrSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+                    }
+                    setAsrSaving(false);
+                  }}
+                  disabled={asrSaving}
+                  className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
+                >
+                  {asrSaving ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Save className="h-4 w-4" />
+                  )}
+                  保存配置
+                </button>
+                {asrSaveMsg && (
+                  <span className="text-xs text-neutral-500">{asrSaveMsg}</span>
+                )}
+              </div>
             </div>
-            <p className="text-[10px] text-neutral-400 mt-1">
-              在讯飞开放平台 → 我的应用 → 语音听写（流式版） 获取
-            </p>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={async () => {
-                setAsrSaving(true);
-                setAsrSaveMsg(null);
-                try {
-                  await saveAsrConfig({
-                    tencent_secret_id: tencentSecretId || undefined,
-                    tencent_secret_key: tencentSecretKey || undefined,
-                    tencent_app_id: tencentAppId ? Number(tencentAppId) : undefined,
-                    xfyun_app_id: xfyunAppId || undefined,
-                    xfyun_api_key: xfyunApiKey || undefined,
-                    xfyun_api_secret: xfyunApiSecret || undefined,
-                  });
-                  const status = await getAsrConfigStatus();
-                  setAsrConfigStatus(status);
-                  setAsrSaveMsg("配置已保存");
-                  setTimeout(() => setAsrSaveMsg(null), 3000);
-                } catch (err) {
-                  setAsrSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`);
-                }
-                setAsrSaving(false);
-              }}
-              disabled={asrSaving}
-              className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
-            >
-              {asrSaving ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Save className="h-4 w-4" />
-              )}
-              保存配置
-            </button>
-            {asrSaveMsg && (
-              <span className="text-xs text-neutral-500">{asrSaveMsg}</span>
-            )}
-          </div>
+          </section>
         </div>
-      </section>
+      )}
 
-      {/* kdclub API Key Card */}
-      <section className="mb-6 rounded-xl border border-neutral-200 bg-white">
-        <div className="border-b border-neutral-100 px-5 py-3">
-          <h2 className="text-sm font-semibold text-neutral-700">
-            金蝶云社区 API
-          </h2>
-          <p className="mt-0.5 text-xs text-neutral-400">
-            配置金蝶云社区 PAT Token，用于产品智能问答功能
-          </p>
-        </div>
-
-        <div className="space-y-4 p-5">
-          <div>
-            <div className="mb-1.5 flex items-center gap-2">
-              <Key className="h-4 w-4 text-neutral-400" />
-              <span className="text-sm font-medium text-neutral-700">PAT Token</span>
-            </div>
-            <div className="relative flex items-center">
-              <input
-                type={showKdclubToken ? "text" : "password"}
-                value={kdclubToken}
-                onChange={(e) => setKdclubToken(e.target.value)}
-                placeholder="kdt_xxxxxxxx..."
-                className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 pr-10 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-              />
+      {/* 数据管理 Tab */}
+      {activeTab === "data" && (
+        <div className="space-y-6">
+          {/* Storage Stats Card */}
+          <section className="rounded-xl border border-neutral-200 bg-white">
+            <div className="flex items-center justify-between border-b border-neutral-100 px-5 py-3">
+              <div>
+                <h2 className="text-sm font-semibold text-neutral-700">
+                  存储统计
+                </h2>
+                <p className="mt-0.5 text-xs text-neutral-400">
+                  知识库当前数据概览
+                </p>
+              </div>
               <button
                 type="button"
-                onClick={() => setShowKdclubToken((v) => !v)}
-                className="absolute right-2 text-neutral-400 hover:text-neutral-600 transition-colors"
-                tabIndex={-1}
-                aria-label={showKdclubToken ? "隐藏 Token" : "显示 Token"}
+                onClick={handleRefreshStats}
+                className="rounded-lg p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 transition-colors"
+                title="刷新"
               >
-                {showKdclubToken ? (
-                  <EyeOff className="h-4 w-4" />
-                ) : (
-                  <Eye className="h-4 w-4" />
-                )}
+                <RefreshCw className="h-4 w-4" />
               </button>
             </div>
-            <p className="mt-1.5 text-[10px] text-neutral-400">
-              在金蝶云社区 → 个人设置 → 访问令牌 获取。格式如 <code className="bg-neutral-100 px-1 rounded">kdt_xxxxxxxx...</code>
-            </p>
-          </div>
 
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={async () => {
-                setKdclubSaving(true);
-                setKdclubSaveMsg(null);
-                try {
-                  // Save to localStorage (not to file for security)
-                  if (kdclubToken) {
-                    localStorage.setItem("kdclub_pat_token", kdclubToken);
-                  } else {
-                    localStorage.removeItem("kdclub_pat_token");
-                  }
-                  setKdclubSaveMsg("配置已保存");
-                  setTimeout(() => setKdclubSaveMsg(null), 3000);
-                } catch (err) {
-                  setKdclubSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`);
-                }
-                setKdclubSaving(false);
-              }}
-              disabled={kdclubSaving}
-              className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
-            >
-              {kdclubSaving ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
+            <div className="p-5">
+              {stats ? (
+                <div className="grid grid-cols-3 gap-4">
+                  <StatCard
+                    label="文档数"
+                    value={stats.document_count}
+                    icon={<HardDrive className="h-4 w-4 text-[#1A6BD8]" />}
+                  />
+                  <StatCard
+                    label="分块数"
+                    value={stats.chunk_count}
+                    icon={<Hash className="h-4 w-4 text-[#1A6BD8]" />}
+                  />
+                  <StatCard
+                    label="数据库"
+                    value={stats.db_path.split(/[/\\]/).pop() || "—"}
+                    icon={<Server className="h-4 w-4 text-[#1A6BD8]" />}
+                    isText
+                  />
+                </div>
               ) : (
-                <Save className="h-4 w-4" />
+                <p className="text-sm text-neutral-400">无法加载统计数据</p>
               )}
-              保存配置
-            </button>
-            {kdclubSaveMsg && (
-              <span className="text-xs text-neutral-500">{kdclubSaveMsg}</span>
-            )}
-          </div>
+            </div>
+          </section>
+
+          {/* Desensitization Config Card */}
+          <section className="rounded-xl border border-neutral-200 bg-white">
+            <div className="border-b border-neutral-100 px-5 py-3">
+              <h2 className="text-sm font-semibold text-neutral-700">
+                数据脱敏配置
+              </h2>
+              <p className="mt-0.5 text-xs text-neutral-400">
+                管理敏感词库，发送给 LLM 前自动过滤
+              </p>
+            </div>
+            <div className="p-5">
+              <p className="mb-3 text-xs text-neutral-500">
+                当前内置规则：身份证号、手机号、邮箱、金额、银行卡号。
+                可添加自定义敏感词（如企业高管姓名、内部项目代号）。
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={keywordInput}
+                  onChange={(e) => setKeywordInput(e.target.value)}
+                  placeholder="输入敏感词..."
+                  className="flex-1 rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-amber-500"
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!keywordInput.trim()) return;
+                    try {
+                      await addSensitiveKeyword(keywordInput.trim());
+                      setKeywordInput("");
+                      const kw = await listSensitiveKeywords();
+                      setKeywords(kw);
+                    } catch (e) { setKeywordError(String(e)); setTimeout(() => setKeywordError(null), 5000); }
+                  }}
+                  className="flex items-center gap-1 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700"
+                >
+                  <Plus className="h-3.5 w-3.5" /> 添加
+                </button>
+              </div>
+              {keywords.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {keywords.map((kw) => (
+                    <span key={kw} className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-xs text-amber-700">
+                      {kw}
+                      <button type="button" onClick={async () => {
+                        try {
+                          await removeSensitiveKeyword(kw);
+                          setKeywords(await listSensitiveKeywords());
+                        } catch (e) { setKeywordError(String(e)); setTimeout(() => setKeywordError(null), 5000); }
+                      }} className="text-amber-400 hover:text-red-500">&times;</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {keywordError && <p className="text-xs text-red-600 mt-1">{keywordError}</p>}
+            </div>
+          </section>
+
+          {/* Database Backup Card */}
+          <DatabaseBackupCard />
         </div>
-      </section>
-
-      {/* Image Processing Card */}
-      <ImageProcessingCard />
-
-      {/* Database Backup Card */}
-      <DatabaseBackupCard />
+      )}
     </div>
   );
 }
