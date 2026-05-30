@@ -10,6 +10,13 @@ import {
 
 // ── Exported Types ──────────────────────────────────────────────────────────
 
+export interface RAGSource {
+  title: string;
+  section_path?: string;
+  content_snippet?: string;
+  score: number;
+}
+
 export interface AgentMessage {
   id: string;
   role: "user" | "assistant";
@@ -19,6 +26,7 @@ export interface AgentMessage {
   hiddenContext?: string;
   clarification?: ClarificationPayload;
   clarificationAnswered?: boolean;
+  sources?: RAGSource[];
 }
 
 export interface ReActTrace {
@@ -92,6 +100,27 @@ function summarizeToolResult(toolName: string, result: string): string {
   const text = important || result;
   const clipped = text.length > 2000 ? `${text.slice(0, 2000)}\n...[truncated]` : text;
   return `工具 ${toolName} 结果摘要:\n${clipped}`;
+}
+
+/** Try to extract RAG sources from a search-knowledge tool result */
+function extractSourcesFromToolResult(toolName: string, result: string): RAGSource[] | undefined {
+  const name = (toolName || "").toLowerCase().replace(/[-_\s]/g, "");
+  if (!name.includes("searchknowledge") && !name.includes("hybridsearch") && !name.includes("knowledge")) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(result);
+    const items = Array.isArray(parsed) ? parsed : (parsed?.results ?? parsed?.items ?? []);
+    if (!Array.isArray(items) || items.length === 0) return undefined;
+    return items.slice(0, 8).map((item: Record<string, unknown>) => ({
+      title: String(item.title ?? item.source ?? "未知来源"),
+      section_path: item.section_path ? String(item.section_path) : undefined,
+      content_snippet: item.content ? String(item.content).slice(0, 200) : undefined,
+      score: typeof item.score === "number" ? item.score : 0,
+    }));
+  } catch {
+    return undefined;
+  }
 }
 
 /** Build conversation history for multi-turn agent context. */
@@ -189,16 +218,19 @@ export function AgentProvider({ children }: { children: ReactNode }) {
             }
             slot.currentTrace = { ...slot.currentTrace, toolCalls: calls };
 
+            // Try to extract RAG sources from search tool results
+            const newSources = extractSourcesFromToolResult(event.name || toolName || "tool", event.result);
+
             // Build hidden context for the last streaming assistant message
             const lastMsg = slot.messages[slot.messages.length - 1];
             if (lastMsg && lastMsg.role === "assistant" && lastMsg.streaming) {
               const summary = summarizeToolResult(event.name || toolName || "tool", event.result);
-              if (summary) {
-                slot.messages[slot.messages.length - 1] = {
-                  ...lastMsg,
-                  hiddenContext: [lastMsg.hiddenContext, summary].filter(Boolean).join("\n\n"),
-                };
-              }
+              const existingSources = lastMsg.sources ?? [];
+              slot.messages[slot.messages.length - 1] = {
+                ...lastMsg,
+                hiddenContext: [lastMsg.hiddenContext, summary].filter(Boolean).join("\n\n"),
+                sources: newSources ? [...existingSources, ...newSources] : existingSources.length > 0 ? existingSources : undefined,
+              };
             }
             break;
           }

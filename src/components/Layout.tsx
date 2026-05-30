@@ -1,8 +1,8 @@
-import { NavLink, Outlet } from "react-router-dom";
-import { useEffect, useRef } from "react";
+import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
 import { BookOpen, Search, Upload, Settings, LayoutDashboard, MessageSquare, FileEdit, Package, ClipboardList, ShieldAlert, Zap } from "lucide-react";
 import Spotlight from "./Spotlight";
-import { agentChat, listenReActEvents } from "../lib/tauri-commands";
+import { agentChat, listenReActEvents, isLLMConfigured, getModelStatus, getStats } from "../lib/tauri-commands";
 
 const LS_KEY_QUESTION = "kb_sidebar_question";
 const LS_KEY_ANSWER = "kb_sidebar_answer";
@@ -21,9 +21,107 @@ const navItems = [
   { to: "/settings", icon: Settings, label: "设置" },
 ];
 
+type StatusLevel = "ok" | "warn" | "error" | "loading";
+
+interface StatusItem {
+  label: string;
+  level: StatusLevel;
+  detail?: string;
+  section: string;
+}
+
+function StatusBar({ onNavigate }: { onNavigate: (path: string) => void }) {
+  const [items, setItems] = useState<StatusItem[]>([
+    { label: "LLM", level: "loading", section: "llm" },
+    { label: "Embedding", level: "loading", section: "embedding" },
+    { label: "知识库", level: "loading", section: "kb" },
+  ]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function check() {
+      const results: StatusItem[] = [];
+
+      // LLM status
+      try {
+        const configured = await isLLMConfigured();
+        results.push({
+          label: "LLM",
+          level: configured ? "ok" : "error",
+          detail: configured ? "已配置" : "未配置",
+          section: "llm",
+        });
+      } catch {
+        results.push({ label: "LLM", level: "error", detail: "检测失败", section: "llm" });
+      }
+
+      // Embedding status
+      try {
+        const loaded = await getModelStatus();
+        results.push({
+          label: "Embedding",
+          level: loaded ? "ok" : "warn",
+          detail: loaded ? "已加载" : "未加载",
+          section: "embedding",
+        });
+      } catch {
+        results.push({ label: "Embedding", level: "error", detail: "检测失败", section: "embedding" });
+      }
+
+      // KB status
+      try {
+        const stats = await getStats();
+        results.push({
+          label: "知识库",
+          level: stats.document_count > 0 ? "ok" : "warn",
+          detail: `${stats.document_count} 篇文档`,
+          section: "kb",
+        });
+      } catch {
+        results.push({ label: "知识库", level: "error", detail: "检测失败", section: "kb" });
+      }
+
+      if (!cancelled) setItems(results);
+    }
+
+    check();
+    const interval = setInterval(check, 30_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  const dotColor: Record<StatusLevel, string> = {
+    ok: "bg-green-500",
+    warn: "bg-yellow-500",
+    error: "bg-red-500",
+    loading: "bg-neutral-300 animate-pulse",
+  };
+
+  return (
+    <div className="border-t border-neutral-200 px-3 py-2.5 space-y-1">
+      {items.map((item) => (
+        <button
+          key={item.label}
+          type="button"
+          onClick={() => onNavigate(`/settings?section=${item.section}`)}
+          className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] text-neutral-500 hover:bg-neutral-50 hover:text-neutral-700 transition-colors"
+          title={`${item.label}: ${item.detail ?? ""}`}
+        >
+          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotColor[item.level]}`} />
+          <span className="font-medium">{item.label}</span>
+          {item.detail && (
+            <span className="ml-auto truncate text-neutral-400">{item.detail}</span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function Layout() {
   const sideAnswerRef = useRef("");
   const sideSessionRef = useRef<string | null>(null);
+  const navigate = useNavigate();
 
   // Sidebar localStorage bridge: poll for questions from Tencent Meeting sidebar
   useEffect(() => {
@@ -108,6 +206,9 @@ export default function Layout() {
             </NavLink>
           ))}
         </nav>
+
+        {/* Status Indicator */}
+        <StatusBar onNavigate={navigate} />
       </aside>
 
       {/* Main content */}

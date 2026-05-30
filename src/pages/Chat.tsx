@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { useNavigate } from "react-router-dom";
 import {
   Send,
   Trash2,
@@ -14,12 +15,18 @@ import {
   FileText,
   Image as ImageIcon,
   StopCircle,
+  RefreshCw,
+  Settings,
+  ChevronDown,
+  ChevronUp,
+  BookOpen,
 } from "lucide-react";
 import {
   useAgent,
   DEFAULT_SLOT,
   buildAgentHistory,
   type AgentMessage,
+  type RAGSource,
 } from "../contexts/AgentContext";
 import {
   isLLMConfigured,
@@ -109,6 +116,7 @@ function summarizeToolArgs(args: string): string {
 
 export default function Chat() {
   const agent = useAgent();
+  const navigate = useNavigate();
   const slot = agent.slots.get("chat") ?? DEFAULT_SLOT;
   const { messages, loading, currentTrace } = slot;
 
@@ -122,6 +130,7 @@ export default function Chat() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const lastInputRef = useRef<{ text: string; attachments: ChatAttachment[] } | null>(null);
 
   // Load chat history from localStorage into slot on mount
   const didLoadRef = useRef(false);
@@ -189,6 +198,9 @@ export default function Chat() {
       return;
     }
 
+    // Preserve input for retry before clearing
+    lastInputRef.current = { text: input, attachments: [...attachments] };
+
     setAttaching(true);
     const preparedAttachments = await prepareAttachmentsForSend(attachments, setAttachments);
     setAttaching(false);
@@ -211,6 +223,23 @@ export default function Chat() {
       providerId: selectedProviderId || undefined,
     });
   }, [input, attachments, loading, attaching, messages, agent, selectedProviderId, llmReady]);
+
+  // Retry last failed message
+  const handleRetry = useCallback(async () => {
+    if (loading || !lastInputRef.current) return;
+    const { text, attachments: prevAttachments } = lastInputRef.current;
+    setInput(text);
+    setAttachments(prevAttachments);
+    // Use a short delay to allow state to update, then trigger send
+    setTimeout(() => {
+      inputRef.current?.focus();
+    }, 50);
+  }, [loading]);
+
+  // Navigate to settings section
+  const handleNavigateSettings = useCallback((section?: string) => {
+    navigate(section ? `/settings?section=${section}` : "/settings");
+  }, [navigate]);
 
   const handleAttach = useCallback(async () => {
     if (loading || attaching) return;
@@ -353,7 +382,13 @@ export default function Chat() {
             </div>
           ) : (
             messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} onClarify={handleClarify} />
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                onClarify={handleClarify}
+                onRetry={handleRetry}
+                onNavigateSettings={handleNavigateSettings}
+              />
             ))
           )}
 
@@ -810,9 +845,22 @@ function AttachmentChip({
 
 // ── Message Bubble Component ──────────────────────────────────────────────
 
-function MessageBubble({ message, onClarify }: { message: AgentMessage; onClarify: (questionId: string, answer: string) => void }) {
+function MessageBubble({
+  message,
+  onClarify,
+  onRetry,
+  onNavigateSettings,
+}: {
+  message: AgentMessage;
+  onClarify: (questionId: string, answer: string) => void;
+  onRetry: () => void;
+  onNavigateSettings: (section?: string) => void;
+}) {
   const isUser = message.role === "user";
   const [freeInput, setFreeInput] = useState("");
+
+  const isLLMError = message.error && /未配置|api.?key|llm|模型|unauthorized|401/i.test(message.content);
+  const isTimeoutError = message.error && /超时|timeout/i.test(message.content);
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -846,6 +894,35 @@ function MessageBubble({ message, onClarify }: { message: AgentMessage; onClarif
                 <span className="ml-1 inline-block h-3.5 w-1.5 animate-pulse bg-amber-500 rounded-sm align-middle" />
               )}
             </div>
+          )}
+
+          {/* Error action buttons */}
+          {message.error && !message.streaming && (
+            <div className="mt-3 flex flex-wrap gap-2 border-t border-red-200 pt-3">
+              {(isLLMError || isTimeoutError) && (
+                <button
+                  type="button"
+                  onClick={() => onNavigateSettings("llm")}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 transition-colors"
+                >
+                  <Settings className="h-3 w-3" />
+                  去设置
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onRetry}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 transition-colors"
+              >
+                <RefreshCw className="h-3 w-3" />
+                重试
+              </button>
+            </div>
+          )}
+
+          {/* RAG Sources */}
+          {!isUser && !message.error && message.sources && message.sources.length > 0 && (
+            <SourcesDisplay sources={message.sources} />
           )}
 
           {/* Clarification options */}
@@ -911,6 +988,60 @@ function MessageBubble({ message, onClarify }: { message: AgentMessage; onClarif
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Collapsible RAG sources display */
+function SourcesDisplay({ sources }: { sources: RAGSource[] }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="mt-3 border-t border-neutral-100 pt-3">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center gap-1.5 text-xs text-neutral-500 hover:text-neutral-700 transition-colors"
+      >
+        <BookOpen className="h-3 w-3" />
+        <span className="font-medium">参考来源 ({sources.length})</span>
+        {expanded ? (
+          <ChevronUp className="h-3 w-3 ml-auto" />
+        ) : (
+          <ChevronDown className="h-3 w-3 ml-auto" />
+        )}
+      </button>
+      {expanded && (
+        <div className="mt-2 space-y-1.5">
+          {sources.map((src, i) => (
+            <div
+              key={i}
+              className="rounded-lg border border-neutral-100 bg-neutral-50 px-3 py-2"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-neutral-700 truncate">
+                  {src.title}
+                </span>
+                {src.score > 0 && (
+                  <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                    {(src.score * 100).toFixed(0)}%
+                  </span>
+                )}
+              </div>
+              {src.section_path && (
+                <div className="mt-0.5 text-[10px] text-neutral-400 truncate">
+                  {src.section_path}
+                </div>
+              )}
+              {src.content_snippet && (
+                <div className="mt-1 text-[11px] text-neutral-500 line-clamp-2 leading-relaxed">
+                  {src.content_snippet}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
