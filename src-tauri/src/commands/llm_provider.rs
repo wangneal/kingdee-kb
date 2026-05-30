@@ -43,6 +43,8 @@ pub async fn add_llm_provider(
         is_default: false,
         is_multimodal: None,
         last_probe_at: None,
+        max_tokens: 4096,
+        temperature: 0.3,
     };
 
     let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
@@ -77,6 +79,8 @@ pub async fn update_llm_provider(
         is_default: false,
         is_multimodal: None,
         last_probe_at: None,
+        max_tokens: 4096,
+        temperature: 0.3,
     };
 
     let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;

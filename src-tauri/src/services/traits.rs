@@ -7,7 +7,7 @@
 //! 3. 函数签名不再依赖具体类型
 
 use crate::services::bm25_service::BM25SearchResult;
-use crate::services::llm_service::LLMConfig;
+use crate::services::llm_providers::LLMProviderConfig;
 use crate::services::metadata::{ChunkMeta, DocumentMeta, KnowledgeStats};
 use crate::services::vector_index::SearchResult;
 
@@ -152,11 +152,8 @@ pub trait LLMServiceSync {
     /// 是否已配置
     fn is_configured(&self) -> bool;
 
-    /// 获取当前配置
-    fn get_config(&self) -> Result<LLMConfig, String>;
-
-    /// 更新配置
-    fn set_config(&self, config: LLMConfig) -> Result<(), String>;
+    /// 获取当前活跃配置
+    fn get_active_config(&self) -> Result<LLMProviderConfig, String>;
 
     /// 同步生成文本（非流式）
     fn generate_text_sync(&self, system_prompt: &str, user_message: &str)

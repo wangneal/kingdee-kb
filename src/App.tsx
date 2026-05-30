@@ -1,6 +1,8 @@
 import { Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import ErrorBoundary from "./components/ErrorBoundary";
+import { ToastProvider } from "./components/Toast";
+import { AgentProvider } from "./contexts/AgentContext";
 import Home from "./pages/Home";
 import Settings from "./pages/Settings";
 import Browse from "./pages/Browse";
@@ -17,6 +19,8 @@ import Skills from "./pages/Skills";
 function App() {
   return (
     <ErrorBoundary>
+      <ToastProvider>
+      <AgentProvider>
       <Routes>
       <Route path="/" element={<Layout />}>
         <Route index element={<Home />} />
@@ -33,6 +37,8 @@ function App() {
         <Route path="settings" element={<Settings />} />
       </Route>
     </Routes>
+      </AgentProvider>
+      </ToastProvider>
     </ErrorBoundary>
   );
 }

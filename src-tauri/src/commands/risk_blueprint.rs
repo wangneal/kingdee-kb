@@ -272,7 +272,7 @@ pub async fn extract_blueprint(
             content: research_context,
         },
     ];
-    let config = state.llm.get_config()?;
+    let config = state.llm.get_active_config()?;
     state.llm.chat_completion(&messages, &config).await
 }
 
@@ -299,7 +299,7 @@ pub async fn analyze_fit_gap(
             content: requirements,
         },
     ];
-    let config = state.llm.get_config()?;
+    let config = state.llm.get_active_config()?;
     state.llm.chat_completion(&messages, &config).await
 }
 
@@ -340,6 +340,10 @@ pub async fn agent_chat(
     let products = state.products.clone();
     let risk_store = state.risk_control_store.clone();
     let skill_manager = state.skill_manager.clone();
+
+    // 注册取消标志
+    let cancel_flag = state.register_cancel_flag(&sid);
+    let cleanup_sid = sid.clone();
 
     // 技能清单注入 system prompt（Claude Code 方式：LLM 自己匹配）
     let skill_catalog = {
@@ -400,6 +404,7 @@ pub async fn agent_chat(
             products,
             risk_store,
             skill_manager,
+            Some(cancel_flag),
         )
         .await;
     });
@@ -414,6 +419,9 @@ pub async fn agent_chat(
             _ => {}
         }
     }
+
+    // 清理取消标志
+    state.remove_cancel_flag(&cleanup_sid);
 
     Ok(())
 }
@@ -431,4 +439,14 @@ pub async fn answer_question(
         .try_state::<AppState>()
         .ok_or("后端尚未初始化完成")?;
     question_tool::answer_question(&state.pending_questions, &question_id, &answer).await
+}
+
+/// 取消正在运行的 agent 流式会话
+#[tauri::command]
+pub async fn cancel_agent_stream(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    state.cancel_agent_session(&session_id);
+    Ok(())
 }

@@ -348,7 +348,7 @@ async fn generate_llm_fields(
     ];
 
     // Use LLM service's configured settings
-    let config = llm.get_config()?;
+    let config = llm.get_active_config()?;
     let response = llm.chat_completion(&messages, &config).await?;
 
     // Parse JSON response
@@ -804,7 +804,7 @@ async fn generate_llm_fields_with_recipe(
     ];
 
     // Use LLM service's configured settings
-    let config = llm.get_config()?;
+    let config = llm.get_active_config()?;
     let response = llm.chat_completion(&messages, &config).await?;
 
     // Parse JSON response
@@ -873,7 +873,7 @@ async fn generate_full_document_content(
         },
     ];
 
-    let config = llm.get_config()?;
+    let config = llm.get_active_config()?;
     let response = llm.chat_completion(&messages, &config).await?;
 
     // Clean up the response - remove code block markers if present

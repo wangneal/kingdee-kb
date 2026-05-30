@@ -5,15 +5,19 @@
 //! 通过 ReActEvent 实时推送到前端。
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use tokio::sync::mpsc;
+use tracing::{debug, error, info};
 
+use crate::services::agent_timeout::AGENT_SESSION_TIMEOUT_SECS;
 use crate::services::bm25_service::BM25Service;
 use crate::services::embedding::EmbeddingService;
-use crate::services::llm_service::{ChatMessage, LLMProvider, LLMService};
+use crate::services::llm_service::{ChatMessage, LLMService};
+use crate::services::llm_providers::LLMProtocol;
 use crate::services::metadata::MetadataStore;
 use crate::services::product_store::ProductStore;
 use crate::services::question_tool::PendingQuestions;
@@ -24,6 +28,30 @@ use crate::services::risk_control::RiskControlStore;
 use crate::services::vector_index::VectorIndex;
 use rig_core::client::CompletionClient;
 use rig_core::streaming::StreamingPrompt;
+
+/// Agent 会话取消标志
+///
+/// 通过 `AtomicBool` 实现线程安全的取消信号。
+/// `new()` 返回标志句柄和共享的原子布尔值，
+/// 前者用于外部取消，后者传入 agent 循环检测。
+pub struct AgentCancelFlag {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl AgentCancelFlag {
+    pub fn new() -> (Self, Arc<AtomicBool>) {
+        let flag = Arc::new(AtomicBool::new(false));
+        (Self { cancelled: flag.clone() }, flag)
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
 
 /// 死循环阈值：如果最近 N 次工具调用的 name+args 完全相同，则提前中断。
 /// 在 `drain_stream()` 中执行，作为实际的循环保护。
@@ -42,6 +70,33 @@ const PRACTICALLY_UNLIMITED_TURNS: usize = 10_000;
 /// truncate the tool call before it reaches execution.
 const MIN_AGENT_OUTPUT_TOKENS: u64 = 16_384;
 const MAX_AGENT_OUTPUT_TOKENS: u64 = 32_768;
+
+/// 每会话工具调用速率限制器
+struct ToolRateLimiter {
+    max_calls_per_minute: u32,
+    recent_calls: Vec<Instant>,
+}
+
+impl ToolRateLimiter {
+    fn new(max_calls_per_minute: u32) -> Self {
+        Self {
+            max_calls_per_minute,
+            recent_calls: Vec::new(),
+        }
+    }
+
+    fn check_and_record(&mut self) -> bool {
+        let now = Instant::now();
+        let one_minute_ago = now - Duration::from_secs(60);
+        self.recent_calls.retain(|t| *t > one_minute_ago);
+        if self.recent_calls.len() >= self.max_calls_per_minute as usize {
+            false
+        } else {
+            self.recent_calls.push(now);
+            true
+        }
+    }
+}
 
 /// RigAgent — 使用 rig 实现替代 ReActAgent
 ///
@@ -75,12 +130,13 @@ impl RigAgent {
         products: Arc<Mutex<ProductStore>>,
         risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
         skill_manager: Arc<Mutex<crate::services::skill_manager::SkillManager>>,
+        cancel_flag: Option<Arc<AtomicBool>>,
     ) {
         let sid = session_id.to_string();
         let started_at = Instant::now();
 
         // 1. 获取 LLM 配置
-        let config = match llm.get_config() {
+        let config = match llm.get_active_config() {
             Ok(c) => c,
             Err(e) => {
                 let _ = sender.send(ReActEvent::Error {
@@ -130,9 +186,24 @@ impl RigAgent {
 提问时优先使用 single_choice 或 multi_choice；无法列出稳定选项时使用 free_input。不要在同一个 prompt 中写多个问句或编号问题。
 
 【文档生成规则 — 必须遵守】
-当用户要求生成文档时（调研报告、蓝图、会议纪要、周报、上线方案、验收报告等）：
-1. **必须调用 generate-doc 工具**，不要直接用文字回复
-2. 正确的 template_id 值：
+当用户要求生成文档时，按以下优先级处理：
+
+**优先使用技能系统（推荐）：**
+1. 首先检查是否有匹配的外部技能：
+   - 调研报告/调研纪要 → survey-assistant 技能
+   - 业务蓝图/蓝图文档 → blueprint-tools 技能
+   - 启动会材料/任命书/项目看板 → kickoff-pack 技能
+   - 上线方案/上线检查 → golive-pack 技能
+   - 验收报告/验收单 → acceptance-pack 技能
+   - 周报/月报 → weekly-report 技能
+   - PPT/演示文稿 → kingdee-ppt 技能
+   - 通用文档编辑/模板填充 → doc-tools 技能
+2. 如果匹配到技能，调用 use-skill 读取技能内容，按技能指引推进
+3. 如果技能需要运行脚本，使用 run-skill-script 工具执行
+
+**回退到 generate-doc（兼容）：**
+如果用户明确要求生成以下白名单 Word/Xlsx 交付物且无匹配技能，可调用 generate-doc：
+1. 正确的 template_id 值：
    - investigation_report: 调研报告
    - business_blueprint: 业务蓝图
    - meeting_minutes: 会议纪要
@@ -140,14 +211,27 @@ impl RigAgent {
    - pcr: 变更申请
    - go_live: 上线方案/上线检查
    - acceptance: 验收报告/验收单
-3. 将附件内容或用户提供的信息放入 context 参数
-4. 不要自己编写文档内容，让工具处理
-5. 只有用户明确要生成上述白名单 Word/Xlsx 交付物时才调用 generate-doc；PPT/演示文稿/启动会PPT不属于 generate-doc 白名单，必须走外部 skill 参考流程，不得改问“是否生成会议纪要”
+2. 将附件内容或用户提供的信息放入 context 参数
+3. 不要自己编写文档内容，让工具处理
 
-【工作方式】
-在每次回答前，先检查用户消息是否包含附件：
-- 有附件 → 直接基于附件内容回答/生成
-- 无附件 → 思考需要什么信息，调用工具获取
+**重要提示：**
+- 不要将非白名单交付物强行映射为 generate-doc 模板
+- PPT/演示文稿/启动会PPT 必须走技能系统，不得改问\"是否生成会议纪要\"
+- 优先尝试技能系统，generate-doc 仅作为兼容性回退
+
+【工作方式 — 必须遵守】
+在每次回答前：
+1. 检查用户消息是否包含附件：
+   - 有附件 → 直接基于附件内容回答/生成
+   - 无附件 → **必须先调用 search-knowledge 工具搜索知识库**
+2. **强制搜索规则**：当用户提到以下内容时，必须先搜索知识库再回答：
+   - 项目名称、客户名称
+   - 金蝶产品功能、模块、配置
+   - 实施方法论、最佳实践
+   - 具体技术问题、报错信息
+   - 任何需要查证的事实性问题
+3. 只有当用户问的是完全通用的问题（如 你好、今天天气）时，才可以跳过搜索直接回答
+4. 搜索结果作为回答的依据，必须引用来源
 
 【规则】
 - 一次只调用一个工具
@@ -167,116 +251,136 @@ impl RigAgent {
         let temperature = config.temperature as f64;
         let max_tokens = agent_output_tokens(config.max_tokens);
         let prompt = build_prompt_with_history(history, user_message);
-        eprintln!(
-            "[RigAgent] start session={} provider={:?} model={} configured_max_tokens={} agent_output_tokens={} temperature={} history_messages={} prompt_chars={}",
-            sid,
-            config.provider,
-            model,
-            config.max_tokens,
-            max_tokens,
-            temperature,
-            history.len(),
-            prompt.chars().count()
+        info!(
+            session = %sid,
+            provider = ?config.protocol,
+            model = %model,
+            configured_max_tokens = config.max_tokens,
+            agent_output_tokens = max_tokens,
+            temperature = temperature,
+            history_messages = history.len(),
+            prompt_chars = prompt.chars().count(),
+            "agent session started"
         );
 
-        // 3. 按 provider 分支，流式推送 agent 事件
-        match config.provider {
-            LLMProvider::OpenAI | LLMProvider::Local => {
-                let client = match build_openai_client(&config) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        let _ = sender.send(ReActEvent::Error {
-                            session_id: sid,
-                            message: e,
-                        });
-                        return;
+        // 3. 按 provider 分支，流式推送 agent 事件（带会话超时保护）
+        let timeout_sender = sender.clone();
+        let timeout_sid = sid.clone();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(AGENT_SESSION_TIMEOUT_SECS),
+            async {
+                let mut rate_limiter = ToolRateLimiter::new(30);
+                match config.protocol {
+                    LLMProtocol::OpenAI | LLMProtocol::Local => {
+                        let client = match build_openai_client(&config) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                let _ = sender.send(ReActEvent::Error {
+                                    session_id: sid,
+                                    message: e,
+                                });
+                                return;
+                            }
+                        };
+
+                        // 使用传统的 Chat Completions API（/v1/chat/completions）
+                        // 而不是新的 Responses API（/v1/responses）
+                        let completions_client = client.completions_api();
+
+                        let mut tools = all_rig_tools(
+                            project_id,
+                            data_dir.clone(),
+                            llm.clone(),
+                            embedding.clone(),
+                            vector_index.clone(),
+                            bm25.clone(),
+                            metadata.clone(),
+                            products.clone(),
+                            risk_store.clone(),
+                            skill_manager.clone(),
+                            risk_project_id,
+                        );
+                        tools.extend(runtime_rig_tools(
+                            pending.clone(),
+                            sender.clone(),
+                            sid.clone(),
+                            skill_manager.clone(),
+                            data_dir.clone(),
+                        ));
+
+                        let mut stream = completions_client
+                            .agent(model)
+                            .preamble(&system_prompt)
+                            .tools(tools)
+                            .temperature(temperature)
+                            .max_tokens(max_tokens)
+                            .default_max_turns(PRACTICALLY_UNLIMITED_TURNS)
+                            .build()
+                            .stream_prompt(prompt.as_str())
+                            .await;
+
+                        Self::drain_stream(&mut stream, &sender, &sid, started_at, &mut rate_limiter, cancel_flag.clone()).await;
                     }
-                };
+                    LLMProtocol::Anthropic => {
+                        let client = match build_anthropic_client(&config) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                let _ = sender.send(ReActEvent::Error {
+                                    session_id: sid,
+                                    message: e,
+                                });
+                                return;
+                            }
+                        };
 
-                // 使用传统的 Chat Completions API（/v1/chat/completions）
-                // 而不是新的 Responses API（/v1/responses）
-                let completions_client = client.completions_api();
+                        let mut tools = all_rig_tools(
+                            project_id,
+                            data_dir.clone(),
+                            llm.clone(),
+                            embedding.clone(),
+                            vector_index.clone(),
+                            bm25.clone(),
+                            metadata.clone(),
+                            products.clone(),
+                            risk_store.clone(),
+                            skill_manager.clone(),
+                            risk_project_id,
+                        );
+                        tools.extend(runtime_rig_tools(
+                            pending.clone(),
+                            sender.clone(),
+                            sid.clone(),
+                            skill_manager.clone(),
+                            data_dir.clone(),
+                        ));
 
-                let mut tools = all_rig_tools(
-                    project_id,
-                    data_dir.clone(),
-                    llm.clone(),
-                    embedding.clone(),
-                    vector_index.clone(),
-                    bm25.clone(),
-                    metadata.clone(),
-                    products.clone(),
-                    risk_store.clone(),
-                    skill_manager.clone(),
-                    risk_project_id,
-                );
-                tools.extend(runtime_rig_tools(
-                    pending.clone(),
-                    sender.clone(),
-                    sid.clone(),
-                    skill_manager.clone(),
-                    data_dir.clone(),
-                ));
+                        let mut stream = client
+                            .agent(model)
+                            .preamble(&system_prompt)
+                            .tools(tools)
+                            .temperature(temperature)
+                            .max_tokens(max_tokens)
+                            .default_max_turns(PRACTICALLY_UNLIMITED_TURNS)
+                            .build()
+                            .stream_prompt(prompt.as_str())
+                            .await;
 
-                let mut stream = completions_client
-                    .agent(model)
-                    .preamble(&system_prompt)
-                    .tools(tools)
-                    .temperature(temperature)
-                    .max_tokens(max_tokens)
-                    .default_max_turns(PRACTICALLY_UNLIMITED_TURNS)
-                    .build()
-                    .stream_prompt(prompt.as_str())
-                    .await;
-
-                Self::drain_stream(&mut stream, &sender, &sid, started_at).await;
-            }
-            LLMProvider::Anthropic => {
-                let client = match build_anthropic_client(&config) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        let _ = sender.send(ReActEvent::Error {
-                            session_id: sid,
-                            message: e,
-                        });
-                        return;
+                        Self::drain_stream(&mut stream, &sender, &sid, started_at, &mut rate_limiter, cancel_flag).await;
                     }
-                };
+                }
+            },
+        )
+        .await;
 
-                let mut tools = all_rig_tools(
-                    project_id,
-                    data_dir.clone(),
-                    llm.clone(),
-                    embedding.clone(),
-                    vector_index.clone(),
-                    bm25.clone(),
-                    metadata.clone(),
-                    products.clone(),
-                    risk_store.clone(),
-                    skill_manager.clone(),
-                    risk_project_id,
-                );
-                tools.extend(runtime_rig_tools(
-                    pending.clone(),
-                    sender.clone(),
-                    sid.clone(),
-                    skill_manager.clone(),
-                    data_dir.clone(),
-                ));
-
-                let mut stream = client
-                    .agent(model)
-                    .preamble(&system_prompt)
-                    .tools(tools)
-                    .temperature(temperature)
-                    .max_tokens(max_tokens)
-                    .default_max_turns(PRACTICALLY_UNLIMITED_TURNS)
-                    .build()
-                    .stream_prompt(prompt.as_str())
-                    .await;
-
-                Self::drain_stream(&mut stream, &sender, &sid, started_at).await;
-            }
+        if result.is_err() {
+            let _ = timeout_sender.send(ReActEvent::Error {
+                session_id: timeout_sid.clone(),
+                message: "会话超时（超过10分钟），请重新开始对话".to_string(),
+            });
+            let _ = timeout_sender.send(ReActEvent::Done {
+                session_id: timeout_sid,
+            });
         }
     }
 
@@ -287,6 +391,8 @@ impl RigAgent {
         sender: &mpsc::UnboundedSender<ReActEvent>,
         sid: &str,
         started_at: Instant,
+        rate_limiter: &mut ToolRateLimiter,
+        cancel_flag: Option<Arc<AtomicBool>>,
     ) {
         use rig_core::agent::MultiTurnStreamItem;
         use rig_core::streaming::{StreamedAssistantContent, StreamedUserContent};
@@ -297,6 +403,18 @@ impl RigAgent {
         let mut announced_tool_args_generation = false;
 
         while let Some(item) = stream.next().await {
+            // 检查取消标志
+            if cancel_flag.as_ref().map_or(false, |f| f.load(Ordering::SeqCst)) {
+                let _ = sender.send(ReActEvent::Error {
+                    session_id: sid.to_string(),
+                    message: "用户已取消操作".to_string(),
+                });
+                let _ = sender.send(ReActEvent::Done {
+                    session_id: sid.to_string(),
+                });
+                return;
+            }
+
             match item {
                 Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => {
                     match content {
@@ -309,13 +427,22 @@ impl RigAgent {
                         StreamedAssistantContent::ToolCall { tool_call, .. } => {
                             let name = tool_call.function.name.clone();
                             let args = tool_call.function.arguments.to_string();
-                            eprintln!(
-                                "[RigAgent] tool_call session={} elapsed_ms={} name={} args_chars={}",
-                                sid,
-                                started_at.elapsed().as_millis(),
-                                name,
-                                args.chars().count()
+                            info!(
+                                session = %sid,
+                                elapsed_ms = started_at.elapsed().as_millis(),
+                                name = %name,
+                                args_chars = args.chars().count(),
+                                "tool call"
                             );
+
+                            // 速率限制检查
+                            if !rate_limiter.check_and_record() {
+                                let _ = sender.send(ReActEvent::Error {
+                                    session_id: sid.to_string(),
+                                    message: "工具调用过于频繁（每分钟上限30次），请稍后重试".to_string(),
+                                });
+                                return;
+                            }
 
                             let _ = sender.send(ReActEvent::ToolCall {
                                 session_id: sid.to_string(),
@@ -356,10 +483,10 @@ impl RigAgent {
                         StreamedAssistantContent::ToolCallDelta { .. } => {
                             if !announced_tool_args_generation {
                                 announced_tool_args_generation = true;
-                                eprintln!(
-                                    "[RigAgent] tool_call_delta_started session={} elapsed_ms={}",
-                                    sid,
-                                    started_at.elapsed().as_millis()
+                                debug!(
+                                    session = %sid,
+                                    elapsed_ms = started_at.elapsed().as_millis(),
+                                    "tool call delta started"
                                 );
                                 let _ = sender.send(ReActEvent::Thinking {
                                     session_id: sid.to_string(),
@@ -385,11 +512,11 @@ impl RigAgent {
                             })
                             .collect::<Vec<_>>()
                             .join("");
-                        eprintln!(
-                            "[RigAgent] tool_result session={} elapsed_ms={} result_chars={}",
-                            sid,
-                            started_at.elapsed().as_millis(),
-                            result_text.chars().count()
+                        debug!(
+                            session = %sid,
+                            elapsed_ms = started_at.elapsed().as_millis(),
+                            result_chars = result_text.chars().count(),
+                            "tool result"
                         );
 
                         let _ = sender.send(ReActEvent::ToolResult {
@@ -400,10 +527,10 @@ impl RigAgent {
                     }
                 },
                 Ok(MultiTurnStreamItem::FinalResponse(_)) => {
-                    eprintln!(
-                        "[RigAgent] done session={} elapsed_ms={}",
-                        sid,
-                        started_at.elapsed().as_millis()
+                    info!(
+                        session = %sid,
+                        elapsed_ms = started_at.elapsed().as_millis(),
+                        "agent session completed"
                     );
                     let _ = sender.send(ReActEvent::Done {
                         session_id: sid.to_string(),
@@ -413,11 +540,11 @@ impl RigAgent {
                 Ok(_) => {}
                 Err(e) => {
                     let raw = e.to_string();
-                    eprintln!(
-                        "[RigAgent] stream_error session={} elapsed_ms={} error={}",
-                        sid,
-                        started_at.elapsed().as_millis(),
-                        raw
+                    error!(
+                        session = %sid,
+                        elapsed_ms = started_at.elapsed().as_millis(),
+                        error = %raw,
+                        "stream error"
                     );
                     let message = if raw.contains("MaxTurnError") {
                         "工具调用轮次已达到上限。当前任务可能需要多步澄清、依赖安装或脚本授权；请补充关键材料后重试，或让助手继续上一轮未完成的生成。".to_string()

@@ -4,7 +4,7 @@ use crate::app_state::AppState;
 use crate::services::bm25_service::BM25SearchResult;
 use crate::services::embedding::EmbeddingService;
 use crate::services::hybrid_search::HybridSearchResult;
-use crate::services::llm_service::{ChatMessage, LLMConfig};
+use crate::services::llm_service::ChatMessage;
 use crate::services::memory;
 
 /// 确保 embedding 模型已加载（懒加载）。
@@ -71,41 +71,6 @@ pub async fn hybrid_search(
         &state.bm25,
         &state.metadata,
     )
-}
-
-/// 配置 LLM 提供商（API 密钥、基础 URL、模型等）
-#[tauri::command]
-pub async fn set_llm_config(state: State<'_, AppState>, config: LLMConfig) -> Result<(), String> {
-    state.llm.set_config(config)
-}
-
-/// 获取当前 LLM 配置（API 密钥已脱敏）
-#[tauri::command]
-pub async fn get_llm_config(state: State<'_, AppState>) -> Result<LLMConfig, String> {
-    let mut config = state.llm.get_config()?;
-    let key_len = config.api_key.len();
-    if key_len > 10 {
-        config.api_key = format!(
-            "{}...{}",
-            &config.api_key[..3],
-            &config.api_key[key_len - 3..]
-        );
-    } else if key_len > 0 {
-        config.api_key = "****".to_string();
-    }
-    Ok(config)
-}
-
-/// 检查 LLM 是否已配置（有 API 密钥）
-#[tauri::command]
-pub async fn is_llm_configured(state: State<'_, AppState>) -> Result<bool, String> {
-    Ok(state.llm.is_configured())
-}
-
-/// 测试 LLM API 连通性
-#[tauri::command]
-pub async fn test_llm_connection(state: State<'_, AppState>) -> Result<String, String> {
-    state.llm.test_connection().await
 }
 
 /// 保存聊天记忆：归档对话 + LLM 提取 → 摄入知识库。

@@ -16,8 +16,6 @@ import {
   generateRiskReport,
   generateDefenseScript,
   analyzeFitGap,
-  agentChat,
-  listenReActEvents,
   exportReport,
   listRiskProjects,
   createRiskProject,
@@ -28,6 +26,8 @@ import {
   importDatabase,
   desensitizeText,
 } from "../lib/tauri-commands";
+import { useAgent, DEFAULT_SLOT } from "../contexts/AgentContext";
+import { useToast } from "../components/Toast";
 
 type Tab = "scope" | "health" | "scripts" | "analysis" | "backup";
 
@@ -40,6 +40,7 @@ export default function RiskControl() {
   const [newClientName, setNewClientName] = useState("");
   const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? null;
   const selectedKbProject = selectedProject?.kb_project || selectedProject?.name;
+  const toast = useToast();
 
   const tabs: { key: Tab; label: string; icon: typeof Shield }[] = [
     { key: "scope", label: "需求蔓延警报", icon: AlertTriangle },
@@ -75,7 +76,7 @@ export default function RiskControl() {
       setShowNewProject(false);
       setSelectedProjectId(id);
       await refreshProjects();
-    } catch (e) { alert("创建项目失败: " + String(e)); }
+    } catch (e) { toast.error("创建项目失败: " + String(e)); }
   };
 
   const handleDeleteProject = async () => {
@@ -85,7 +86,7 @@ export default function RiskControl() {
       await deleteRiskProject(selectedProjectId);
       setSelectedProjectId(null);
       await refreshProjects();
-    } catch (e) { alert("删除项目失败: " + String(e)); }
+    } catch (e) { toast.error("删除项目失败: " + String(e)); }
   };
 
   return (
@@ -177,6 +178,7 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
   const [extractLoading, setExtractLoading] = useState(false);
   const [candidates, setCandidates] = useState<CandidateScopeItem[]>([]);
   const [confirmLoading, setConfirmLoading] = useState(false);
+  const toast = useToast();
 
   const refresh = useCallback(async () => {
     if (projectId === null) return;
@@ -194,7 +196,7 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
     try {
       const r = await checkScopeCreep(projectId, newReq.trim());
       setCheckResult(r);
-    } catch (e) { alert(String(e)); }
+    } catch (e) { toast.error(String(e)); }
     setLoading(false);
   };
 
@@ -212,7 +214,7 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
     try {
       const result = await extractScopeFromDocument(projectId, Number(extractDocId));
       setCandidates(result);
-    } catch (e) { alert("提取失败: " + String(e)); }
+    } catch (e) { toast.error("提取失败: " + String(e)); }
     setExtractLoading(false);
   };
 
@@ -225,7 +227,7 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
       setShowExtract(false);
       setExtractDocId("");
       await refresh();
-    } catch (e) { alert("导入失败: " + String(e)); }
+    } catch (e) { toast.error("导入失败: " + String(e)); }
     setConfirmLoading(false);
   };
 
@@ -352,11 +354,12 @@ function HealthTab({ projectId }: { projectId: number | null }) {
   const [fitGapInput, setFitGapInput] = useState("");
   const [fitGapResult, setFitGapResult] = useState("");
   const [fitGapLoading, setFitGapLoading] = useState(false);
+  const toast = useToast();
 
   const refresh = useCallback(async () => {
     if (projectId === null) return;
     setLoading(true);
-    try { setHealth(await getProjectHealth(projectId)); } catch (e) { alert(String(e)); }
+    try { setHealth(await getProjectHealth(projectId)); } catch (e) { toast.error(String(e)); }
     setLoading(false);
   }, [projectId]);
 
@@ -371,7 +374,7 @@ function HealthTab({ projectId }: { projectId: number | null }) {
     try {
       const report = await generateRiskReport(projectId, context);
       setAiReport(report);
-    } catch (e) { alert("分析失败: " + String(e)); }
+    } catch (e) { toast.error("分析失败: " + String(e)); }
     setAiLoading(false);
   }, [health, aiLoading, projectId]);
 
@@ -450,7 +453,7 @@ function HealthTab({ projectId }: { projectId: number | null }) {
                   const { save } = await import("@tauri-apps/plugin-dialog");
                   const path = await save({ filters: [{ name: "Markdown", extensions: ["md"] }] });
                   if (path) await exportReport(aiReport, path);
-                } catch(e) { alert("导出失败: " + String(e)); }
+                } catch(e) { toast.error("导出失败: " + String(e)); }
               }} className="flex items-center gap-1 rounded bg-neutral-100 px-2 py-1 text-[10px] text-neutral-500 hover:bg-neutral-200">
                 <Download className="h-3 w-3" />导出报告
               </button>
@@ -488,7 +491,7 @@ function HealthTab({ projectId }: { projectId: number | null }) {
                   const { save } = await import("@tauri-apps/plugin-dialog");
                   const path = await save({ filters: [{ name: "Markdown", extensions: ["md"] }] });
                   if (path) await exportReport(fitGapResult, path);
-                } catch(e) { alert("导出失败: " + String(e)); }
+                } catch(e) { toast.error("导出失败: " + String(e)); }
               }} className="flex items-center gap-1 rounded bg-neutral-100 px-2 py-1 text-[10px] text-neutral-500 hover:bg-neutral-200">
                 <Download className="h-3 w-3" />导出分析
               </button>
@@ -507,6 +510,7 @@ function ScriptsTab({ projectId }: { projectId: number | null }) {
   const [tone, setTone] = useState("push_back");
   const [result, setResult] = useState<DefenseScriptResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const toast = useToast();
 
   const handleGenerate = async () => {
     if (!scenario.trim()) return;
@@ -514,7 +518,7 @@ function ScriptsTab({ projectId }: { projectId: number | null }) {
     try {
       const r = await generateDefenseScript({ scenario: scenario.trim(), context: context.trim(), tone });
       setResult(r);
-    } catch (e) { alert(String(e)); }
+    } catch (e) { toast.error(String(e)); }
     setLoading(false);
   };
 
@@ -563,7 +567,7 @@ function ScriptsTab({ projectId }: { projectId: number | null }) {
                   const { save } = await import("@tauri-apps/plugin-dialog");
                   const path = await save({ filters: [{ name: "Markdown", extensions: ["md"] }] });
                   if (path) await exportReport(md, path);
-                } catch(e) { alert("导出失败: " + String(e)); }
+                } catch(e) { toast.error("导出失败: " + String(e)); }
               }} className="flex items-center gap-1 rounded bg-neutral-100 px-2 py-1 text-[10px] text-neutral-500 hover:bg-neutral-200">
                 <Download className="h-3 w-3" />导出话术
               </button>
@@ -581,6 +585,7 @@ function BackupTab() {
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportDbResult | null>(null);
+  const toast = useToast();
 
   const handleExport = async () => {
     setExporting(true);
@@ -592,9 +597,9 @@ function BackupTab() {
       });
       if (path) {
         await exportDatabase(path);
-        alert("备份导出成功！");
+        toast.success("备份导出成功！");
       }
-    } catch (e) { alert("导出失败: " + String(e)); }
+    } catch (e) { toast.error("导出失败: " + String(e)); }
     setExporting(false);
   };
 
@@ -611,7 +616,7 @@ function BackupTab() {
         const result = await importDatabase(selected as string);
         setImportResult(result);
       }
-    } catch (e) { alert("导入失败: " + String(e)); }
+    } catch (e) { toast.error("导入失败: " + String(e)); }
     setImporting(false);
   };
 
@@ -685,56 +690,12 @@ function BackupTab() {
 
 // ─── Analysis Tab: ReAct 深度分析对话 ──────────────────────────────────
 
-interface ChatMsg {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  loading?: boolean;
-}
-
 function AnalysisTab({ projectId, kbProject }: { projectId: number | null; kbProject?: string }) {
-  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const agent = useAgent();
+  const slot = agent.slots.get("risk-analysis") ?? DEFAULT_SLOT;
+  const { messages, loading, currentTrace } = slot;
   const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const msgRef = useRef("");
-  const sessionRef = useRef<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
-
-  // Listen for ReAct streaming events
-  useEffect(() => {
-    let cancelled = false;
-    listenReActEvents((event) => {
-      // Support both snake_case and camelCase (Tauri v2 may convert)
-      const eventSessionId = event.session_id || (event as any).sessionId;
-      if (eventSessionId !== sessionRef.current) return;
-      if (event.type === "text_delta") {
-        msgRef.current += event.content;
-        setMessages((prev) => {
-          const next = [...prev];
-          const last = next[next.length - 1];
-          if (last && last.role === "assistant") {
-            next[next.length - 1] = { ...last, content: msgRef.current };
-          }
-          return next;
-        });
-      }
-      if (event.type === "done" || event.type === "error") {
-        setLoading(false);
-        setMessages((prev) => {
-          const next = [...prev];
-          const last = next[next.length - 1];
-          if (last && last.role === "assistant") {
-            next[next.length - 1] = { ...last, loading: false };
-          }
-          return next;
-        });
-        sessionRef.current = null;
-      }
-    }).then((fn) => {
-      if (cancelled) { fn(); return; }
-    });
-    return () => { cancelled = true; };
-  }, []);
 
   // Auto-scroll
   useEffect(() => {
@@ -746,31 +707,9 @@ function AnalysisTab({ projectId, kbProject }: { projectId: number | null; kbPro
     if (!text || loading || projectId === null) return;
     setInput("");
 
-    const newMsg: ChatMsg = { id: `m${Date.now()}`, role: "user", content: text };
-    const placeholder: ChatMsg = { id: `m${Date.now() + 1}`, role: "assistant", content: "", loading: true };
-    setMessages((prev) => [...prev, newMsg, placeholder]);
-    msgRef.current = "";
-
-    setLoading(true);
-    try {
-      // Generate session ID first before calling agentChat
-      const sid = `risk_${Date.now()}`;
-      sessionRef.current = sid;
-      await agentChat(
-        "请作为 KingdeeKB 双轨风险把控舱中的风控专家分析以下问题，必要时使用知识库搜索、范围蔓延检查、项目健康评分、差异分析或防身话术工具，并给出专业、简洁、可执行的回答。\n\n问题：" + text,
-        sid,
-        kbProject,
-        projectId
-      );
-    } catch {
-      setLoading(false);
-      setMessages((prev) => {
-        const next = [...prev];
-        next[next.length - 1] = { ...next[next.length - 1], content: "分析失败，请重试", loading: false };
-        return next;
-      });
-    }
-  }, [input, loading, projectId, kbProject]);
+    const prompt = "请作为 KingdeeKB 双轨风险把控舱中的风控专家分析以下问题，必要时使用知识库搜索、范围蔓延检查、项目健康评分、差异分析或防身话术工具，并给出专业、简洁、可执行的回答。\n\n问题：" + text;
+    await agent.sendMessage("risk-analysis", prompt, { projectId: kbProject, riskProjectId: projectId });
+  }, [input, loading, projectId, kbProject, agent]);
 
   return (
       <div className="flex flex-col" style={{ height: "calc(100vh - 12rem)" }}>
@@ -792,7 +731,7 @@ function AnalysisTab({ projectId, kbProject }: { projectId: number | null; kbPro
                 ? "bg-amber-600 text-white"
                 : "bg-neutral-100 text-neutral-700"
             }`}>
-              {msg.loading && !msg.content ? (
+              {msg.streaming && !msg.content ? (
                 <span className="flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" />分析中</span>
               ) : (
                 <span className="whitespace-pre-wrap">{msg.content}</span>
@@ -800,6 +739,37 @@ function AnalysisTab({ projectId, kbProject }: { projectId: number | null; kbPro
             </div>
           </div>
         ))}
+
+        {/* ReAct Trace: thinking + tool calls */}
+        {loading && (currentTrace.thinking || currentTrace.toolCalls.length > 0) && (
+          <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50/50 p-3">
+            {currentTrace.thinking && (
+              <details className="text-xs">
+                <summary className="cursor-pointer font-medium text-amber-700 select-none">🤔 思考过程</summary>
+                <div className="mt-1 whitespace-pre-wrap leading-relaxed text-amber-800 italic">
+                  {currentTrace.thinking}
+                </div>
+              </details>
+            )}
+            {currentTrace.toolCalls.map((tc, i) => (
+              <div key={i} className="flex items-center gap-2 rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-xs">
+                <span className="text-amber-600">🔧</span>
+                <span className="font-medium text-neutral-700">{tc.name}</span>
+                {tc.args && (
+                  <span className="truncate text-neutral-400 max-w-[200px]" title={tc.args}>
+                    {tc.args.length > 60 ? tc.args.slice(0, 60) + "…" : tc.args}
+                  </span>
+                )}
+                <span className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                  tc.result ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+                }`}>
+                  {tc.result ? "完成" : "执行中…"}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div ref={chatEndRef} />
       </div>
 

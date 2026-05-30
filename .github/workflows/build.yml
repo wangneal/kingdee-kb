@@ -1,0 +1,142 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: Windows x64
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            label: macOS ARM
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            label: macOS x64
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: Linux x64
+
+    runs-on: ${{ matrix.platform }}
+    name: Build (${{ matrix.label }})
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "KingdeeKB ${{ github.ref_name }}"
+          releaseBody: |
+            ## KingdeeKB ${{ github.ref_name }}
+            
+            金蝶 ERP 实施知识库桌面应用 — AI 驱动的调研助手、风险把控、文档生成。
+            
+            ### 下载说明
+            - **Windows**: 下载 `.msi` 或 `.exe` 安装包
+            - **macOS**: 下载 `.dmg` 文件（ARM 用于 Apple Silicon，x64 用于 Intel）
+            - **Linux**: 下载 `.AppImage` 或 `.deb` 文件
+            
+            ### 首次使用
+            1. 安装后打开应用
+            2. 进入「设置」配置 LLM API Key
+            3. 在「知识库」中导入文档
+            4. 开始在「AI 助手」中提问
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+
+  # Smoke test: verify the app compiles without errors
+  check:
+    runs-on: ubuntu-22.04
+    name: Lint & Type Check
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev
+
+      - run: npm ci
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Rust check
+        run: cargo check
+        working-directory: src-tauri
+
+      - name: Rust tests
+        run: cargo test --lib
+        working-directory: src-tauri
+
+      - name: E2E tests
+        run: npx playwright test --reporter=list

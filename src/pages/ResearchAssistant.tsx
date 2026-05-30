@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   ClipboardList,
   Plus,
@@ -33,14 +33,14 @@ import {
   startWhisperRecording,
   stopWhisperRecording,
   getWhisperStatus,
-  agentChat,
-  listenReActEvents,
   type WhisperStatus,
   listAsrProviders,
   type AsrProviderInfo,
   getAsrConfigStatus,
   type AsrConfigStatus,
 } from "../lib/tauri-commands";
+import { useAgent, DEFAULT_SLOT } from "../contexts/AgentContext";
+import { useToast } from "../components/Toast";
 
 export default function ResearchAssistant() {
   const [mode, setMode] = useState<"list" | "detail" | "new">("list");
@@ -196,6 +196,7 @@ function NewSessionForm({ onCreated, onCancel }: { onCreated: (id: number) => vo
   const [interviewee, setInterviewee] = useState("");
   const [sessionDate, setSessionDate] = useState(new Date().toISOString().slice(0, 10));
   const [saving, setSaving] = useState(false);
+  const toast = useToast();
 
   const handleSubmit = async () => {
     if (!title.trim()) return;
@@ -204,7 +205,7 @@ function NewSessionForm({ onCreated, onCancel }: { onCreated: (id: number) => vo
       const id = await createResearchSession(title.trim(), edition, moduleCode.trim(), interviewee.trim(), sessionDate);
       onCreated(id);
     } catch (err) {
-      alert(String(err));
+      toast.error(String(err));
     }
     setSaving(false);
   };
@@ -270,6 +271,9 @@ function NewSessionForm({ onCreated, onCancel }: { onCreated: (id: number) => vo
 
 function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetail; onBack: () => void; onUpdated: () => void }) {
   const { session, records } = detail;
+  const agent = useAgent();
+  const slot = agent.slots.get("research") ?? DEFAULT_SLOT;
+  const aiLoading = slot.loading;
   const [recording, setRecording] = useState(false);
   const [whisperStatus, setWhisperStatus] = useState<WhisperStatus | null>(null);
   const [loadingWhisper, setLoadingWhisper] = useState(false);
@@ -280,10 +284,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
   const [newAnswer, setNewAnswer] = useState("");
   const [editingRecord, setEditingRecord] = useState<number | null>(null);
   const [editAnswer, setEditAnswer] = useState("");
-  const [aiLoading, setAiLoading] = useState(false);
-  const aiAnswerRef = useRef("");
-  const aiSessionRef = useRef<string | null>(null);
-  const unsubRef = useRef<(() => void) | null>(null);
+  const toast = useToast();
 
   useEffect(() => {
     getWhisperStatus().then(setWhisperStatus).catch((err) => {
@@ -293,45 +294,23 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
     getAsrConfigStatus().then(setAsrConfigStatus).catch(console.error);
   }, []);
 
-  // Subscribe to ReAct events for AI assist (filtered by session)
+  // Sync AI answer from agent slot while streaming
   useEffect(() => {
-    let cancelled = false;
-    listenReActEvents((event) => {
-      // Support both snake_case and camelCase (Tauri v2 may convert)
-      const eventSessionId = event.session_id || (event as any).sessionId;
-      if (eventSessionId !== aiSessionRef.current) return;
-      if (event.type === "text_delta") {
-        aiAnswerRef.current += event.content;
-        setNewAnswer(aiAnswerRef.current);
+    if (slot.loading) {
+      const last = slot.messages[slot.messages.length - 1];
+      if (last?.role === "assistant") {
+        setNewAnswer(last.content);
       }
-      if (event.type === "done" || event.type === "error") {
-        setAiLoading(false);
-        aiSessionRef.current = null;
-      }
-    }).then((fn) => {
-      if (cancelled) { fn(); return; }
-      unsubRef.current = fn;
-    });
-    return () => {
-      cancelled = true;
-      unsubRef.current?.();
-    };
-  }, []);
+    }
+  }, [slot.loading, slot.messages]);
 
   const handleAIAssist = async () => {
     if (!newQuestion.trim() || aiLoading) return;
-    setAiLoading(true);
-    aiAnswerRef.current = "";
+    agent.clearSlot("research");
     setNewAnswer("");
     const context = `当前调研：${session.title}（${session.edition}/${session.module_code}）\n已有记录：${records.map((r) => `Q: ${r.question_text}`).join("\n")}`;
-    try {
-      // Generate session ID first before calling agentChat
-      const sid = `research_${Date.now()}`;
-      aiSessionRef.current = sid;
-      await agentChat(`请回答以下调研问题，基于知识库中的金蝶ERP实施经验。回答要具体、可操作，包含系统配置路径或单据类型；不确定的写[待确认]。\n\n问题：${newQuestion}\n\n背景：${context}`, sid);
-    } catch (err) {
-      setAiLoading(false);
-    }
+    const prompt = `请回答以下调研问题，基于知识库中的金蝶ERP实施经验。回答要具体、可操作，包含系统配置路径或单据类型；不确定的写[待确认]。\n\n问题：${newQuestion}\n\n背景：${context}`;
+    await agent.sendMessage("research", prompt);
   };
 
   const handleStartRecording = async () => {
@@ -342,7 +321,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
         const status = await getWhisperStatus();
         setWhisperStatus(status);
       } catch (err) {
-        alert("加载语音模型失败: " + String(err));
+        toast.error("加载语音模型失败: " + String(err));
         setLoadingWhisper(false);
         return;
       }
@@ -352,7 +331,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       await startWhisperRecording();
       setRecording(true);
     } catch (err) {
-      alert("启动录音失败: " + String(err));
+      toast.error("启动录音失败: " + String(err));
     }
   };
 
@@ -365,7 +344,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       }
     } catch (err) {
       setRecording(false);
-      alert("停止录音失败: " + String(err));
+      toast.error("停止录音失败: " + String(err));
     }
   };
 
@@ -377,7 +356,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       setNewAnswer("");
       onUpdated();
     } catch (err) {
-      alert(String(err));
+      toast.error(String(err));
     }
   };
 
@@ -387,7 +366,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       setEditingRecord(null);
       onUpdated();
     } catch (err) {
-      alert(String(err));
+      toast.error(String(err));
     }
   };
 
@@ -397,7 +376,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       await deleteQARecord(recordId);
       onUpdated();
     } catch (err) {
-      alert(String(err));
+      toast.error(String(err));
     }
   };
 
@@ -412,7 +391,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      alert(String(err));
+      toast.error(String(err));
     }
   };
 
@@ -427,13 +406,13 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      alert(String(err));
+      toast.error(String(err));
     }
   };
 
   const handleExtractBlueprint = async () => {
     const qaText = records.map((r, i) => `Q${i + 1}: ${r.question_text}\nA: ${r.answer_text}`).join("\n\n");
-    if (!qaText.trim()) { alert("暂无记录，无法提炼蓝图"); return; }
+    if (!qaText.trim()) { toast.warning("暂无记录，无法提炼蓝图"); return; }
     try {
       const blueprint = await extractBlueprint(qaText);
       const blob = new Blob([blueprint], { type: "text/markdown;charset=utf-8" });
@@ -444,7 +423,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      alert("蓝图提炼失败: " + String(err));
+      toast.error("蓝图提炼失败: " + String(err));
     }
   };
 

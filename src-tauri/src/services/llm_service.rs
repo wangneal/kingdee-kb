@@ -11,13 +11,17 @@
 use futures_util::StreamExt;
 use reqwest_eventsource::{Event, EventSource};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::mpsc;
+use tracing::{info, warn};
+
+use crate::services::agent_timeout::{LLM_CALL_TIMEOUT_SECS, LLM_STREAM_FIRST_CHUNK_TIMEOUT_SECS, MAX_RETRIES, RETRY_BASE_DELAY_MS};
 
 use crate::services::bm25_service::BM25Service;
 use crate::services::embedding::EmbeddingService;
 use crate::services::hybrid_search::{self, HybridSearchResult};
+use crate::services::llm_providers::{LLMProviderConfig, LLMProtocol, LLMProviderManager};
 use crate::services::metadata::MetadataStore;
 use crate::services::vector_index::VectorIndex;
 
@@ -101,50 +105,133 @@ const DEFAULT_ANTHROPIC_MODEL: &str = "claude-3-5-sonnet-20241022";
 /// Anthropic API 版本头
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
-// ─── 提供商 ───
+// ─── 重试工具函数 ───
 
-/// LLM 提供商类型 — 决定使用哪种 API 协议
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum LLMProvider {
-    #[serde(rename = "openai")]
-    OpenAI,
-    #[serde(rename = "anthropic")]
-    Anthropic,
-    /// 本地模型（Ollama、llama.cpp 等）— 无需 API 密钥，使用本地服务器
-    #[serde(rename = "local")]
-    Local,
-}
+/// 带指数退避的异步重试包装器
+///
+/// 对于瞬时错误（网络超时、429 速率限制、5xx 服务器错误）自动重试。
+/// 对于永久性错误（401 认证失败、400 请求格式错误）立即返回错误。
+async fn with_retry<F, Fut, T, E>(operation_name: &str, mut f: F) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let mut last_error = None;
 
-// ─── 配置 ───
+    for attempt in 0..=MAX_RETRIES {
+        match f().await {
+            Ok(result) => {
+                if attempt > 0 {
+                    info!("{}: 成功（第{}次重试）", operation_name, attempt);
+                }
+                return Ok(result);
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
 
-/// LLM 提供商配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LLMConfig {
-    /// 使用哪个提供商（决定 API 协议）
-    pub provider: LLMProvider,
-    /// 用于身份验证的 API 密钥
-    pub api_key: String,
-    /// 基础 URL（默认值因提供商而异）
-    pub base_url: String,
-    /// 模型名称（默认值因提供商而异）
-    pub model: String,
-    /// 最大上下文窗口（token 数，默认：4096）
-    pub max_tokens: u32,
-    /// 生成温度（默认：0.3）
-    pub temperature: f32,
-}
+                // 检查是否为永久性错误（不应重试）
+                if is_permanent_error(&error_msg) {
+                    warn!("{}: 永久性错误，不重试: {}", operation_name, error_msg);
+                    return Err(e);
+                }
 
-impl Default for LLMConfig {
-    fn default() -> Self {
-        Self {
-            provider: LLMProvider::OpenAI,
-            api_key: String::new(),
-            base_url: DEFAULT_OPENAI_BASE_URL.to_string(),
-            model: DEFAULT_OPENAI_MODEL.to_string(),
-            max_tokens: DEFAULT_MAX_CONTEXT_TOKENS,
-            temperature: 0.3,
+                last_error = Some(e);
+
+                if attempt < MAX_RETRIES {
+                    let delay = Duration::from_millis(RETRY_BASE_DELAY_MS * 2u64.pow(attempt));
+                    warn!(
+                        "{}: 第{}次尝试失败，{}ms 后重试: {}",
+                        operation_name,
+                        attempt + 1,
+                        delay.as_millis(),
+                        error_msg
+                    );
+                    tokio::time::sleep(delay).await;
+                } else {
+                    warn!("{}: 所有{}次重试均失败", operation_name, MAX_RETRIES + 1);
+                }
+            }
         }
     }
+
+    Err(last_error.unwrap())
+}
+
+/// 带指数退避的同步重试包装器
+///
+/// 用于 `generate_text_sync` 等阻塞调用。
+fn with_retry_sync<F, T, E>(operation_name: &str, mut f: F) -> Result<T, E>
+where
+    F: FnMut() -> Result<T, E>,
+    E: std::fmt::Display,
+{
+    let mut last_error = None;
+
+    for attempt in 0..=MAX_RETRIES {
+        match f() {
+            Ok(result) => {
+                if attempt > 0 {
+                    info!("{}: 成功（第{}次重试）", operation_name, attempt);
+                }
+                return Ok(result);
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+
+                // 检查是否为永久性错误（不应重试）
+                if is_permanent_error(&error_msg) {
+                    warn!("{}: 永久性错误，不重试: {}", operation_name, error_msg);
+                    return Err(e);
+                }
+
+                last_error = Some(e);
+
+                if attempt < MAX_RETRIES {
+                    let delay = Duration::from_millis(RETRY_BASE_DELAY_MS * 2u64.pow(attempt));
+                    warn!(
+                        "{}: 第{}次尝试失败，{}ms 后重试: {}",
+                        operation_name,
+                        attempt + 1,
+                        delay.as_millis(),
+                        error_msg
+                    );
+                    std::thread::sleep(delay);
+                } else {
+                    warn!("{}: 所有{}次重试均失败", operation_name, MAX_RETRIES + 1);
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap())
+}
+
+/// 判断是否为永久性错误（不应重试）
+fn is_permanent_error(error_msg: &str) -> bool {
+    let msg = error_msg.to_lowercase();
+
+    // 认证错误
+    if msg.contains("401") || msg.contains("unauthorized") || msg.contains("invalid api key") {
+        return true;
+    }
+
+    // 请求格式错误
+    if msg.contains("400") || msg.contains("bad request") {
+        return true;
+    }
+
+    // 资源不存在
+    if msg.contains("404") || msg.contains("not found") {
+        return true;
+    }
+
+    // 无效模型
+    if msg.contains("model_not_found") || msg.contains("invalid model") {
+        return true;
+    }
+
+    false
 }
 
 // ─── 聊天消息 ───
@@ -375,97 +462,78 @@ fn estimate_tokens(messages: &[ChatMessage]) -> u32 {
 /// LLM Service — manages API config and provides RAG query capabilities.
 #[derive(Clone)]
 pub struct LLMService {
-    /// Current API configuration
-    config: Arc<Mutex<LLMConfig>>,
-    /// Path to persist config JSON (e.g. ~/.kingdee-kb/config.json)
-    config_path: PathBuf,
+    /// 供应商管理器（获取默认供应商配置）
+    providers: Arc<Mutex<LLMProviderManager>>,
     /// HTTP client (reusable for connection pooling)
     client: reqwest::Client,
 }
 
 impl LLMService {
-    /// Create a new LLM service, loading persisted config if available.
-    pub fn new(data_dir: &std::path::Path) -> Self {
-        let config_path = data_dir.join("config.json");
-        let config = Self::load_config(&config_path).unwrap_or_default();
+    /// Create a new LLM service backed by LLMProviderManager.
+    pub fn new(providers: Arc<Mutex<LLMProviderManager>>) -> Self {
         Self {
-            config: Arc::new(Mutex::new(config)),
-            config_path,
+            providers,
             client: reqwest::Client::new(),
         }
     }
 
-    /// Load config from JSON file, returning default on any failure.
-    fn load_config(path: &std::path::Path) -> Result<LLMConfig, String> {
-        let data =
-            std::fs::read_to_string(path).map_err(|e| format!("Read config failed: {}", e))?;
-        serde_json::from_str(&data).map_err(|e| format!("Parse config failed: {}", e))
-    }
-
-    /// Persist current config to JSON file.
-    fn save_config(config: &LLMConfig, path: &std::path::Path) -> Result<(), String> {
-        let data = serde_json::to_string_pretty(config)
-            .map_err(|e| format!("Serialize config failed: {}", e))?;
-        std::fs::write(path, data).map_err(|e| format!("Write config failed: {}", e))
-    }
-
-    /// Update the LLM configuration and persist to disk.
-    pub fn set_config(&self, config: LLMConfig) -> Result<(), String> {
-        let mut cfg = self.config.lock().map_err(|e| e.to_string())?;
-        *cfg = config;
-        Self::save_config(&*cfg, &self.config_path)?;
-        Ok(())
-    }
-
-    /// Get current config (read-only clone).
-    pub fn get_config(&self) -> Result<LLMConfig, String> {
-        let cfg = self.config.lock().map_err(|e| e.to_string())?;
-        Ok(cfg.clone())
+    /// Get the active provider config from the default provider.
+    pub fn get_active_config(&self) -> Result<LLMProviderConfig, String> {
+        let mgr = self.providers.lock().map_err(|e| e.to_string())?;
+        mgr.get_default_provider()
+            .cloned()
+            .ok_or_else(|| "未配置默认 LLM 供应商".to_string())
     }
 
     /// Synchronous text generation (non-streaming) for internal backend use.
     ///
     /// Uses `ureq` for a simple blocking HTTP call. Returns the complete generated text.
+    /// Includes exponential backoff retry for transient errors.
     pub fn generate_text_sync(
         &self,
         system_prompt: &str,
         user_message: &str,
     ) -> Result<String, String> {
-        let config = self.config.lock().map_err(|e| e.to_string())?;
+        let config = self.get_active_config()?;
 
         if config.api_key.is_empty() {
             return Err("LLM API key not configured".to_string());
         }
 
         let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-
-        let body = serde_json::json!({
-            "model": config.model,
-            "messages": [
-                { "role": "system", "content": system_prompt },
-                { "role": "user", "content": user_message }
-            ],
-            "temperature": config.temperature,
-            "max_tokens": config.max_tokens,
-            "stream": false
-        });
-
         let auth_header = format!("Bearer {}", config.api_key);
-        let response: serde_json::Value = ureq::post(&url)
-            .header("Authorization", &auth_header)
-            .header("Content-Type", "application/json")
-            .send_json(&body)
-            .map_err(|e| format!("LLM request failed: {}", e))?
-            .body_mut()
-            .read_json()
-            .map_err(|e| format!("Failed to parse LLM response: {}", e))?;
+        let model = config.model.clone();
+        let temperature = config.temperature;
+        let max_tokens = config.max_tokens;
 
-        let text = response["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        with_retry_sync("LLM 生成", || {
+            let body = serde_json::json!({
+                "model": model,
+                "messages": [
+                    { "role": "system", "content": system_prompt },
+                    { "role": "user", "content": user_message }
+                ],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": false
+            });
 
-        Ok(text)
+            let response: serde_json::Value = ureq::post(&url)
+                .header("Authorization", &auth_header)
+                .header("Content-Type", "application/json")
+                .send_json(&body)
+                .map_err(|e| format!("LLM request failed: {}", e))?
+                .body_mut()
+                .read_json()
+                .map_err(|e| format!("Failed to parse LLM response: {}", e))?;
+
+            let text = response["choices"][0]["message"]["content"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+
+            Ok(text)
+        })
     }
 
     fn needs_relaxed_tls(base_url: &str) -> bool {
@@ -473,7 +541,7 @@ impl LLMService {
         base_url.starts_with("https://maas.gd.chinamobile.com")
     }
 
-    fn client_for_config(&self, config: &LLMConfig) -> Result<reqwest::Client, String> {
+    fn client_for_config(&self, config: &LLMProviderConfig) -> Result<reqwest::Client, String> {
         if Self::needs_relaxed_tls(&config.base_url) {
             return reqwest::Client::builder()
                 .danger_accept_invalid_certs(true)
@@ -488,15 +556,8 @@ impl LLMService {
 
     /// Check if the LLM is configured (has API key, or is a local model).
     pub fn is_configured(&self) -> bool {
-        self.config
-            .lock()
-            .map(|cfg| {
-                // Local models (non-standard OpenAI/Anthropic) don't need API key
-                if cfg.provider != LLMProvider::OpenAI && cfg.provider != LLMProvider::Anthropic {
-                    return !cfg.base_url.is_empty();
-                }
-                !cfg.api_key.is_empty()
-            })
+        self.get_active_config()
+            .map(|cfg| cfg.is_configured())
             .unwrap_or(false)
     }
 
@@ -551,11 +612,8 @@ impl LLMService {
             return Ok(self.fallback_response(&search_results));
         }
 
-        // Step 3: Read config in a block scope to drop MutexGuard before .await
-        let config = {
-            let cfg = self.config.lock().map_err(|e| e.to_string())?;
-            cfg.clone()
-        };
+        // Step 3: Read config from provider manager
+        let config = self.get_active_config()?;
 
         // Step 4: Compress conversation history if it exceeds token threshold
         // (OpenCode-inspired: summarize older turns, keep last 2 pairs verbatim)
@@ -588,12 +646,12 @@ impl LLMService {
         });
 
         // Step 7: Branch by provider (Local uses OpenAI-compatible protocol)
-        match config.provider {
-            LLMProvider::OpenAI | LLMProvider::Local => {
+        match config.protocol {
+            LLMProtocol::OpenAI | LLMProtocol::Local => {
                 self.rag_query_openai(&config, SYSTEM_PROMPT, &messages)
                     .await
             }
-            LLMProvider::Anthropic => {
+            LLMProtocol::Anthropic => {
                 self.rag_query_anthropic(&config, SYSTEM_PROMPT, &messages)
                     .await
             }
@@ -605,7 +663,7 @@ impl LLMService {
     /// Uses `reqwest_eventsource::EventSource` for robust SSE parsing.
     async fn rag_query_openai(
         &self,
-        config: &LLMConfig,
+        config: &LLMProviderConfig,
         system_prompt: &str,
         messages: &[ChatMessage],
     ) -> Result<Vec<StreamChunk>, String> {
@@ -643,6 +701,66 @@ impl LLMService {
 
         let mut chunks = Vec::new();
 
+        // Wait for the first event with timeout (connection + first data chunk)
+        let first_event = tokio::time::timeout(
+            Duration::from_secs(LLM_STREAM_FIRST_CHUNK_TIMEOUT_SECS),
+            es.next(),
+        )
+        .await
+        .map_err(|_| "LLM 流式响应超时，未收到首个数据块".to_string())?;
+
+        // Process first event if received
+        if let Some(event) = first_event {
+            match event {
+                Ok(Event::Message(msg)) => {
+                    if msg.data == "[DONE]" {
+                        chunks.push(StreamChunk {
+                            content: String::new(),
+                            done: true,
+                            thinking: None,
+                        });
+                        return Ok(chunks);
+                    }
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg.data) {
+                        if let Some(reasoning) =
+                            parsed["choices"][0]["delta"]["reasoning_content"].as_str()
+                        {
+                            if !reasoning.is_empty() {
+                                chunks.push(StreamChunk {
+                                    content: String::new(),
+                                    done: false,
+                                    thinking: Some(reasoning.to_string()),
+                                });
+                            }
+                        }
+                        if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
+                            let cleaned = scrub_response(content);
+                            if !cleaned.is_empty() {
+                                chunks.push(StreamChunk {
+                                    content: cleaned,
+                                    done: false,
+                                    thinking: None,
+                                });
+                            }
+                        }
+                        if let Some(reason) = parsed["choices"][0]["finish_reason"].as_str() {
+                            if !reason.is_empty() && reason != "null" {
+                                chunks.push(StreamChunk {
+                                    content: String::new(),
+                                    done: true,
+                                    thinking: None,
+                                });
+                                return Ok(chunks);
+                            }
+                        }
+                    }
+                }
+                Ok(Event::Open) => {}
+                Err(e) => return Err(format!("SSE error: {}", e)),
+            }
+        }
+
+        // Process remaining events (first-chunk timeout already passed)
         while let Some(event) = es.next().await {
             match event {
                 Ok(Event::Message(msg)) => {
@@ -681,7 +799,7 @@ impl LLMService {
                         }
                         // Check finish_reason
                         if let Some(reason) = parsed["choices"][0]["finish_reason"].as_str() {
-                            if !reason.is_empty() && reason != "null" && reason != "null" {
+                            if !reason.is_empty() && reason != "null" {
                                 chunks.push(StreamChunk {
                                     content: String::new(),
                                     done: true,
@@ -726,7 +844,7 @@ impl LLMService {
     /// Anthropic sends events: `content_block_delta`, `message_delta`, `message_stop`.
     async fn rag_query_anthropic(
         &self,
-        config: &LLMConfig,
+        config: &LLMProviderConfig,
         system_prompt: &str,
         messages: &[ChatMessage],
     ) -> Result<Vec<StreamChunk>, String> {
@@ -768,6 +886,62 @@ impl LLMService {
 
         let mut chunks = Vec::new();
 
+        // Wait for the first event with timeout (connection + first data chunk)
+        let first_event = tokio::time::timeout(
+            Duration::from_secs(LLM_STREAM_FIRST_CHUNK_TIMEOUT_SECS),
+            es.next(),
+        )
+        .await
+        .map_err(|_| "LLM 流式响应超时，未收到首个数据块".to_string())?;
+
+        // Process first event if received
+        if let Some(event) = first_event {
+            match event {
+                Ok(Event::Message(msg)) => match msg.event.as_str() {
+                    "content_block_delta" => {
+                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&msg.data) {
+                            if data["type"] == "content_block_delta" {
+                                if let Some(delta) = data.get("delta") {
+                                    if delta["type"] == "text_delta" {
+                                        if let Some(text) = delta["text"].as_str() {
+                                            let cleaned = scrub_response(text);
+                                            if !cleaned.is_empty() {
+                                                chunks.push(StreamChunk {
+                                                    content: cleaned,
+                                                    done: false,
+                                                    thinking: None,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "message_delta" | "message_stop" => {
+                        chunks.push(StreamChunk {
+                            content: String::new(),
+                            done: true,
+                            thinking: None,
+                        });
+                        return Ok(chunks);
+                    }
+                    "error" => {
+                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&msg.data) {
+                            let err_msg = data["error"]["message"]
+                                .as_str()
+                                .unwrap_or("Unknown Anthropic stream error");
+                            return Err(format!("Anthropic stream error: {}", err_msg));
+                        }
+                    }
+                    _ => {}
+                },
+                Ok(Event::Open) => {}
+                Err(e) => return Err(format!("SSE error: {}", e)),
+            }
+        }
+
+        // Process remaining events (first-chunk timeout already passed)
         while let Some(event) = es.next().await {
             match event {
                 Ok(Event::Message(msg)) => {
@@ -932,20 +1106,20 @@ impl LLMService {
     pub async fn chat_completion(
         &self,
         messages: &[ChatMessage],
-        config: &LLMConfig,
+        config: &LLMProviderConfig,
     ) -> Result<String, String> {
         if config.api_key.is_empty() {
             return Err("LLM API key not configured".to_string());
         }
 
-        match config.provider {
-            LLMProvider::OpenAI | LLMProvider::Local => {
+        match config.protocol {
+            LLMProtocol::OpenAI | LLMProtocol::Local => {
                 let result = self
                     .chat_completion_openai_with_tools(messages, config, &[], true)
                     .await?;
                 Ok(result)
             }
-            LLMProvider::Anthropic => self.chat_completion_anthropic(messages, config).await,
+            LLMProtocol::Anthropic => self.chat_completion_anthropic(messages, config).await,
         }
     }
 
@@ -955,7 +1129,7 @@ impl LLMService {
     async fn chat_completion_openai_with_tools(
         &self,
         messages: &[ChatMessage],
-        config: &LLMConfig,
+        config: &LLMProviderConfig,
         tools: &[serde_json::Value],
         _stream: bool,
     ) -> Result<String, String> {
@@ -982,40 +1156,49 @@ impl LLMService {
             body["tool_choice"] = serde_json::json!("auto");
         }
 
-        let response = self
-            .client_for_config(config)?
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", config.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("OpenAI request failed: {}", e))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body_text = response
-                .text()
+        let request_future = async {
+            let response = self
+                .client_for_config(config)?
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", config.api_key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
                 .await
-                .unwrap_or_else(|_| "<unreadable>".to_string());
-            return Err(format!("OpenAI API error ({}): {}", status, body_text));
-        }
+                .map_err(|e| format!("OpenAI request failed: {}", e))?;
 
-        let json: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse OpenAI response: {}", e))?;
+            if !response.status().is_success() {
+                let status = response.status();
+                let body_text = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "<unreadable>".to_string());
+                return Err(format!("OpenAI API error ({}): {}", status, body_text));
+            }
 
-        let content = json["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+            let json: serde_json::Value = response
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse OpenAI response: {}", e))?;
 
-        if content.is_empty() {
-            return Err("OpenAI returned empty response".to_string());
-        }
+            let content = json["choices"][0]["message"]["content"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
 
-        Ok(content)
+            if content.is_empty() {
+                return Err("OpenAI returned empty response".to_string());
+            }
+
+            Ok(content)
+        };
+
+        tokio::time::timeout(
+            Duration::from_secs(LLM_CALL_TIMEOUT_SECS),
+            request_future,
+        )
+        .await
+        .map_err(|_| "LLM 调用超时，请检查网络连接或稍后重试".to_string())?
     }
 
     /// Anthropic non-streaming chat completion — POST /messages
@@ -1025,7 +1208,7 @@ impl LLMService {
     async fn chat_completion_anthropic(
         &self,
         messages: &[ChatMessage],
-        config: &LLMConfig,
+        config: &LLMProviderConfig,
     ) -> Result<String, String> {
         let url = format!("{}/messages", config.base_url.trim_end_matches('/'));
 
@@ -1060,46 +1243,55 @@ impl LLMService {
             body["system"] = serde_json::json!(system_prompt);
         }
 
-        let response = self
-            .client
-            .post(&url)
-            .header("x-api-key", &config.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("anthropic-dangerous-direct-browser-access", "true")
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("Anthropic request failed: {}", e))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body_text = response
-                .text()
+        let request_future = async {
+            let response = self
+                .client
+                .post(&url)
+                .header("x-api-key", &config.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .header("anthropic-dangerous-direct-browser-access", "true")
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
                 .await
-                .unwrap_or_else(|_| "<unreadable>".to_string());
-            return Err(format!("Anthropic API error ({}): {}", status, body_text));
-        }
+                .map_err(|e| format!("Anthropic request failed: {}", e))?;
 
-        let json: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse Anthropic response: {}", e))?;
+            if !response.status().is_success() {
+                let status = response.status();
+                let body_text = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "<unreadable>".to_string());
+                return Err(format!("Anthropic API error ({}): {}", status, body_text));
+            }
 
-        // Anthropic response: content[0].text
-        let content = json["content"]
-            .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|block| block.get("text"))
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .to_string();
+            let json: serde_json::Value = response
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse Anthropic response: {}", e))?;
 
-        if content.is_empty() {
-            return Err("Anthropic returned empty response".to_string());
-        }
+            // Anthropic response: content[0].text
+            let content = json["content"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|block| block.get("text"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
 
-        Ok(content)
+            if content.is_empty() {
+                return Err("Anthropic returned empty response".to_string());
+            }
+
+            Ok(content)
+        };
+
+        tokio::time::timeout(
+            Duration::from_secs(LLM_CALL_TIMEOUT_SECS),
+            request_future,
+        )
+        .await
+        .map_err(|_| "LLM 调用超时，请检查网络连接或稍后重试".to_string())?
     }
 
     /// RAG query with channel-based streaming.
@@ -1164,10 +1356,7 @@ impl LLMService {
         }
 
         // Step 3: Read config
-        let config = {
-            let cfg = self.config.lock().map_err(|e| e.to_string())?;
-            cfg.clone()
-        };
+        let config = self.get_active_config()?;
 
         // Compress conversation if too long (OpenCode-inspired)
         let compressed = self.compress_conversation(&conversation_history).await;
@@ -1199,12 +1388,12 @@ impl LLMService {
 
         // Step 6: Branch by provider and stream to channel
         // Branch by provider (Local uses OpenAI-compatible protocol)
-        match config.provider {
-            LLMProvider::OpenAI | LLMProvider::Local => {
+        match config.protocol {
+            LLMProtocol::OpenAI | LLMProtocol::Local => {
                 self.stream_openai_to_sender(&config, SYSTEM_PROMPT, &messages, &tx)
                     .await
             }
-            LLMProvider::Anthropic => {
+            LLMProtocol::Anthropic => {
                 self.stream_anthropic_to_sender(&config, SYSTEM_PROMPT, &messages, &tx)
                     .await
             }
@@ -1214,7 +1403,7 @@ impl LLMService {
     /// Stream OpenAI response to channel sender (real-time).
     async fn stream_openai_to_sender(
         &self,
-        config: &LLMConfig,
+        config: &LLMProviderConfig,
         system_prompt: &str,
         messages: &[ChatMessage],
         tx: &mpsc::Sender<StreamChunk>,
@@ -1250,6 +1439,74 @@ impl LLMService {
         let mut es = EventSource::new(request)
             .map_err(|e| format!("Failed to create EventSource: {}", e))?;
 
+        // Wait for the first event with timeout
+        let first_event = tokio::time::timeout(
+            Duration::from_secs(LLM_STREAM_FIRST_CHUNK_TIMEOUT_SECS),
+            es.next(),
+        )
+        .await
+        .map_err(|_| "LLM 流式响应超时，未收到首个数据块".to_string())?;
+
+        // Process first event if received
+        if let Some(event) = first_event {
+            match event {
+                Ok(Event::Message(msg)) => {
+                    if msg.data == "[DONE]" {
+                        let _ = tx
+                            .send(StreamChunk {
+                                content: String::new(),
+                                done: true,
+                                thinking: None,
+                            })
+                            .await;
+                        return Ok(());
+                    }
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg.data) {
+                        if let Some(reasoning) =
+                            parsed["choices"][0]["delta"]["reasoning_content"].as_str()
+                        {
+                            if !reasoning.is_empty() {
+                                let _ = tx
+                                    .send(StreamChunk {
+                                        content: String::new(),
+                                        done: false,
+                                        thinking: Some(reasoning.to_string()),
+                                    })
+                                    .await;
+                            }
+                        }
+                        if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
+                            let cleaned = scrub_response(content);
+                            if !cleaned.is_empty() {
+                                let _ = tx
+                                    .send(StreamChunk {
+                                        content: cleaned,
+                                        done: false,
+                                        thinking: None,
+                                    })
+                                    .await;
+                            }
+                        }
+                        if let Some(reason) = parsed["choices"][0]["finish_reason"].as_str() {
+                            if !reason.is_empty() && reason != "null" {
+                                let _ = tx
+                                    .send(StreamChunk {
+                                        content: String::new(),
+                                        done: true,
+                                        thinking: None,
+                                    })
+                                    .await;
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+                Ok(Event::Open) => {}
+                Err(e) => return Err(format!("SSE error: {}", e)),
+            }
+        }
+
+        // Process remaining events (first-chunk timeout already passed)
         while let Some(event) = es.next().await {
             match event {
                 Ok(Event::Message(msg)) => {
@@ -1327,7 +1584,7 @@ impl LLMService {
     /// Stream Anthropic response to channel sender (real-time).
     async fn stream_anthropic_to_sender(
         &self,
-        config: &LLMConfig,
+        config: &LLMProviderConfig,
         system_prompt: &str,
         messages: &[ChatMessage],
         tx: &mpsc::Sender<StreamChunk>,
@@ -1366,6 +1623,66 @@ impl LLMService {
         let mut es = EventSource::new(request)
             .map_err(|e| format!("Failed to create EventSource: {}", e))?;
 
+        // Wait for the first event with timeout
+        let first_event = tokio::time::timeout(
+            Duration::from_secs(LLM_STREAM_FIRST_CHUNK_TIMEOUT_SECS),
+            es.next(),
+        )
+        .await
+        .map_err(|_| "LLM 流式响应超时，未收到首个数据块".to_string())?;
+
+        // Process first event if received
+        if let Some(event) = first_event {
+            match event {
+                Ok(Event::Message(msg)) => match msg.event.as_str() {
+                    "content_block_delta" => {
+                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&msg.data) {
+                            if data["type"] == "content_block_delta" {
+                                if let Some(delta) = data.get("delta") {
+                                    if delta["type"] == "text_delta" {
+                                        if let Some(text) = delta["text"].as_str() {
+                                            let cleaned = scrub_response(text);
+                                            if !cleaned.is_empty() {
+                                                let _ = tx
+                                                    .send(StreamChunk {
+                                                        content: cleaned,
+                                                        done: false,
+                                                        thinking: None,
+                                                    })
+                                                    .await;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "message_delta" | "message_stop" => {
+                        let _ = tx
+                            .send(StreamChunk {
+                                content: String::new(),
+                                done: true,
+                                thinking: None,
+                            })
+                            .await;
+                        return Ok(());
+                    }
+                    "error" => {
+                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&msg.data) {
+                            let err_msg = data["error"]["message"]
+                                .as_str()
+                                .unwrap_or("Unknown Anthropic stream error");
+                            return Err(format!("Anthropic stream error: {}", err_msg));
+                        }
+                    }
+                    _ => {}
+                },
+                Ok(Event::Open) => {}
+                Err(e) => return Err(format!("SSE error: {}", e)),
+            }
+        }
+
+        // Process remaining events (first-chunk timeout already passed)
         while let Some(event) = es.next().await {
             match event {
                 Ok(Event::Message(msg)) => match msg.event.as_str() {
@@ -1456,9 +1773,11 @@ impl LLMService {
             return Ok(conversation.to_vec());
         }
 
-        eprintln!(
-            "[Compress] Conversation tokens {} exceed threshold {} — starting summarization",
-            total_tokens, COMPRESS_THRESHOLD
+        info!(
+            target: "llm",
+            total_tokens,
+            threshold = COMPRESS_THRESHOLD,
+            "[Compress] Conversation tokens exceed threshold — starting summarization"
         );
 
         // Walk backwards from the end to find split point:
@@ -1491,7 +1810,7 @@ impl LLMService {
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        let config = self.get_config()?;
+        let config = self.get_active_config()?;
 
         let summary_prompt = format!(
             "从以下对话中提取关键信息，保持简洁的要点格式：\n\
@@ -1528,16 +1847,21 @@ impl LLMService {
                 });
                 result.extend(tail.iter().cloned());
                 let compressed_tokens = estimate_tokens(&result);
-                eprintln!(
-                    "[Compress] Summarized {} head messages → {} tokens (was {} tokens, tail has {} msgs)",
-                    head.len(), compressed_tokens, total_tokens, tail.len()
+                info!(
+                    target: "llm",
+                    head_count = head.len(),
+                    compressed_tokens,
+                    total_tokens,
+                    tail_count = tail.len(),
+                    "[Compress] Summarized head messages"
                 );
                 Ok(result)
             }
             Err(e) => {
-                eprintln!(
-                    "[Compress] LLM summarization failed: {} — keeping full history",
-                    e
+                warn!(
+                    target: "llm",
+                    error = %e,
+                    "[Compress] LLM summarization failed — keeping full history"
                 );
                 Ok(conversation.to_vec())
             }
@@ -1550,19 +1874,15 @@ impl LLMService {
     /// that the API key and endpoint are valid. Returns Ok with a success
     /// message or Err with a descriptive error.
     pub async fn test_connection(&self) -> Result<String, String> {
-        let config = {
-            let cfg = self.config.lock().map_err(|e| e.to_string())?;
-            // Local models (non-standard) are allowed to have empty API key
-            let is_local =
-                cfg.provider != LLMProvider::OpenAI && cfg.provider != LLMProvider::Anthropic;
-            if cfg.api_key.is_empty() && !is_local {
-                return Err("API Key 未配置".to_string());
-            }
-            cfg.clone()
-        };
+        let config = self.get_active_config()?;
+        // Local models (non-standard) are allowed to have empty API key
+        let is_local = config.protocol == LLMProtocol::Local;
+        if config.api_key.is_empty() && !is_local {
+            return Err("API Key 未配置".to_string());
+        }
 
-        match config.provider {
-            LLMProvider::OpenAI | LLMProvider::Local => {
+        match config.protocol {
+            LLMProtocol::OpenAI | LLMProtocol::Local => {
                 let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
                 let body = serde_json::json!({
                     "model": config.model,
@@ -1571,15 +1891,18 @@ impl LLMService {
                     "temperature": 0.0
                 });
 
-                let response = self
-                    .client
-                    .post(&url)
-                    .header("Authorization", format!("Bearer {}", config.api_key))
-                    .header("Content-Type", "application/json")
-                    .json(&body)
-                    .send()
-                    .await
-                    .map_err(|e| format!("连接失败：{}", e))?;
+                let response = tokio::time::timeout(
+                    Duration::from_secs(LLM_CALL_TIMEOUT_SECS),
+                    self.client
+                        .post(&url)
+                        .header("Authorization", format!("Bearer {}", config.api_key))
+                        .header("Content-Type", "application/json")
+                        .json(&body)
+                        .send(),
+                )
+                .await
+                .map_err(|_| "LLM 连接测试超时".to_string())?
+                .map_err(|e| format!("连接失败：{}", e))?;
 
                 if !response.status().is_success() {
                     let status = response.status();
@@ -1592,7 +1915,7 @@ impl LLMService {
 
                 Ok(format!("连接成功（openai / {}）", config.model))
             }
-            LLMProvider::Anthropic => {
+            LLMProtocol::Anthropic => {
                 let url = format!("{}/messages", config.base_url.trim_end_matches('/'));
                 let body = serde_json::json!({
                     "model": config.model,
@@ -1601,17 +1924,20 @@ impl LLMService {
                     "messages": [{"role": "user", "content": "Hi"}]
                 });
 
-                let response = self
-                    .client_for_config(&config)?
-                    .post(&url)
-                    .header("x-api-key", &config.api_key)
-                    .header("anthropic-version", ANTHROPIC_VERSION)
-                    .header("anthropic-dangerous-direct-browser-access", "true")
-                    .header("Content-Type", "application/json")
-                    .json(&body)
-                    .send()
-                    .await
-                    .map_err(|e| format!("连接失败：{}", e))?;
+                let response = tokio::time::timeout(
+                    Duration::from_secs(LLM_CALL_TIMEOUT_SECS),
+                    self.client_for_config(&config)?
+                        .post(&url)
+                        .header("x-api-key", &config.api_key)
+                        .header("anthropic-version", ANTHROPIC_VERSION)
+                        .header("anthropic-dangerous-direct-browser-access", "true")
+                        .header("Content-Type", "application/json")
+                        .json(&body)
+                        .send(),
+                )
+                .await
+                .map_err(|_| "LLM 连接测试超时".to_string())?
+                .map_err(|e| format!("连接失败：{}", e))?;
 
                 if !response.status().is_success() {
                     let status = response.status();

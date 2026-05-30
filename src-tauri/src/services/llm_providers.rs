@@ -33,6 +33,30 @@ pub struct LLMProviderConfig {
     /// 最后探测时间
     #[serde(default)]
     pub last_probe_at: Option<String>,
+    /// 最大上下文窗口（token 数，默认：4096）
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+    /// 生成温度（默认：0.3）
+    #[serde(default = "default_temperature")]
+    pub temperature: f32,
+}
+
+impl LLMProviderConfig {
+    /// 检查是否已配置（有 API 密钥，或是本地模型）
+    pub fn is_configured(&self) -> bool {
+        if self.protocol == LLMProtocol::Local {
+            return !self.base_url.is_empty();
+        }
+        !self.api_key.is_empty()
+    }
+}
+
+fn default_max_tokens() -> u32 {
+    4096
+}
+
+fn default_temperature() -> f32 {
+    0.3
 }
 
 /// LLM 协议类型
@@ -336,6 +360,8 @@ mod tests {
             is_default: true,
             is_multimodal: None,
             last_probe_at: None,
+            max_tokens: 4096,
+            temperature: 0.3,
         };
         manager.add_provider(provider).unwrap();
 
@@ -370,6 +396,8 @@ mod tests {
             is_default: true,
             is_multimodal: Some(false),
             last_probe_at: None,
+            max_tokens: 4096,
+            temperature: 0.3,
         }).unwrap();
 
         manager.add_provider(LLMProviderConfig {
@@ -382,6 +410,8 @@ mod tests {
             is_default: false,
             is_multimodal: Some(true),
             last_probe_at: None,
+            max_tokens: 4096,
+            temperature: 0.3,
         }).unwrap();
 
         // 自动选择应返回多模态供应商

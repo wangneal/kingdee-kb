@@ -341,7 +341,7 @@ pub async fn generate_followup_questions(
     let user_prompt = build_followup_user_prompt(&request.answered_qa, &kb_results);
 
     // Step 4: Call LLM
-    let config = llm.get_config()?;
+    let config = llm.get_active_config()?;
     let messages = vec![
         ChatMessage {
             role: "system".to_string(),
@@ -455,7 +455,7 @@ pub async fn smart_fill_for_question(
     user_prompt.push_str("\n请直接回答上述问题。");
 
     // Step 4: Call LLM
-    let config = llm.get_config()?;
+    let config = llm.get_active_config()?;
     let messages = vec![
         ChatMessage {
             role: "system".to_string(),

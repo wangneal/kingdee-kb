@@ -155,10 +155,6 @@ pub fn run() {
             commands::search_llm::bm25_search,
             commands::search_llm::hybrid_search,
             // Phase 6: LLM Integration
-            commands::search_llm::set_llm_config,
-            commands::search_llm::get_llm_config,
-            commands::search_llm::is_llm_configured,
-            commands::search_llm::test_llm_connection,
             commands::search_llm::save_chat_memory,
             commands::search_llm::count_tokens,
             // Phase 9: Template Engine

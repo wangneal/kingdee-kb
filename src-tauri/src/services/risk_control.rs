@@ -464,7 +464,7 @@ impl RiskControlStore {
             },
         ];
 
-        let config = llm.get_config()?;
+        let config = llm.get_active_config()?;
         let response = llm.chat_completion(&messages, &config).await?;
 
         // 解析JSON响应
@@ -527,7 +527,7 @@ impl RiskControlStore {
             },
         ];
 
-        let config = llm.get_config()?;
+        let config = llm.get_active_config()?;
         llm.chat_completion(&messages, &config).await
     }
 
@@ -569,7 +569,7 @@ impl RiskControlStore {
             },
         ];
 
-        let config = llm.get_config()?;
+        let config = llm.get_active_config()?;
         let response = llm.chat_completion(&messages, &config).await?;
 
         serde_json::from_str(&response)
@@ -676,7 +676,7 @@ impl RiskControlStore {
                 content: prompt,
             },
         ];
-        let config = llm.get_config()?;
+        let config = llm.get_active_config()?;
         let response = llm.chat_completion(&messages, &config).await?;
         Self::extract_json_from_llm_response(&response)
     }

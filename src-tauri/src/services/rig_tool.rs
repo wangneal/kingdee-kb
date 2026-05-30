@@ -1,11 +1,98 @@
 use rig_core::{completion::ToolDefinition, tool::Tool};
+use rig_core::tool::ToolDyn;
+use rig_core::wasm_compat::WasmBoxedFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::{error, info, warn};
+
+use crate::services::agent_timeout::{MAX_RETRIES, retry_delay};
+
+/// 用户回答澄清问题的超时时间（秒）
+const QUESTION_TIMEOUT_SECS: u64 = 300; // 5 分钟
 use tokio::sync::{mpsc, oneshot};
+
+// ─── RetryToolWrapper ────────────────────────────────────────────────────────
+//
+// Wraps a `Box<dyn ToolDyn>` with retry logic using exponential backoff.
+// Uses `MAX_RETRIES` and `retry_delay()` from `agent_timeout.rs`.
+//
+// **Design note**: We implement `ToolDyn` (not `Tool`) directly because
+// `ToolDyn::call` takes `args: String` (JSON), which is `Clone` and can be
+// retried. The `Tool` trait's `call` takes `Args` by value without `Clone`
+// bound, so retrying at the `Tool` level would require serializing/deserializing.
+//
+// Tools with side effects (file I/O, user interaction, script execution)
+// should NOT be wrapped with retry.
+
+pub struct RetryToolWrapper {
+    inner: Box<dyn ToolDyn>,
+}
+
+impl RetryToolWrapper {
+    /// Wrap any tool that implements `ToolDyn` (which all `Tool` types do
+    /// via the blanket impl in rig-core).
+    pub fn new(inner: impl ToolDyn + 'static) -> Self {
+        Self {
+            inner: Box::new(inner),
+        }
+    }
+}
+
+impl ToolDyn for RetryToolWrapper {
+    fn name(&self) -> String {
+        self.inner.name()
+    }
+
+    fn definition<'a>(&'a self, prompt: String) -> WasmBoxedFuture<'a, ToolDefinition> {
+        self.inner.definition(prompt)
+    }
+
+    fn call<'a>(&'a self, args: String) -> WasmBoxedFuture<'a, Result<String, rig_core::tool::ToolError>> {
+        Box::pin(async move {
+            let tool_name = self.inner.name();
+            let mut last_error = None;
+            for attempt in 0..=MAX_RETRIES {
+                match self.inner.call(args.clone()).await {
+                    Ok(result) => {
+                        if attempt > 0 {
+                            info!(
+                                tool = tool_name.as_str(),
+                                attempt = attempt,
+                                "tool call succeeded after retry"
+                            );
+                        }
+                        return Ok(result);
+                    }
+                    Err(e) => {
+                        last_error = Some(e);
+                        if attempt < MAX_RETRIES {
+                            let delay = retry_delay(attempt);
+                            warn!(
+                                tool = tool_name.as_str(),
+                                attempt = attempt + 1,
+                                max_retries = MAX_RETRIES + 1,
+                                delay_ms = delay.as_millis() as u64,
+                                "tool call failed, retrying with exponential backoff"
+                            );
+                            tokio::time::sleep(delay).await;
+                        } else {
+                            error!(
+                                tool = tool_name.as_str(),
+                                attempts = MAX_RETRIES + 1,
+                                "tool call failed after all retries"
+                            );
+                        }
+                    }
+                }
+            }
+            Err(last_error.unwrap())
+        })
+    }
+}
 
 use crate::services::bm25_service::BM25Service;
 use crate::services::doc_generator::RecipeDocRequest;
@@ -590,7 +677,7 @@ impl Tool for AnalyzeFitGapTool {
             },
         ];
 
-        let config = self.llm.get_config().map_err(ToolError::msg)?;
+        let config = self.llm.get_active_config().map_err(ToolError::msg)?;
         let response = self
             .llm
             .chat_completion(&messages, &config)
@@ -791,7 +878,7 @@ impl Tool for ExtractBlueprintTool {
             },
         ];
 
-        let config = self.llm.get_config().map_err(ToolError::msg)?;
+        let config = self.llm.get_active_config().map_err(ToolError::msg)?;
         let response = self
             .llm
             .chat_completion(&messages, &config)
@@ -865,7 +952,7 @@ impl Tool for RecommendQuestionsTool {
             },
         ];
 
-        let config = self.llm.get_config().map_err(ToolError::msg)?;
+        let config = self.llm.get_active_config().map_err(ToolError::msg)?;
         let response = self
             .llm
             .chat_completion(&messages, &config)
@@ -987,7 +1074,16 @@ impl Tool for RigQuestionTool {
         });
 
         // Wait for the user's answer
-        let answer = rx.await.unwrap_or_default();
+        let answer = tokio::time::timeout(
+            Duration::from_secs(QUESTION_TIMEOUT_SECS),
+            rx,
+        )
+        .await
+        .unwrap_or_else(|_| {
+            warn!(target: "tool", timeout_secs = QUESTION_TIMEOUT_SECS, "[QuestionTool] timeout waiting for user answer");
+            Ok("用户未在规定时间内回答".to_string())
+        })
+        .unwrap_or_default();
 
         // Cleanup
         {
@@ -1263,14 +1359,15 @@ impl Tool for RunSkillScriptTool {
         std::fs::create_dir_all(&output_dir)
             .map_err(|e| ToolError::msg(format!("创建 skill 输出目录失败: {}", e)))?;
         let input_file_bytes: usize = args.input_files.iter().map(|f| f.content.len()).sum();
-        eprintln!(
-            "[RunSkillScript] prepare skill={} script={} input_files={} input_bytes={} raw_args={} sandbox={}",
-            skill.name,
-            args.script,
-            args.input_files.len(),
-            input_file_bytes,
-            args.args.len(),
-            sandbox_dir.display()
+        info!(
+            target: "tool",
+            skill = %skill.name,
+            script = %args.script,
+            input_files = args.input_files.len(),
+            input_bytes = input_file_bytes,
+            raw_args = args.args.len(),
+            sandbox = %sandbox_dir.display(),
+            "[RunSkillScript] prepare"
         );
         write_skill_input_files(&sandbox_dir, &args.input_files)?;
         let mut user_args = args.args.clone();
@@ -1278,9 +1375,12 @@ impl Tool for RunSkillScriptTool {
         if let Err(e) =
             validate_known_skill_invocation(&skill.name, &args.script, &user_args, &sandbox_dir)
         {
-            eprintln!(
-                "[RunSkillScript] validation_recoverable skill={} script={} error={}",
-                skill.name, args.script, e
+            warn!(
+                target: "tool",
+                skill = %skill.name,
+                script = %args.script,
+                error = %e,
+                "[RunSkillScript] validation_recoverable"
             );
             return Ok(format!(
                 "run-skill-script 未执行，因为输入尚未满足脚本协议。\n{}\n下一步: 不要原样重复调用。请按上面的错误说明补齐参数、重写 input_files，或调用 question 向用户补充缺失信息后再执行。",
@@ -1349,13 +1449,14 @@ impl Tool for RunSkillScriptTool {
             }
         }
         command_args.extend(user_args.clone());
-        eprintln!(
-            "[RunSkillScript] execute skill={} script={} program={} command_args={} timeout_seconds={}",
-            skill.name,
-            args.script,
-            program,
-            command_args.len(),
-            execution_plan.timeout_seconds
+        info!(
+            target: "tool",
+            skill = %skill.name,
+            script = %args.script,
+            program = %program,
+            command_args = command_args.len(),
+            timeout_seconds = execution_plan.timeout_seconds,
+            "[RunSkillScript] execute"
         );
 
         let timeout_seconds = execution_plan.timeout_seconds;
@@ -1376,9 +1477,12 @@ impl Tool for RunSkillScriptTool {
         {
             Ok(Ok(result)) => result,
             Ok(Err(err)) => {
-                eprintln!(
-                    "[RunSkillScript] internal_error skill={} script={} error={}",
-                    skill.name, args.script, err
+                error!(
+                    target: "tool",
+                    skill = %skill.name,
+                    script = %args.script,
+                    error = %err,
+                    "[RunSkillScript] internal_error"
                 );
                 return Ok(format!(
                     "run-skill-script 内部执行失败，当前错误可在本轮上下文中修正。\n技能: {}\n脚本: {}\n错误: {}\n下一步: 不要结束对话，也不要原样重复调用。请根据错误修改参数或 input_files，然后再次调用工具。",
@@ -1386,9 +1490,12 @@ impl Tool for RunSkillScriptTool {
                 ));
             }
             Err(err) => {
-                eprintln!(
-                    "[RunSkillScript] join_error skill={} script={} error={}",
-                    skill.name, args.script, err
+                error!(
+                    target: "tool",
+                    skill = %skill.name,
+                    script = %args.script,
+                    error = %err,
+                    "[RunSkillScript] join_error"
                 );
                 return Ok(format!(
                     "run-skill-script 后台任务异常，已捕获且未继续中断对话。\n技能: {}\n脚本: {}\n错误: {}\n下一步: 不要结束对话。请检查上一轮 input_files/参数是否触发了脚本或校验异常，修正后再次调用工具。",
@@ -1398,13 +1505,14 @@ impl Tool for RunSkillScriptTool {
         };
 
         if result.exit_code != 0 {
-            eprintln!(
-                "[RunSkillScript] exit_nonzero skill={} script={} exit_code={} stdout_chars={} stderr_chars={}",
-                skill.name,
-                args.script,
-                result.exit_code,
-                result.stdout.chars().count(),
-                result.stderr.chars().count()
+            warn!(
+                target: "tool",
+                skill = %skill.name,
+                script = %args.script,
+                exit_code = result.exit_code,
+                stdout_chars = result.stdout.chars().count(),
+                stderr_chars = result.stderr.chars().count(),
+                "[RunSkillScript] exit_nonzero"
             );
             let recovery_hint = skill_script_failure_recovery_hint(
                 &skill.name,
@@ -1423,14 +1531,15 @@ impl Tool for RunSkillScriptTool {
                 truncate_tool_output(&result.stderr)
             ));
         }
-        eprintln!(
-            "[RunSkillScript] success skill={} script={} exit_code={} stdout_chars={} stderr_chars={} output_dir={}",
-            skill.name,
-            args.script,
-            result.exit_code,
-            result.stdout.chars().count(),
-            result.stderr.chars().count(),
-            output_dir.display()
+        info!(
+            target: "tool",
+            skill = %skill.name,
+            script = %args.script,
+            exit_code = result.exit_code,
+            stdout_chars = result.stdout.chars().count(),
+            stderr_chars = result.stderr.chars().count(),
+            output_dir = %output_dir.display(),
+            "[RunSkillScript] success"
         );
 
         Ok(format!(
@@ -1621,7 +1730,16 @@ async fn ask_skill_script_approval(
         session_id,
         payload,
     });
-    let answer = rx.await.unwrap_or_default();
+    let answer = tokio::time::timeout(
+            Duration::from_secs(QUESTION_TIMEOUT_SECS),
+            rx,
+        )
+        .await
+        .unwrap_or_else(|_| {
+            warn!(target: "tool", timeout_secs = QUESTION_TIMEOUT_SECS, "[QuestionTool] timeout waiting for user answer");
+            Ok("用户未在规定时间内回答".to_string())
+        })
+        .unwrap_or_default();
     {
         let mut map = pending.lock().await;
         map.remove(&question_id);
@@ -1837,7 +1955,16 @@ async fn ask_skill_install_approval(
         session_id,
         payload,
     });
-    let answer = rx.await.unwrap_or_default();
+    let answer = tokio::time::timeout(
+            Duration::from_secs(QUESTION_TIMEOUT_SECS),
+            rx,
+        )
+        .await
+        .unwrap_or_else(|_| {
+            warn!(target: "tool", timeout_secs = QUESTION_TIMEOUT_SECS, "[QuestionTool] timeout waiting for user answer");
+            Ok("用户未在规定时间内回答".to_string())
+        })
+        .unwrap_or_default();
     {
         let mut map = pending.lock().await;
         map.remove(&question_id);
@@ -2351,13 +2478,15 @@ pub fn all_rig_tools(
         .unwrap_or(0);
 
     vec![
-        Box::new(SearchKnowledgeTool::new(
+        // Safe tools — wrapped with retry (exponential backoff)
+        Box::new(RetryToolWrapper::new(SearchKnowledgeTool::new(
             project_id.map(|s| s.to_string()),
             embedding.clone(),
             vector_index.clone(),
             bm25.clone(),
             metadata.clone(),
-        )),
+        ))),
+        // GenerateDocTool writes files — side effect, no retry
         Box::new(GenerateDocTool::new(
             data_dir.clone(),
             llm.clone(),
@@ -2368,19 +2497,23 @@ pub fn all_rig_tools(
             metadata,
             products,
         )),
-        Box::new(CheckScopeCreepTool::new(
+        Box::new(RetryToolWrapper::new(CheckScopeCreepTool::new(
             risk_project_id,
             llm.clone(),
             risk_store.clone(),
-        )),
-        Box::new(AnalyzeFitGapTool::new(llm.clone())),
-        Box::new(GetProjectHealthTool::new(
+        ))),
+        Box::new(RetryToolWrapper::new(AnalyzeFitGapTool::new(llm.clone()))),
+        Box::new(RetryToolWrapper::new(GetProjectHealthTool::new(
             risk_project_id,
             risk_store.clone(),
-        )),
-        Box::new(GenerateDefenseScriptTool::new(llm.clone(), risk_store)),
-        Box::new(ExtractBlueprintTool::new(llm.clone())),
-        Box::new(RecommendQuestionsTool::new(llm)),
+        ))),
+        Box::new(RetryToolWrapper::new(GenerateDefenseScriptTool::new(
+            llm.clone(),
+            risk_store,
+        ))),
+        Box::new(RetryToolWrapper::new(ExtractBlueprintTool::new(llm.clone()))),
+        Box::new(RetryToolWrapper::new(RecommendQuestionsTool::new(llm))),
+        // UseSkillTool runs skills — side effect, no retry
         Box::new(UseSkillTool { skill_manager }),
     ]
 }
@@ -2412,4 +2545,151 @@ pub fn runtime_rig_tools(
             session_id,
         }),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── sanitize_filename ──
+
+    #[test]
+    fn sanitize_filename_normal() {
+        assert_eq!(sanitize_filename("hello world"), "hello world");
+    }
+
+    #[test]
+    fn sanitize_filename_special_chars() {
+        assert_eq!(
+            sanitize_filename("file<>:\"/\\|?*name"),
+            "file_________name"
+        );
+    }
+
+    #[test]
+    fn sanitize_filename_long() {
+        let long = "a".repeat(200);
+        assert_eq!(sanitize_filename(&long).len(), 80);
+    }
+
+    #[test]
+    fn sanitize_filename_empty() {
+        assert_eq!(sanitize_filename(""), "document");
+    }
+
+    #[test]
+    fn sanitize_filename_only_dots() {
+        assert_eq!(sanitize_filename("..."), "document");
+    }
+
+    #[test]
+    fn sanitize_filename_control_chars() {
+        assert_eq!(sanitize_filename("foo\x00bar\x1f"), "foo_bar_");
+    }
+
+    #[test]
+    fn sanitize_filename_trims_dots() {
+        assert_eq!(sanitize_filename("..test.."), "test");
+    }
+
+    // ── is_safe_relative_path ──
+
+    #[test]
+    fn safe_relative_normal() {
+        assert!(is_safe_relative_path("docs/readme.md"));
+    }
+
+    #[test]
+    fn safe_relative_current_dir() {
+        assert!(is_safe_relative_path("./file.txt"));
+    }
+
+    #[test]
+    fn safe_relative_traversal() {
+        assert!(!is_safe_relative_path("../etc/passwd"));
+    }
+
+    #[test]
+    fn safe_relative_absolute() {
+        assert!(!is_safe_relative_path("/etc/passwd"));
+    }
+
+    #[test]
+    fn safe_relative_null_byte() {
+        assert!(!is_safe_relative_path("file\0.txt"));
+    }
+
+    #[test]
+    fn safe_relative_empty() {
+        assert!(!is_safe_relative_path(""));
+    }
+
+    #[test]
+    fn safe_relative_windows_absolute() {
+        // On Windows, C:\foo is absolute
+        assert!(!is_safe_relative_path("C:\\Windows\\System32"));
+    }
+
+    // ── contains_shell_control_token ──
+
+    #[test]
+    fn shell_token_normal() {
+        assert!(!contains_shell_control_token("hello world"));
+    }
+
+    #[test]
+    fn shell_token_and() {
+        assert!(contains_shell_control_token("foo && bar"));
+    }
+
+    #[test]
+    fn shell_token_or() {
+        assert!(contains_shell_control_token("foo || bar"));
+    }
+
+    #[test]
+    fn shell_token_pipe() {
+        assert!(contains_shell_control_token("foo | bar"));
+    }
+
+    #[test]
+    fn shell_token_redirect() {
+        assert!(contains_shell_control_token("foo > bar"));
+    }
+
+    #[test]
+    fn shell_token_input_redirect() {
+        assert!(contains_shell_control_token("foo < bar"));
+    }
+
+    #[test]
+    fn shell_token_backtick() {
+        assert!(contains_shell_control_token("foo `cmd` bar"));
+    }
+
+    // ── validate_skill_script_args ──
+
+    #[test]
+    fn validate_args_normal() {
+        let args = vec!["--flag".to_string(), "value".to_string()];
+        assert!(validate_skill_script_args(&args, &[]).is_ok());
+    }
+
+    #[test]
+    fn validate_args_nul_byte() {
+        let args = vec!["foo\0bar".to_string()];
+        assert!(validate_skill_script_args(&args, &[]).is_err());
+    }
+
+    #[test]
+    fn validate_args_shell_token() {
+        let args = vec!["foo && rm -rf /".to_string()];
+        assert!(validate_skill_script_args(&args, &[]).is_err());
+    }
+
+    #[test]
+    fn validate_args_relative_path_ok() {
+        let args = vec!["./output/file.txt".to_string()];
+        assert!(validate_skill_script_args(&args, &[]).is_ok());
+    }
 }

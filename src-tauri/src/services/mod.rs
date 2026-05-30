@@ -15,6 +15,7 @@ pub mod hybrid_search;
 pub mod image_processor;
 pub mod ingestion;
 pub mod ingestion_helpers;
+pub mod llm_providers;
 pub mod llm_service;
 pub mod memory;
 pub mod metadata;

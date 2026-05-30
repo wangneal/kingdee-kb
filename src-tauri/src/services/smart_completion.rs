@@ -282,7 +282,7 @@ async fn generate_fields_with_kb_context(
     ];
 
     // Call LLM
-    let config = llm.get_config()?;
+    let config = llm.get_active_config()?;
     let response = llm.chat_completion(&messages, &config).await?;
 
     // Parse JSON response

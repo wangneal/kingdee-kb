@@ -338,23 +338,12 @@ pub async fn check_image_deps(state: State<'_, AppState>) -> Result<ImageDepsSta
 /// 探测当前 LLM 是否支持多模态
 #[tauri::command]
 pub async fn probe_llm_multimodal(state: State<'_, AppState>) -> Result<bool, String> {
-    // 获取 LLM 配置
+    // 从 LLMProviderManager 获取默认供应商配置
     let (llm_api_key, llm_base_url, llm_model) = {
-        let _processor = state.image_processor.lock().map_err(|e| e.to_string())?;
-        // 从 AppState 获取 LLM 配置
-        let config_path = state.data_dir.join("config.json");
-        if let Ok(content) = std::fs::read_to_string(&config_path) {
-            if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
-                let api_key = config["api_key"].as_str().unwrap_or("").to_string();
-                let base_url = config["base_url"].as_str().unwrap_or("https://api.openai.com/v1").to_string();
-                let model = config["model"].as_str().unwrap_or("gpt-4o").to_string();
-                (api_key, base_url, model)
-            } else {
-                (String::new(), String::new(), String::new())
-            }
-        } else {
-            (String::new(), String::new(), String::new())
-        }
+        let mgr = state.llm_providers.lock().map_err(|e| e.to_string())?;
+        mgr.get_default_provider()
+            .map(|p| (p.api_key.clone(), p.base_url.clone(), p.model.clone()))
+            .unwrap_or_default()
     };
     
     // 创建临时处理器进行探测

@@ -1,4 +1,4 @@
-use crate::services::llm_service::{LLMConfig, LLMProvider};
+use crate::services::llm_providers::{LLMProviderConfig, LLMProtocol};
 use bytes::Bytes;
 use futures::StreamExt;
 use rig_core::http_client::{self, HttpClientExt, MultipartForm, Request, Response};
@@ -201,9 +201,9 @@ impl HttpClientExt for CompatReqwestClient {
 }
 
 pub fn build_openai_client(
-    config: &LLMConfig,
+    config: &LLMProviderConfig,
 ) -> Result<rig_core::providers::openai::Client<CompatReqwestClient>, String> {
-    if config.api_key.is_empty() && config.provider != LLMProvider::Local {
+    if config.api_key.is_empty() && config.protocol != LLMProtocol::Local {
         return Err("API key 为空，无法构建 rig OpenAI client".to_string());
     }
 
@@ -227,7 +227,7 @@ pub fn build_openai_client(
 }
 
 pub fn build_anthropic_client(
-    config: &LLMConfig,
+    config: &LLMProviderConfig,
 ) -> Result<rig_core::providers::anthropic::Client<CompatReqwestClient>, String> {
     if config.api_key.is_empty() {
         return Err("API key 为空，无法构建 rig Anthropic client".to_string());
@@ -252,11 +252,11 @@ mod tests {
     use futures::StreamExt;
     use rig_core::client::CompletionClient;
     use rig_core::streaming::StreamingPrompt;
-    use serde::Deserialize;
     use std::sync::Arc;
 
     use crate::services::bm25_service::BM25Service;
     use crate::services::embedding::EmbeddingService;
+    use crate::services::llm_providers::{LLMProviderConfig, LLMProtocol, LLMProviderManager};
     use crate::services::llm_service::LLMService;
     use crate::services::metadata::MetadataStore;
     use crate::services::product_store::ProductStore;
@@ -265,28 +265,10 @@ mod tests {
     use crate::services::skill_manager::SkillManager;
     use crate::services::vector_index::VectorIndex;
 
-    #[derive(Debug, Deserialize)]
-    struct SavedConfig {
-        provider: LLMProvider,
-        api_key: String,
-        base_url: String,
-        model: String,
-        max_tokens: u32,
-        temperature: f32,
-    }
-
-    fn load_saved_config() -> Option<LLMConfig> {
-        let path = dirs::home_dir()?.join(".kingdee-kb").join("config.json");
-        let data = std::fs::read_to_string(path).ok()?;
-        let saved: SavedConfig = serde_json::from_str(&data).ok()?;
-        Some(LLMConfig {
-            provider: saved.provider,
-            api_key: saved.api_key,
-            base_url: saved.base_url,
-            model: saved.model,
-            max_tokens: saved.max_tokens,
-            temperature: saved.temperature,
-        })
+    fn load_saved_config() -> Option<LLMProviderConfig> {
+        let data_dir = dirs::home_dir()?.join(".kingdee-kb");
+        let manager = LLMProviderManager::new(&data_dir);
+        manager.get_default_provider().cloned()
     }
 
     fn test_tool_deps(
@@ -368,7 +350,10 @@ mod tests {
             let tmp = tempfile::tempdir().expect("tempdir");
             let (embedding, vector_index, bm25, metadata, products, risk_store) =
                 test_tool_deps(tmp.path());
-            let llm = LLMService::new(tmp.path());
+            let providers = Arc::new(std::sync::Mutex::new(
+                LLMProviderManager::new(&tmp.path().to_path_buf())
+            ));
+            let llm = LLMService::new(providers);
             let skill_manager = Arc::new(std::sync::Mutex::new(SkillManager::new(
                 tmp.path().join("skills"),
             )));

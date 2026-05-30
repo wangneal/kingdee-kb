@@ -10,6 +10,7 @@
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use tracing::{error, info, warn};
 
 use crate::services::bm25_service::BM25Service;
 use crate::services::embedding::EmbeddingService;
@@ -47,7 +48,7 @@ pub async fn save_chat_memory(
     // information.  If LLM is not configured, fall back to a lenient length
     // heuristic (only skip pure greetings like "你好" with <5 user chars).
     if !is_substantive_conversation(conversation, llm).await {
-        eprintln!("[Memory] Skipping save: conversation lacks substantive content");
+        info!(target: "memory", "[Memory] Skipping save: conversation lacks substantive content");
         return;
     }
     // --- End semantic quality check ---
@@ -76,7 +77,7 @@ pub async fn save_chat_memory(
     let memory_text = match extract_memory(conversation, llm).await {
         Ok(text) => text,
         Err(e) => {
-            eprintln!("[Memory] Extraction failed (non-fatal): {}", e);
+            warn!(target: "memory", error = %e, "[Memory] Extraction failed (non-fatal)");
             return;
         }
     };
@@ -93,9 +94,10 @@ pub async fn save_chat_memory(
         .collect::<Vec<_>>()
         .join("");
     if trimmed.is_empty() {
-        eprintln!(
-            "[Memory] Skipping — LLM returned empty template (no project info in conversation): {}",
-            extract_title(conversation)
+        info!(
+            target: "memory",
+            title = %extract_title(conversation),
+            "[Memory] Skipping — LLM returned empty template (no project info in conversation)"
         );
         return;
     }
@@ -107,10 +109,7 @@ pub async fn save_chat_memory(
     // 4. Check for duplicate by semantic similarity — skip if too similar to recent memory
     let title = format!("记忆: {}", extract_title(conversation));
     if is_duplicate_memory(&title, &memory_text, embedding, vector_index, metadata) {
-        eprintln!(
-            "[Memory] Skipping — similar memory already exists: {}",
-            title
-        );
+        info!(target: "memory", title = %title, "[Memory] Skipping — similar memory already exists");
         return;
     }
 
@@ -148,10 +147,7 @@ async fn is_substantive_conversation(conversation: &[ChatMessage], llm: &LLMServ
             .map(|m| m.content.chars().count())
             .sum();
         if user_chars < 5 {
-            eprintln!(
-                "[Memory] LLM not configured, heuristic: user content too short ({} chars)",
-                user_chars
-            );
+            info!(target: "memory", user_chars, "[Memory] LLM not configured, heuristic: user content too short");
             return false;
         }
         return true;
@@ -190,29 +186,27 @@ async fn is_substantive_conversation(conversation: &[ChatMessage], llm: &LLMServ
         content: prompt,
     }];
 
-    match llm.get_config() {
+    match llm.get_active_config() {
         Ok(config) => match llm.chat_completion(&messages, &config).await {
             Ok(response) => {
                 let answer = response.trim().to_uppercase();
                 let is_yes = answer.contains("YES") && !answer.contains("NO");
                 if !is_yes {
-                    eprintln!(
-                        "[Memory] LLM judged conversation as non-substantive: {}",
-                        response.trim()
+                    info!(
+                        target: "memory",
+                        response = %response.trim(),
+                        "[Memory] LLM judged conversation as non-substantive"
                     );
                 }
                 is_yes
             }
             Err(e) => {
-                eprintln!(
-                    "[Memory] LLM quality check failed ({}), defaulting to save",
-                    e
-                );
+                warn!(target: "memory", error = %e, "[Memory] LLM quality check failed, defaulting to save");
                 true // on error, default to saving rather than losing data
             }
         },
         Err(_) => {
-            eprintln!("[Memory] Cannot get LLM config, defaulting to save");
+            warn!(target: "memory", "[Memory] Cannot get LLM config, defaulting to save");
             true
         }
     }
@@ -235,7 +229,7 @@ fn is_duplicate_memory(
         Ok(mut emb) => match emb.embed_text(memory_text) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("[Memory] Embedding failed for dedup check: {}", e);
+                warn!(target: "memory", error = %e, "[Memory] Embedding failed for dedup check");
                 // Fall back to exact title match
                 return is_duplicate_memory_by_title(title, metadata);
             }
@@ -276,9 +270,12 @@ fn is_duplicate_memory(
                         .map(|d| d.title.as_str())
                         .unwrap_or("(unknown)");
 
-                    eprintln!(
-                        "[Memory] Duplicate detected: '{}' vs '{}' (sim={:.3})",
-                        title, doc_title, result.similarity
+                    info!(
+                        target: "memory",
+                        title = %title,
+                        existing = %doc_title,
+                        similarity = result.similarity,
+                        "[Memory] Duplicate detected"
                     );
                     return true;
                 }
@@ -312,12 +309,12 @@ fn cleanup_stale_memories(
         Ok(meta) => match meta.list_documents(Some("记忆库")) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("[Memory] Failed to list memory docs: {}", e);
+                error!(target: "memory", error = %e, "[Memory] Failed to list memory docs");
                 return;
             }
         },
         Err(e) => {
-            eprintln!("[Memory] Metadata lock error: {}", e);
+            error!(target: "memory", error = %e, "[Memory] Metadata lock error");
             return;
         }
     };
@@ -346,7 +343,7 @@ fn cleanup_stale_memories(
             let chunks: Vec<ChunkMeta> = match meta.get_chunks_by_document(doc.id) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("[Memory] Failed to get chunks for doc {}: {}", doc.id, e);
+                    error!(target: "memory", doc_id = doc.id, error = %e, "[Memory] Failed to get chunks for doc");
                     continue;
                 }
             };
@@ -356,7 +353,7 @@ fn cleanup_stale_memories(
                 let _ = idx.remove(chunk.vector_key as u64);
             }
             if let Err(e) = idx.save() {
-                eprintln!("[Memory] Failed to save index after cleanup: {}", e);
+                error!(target: "memory", error = %e, "[Memory] Failed to save index after cleanup");
             }
 
             // Remove from metadata store
@@ -368,17 +365,19 @@ fn cleanup_stale_memories(
             chunks // return chunks for progress logging
         }; // both locks dropped together
 
-        eprintln!(
-            "[Memory] Cleaned up doc '{}' ({} chunks removed)",
-            doc.title,
-            chunks.len()
+        info!(
+            target: "memory",
+            title = %doc.title,
+            chunks_removed = chunks.len(),
+            "[Memory] Cleaned up doc"
         );
     }
 
-    eprintln!(
-        "[Memory] Cleaned up {} stale memories ({} remaining)",
-        stale.len(),
-        MAX_MEMORY_DOCS
+    info!(
+        target: "memory",
+        cleaned = stale.len(),
+        remaining = MAX_MEMORY_DOCS,
+        "[Memory] Cleaned up stale memories"
     );
 }
 
@@ -411,7 +410,7 @@ async fn extract_memory(conversation: &[ChatMessage], llm: &LLMService) -> Resul
         truncated
     );
 
-    let config = llm.get_config()?;
+    let config = llm.get_active_config()?;
     let messages = vec![
         ChatMessage {
             role: "system".to_string(),

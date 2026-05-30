@@ -19,6 +19,7 @@ import {
   type DocumentMeta,
   type ChunkMeta,
 } from "../lib/tauri-commands";
+import { useToast } from "../components/Toast";
 
 interface ProjectGroup {
   project: string;
@@ -48,6 +49,7 @@ export default function Browse() {
   const [loading, setLoading] = useState(true);
   const [tagFilter, setTagFilter] = useState("");
   const [batchDeleting, setBatchDeleting] = useState(false);
+  const toast = useToast();
 
   // Group documents by project
   const projectGroups = useMemo<ProjectGroup[]>(() => {
@@ -174,7 +176,7 @@ export default function Browse() {
       setDocuments(docs);
     } catch (err) {
       console.error("Batch delete failed:", err);
-      alert("批量删除失败：" + err);
+      toast.error("批量删除失败：" + err);
     } finally {
       setBatchDeleting(false);
     }

@@ -80,15 +80,6 @@ export interface KnowledgeStats {
 
 // ── LLM / RAG Types ────────────────────────────────────────────────────────
 
-export interface LLMConfig {
-  provider: 'openai' | 'anthropic' | 'local';
-  api_key: string;
-  base_url: string;
-  model: string;
-  temperature: number;
-  max_tokens: number;
-}
-
 export interface ChatMessage {
   role: string;
   content: string;
@@ -231,22 +222,6 @@ export async function setEmbeddingModelConfig(
   return invoke("set_embedding_model_config", {
     custom_model_dir: customModelDir ?? null,
   });
-}
-
-export async function setLLMConfig(config: LLMConfig): Promise<void> {
-  return invoke("set_llm_config", { config });
-}
-
-export async function getLLMConfig(): Promise<LLMConfig> {
-  return invoke("get_llm_config");
-}
-
-export async function isLLMConfigured(): Promise<boolean> {
-  return invoke("is_llm_configured");
-}
-
-export async function testLLMConnection(): Promise<string> {
-  return invoke("test_llm_connection");
 }
 
 export async function ragQuery(
@@ -722,24 +697,67 @@ function nextSessionId(): string {
   return crypto.randomUUID();
 }
 
+/** agentChat 请求超时时间（毫秒） */
+const AGENT_CHAT_TIMEOUT_MS = 60_000; // 60 seconds
+/** agentChat 最大重试次数 */
+const MAX_RETRIES = 2;
+
 /**
  * Agent 对话入口：发送消息给 rig agent，通过 SSE 事件流返回结果。
  * 前端应先调用 listenReActEvents() 监听事件，再调用此函数。
+ *
+ * 包含 60 秒超时和最多 2 次指数退避重试（仅对超时错误重试）。
+ *
+ * 注意：Rust 端还有 _system_extra（未使用）参数，Tauri 默认 camelCase 转换后
+ * 前端应传 _systemExtra。此处省略因为该参数在 Rust 中未使用。
  */
 export async function agentChat(
   message: string,
-  systemExtra?: string,
   sessionId?: string,
   projectId?: string,
+  riskProjectId?: number | null,
+  history?: ChatMessage[],
 ): Promise<string> {
   const sid = sessionId || nextSessionId();
-  await invoke("agent_chat", {
-    message,
-    systemExtra: systemExtra ?? "",
-    sessionId: sid,
-    projectId: projectId ?? null,
-  });
-  return sid;
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const invokePromise = invoke("agent_chat", {
+        message,
+        sessionId: sid,
+        projectId: projectId ?? null,
+        riskProjectId: riskProjectId ?? null,
+        history: history ?? [],
+      });
+
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("__AGENT_CHAT_TIMEOUT__")), AGENT_CHAT_TIMEOUT_MS),
+      );
+
+      await Promise.race([invokePromise, timeoutPromise]);
+      return sid; // Success
+    } catch (err) {
+      lastError = err;
+      const isTimeout =
+        err instanceof Error && err.message === "__AGENT_CHAT_TIMEOUT__";
+
+      if (isTimeout && attempt < MAX_RETRIES) {
+        // Exponential backoff: 1s, 2s
+        const delay = 1000 * Math.pow(2, attempt);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+
+      if (isTimeout) {
+        throw new Error("请求超时，请检查网络连接后重试");
+      }
+      throw err;
+    }
+  }
+
+  // Should not reach here, but satisfy TypeScript
+  throw lastError;
 }
 
 /** Answer a pending clarification question (resolves the blocked question tool) */
@@ -753,6 +771,11 @@ export async function answerQuestion(
     answer,
     projectId: projectId ?? null,
   });
+}
+
+/** Cancel a running agent stream session */
+export async function cancelAgentStream(sessionId: string): Promise<void> {
+  return invoke("cancel_agent_stream", { sessionId });
 }
 
 /**
@@ -860,38 +883,6 @@ export interface RiskProject {
   contract_doc_id: number | null;
   sow_doc_id: number | null;
   created_at: string;
-}
-
-export interface ContractScopeItem {
-  id: number;
-  category: string;
-  description: string;
-  is_in_scope: boolean;
-  detail: string;
-  created_at: string;
-}
-
-export interface ScopeCreepResult {
-  risk_level: string;
-  risk_label: string;
-  explanation: string;
-  matched_items: string[];
-  suggestion: string;
-}
-
-export interface ProjectHealthScore {
-  overall_score: number;
-  risk_level: string;
-  dimensions: HealthDimension[];
-  trend: string;
-  alert_count: number;
-}
-
-export interface HealthDimension {
-  name: string;
-  score: number;
-  weight: number;
-  detail: string;
 }
 
 export interface CandidateScopeItem {
