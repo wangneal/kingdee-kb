@@ -27,7 +27,7 @@ import {
   ingestFile,
   saveChatMemory,
 } from "../lib/tauri-commands";
-import { listLLMProviders } from "../lib/skill-commands";
+import { listLLMProviders, processImage } from "../lib/skill-commands";
 import type { LLMProviderConfig } from "../lib/skill-types";
 
 interface ChatAttachment {
@@ -49,6 +49,7 @@ function nextId(): string {
 const CHAT_STORAGE_KEY = "kingdee_kb_chat_history";
 const MAX_STORED_MESSAGES = 500;
 const CHAT_ATTACHMENT_PROJECT = "chat-attachments";
+const ACTIVE_PROJECT_KEY = "kingdee_kb_active_project";
 const MAX_ATTACHMENT_PROMPT_CHARS = 12000;
 const DOCUMENT_EXTENSIONS = new Set([
   "md",
@@ -194,9 +195,15 @@ export default function Chat() {
     setInput("");
     setAttachments([]);
 
+    const projectId = localStorage.getItem(ACTIVE_PROJECT_KEY) || undefined;
     const history = buildAgentHistory(messages);
-    await agent.sendMessage("chat", outboundText, { displayText: visibleText, history });
-  }, [input, attachments, loading, attaching, messages, agent]);
+    await agent.sendMessage("chat", outboundText, {
+      displayText: visibleText,
+      history,
+      projectId,
+      providerId: selectedProviderId || undefined,
+    });
+  }, [input, attachments, loading, attaching, messages, agent, selectedProviderId]);
 
   const handleAttach = useCallback(async () => {
     if (loading || attaching) return;
@@ -529,13 +536,11 @@ function createAttachment(path: string): ChatAttachment {
     path,
     name,
     kind,
-    status: kind === "document" ? "ready" : "ingested",
+    status: kind === "unsupported" ? "error" : "ready",
     error:
-      kind === "image"
-        ? "图片内容需要多模态模型解析；当前 AI 只能看到文件名和路径。"
-        : kind === "unsupported"
-          ? "当前格式暂不支持内容解析。"
-          : undefined,
+      kind === "unsupported"
+        ? "当前格式暂不支持内容解析。"
+        : undefined,
   };
 }
 
@@ -547,6 +552,42 @@ async function prepareAttachmentsForSend(
 
   for (let i = 0; i < prepared.length; i++) {
     const attachment = prepared[i];
+
+    // Process images via OCR/vision
+    if (attachment.kind === "image" && !attachment.extractedText && attachment.status !== "error") {
+      setAttachments((prev) =>
+        prev.map((a) =>
+          a.id === attachment.id ? { ...a, status: "ingesting", error: undefined } : a
+        )
+      );
+
+      try {
+        const result = await processImage(attachment.path);
+        const text = result.ocr_text || result.description || "";
+        prepared[i] = {
+          ...attachment,
+          status: "parsed",
+          extractedText: text,
+          charCount: text.length,
+          error: undefined,
+        };
+        setAttachments((prev) =>
+          prev.map((a) => (a.id === attachment.id ? prepared[i] : a))
+        );
+      } catch (err) {
+        prepared[i] = {
+          ...attachment,
+          status: "error",
+          error: `图片处理失败：${String(err)}`,
+        };
+        setAttachments((prev) =>
+          prev.map((a) => (a.id === attachment.id ? prepared[i] : a))
+        );
+      }
+      continue;
+    }
+
+    // Skip non-documents or already processed
     if (
       attachment.kind !== "document" ||
       attachment.extractedText ||
@@ -629,6 +670,8 @@ function buildAttachmentDisplay(attachments: ChatAttachment[]): string {
         ? `已入库 #${a.documentId}`
         : a.status === "parsed"
           ? (a.error ?? "已解析")
+        : a.kind === "image" && a.extractedText
+          ? "已识别"
         : a.error
           ? a.error
           : a.status;
@@ -644,7 +687,14 @@ function buildAttachmentPrompt(attachments: ChatAttachment[]): string {
     (a.status === "parsed" || a.status === "ingested") &&
     Boolean(a.extractedText)
   );
-  const images = attachments.filter((a) => a.kind === "image");
+  const processedImages = attachments.filter((a) =>
+    a.kind === "image" &&
+    (a.status === "parsed") &&
+    Boolean(a.extractedText)
+  );
+  const unprocessedImages = attachments.filter((a) =>
+    a.kind === "image" && !a.extractedText
+  );
   const failed = attachments.filter((a) => a.status === "error" || a.kind === "unsupported");
   const lines = ["【本轮附件】"];
 
@@ -662,9 +712,19 @@ function buildAttachmentPrompt(attachments: ChatAttachment[]): string {
       }
     }
   }
-  if (images.length > 0) {
-    lines.push("以下图片已作为附件上传，但图片内容需要多模态模型解析；当前只能看到文件名和路径，不要声称已读取图片内容：");
-    for (const image of images) {
+  if (processedImages.length > 0) {
+    lines.push("以下图片已通过 OCR/视觉模型解析，优先基于解析内容回答：");
+    for (const image of processedImages) {
+      const fullText = image.extractedText ?? "";
+      const excerpt = truncateForPrompt(fullText, MAX_ATTACHMENT_PROMPT_CHARS);
+      lines.push(`\n--- 图片：${image.name} ---`);
+      lines.push(`字符数=${image.charCount ?? fullText.length}`);
+      lines.push(excerpt || "（未提取到文本）");
+    }
+  }
+  if (unprocessedImages.length > 0) {
+    lines.push("以下图片未能解析内容，回答时不要声称已读取其内容：");
+    for (const image of unprocessedImages) {
       lines.push(`- ${image.name}，path=${image.path}`);
     }
   }

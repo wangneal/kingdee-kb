@@ -315,6 +315,7 @@ pub async fn agent_chat(
     project_id: Option<String>,
     risk_project_id: Option<i64>,
     history: Option<Vec<crate::services::llm_service::ChatMessage>>,
+    provider_id: Option<String>,
 ) -> Result<(), String> {
     use tauri::Manager;
     use tokio::sync::mpsc;
@@ -405,6 +406,7 @@ pub async fn agent_chat(
             risk_store,
             skill_manager,
             Some(cancel_flag),
+            provider_id.as_deref(),
         )
         .await;
     });

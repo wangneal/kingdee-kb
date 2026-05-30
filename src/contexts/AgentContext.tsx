@@ -43,6 +43,7 @@ export const DEFAULT_SLOT: AgentSlot = {
 export interface SendMessageOptions {
   projectId?: string;
   riskProjectId?: number | null;
+  providerId?: string;
   history?: ChatMessage[];
   /** Override the text shown as user message (defaults to outbound text) */
   displayText?: string;
@@ -288,7 +289,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       });
 
       try {
-        await agentChat(text, sid, options?.projectId, options?.riskProjectId, options?.history);
+        await agentChat(text, sid, options?.projectId, options?.riskProjectId, options?.history, options?.providerId);
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         updateSlots((prev) => {

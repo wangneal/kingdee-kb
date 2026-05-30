@@ -108,6 +108,11 @@ export interface RAGResponse {
 // NOTE: Tauri v2 invoke() does NOT auto-convert camelCase↔snake_case.
 // All parameter keys MUST match the Rust function parameter names exactly (snake_case).
 
+/** Check if any LLM provider is configured with a valid API key */
+export async function isLLMConfigured(): Promise<boolean> {
+  return invoke("is_llm_configured");
+}
+
 export async function hybridSearch(
   query: string,
   projectId?: string,
@@ -698,7 +703,7 @@ function nextSessionId(): string {
 }
 
 /** agentChat 请求超时时间（毫秒） */
-const AGENT_CHAT_TIMEOUT_MS = 60_000; // 60 seconds
+const AGENT_CHAT_TIMEOUT_MS = 180_000; // 3 minutes
 /** agentChat 最大重试次数 */
 const MAX_RETRIES = 2;
 
@@ -706,7 +711,7 @@ const MAX_RETRIES = 2;
  * Agent 对话入口：发送消息给 rig agent，通过 SSE 事件流返回结果。
  * 前端应先调用 listenReActEvents() 监听事件，再调用此函数。
  *
- * 包含 60 秒超时和最多 2 次指数退避重试（仅对超时错误重试）。
+ * 包含 3 分钟超时和最多 2 次指数退避重试（仅对超时错误重试）。
  *
  * 注意：Rust 端还有 _system_extra（未使用）参数，Tauri 默认 camelCase 转换后
  * 前端应传 _systemExtra。此处省略因为该参数在 Rust 中未使用。
@@ -717,6 +722,7 @@ export async function agentChat(
   projectId?: string,
   riskProjectId?: number | null,
   history?: ChatMessage[],
+  providerId?: string,
 ): Promise<string> {
   const sid = sessionId || nextSessionId();
 
@@ -729,6 +735,7 @@ export async function agentChat(
         projectId: projectId ?? null,
         riskProjectId: riskProjectId ?? null,
         history: history ?? [],
+        providerId: providerId ?? null,
       });
 
       const timeoutPromise = new Promise<never>((_, reject) =>

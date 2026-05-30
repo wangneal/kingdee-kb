@@ -83,6 +83,26 @@ impl ImageProcessor {
         self.vision_fallback = Some(config);
     }
 
+    /// 获取 LLM API Key
+    pub fn get_llm_api_key(&self) -> &str {
+        &self.llm_api_key
+    }
+
+    /// 获取 LLM Base URL
+    pub fn get_llm_base_url(&self) -> &str {
+        &self.llm_base_url
+    }
+
+    /// 获取 LLM 模型名
+    pub fn get_llm_model(&self) -> &str {
+        &self.llm_model
+    }
+
+    /// 克隆 OCR 配置
+    pub fn get_ocr_config_cloned(&self) -> Option<OcrConfig> {
+        self.ocr_config.clone()
+    }
+
     /// 探测当前 LLM 是否支持多模态
     pub async fn probe_multimodal(&self) -> bool {
         if self.probed.load(Ordering::Relaxed) {

@@ -485,6 +485,19 @@ impl LLMService {
             .ok_or_else(|| "未配置默认 LLM 供应商".to_string())
     }
 
+    /// Get config for a specific provider by ID, falling back to default if not found.
+    pub fn get_config_for_provider(&self, provider_id: Option<&str>) -> Result<LLMProviderConfig, String> {
+        match provider_id {
+            Some(id) => {
+                let mgr = self.providers.lock().map_err(|e| e.to_string())?;
+                mgr.get_provider(id)
+                    .cloned()
+                    .ok_or_else(|| format!("供应商 '{}' 不存在", id))
+            }
+            None => self.get_active_config(),
+        }
+    }
+
     /// Synchronous text generation (non-streaming) for internal backend use.
     ///
     /// Uses `ureq` for a simple blocking HTTP call. Returns the complete generated text.

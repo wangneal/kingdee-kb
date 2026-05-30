@@ -131,12 +131,13 @@ impl RigAgent {
         risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
         skill_manager: Arc<Mutex<crate::services::skill_manager::SkillManager>>,
         cancel_flag: Option<Arc<AtomicBool>>,
+        provider_id: Option<&str>,
     ) {
         let sid = session_id.to_string();
         let started_at = Instant::now();
 
-        // 1. 获取 LLM 配置
-        let config = match llm.get_active_config() {
+        // 1. 获取 LLM 配置（支持指定供应商）
+        let config = match llm.get_config_for_provider(provider_id) {
             Ok(c) => c,
             Err(e) => {
                 let _ = sender.send(ReActEvent::Error {

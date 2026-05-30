@@ -8,6 +8,13 @@ use crate::services::llm_providers::{LLMProviderConfig, LLMProtocol, OcrProvider
 
 // ─── LLM 供应商命令 ───
 
+/// 检查是否有已配置的 LLM 供应商
+#[tauri::command]
+pub async fn is_llm_configured(state: State<'_, AppState>) -> Result<bool, String> {
+    let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    Ok(manager.list_providers().iter().any(|p| p.is_configured()))
+}
+
 /// 获取所有 LLM 供应商
 #[tauri::command]
 pub async fn list_llm_providers(state: State<'_, AppState>) -> Result<Vec<LLMProviderConfig>, String> {
@@ -48,7 +55,18 @@ pub async fn add_llm_provider(
     };
 
     let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
-    manager.add_provider(provider)
+    manager.add_provider(provider)?;
+
+    // 同步 ImageProcessor 的 LLM 配置
+    if let Some(default) = manager.get_default_provider() {
+        let (api_key, base_url, model) = (default.api_key.clone(), default.base_url.clone(), default.model.clone());
+        drop(manager);
+        if let Ok(mut processor) = state.image_processor.lock() {
+            processor.update_llm_config(api_key, base_url, model);
+        }
+    }
+
+    Ok(())
 }
 
 /// 更新 LLM 供应商
@@ -84,21 +102,54 @@ pub async fn update_llm_provider(
     };
 
     let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
-    manager.update_provider(&id, provider)
+    manager.update_provider(&id, provider)?;
+
+    // 同步 ImageProcessor 的 LLM 配置
+    if let Some(default) = manager.get_default_provider() {
+        let (api_key, base_url, model) = (default.api_key.clone(), default.base_url.clone(), default.model.clone());
+        drop(manager);
+        if let Ok(mut processor) = state.image_processor.lock() {
+            processor.update_llm_config(api_key, base_url, model);
+        }
+    }
+
+    Ok(())
 }
 
 /// 删除 LLM 供应商
 #[tauri::command]
 pub async fn delete_llm_provider(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
-    manager.delete_provider(&id)
+    manager.delete_provider(&id)?;
+
+    // 同步 ImageProcessor 的 LLM 配置
+    if let Some(default) = manager.get_default_provider() {
+        let (api_key, base_url, model) = (default.api_key.clone(), default.base_url.clone(), default.model.clone());
+        drop(manager);
+        if let Ok(mut processor) = state.image_processor.lock() {
+            processor.update_llm_config(api_key, base_url, model);
+        }
+    }
+
+    Ok(())
 }
 
 /// 设置默认 LLM 供应商
 #[tauri::command]
 pub async fn set_default_llm_provider(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
-    manager.set_default(&id)
+    manager.set_default(&id)?;
+
+    // 同步 ImageProcessor 的 LLM 配置
+    if let Some(default) = manager.get_default_provider() {
+        let (api_key, base_url, model) = (default.api_key.clone(), default.base_url.clone(), default.model.clone());
+        drop(manager);
+        if let Ok(mut processor) = state.image_processor.lock() {
+            processor.update_llm_config(api_key, base_url, model);
+        }
+    }
+
+    Ok(())
 }
 
 /// 探测单个供应商的多模态能力

@@ -265,6 +265,7 @@ pub fn run() {
             commands::skill::process_image,
             commands::skill::probe_llm_multimodal,
             // LLM Provider Management
+            commands::llm_provider::is_llm_configured,
             commands::llm_provider::list_llm_providers,
             commands::llm_provider::add_llm_provider,
             commands::llm_provider::update_llm_provider,
