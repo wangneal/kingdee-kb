@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
-import { Search as SearchIcon, FileText, Hash, Tag, Loader2 } from "lucide-react";
+import { Search as SearchIcon, FileText, Hash, Tag, Loader2, AlertCircle, RefreshCw } from "lucide-react";
 import {
   hybridSearch,
   type HybridSearchResult,
@@ -31,6 +31,7 @@ export default function Search() {
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const [tagFilter, setTagFilter] = useState("");
+  const [searchError, setSearchError] = useState<string | null>(null);
 
   const handleSearch = useCallback(
     async (e?: React.FormEvent) => {
@@ -38,12 +39,15 @@ export default function Search() {
       if (!query.trim()) return;
       setLoading(true);
       setSearched(true);
+      setSearchError(null);
       try {
         const res = await hybridSearch(query.trim(), undefined, 30);
         setResults(res);
+        setSearchError(null);
       } catch (err) {
         console.error("Search failed:", err);
         setResults([]);
+        setSearchError("搜索服务暂时不可用，请稍后重试");
       } finally {
         setLoading(false);
       }
@@ -117,9 +121,24 @@ export default function Search() {
           <Loader2 className="mr-2 h-5 w-5 animate-spin" />
           <span className="text-sm">检索中…</span>
         </div>
+      ) : searched && searchError ? (
+        <div className="py-12 text-center">
+          <AlertCircle className="mx-auto mb-3 h-8 w-8 text-red-400" />
+          <p className="text-sm text-red-600 mb-3">{searchError}</p>
+          <button
+            type="button"
+            onClick={() => handleSearch()}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] transition-colors"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            重试
+          </button>
+        </div>
       ) : searched && filteredResults.length === 0 ? (
-        <div className="py-12 text-center text-sm text-neutral-400">
-          未找到相关结果
+        <div className="py-12 text-center">
+          <SearchIcon className="mx-auto mb-3 h-8 w-8 text-neutral-300" />
+          <p className="text-sm text-neutral-500 mb-1">未找到相关结果</p>
+          <p className="text-xs text-neutral-400">您可以尝试不同的关键词或导入相关文档</p>
         </div>
       ) : (
         <div className="space-y-3">

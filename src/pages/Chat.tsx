@@ -183,6 +183,12 @@ export default function Chat() {
     const text = input.trim();
     if ((!text && attachments.length === 0) || loading || attaching) return;
 
+    // Check if LLM is configured before sending
+    if (llmReady === false) {
+      alert("尚未配置 AI 模型，请前往【设置 → AI 模型】添加 LLM 供应商");
+      return;
+    }
+
     setAttaching(true);
     const preparedAttachments = await prepareAttachmentsForSend(attachments, setAttachments);
     setAttaching(false);
@@ -204,7 +210,7 @@ export default function Chat() {
       projectId,
       providerId: selectedProviderId || undefined,
     });
-  }, [input, attachments, loading, attaching, messages, agent, selectedProviderId]);
+  }, [input, attachments, loading, attaching, messages, agent, selectedProviderId, llmReady]);
 
   const handleAttach = useCallback(async () => {
     if (loading || attaching) return;

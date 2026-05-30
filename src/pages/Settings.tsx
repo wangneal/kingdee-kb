@@ -999,15 +999,11 @@ export default function Settings() {
 // ── Image Processing Card ──────────────────────────────────────────────
 
 function ImageProcessingCard() {
-  const [ocrProvider, setOcrProvider] = useState<string>("baidu");
-  const [ocrApiKey, setOcrApiKey] = useState("");
-  const [ocrSecretKey, setOcrSecretKey] = useState("");
   const [visionProvider, setVisionProvider] = useState<string>("gpt4v");
   const [visionApiKey, setVisionApiKey] = useState("");
   const [visionBaseUrl, setVisionBaseUrl] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
-  const [showOcrKey, setShowOcrKey] = useState(false);
   const [showVisionKey, setShowVisionKey] = useState(false);
 
   // Load config from localStorage
@@ -1016,9 +1012,6 @@ function ImageProcessingCard() {
       const stored = localStorage.getItem("image_processing_config");
       if (stored) {
         const config = JSON.parse(stored);
-        setOcrProvider(config.ocr_provider || "baidu");
-        setOcrApiKey(config.ocr_api_key || "");
-        setOcrSecretKey(config.ocr_secret_key || "");
         setVisionProvider(config.vision_provider || "gpt4v");
         setVisionApiKey(config.vision_api_key || "");
         setVisionBaseUrl(config.vision_base_url || "");
@@ -1031,9 +1024,6 @@ function ImageProcessingCard() {
     setSaveMsg(null);
     try {
       const config = {
-        ocr_provider: ocrProvider,
-        ocr_api_key: ocrApiKey,
-        ocr_secret_key: ocrSecretKey,
         vision_provider: visionProvider,
         vision_api_key: visionApiKey,
         vision_base_url: visionBaseUrl,
@@ -1045,81 +1035,18 @@ function ImageProcessingCard() {
       setSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`);
     }
     setSaving(false);
-  }, [ocrProvider, ocrApiKey, ocrSecretKey, visionProvider, visionApiKey, visionBaseUrl]);
+  }, [visionProvider, visionApiKey, visionBaseUrl]);
 
   return (
     <section className="mb-6 rounded-xl border border-neutral-200 bg-white">
       <div className="border-b border-neutral-100 px-5 py-3">
-        <h2 className="text-sm font-semibold text-neutral-700">图像处理配置</h2>
+        <h2 className="text-sm font-semibold text-neutral-700">多模态 LLM 备用配置</h2>
         <p className="mt-0.5 text-xs text-neutral-400">
-          配置 OCR 和多模态 LLM API，用于理解蓝图、操作手册中的图片
+          配置多模态 LLM API，用于理解蓝图、操作手册中的图片（OCR 文字识别请在上方「OCR 文字识别」卡片中配置）
         </p>
       </div>
 
       <div className="space-y-6 p-5">
-        {/* OCR 配置 */}
-        <div>
-          <h3 className="mb-3 text-sm font-medium text-neutral-700">OCR 文字识别</h3>
-          
-          <div className="space-y-3">
-            <div>
-              <label className="mb-1.5 block text-xs text-neutral-500">OCR 服务商</label>
-              <select
-                value={ocrProvider}
-                onChange={(e) => setOcrProvider(e.target.value)}
-                className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm"
-              >
-                <option value="baidu">百度 OCR（推荐，中文最强）</option>
-                <option value="tencent">腾讯 OCR</option>
-                <option value="tesseract">本地 Tesseract（需安装）</option>
-              </select>
-            </div>
-
-            {ocrProvider !== "tesseract" && (
-              <>
-                <div>
-                  <label className="mb-1.5 block text-xs text-neutral-500">API Key</label>
-                  <div className="relative">
-                    <input
-                      type={showOcrKey ? "text" : "password"}
-                      value={ocrApiKey}
-                      onChange={(e) => setOcrApiKey(e.target.value)}
-                      placeholder="输入 API Key"
-                      className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 pr-10 text-sm"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowOcrKey((v) => !v)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
-                    >
-                      {showOcrKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                    </button>
-                  </div>
-                </div>
-
-                {ocrProvider === "baidu" && (
-                  <div>
-                    <label className="mb-1.5 block text-xs text-neutral-500">Secret Key</label>
-                    <input
-                      type="password"
-                      value={ocrSecretKey}
-                      onChange={(e) => setOcrSecretKey(e.target.value)}
-                      placeholder="输入 Secret Key"
-                      className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm"
-                    />
-                  </div>
-                )}
-              </>
-            )}
-
-            {ocrProvider === "tesseract" && (
-              <p className="text-xs text-neutral-400">
-                需要先安装 Tesseract OCR：https://github.com/UB-Mannheim/tesseract/wiki
-              </p>
-            )}
-          </div>
-        </div>
-
         {/* 多模态 LLM 配置 */}
         <div>
           <h3 className="mb-3 text-sm font-medium text-neutral-700">多模态 LLM（图表理解）</h3>
