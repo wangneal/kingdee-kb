@@ -136,8 +136,18 @@ impl RigAgent {
         let sid = session_id.to_string();
         let started_at = Instant::now();
 
-        // 1. 获取 LLM 配置（支持指定供应商）
-        let config = match llm.get_config_for_provider(provider_id) {
+        // 1. 自动路由：检测是否需要多模态模型
+        let has_images = detect_images_in_message(user_message);
+        let effective_provider_id = if has_images && provider_id.is_none() {
+            // 有图片且未指定供应商 → 尝试自动切换到多模态模型
+            tracing::info!("检测到图片附件，尝试自动切换到多模态模型");
+            None // 让 LLMService 自动选择
+        } else {
+            provider_id
+        };
+
+        // 2. 获取 LLM 配置（支持指定供应商或自动路由）
+        let config = match llm.get_config_for_provider(effective_provider_id) {
             Ok(c) => c,
             Err(e) => {
                 let _ = sender.send(ReActEvent::Error {
@@ -579,6 +589,34 @@ fn looks_like_output_limit_error(raw: &str) -> bool {
         || lower.contains("finish_reason")
         || lower.contains("length")
         || lower.contains("truncated")
+}
+
+/// 检测用户消息中是否包含图片引用
+fn detect_images_in_message(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    
+    // 检测图片文件路径
+    let image_extensions = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"];
+    for ext in &image_extensions {
+        if lower.contains(ext) {
+            return true;
+        }
+    }
+    
+    // 检测 base64 图片数据
+    if lower.contains("data:image/") || lower.contains("base64,") {
+        return true;
+    }
+    
+    // 检测图片相关关键词
+    let image_keywords = ["图片", "图像", "截图", "附件", "上传", "图片附件"];
+    for keyword in &image_keywords {
+        if message.contains(keyword) {
+            return true;
+        }
+    }
+    
+    false
 }
 
 fn build_prompt_with_history(history: &[ChatMessage], user_message: &str) -> String {

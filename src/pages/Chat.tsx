@@ -20,6 +20,7 @@ import {
   ChevronDown,
   ChevronUp,
   BookOpen,
+  Zap,
 } from "lucide-react";
 import {
   useAgent,
@@ -490,16 +491,24 @@ export default function Chat() {
                       多模态
                     </span>
                   )}
-                   <svg
-                     className={`h-3 w-3 text-neutral-400 transition-transform ${dropdownOpen ? "rotate-180" : ""}`}
-                     fill="none"
-                     viewBox="0 0 24 24"
-                     stroke="currentColor"
-                     aria-hidden="true"
-                   >
-                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                   </svg>
-                </button>
+                    <svg
+                      className={`h-3 w-3 text-neutral-400 transition-transform ${dropdownOpen ? "rotate-180" : ""}`}
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      aria-hidden="true"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                 </button>
+
+                 {/* Auto-routing indicator */}
+                 {attachments.some(a => a.kind === "image") && selectedProvider && !selectedProvider.is_multimodal && (
+                   <div className="mt-1 flex items-center gap-1 text-[10px] text-amber-600">
+                     <Zap className="h-3 w-3" />
+                     <span>图片附件将自动使用多模态模型</span>
+                   </div>
+                 )}
 
                 {dropdownOpen && (
                   <div className="absolute bottom-full left-0 z-50 mb-1 w-72 rounded-lg border border-neutral-200 bg-white py-1 shadow-lg max-h-64 overflow-y-auto">
