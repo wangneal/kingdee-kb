@@ -160,32 +160,28 @@ export async function processImage(imagePath: string): Promise<ImageProcessResul
 
 // ─── LLM 供应商管理命令 ──────────────────────────────────
 
+/** LLM 供应商创建/更新参数 */
+export type LLMProviderInput = {
+  id: string;
+  name: string;
+  protocol: string;
+  api_key: string;
+  base_url: string;
+  model: string;
+};
+
 /** 获取所有 LLM 供应商 */
 export async function listLLMProviders(): Promise<LLMProviderConfig[]> {
   return invoke("list_llm_providers");
 }
 
 /** 添加 LLM 供应商 */
-export async function addLLMProvider(provider: {
-  id: string;
-  name: string;
-  protocol: string;
-  api_key: string;
-  base_url: string;
-  model: string;
-}): Promise<void> {
+export async function addLLMProvider(provider: LLMProviderInput): Promise<void> {
   return invoke("add_llm_provider", provider);
 }
 
 /** 更新 LLM 供应商 */
-export async function updateLLMProvider(provider: {
-  id: string;
-  name: string;
-  protocol: string;
-  api_key: string;
-  base_url: string;
-  model: string;
-}): Promise<void> {
+export async function updateLLMProvider(provider: LLMProviderInput): Promise<void> {
   return invoke("update_llm_provider", provider);
 }
 

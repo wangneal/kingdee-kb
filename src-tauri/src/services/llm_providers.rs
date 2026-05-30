@@ -268,9 +268,9 @@ impl LLMProviderManager {
                 if resp.status().is_success() {
                     true
                 } else {
-                    let body = resp.text().await.unwrap_or_default();
-                    let lower = body.to_lowercase();
-                    !(lower.contains("image") || lower.contains("vision") || lower.contains("multimodal"))
+                    // 非成功状态码 → 不支持多模态
+                    // 无论是 400 Bad Request 还是其他错误，都视为不支持
+                    false
                 }
             }
             Err(_) => false,

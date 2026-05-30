@@ -70,8 +70,9 @@ function loadChatHistory(): AgentMessage[] {
   try {
     const raw = localStorage.getItem(CHAT_STORAGE_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw) as AgentMessage[];
-    return parsed.filter((m) => m.id && m.role);
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return (parsed as AgentMessage[]).filter((m) => m.id && m.role);
   } catch {
     return [];
   }
@@ -306,6 +307,8 @@ export default function Chat() {
     [handleSend]
   );
 
+  const selectedProvider = providers.find((p) => p.id === selectedProviderId);
+
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
@@ -421,9 +424,9 @@ export default function Chat() {
                 >
                   <Brain className="h-3.5 w-3.5 text-amber-600" />
                   <span className="max-w-[120px] truncate">
-                    {providers.find((p) => p.id === selectedProviderId)?.model || "选择模型"}
+                    {selectedProvider?.model || "选择模型"}
                   </span>
-                  {providers.find((p) => p.id === selectedProviderId)?.is_multimodal && (
+                  {selectedProvider?.is_multimodal && (
                     <span className="rounded bg-blue-100 px-1 py-0.5 text-[9px] font-medium text-blue-700">
                       多模态
                     </span>

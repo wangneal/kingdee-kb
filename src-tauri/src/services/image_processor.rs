@@ -136,9 +136,8 @@ impl ImageProcessor {
                 if resp.status().is_success() {
                     true
                 } else {
-                    let body = resp.text().await.unwrap_or_default();
-                    let lower = body.to_lowercase();
-                    !(lower.contains("image") || lower.contains("vision") || lower.contains("multimodal"))
+                    // 非成功状态码 → 不支持多模态
+                    false
                 }
             }
             Err(_) => false,
@@ -244,7 +243,7 @@ impl ImageProcessor {
             .form(&[("image", img_base64)])
             .send().await.map_err(|e| ImageError::ApiError(e.to_string()))?;
         let result: serde_json::Value = resp.json().await.map_err(|e| ImageError::ApiError(e.to_string()))?;
-        let words: Vec<String> = result["words_result"].as_array().unwrap_or(&vec![])
+        let words: Vec<String> = result["words_result"].as_array().map_or(&[][..], |v| v)
             .iter().map(|w| w["words"].as_str().unwrap_or("").to_string()).collect();
         Ok(words.join("\n"))
     }
@@ -271,7 +270,7 @@ impl ImageProcessor {
             .json(&serde_json::json!({"ImageBase64": img_base64}))
             .send().await.map_err(|e| ImageError::ApiError(e.to_string()))?;
         let result: serde_json::Value = resp.json().await.map_err(|e| ImageError::ApiError(e.to_string()))?;
-        let words: Vec<String> = result["Response"]["TextDetections"].as_array().unwrap_or(&vec![])
+        let words: Vec<String> = result["Response"]["TextDetections"].as_array().map_or(&[][..], |v| v)
             .iter().map(|w| w["DetectedText"].as_str().unwrap_or("").to_string()).collect();
         Ok(words.join("\n"))
     }

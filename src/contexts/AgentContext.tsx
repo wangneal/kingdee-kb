@@ -33,12 +33,17 @@ export interface AgentSlot {
   sessionId: string | null;
 }
 
-export const DEFAULT_SLOT: AgentSlot = {
-  messages: [],
-  loading: false,
-  currentTrace: { thinking: "", toolCalls: [] },
-  sessionId: null,
-};
+export function createDefaultSlot(): AgentSlot {
+  return {
+    messages: [],
+    loading: false,
+    currentTrace: { thinking: "", toolCalls: [] },
+    sessionId: null,
+  };
+}
+
+/** @deprecated Use createDefaultSlot() instead to avoid shared mutable state */
+export const DEFAULT_SLOT: AgentSlot = createDefaultSlot();
 
 export interface SendMessageOptions {
   projectId?: string;
@@ -140,6 +145,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 
   // ── Global ReAct event listener ─────────────────────────────────────────
   useEffect(() => {
+    let unsub: (() => void) | null = null;
     let cancelled = false;
     listenReActEvents((event) => {
       const eventSessionId = event.session_id || event.sessionId;
@@ -202,7 +208,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
             if (last && last.role === "assistant" && last.streaming) {
               slot.messages[slot.messages.length - 1] = { ...last, content: last.content + event.content };
             } else {
-              slot.messages.push({ id: nextId(), role: "assistant", content: event.content, streaming: true });
+              slot.messages = [...slot.messages, { id: nextId(), role: "assistant", content: event.content, streaming: true }];
             }
             break;
           }
@@ -230,7 +236,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
             if (last && last.role === "assistant" && last.streaming) {
               slot.messages[slot.messages.length - 1] = { ...last, streaming: false, ...clarMsg };
             } else {
-              slot.messages.push(clarMsg);
+              slot.messages = [...slot.messages, clarMsg];
             }
             slot.loading = false;
             slot.currentTrace = { thinking: "", toolCalls: [] };
@@ -254,11 +260,16 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         next.set(slotId, { slot, latestToolName: toolName });
         return next;
       });
-    }).then((unsub) => {
-      if (cancelled) unsub();
+    }).then((unsubFn) => {
+      if (cancelled) {
+        unsubFn();
+      } else {
+        unsub = unsubFn;
+      }
     });
     return () => {
       cancelled = true;
+      unsub?.();
     };
   }, [updateSlots]);
 
@@ -275,7 +286,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 
       updateSlots((prev) => {
         const next = new Map(prev);
-        const internal = next.get(slotId) ?? { slot: { ...DEFAULT_SLOT, messages: [] }, latestToolName: "" };
+        const internal = next.get(slotId) ?? { slot: createDefaultSlot(), latestToolName: "" };
         next.set(slotId, {
           slot: {
             messages: [...internal.slot.messages, userMsg, assistantMsg],
@@ -389,7 +400,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     (slotId: string, updater: (prev: AgentMessage[]) => AgentMessage[]) => {
       updateSlots((prev) => {
         const next = new Map(prev);
-        const internal = next.get(slotId) ?? { slot: { ...DEFAULT_SLOT, messages: [] }, latestToolName: "" };
+        const internal = next.get(slotId) ?? { slot: createDefaultSlot(), latestToolName: "" };
         next.set(slotId, {
           ...internal,
           slot: { ...internal.slot, messages: updater(internal.slot.messages) },

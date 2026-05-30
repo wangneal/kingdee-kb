@@ -3,14 +3,14 @@
  * 与 Rust services/skill_types.rs 保持一致
  */
 
-export type SkillCategory = "core" | "stage" | "mgmt" | "tool" | string;
+export type SkillCategory = "core" | "stage" | "mgmt" | "tool" | "other";
 
 export interface SkillMetadata {
   name?: string;
   description?: string;
   version?: string;
   category: SkillCategory;
-  phase: "all" | string;
+  phase: string;
   icon?: string;
   paths: string[];
 }

@@ -6,8 +6,16 @@
 //!   - 支持中英文混合查询
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use crate::services::skill_types::{Skill, extract_triggers_from_body};
+
+/// 编译后的正则表达式（全局缓存）
+static EN_WORD_REGEX: OnceLock<regex::Regex> = OnceLock::new();
+
+fn get_en_word_regex() -> &'static regex::Regex {
+    EN_WORD_REGEX.get_or_init(|| regex::Regex::new(r"[a-zA-Z]+").unwrap())
+}
 
 /// 技能匹配结果
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -157,7 +165,7 @@ impl SkillTriggerEngine {
                 },
             })
             .collect();
-        matches.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        matches.sort_by(|a, b| b.score.total_cmp(&a.score));
         matches
     }
 
@@ -191,8 +199,8 @@ impl SkillTriggerEngine {
     fn extract_keywords(text: &str) -> Vec<String> {
         let mut keywords = Vec::new();
 
-        // 英文单词
-        let en_regex = regex::Regex::new(r"[a-zA-Z]+").unwrap();
+        // 英文单词（使用缓存的正则）
+        let en_regex = get_en_word_regex();
         for mat in en_regex.find_iter(text) {
             let word = mat.as_str().to_lowercase();
             if word.len() >= 2 {
