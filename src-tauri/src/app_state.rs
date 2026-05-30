@@ -84,6 +84,20 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// 从配置文件读取 LLM 配置（用于初始化 ImageProcessor）
+    fn get_llm_config_static(data_dir: &std::path::Path) -> (String, String, String) {
+        let config_path = data_dir.join("config.json");
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
+                let api_key = config["api_key"].as_str().unwrap_or("").to_string();
+                let base_url = config["base_url"].as_str().unwrap_or("https://api.openai.com/v1").to_string();
+                let model = config["model"].as_str().unwrap_or("gpt-4o").to_string();
+                return (api_key, base_url, model);
+            }
+        }
+        (String::new(), "https://api.openai.com/v1".to_string(), "gpt-4o".to_string())
+    }
+
     /// 使用给定的数据目录（~/.kingdee-kb/）初始化所有服务
     pub fn new(data_dir: &std::path::Path, skill_manager: SkillManager) -> Result<Self, String> {
         let model_dir = data_dir.join("models");
@@ -156,9 +170,13 @@ impl AppState {
         let template_cache_dir = data_dir.join("templates");
         let template_manager = TemplateManager::new(template_cache_dir, String::new());
 
-        // 初始化 ImageProcessor（图像处理）
-        let image_cache_dir = data_dir.join("image_cache");
-        let image_processor = ImageProcessor::new(image_cache_dir);
+        // 初始化 ImageProcessor（图像处理，复用 LLM 配置）
+        let llm_config = Self::get_llm_config_static(data_dir);
+        let image_processor = ImageProcessor::new(
+            llm_config.0,
+            llm_config.1,
+            llm_config.2,
+        );
 
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
@@ -290,7 +308,7 @@ impl AppState {
                 TemplateManager::new(data_dir.join("templates"), String::new())
             )),
             image_processor: Arc::new(Mutex::new(
-                ImageProcessor::new(data_dir.join("image_cache"))
+                ImageProcessor::new(String::new(), String::new(), String::new())
             )),
             cancel_flags: Arc::new(Mutex::new(HashMap::new())),
         }

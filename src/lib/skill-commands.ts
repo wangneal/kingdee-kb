@@ -133,14 +133,19 @@ export async function checkImageDeps(): Promise<ImageDepsStatus> {
   return invoke("check_image_deps");
 }
 
+/** 探测当前 LLM 是否支持多模态 */
+export async function probeLlmMultimodal(): Promise<boolean> {
+  return invoke("probe_llm_multimodal");
+}
+
 /** 保存图像处理 API 配置 */
 export async function saveImageConfig(config: {
   ocr_provider?: string;
   ocr_api_key?: string;
   ocr_secret_key?: string;
-  vision_provider?: string;
-  vision_api_key?: string;
-  vision_base_url?: string;
+  vision_fallback_api_key?: string;
+  vision_fallback_base_url?: string;
+  vision_fallback_model?: string;
 }): Promise<void> {
   return invoke("save_image_config", config);
 }

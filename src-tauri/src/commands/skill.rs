@@ -329,10 +329,39 @@ pub async fn check_image_deps(state: State<'_, AppState>) -> Result<ImageDepsSta
     
     Ok(ImageDepsStatus {
         ocr_configured: processor.has_ocr(),
-        vision_configured: processor.has_vision(),
+        vision_configured: processor.can_process_images(),
         ocr_provider: processor.get_ocr_provider(),
-        vision_provider: processor.get_vision_provider(),
+        llm_multimodal: processor.is_llm_multimodal(),
     })
+}
+
+/// 探测当前 LLM 是否支持多模态
+#[tauri::command]
+pub async fn probe_llm_multimodal(state: State<'_, AppState>) -> Result<bool, String> {
+    // 获取 LLM 配置
+    let (llm_api_key, llm_base_url, llm_model) = {
+        let _processor = state.image_processor.lock().map_err(|e| e.to_string())?;
+        // 从 AppState 获取 LLM 配置
+        let config_path = state.data_dir.join("config.json");
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
+                let api_key = config["api_key"].as_str().unwrap_or("").to_string();
+                let base_url = config["base_url"].as_str().unwrap_or("https://api.openai.com/v1").to_string();
+                let model = config["model"].as_str().unwrap_or("gpt-4o").to_string();
+                (api_key, base_url, model)
+            } else {
+                (String::new(), String::new(), String::new())
+            }
+        } else {
+            (String::new(), String::new(), String::new())
+        }
+    };
+    
+    // 创建临时处理器进行探测
+    let processor = crate::services::image_processor::ImageProcessor::new(
+        llm_api_key, llm_base_url, llm_model
+    );
+    Ok(processor.probe_multimodal().await)
 }
 
 /// 保存图像处理 API 配置
@@ -342,9 +371,9 @@ pub async fn save_image_config(
     ocr_provider: Option<String>,
     ocr_api_key: Option<String>,
     ocr_secret_key: Option<String>,
-    vision_provider: Option<String>,
-    vision_api_key: Option<String>,
-    vision_base_url: Option<String>,
+    vision_fallback_api_key: Option<String>,
+    vision_fallback_base_url: Option<String>,
+    vision_fallback_model: Option<String>,
 ) -> Result<(), String> {
     let mut processor = state.image_processor.lock().map_err(|e| e.to_string())?;
     
@@ -353,7 +382,7 @@ pub async fn save_image_config(
         let ocr_provider = match provider.as_str() {
             "baidu" => crate::services::image_processor::OcrProvider::Baidu,
             "tencent" => crate::services::image_processor::OcrProvider::Tencent,
-            "tesseract" => crate::services::image_processor::OcrProvider::Tesseract,
+            "llm" => crate::services::image_processor::OcrProvider::Llm,
             _ => return Err(format!("不支持的 OCR 提供商: {}", provider)),
         };
         
@@ -365,22 +394,14 @@ pub async fn save_image_config(
         processor.set_ocr_config(config);
     }
     
-    // 配置多模态 LLM
-    if let (Some(provider), Some(api_key)) = (vision_provider, vision_api_key) {
-        let vision_provider = match provider.as_str() {
-            "gpt4v" => crate::services::image_processor::VisionProvider::Gpt4v,
-            "qwen_vl" => crate::services::image_processor::VisionProvider::QwenVl,
-            "glm4v" => crate::services::image_processor::VisionProvider::Glm4v,
-            "claude" => crate::services::image_processor::VisionProvider::Claude,
-            _ => return Err(format!("不支持的多模态 LLM 提供商: {}", provider)),
-        };
-        
-        let config = crate::services::image_processor::VisionConfig {
-            provider: vision_provider,
+    // 配置备用 Vision（当主 LLM 不支持多模态时使用）
+    if let (Some(api_key), Some(base_url), Some(model)) = (vision_fallback_api_key, vision_fallback_base_url, vision_fallback_model) {
+        let config = crate::services::image_processor::VisionFallback {
             api_key,
-            base_url: vision_base_url,
+            base_url,
+            model,
         };
-        processor.set_vision_config(config);
+        processor.set_vision_fallback(config);
     }
     
     Ok(())
@@ -393,22 +414,20 @@ pub async fn process_image(
     image_path: String,
 ) -> Result<ImageProcessResult, String> {
     // 克隆配置，避免在 await 时持有 MutexGuard
-    let cache_dir;
-    let has_ocr;
-    let has_vision;
+    let can_process;
     {
         let processor = state.image_processor.lock().map_err(|e| e.to_string())?;
-        has_ocr = processor.has_ocr();
-        has_vision = processor.has_vision();
-        cache_dir = std::env::temp_dir().join("kingdee-kb-image-cache");
+        can_process = processor.can_process_images();
     }
     
-    if !has_ocr && !has_vision {
-        return Err("请先配置 OCR 或多模态 LLM API".to_string());
+    if !can_process {
+        return Err("请先配置 OCR 或确保 LLM 支持多模态".to_string());
     }
     
-    // 创建新的处理器实例（配置会从 AppState 中获取）
-    let processor = crate::services::image_processor::ImageProcessor::new(cache_dir);
+    // 创建新的处理器实例
+    let processor = crate::services::image_processor::ImageProcessor::new(
+        String::new(), String::new(), String::new()
+    );
     
     let result = processor
         .process_image(&image_path)
@@ -423,8 +442,8 @@ pub async fn process_image(
             crate::services::image_processor::ImageType::Table => "table".to_string(),
             crate::services::image_processor::ImageType::Mixed => "mixed".to_string(),
         },
-        ocr_text: result.ocr_text,
-        description: result.description,
+        ocr_text: Some(result.text),
+        description: None,
         processing_time_ms: result.processing_time_ms,
     })
 }
@@ -448,7 +467,7 @@ pub struct ImageDepsStatus {
     pub ocr_configured: bool,
     pub vision_configured: bool,
     pub ocr_provider: Option<String>,
-    pub vision_provider: Option<String>,
+    pub llm_multimodal: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

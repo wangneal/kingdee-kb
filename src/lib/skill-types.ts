@@ -188,7 +188,7 @@ export interface ImageDepsStatus {
   ocr_configured: boolean;
   vision_configured: boolean;
   ocr_provider: OcrProvider | null;
-  vision_provider: VisionProvider | null;
+  llm_multimodal: boolean;
 }
 
 /** 图像处理结果 */
