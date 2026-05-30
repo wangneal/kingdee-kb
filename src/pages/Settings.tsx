@@ -1343,10 +1343,19 @@ function LLMProviderList() {
     model: string;
   }) => {
     try {
+      // 转换为 camelCase（Tauri v2 自动转换 snake_case → camelCase）
+      const payload = {
+        id: data.id,
+        name: data.name,
+        protocol: data.protocol,
+        apiKey: data.api_key,
+        baseUrl: data.base_url,
+        model: data.model,
+      };
       if (data.id) {
-        await updateLLMProvider(data as { id: string; name: string; protocol: string; api_key: string; base_url: string; model: string });
+        await updateLLMProvider(payload as any);
       } else {
-        await addLLMProvider({ ...data, id: crypto.randomUUID() } as { id: string; name: string; protocol: string; api_key: string; base_url: string; model: string });
+        await addLLMProvider({ ...payload, id: crypto.randomUUID() } as any);
       }
       await loadProviders();
       setShowForm(false);

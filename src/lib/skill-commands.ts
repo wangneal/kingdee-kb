@@ -165,8 +165,8 @@ export type LLMProviderInput = {
   id: string;
   name: string;
   protocol: string;
-  api_key: string;
-  base_url: string;
+  apiKey: string;
+  baseUrl: string;
   model: string;
 };
 
