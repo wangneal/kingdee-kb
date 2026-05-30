@@ -18,7 +18,12 @@ import type {
   ImageProcessResult,
   LLMProviderConfig,
   OcrProviderConfig,
-  ProviderProbeResult,
+  ModelProbeResult,
+  AutoRouteResult,
+  AvailableModel,
+  NextApiKeyResult,
+  ApiKeyConfig,
+  ModelConfig,
 } from "./skill-types";
 
 /** 列出所有技能 */
@@ -162,12 +167,12 @@ export async function processImage(imagePath: string): Promise<ImageProcessResul
 
 /** LLM 供应商创建/更新参数 */
 export type LLMProviderInput = {
-  id: string;
+  id?: string;
   name: string;
   protocol: string;
-  apiKey: string;
   baseUrl: string;
-  model: string;
+  apiKeys: ApiKeyConfig[];
+  models: ModelConfig[];
 };
 
 /** 获取所有 LLM 供应商 */
@@ -195,13 +200,64 @@ export async function setDefaultLLMProvider(id: string): Promise<void> {
   return invoke("set_default_llm_provider", { id });
 }
 
-/** 探测单个供应商的多模态能力 */
+// ─── API Key 管理命令 ──────────────────────────────────
+
+/** 添加 API Key */
+export async function addApiKey(providerId: string, id: string, name: string, key: string): Promise<void> {
+  return invoke("add_api_key", { providerId, id, name, key });
+}
+
+/** 更新 API Key */
+export async function updateApiKey(providerId: string, id: string, name: string, key: string, isDefault: boolean): Promise<void> {
+  return invoke("update_api_key", { providerId, id, name, key, isDefault });
+}
+
+/** 删除 API Key */
+export async function deleteApiKey(providerId: string, keyId: string): Promise<void> {
+  return invoke("delete_provider_api_key", { providerId, keyId });
+}
+
+/** 设置默认 API Key */
+export async function setDefaultApiKey(providerId: string, keyId: string): Promise<void> {
+  return invoke("set_default_api_key", { providerId, keyId });
+}
+
+// ─── 模型管理命令 ──────────────────────────────────
+
+/** 添加模型 */
+export async function addModel(providerId: string, id: string, name: string): Promise<void> {
+  return invoke("add_model", { providerId, id, name });
+}
+
+/** 更新模型 */
+export async function updateModel(providerId: string, id: string, name: string, isDefault: boolean): Promise<void> {
+  return invoke("update_model", { providerId, id, name, isDefault });
+}
+
+/** 删除模型 */
+export async function deleteModel(providerId: string, modelId: string): Promise<void> {
+  return invoke("delete_model", { providerId, modelId });
+}
+
+/** 设置默认模型 */
+export async function setDefaultModel(providerId: string, modelId: string): Promise<void> {
+  return invoke("set_default_model", { providerId, modelId });
+}
+
+// ─── 多模态探测命令 ──────────────────────────────────
+
+/** 探测单个模型的多模态能力 */
+export async function probeModelMultimodal(providerId: string, modelId: string): Promise<boolean> {
+  return invoke("probe_model_multimodal", { providerId, modelId });
+}
+
+/** 探测单个供应商的多模态能力（使用默认模型） */
 export async function probeProviderMultimodal(id: string): Promise<boolean> {
   return invoke("probe_provider_multimodal", { id });
 }
 
-/** 批量探测所有供应商的多模态能力 */
-export async function probeAllProviders(): Promise<ProviderProbeResult[]> {
+/** 批量探测所有供应商所有模型的多模态能力 */
+export async function probeAllProviders(): Promise<ModelProbeResult[]> {
   return invoke("probe_all_providers");
 }
 
@@ -224,4 +280,19 @@ export async function saveOcrConfig(config: {
 /** 清除 OCR 配置 */
 export async function clearOcrConfig(): Promise<void> {
   return invoke("clear_ocr_config");
+}
+
+/** 自动路由：根据输入内容选择最佳模型 */
+export async function autoRouteModel(hasImages: boolean): Promise<AutoRouteResult | null> {
+  return invoke("auto_route_model", { has_images: hasImages });
+}
+
+/** 获取所有可用模型列表 */
+export async function listAvailableModels(): Promise<AvailableModel[]> {
+  return invoke("list_available_models");
+}
+
+/** 获取下一个可用的 API Key（故障切换） */
+export async function getNextApiKey(providerId: string, failedKeyId: string): Promise<NextApiKeyResult | null> {
+  return invoke("get_next_api_key", { provider_id: providerId, failed_key_id: failedKeyId });
 }

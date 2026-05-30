@@ -183,16 +183,39 @@ export type OcrProviderType = "baidu" | "tencent";
 /** LLM 协议类型 */
 export type LLMProtocol = "openai" | "anthropic" | "local";
 
+/** API Key 配置 */
+export interface ApiKeyConfig {
+  id: string;
+  name: string;
+  key: string;
+  is_default: boolean;
+}
+
+/** 模型配置 */
+export interface ModelConfig {
+  id: string;
+  name: string;
+  is_default: boolean;
+  is_multimodal: boolean | null;
+  last_probe_at: string | null;
+}
+
 /** LLM 供应商配置 */
 export interface LLMProviderConfig {
   id: string;
   name: string;
   protocol: LLMProtocol;
-  api_key: string;
   base_url: string;
-  model: string;
   is_default: boolean;
+  api_keys: ApiKeyConfig[];
+  models: ModelConfig[];
+  /** 旧版单个 API Key（向后兼容） */
+  api_key: string;
+  /** 旧版单个模型名称（向后兼容） */
+  model: string;
+  /** 旧版多模态状态（向后兼容） */
   is_multimodal: boolean | null;
+  /** 旧版探测时间（向后兼容） */
   last_probe_at: string | null;
 }
 
@@ -206,10 +229,41 @@ export interface OcrProviderConfig {
   is_default: boolean;
 }
 
-/** 供应商探测结果 */
+/** 供应商探测结果（旧版兼容） */
 export interface ProviderProbeResult {
   id: string;
   is_multimodal: boolean;
+}
+
+/** 模型探测结果 */
+export interface ModelProbeResult {
+  provider_id: string;
+  model_id: string;
+  is_multimodal: boolean;
+}
+
+/** 自动路由结果 */
+export interface AutoRouteResult {
+  provider_id: string;
+  model_id: string;
+  model_name: string;
+  base_url: string;
+}
+
+/** 可用模型 */
+export interface AvailableModel {
+  provider_id: string;
+  provider_name: string;
+  model_id: string;
+  model_name: string;
+  is_default: boolean;
+  is_multimodal: boolean | null;
+}
+
+/** 下一个可用 API Key */
+export interface NextApiKeyResult {
+  key_id: string;
+  key_value: string;
 }
 
 /** 图像处理依赖状态 */

@@ -126,6 +126,7 @@ export default function Chat() {
   const [llmReady, setLlmReady] = useState<boolean | null>(null);
   const [providers, setProviders] = useState<LLMProviderConfig[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<string>("");
+  const [selectedModelId, setSelectedModelId] = useState<string>("");
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -157,12 +158,14 @@ export default function Chat() {
     listLLMProviders()
       .then((fetchedProviders) => {
         setProviders(fetchedProviders);
-        // Pre-select default provider
-        const defaultProvider = fetchedProviders.find((p) => p.is_default);
+        // Pre-select default provider and model
+        const defaultProvider = fetchedProviders.find((p) => p.is_default) || fetchedProviders[0];
         if (defaultProvider) {
           setSelectedProviderId(defaultProvider.id);
-        } else if (fetchedProviders.length > 0) {
-          setSelectedProviderId(fetchedProviders[0].id);
+          const defaultModel = defaultProvider.models.find((m) => m.is_default) || defaultProvider.models[0];
+          if (defaultModel) {
+            setSelectedModelId(defaultModel.id);
+          }
         }
       })
       .catch((err) => {
@@ -343,6 +346,19 @@ export default function Chat() {
   );
 
   const selectedProvider = providers.find((p) => p.id === selectedProviderId);
+  const selectedModel = selectedProvider?.models.find((m) => m.id === selectedModelId);
+
+  // Build flat list of all provider+model combinations for the dropdown
+  const modelOptions = providers.flatMap((p) =>
+    p.models.map((m) => ({
+      providerId: p.id,
+      providerName: p.name,
+      modelId: m.id,
+      modelName: m.name,
+      isMultimodal: m.is_multimodal,
+      isDefault: p.is_default && m.is_default,
+    }))
+  );
 
   return (
     <div className="flex h-full flex-col">
@@ -464,10 +480,12 @@ export default function Chat() {
                   title="选择模型"
                 >
                   <Brain className="h-3.5 w-3.5 text-amber-600" />
-                  <span className="max-w-[120px] truncate">
-                    {selectedProvider?.model || "选择模型"}
+                  <span className="max-w-[160px] truncate">
+                    {selectedProvider && selectedModel
+                      ? `${selectedProvider.name} > ${selectedModel.name}`
+                      : "选择模型"}
                   </span>
-                  {selectedProvider?.is_multimodal && (
+                  {selectedModel?.is_multimodal && (
                     <span className="rounded bg-blue-100 px-1 py-0.5 text-[9px] font-medium text-blue-700">
                       多模态
                     </span>
@@ -484,38 +502,41 @@ export default function Chat() {
                 </button>
 
                 {dropdownOpen && (
-                  <div className="absolute bottom-full left-0 z-50 mb-1 w-64 rounded-lg border border-neutral-200 bg-white py-1 shadow-lg">
+                  <div className="absolute bottom-full left-0 z-50 mb-1 w-72 rounded-lg border border-neutral-200 bg-white py-1 shadow-lg max-h-64 overflow-y-auto">
                     <div className="px-3 py-1.5 text-[10px] font-medium text-neutral-400 uppercase tracking-wider">
                       选择模型
                     </div>
-                    {providers.map((provider) => (
+                    {modelOptions.map((option) => (
                       <button
-                        key={provider.id}
+                        key={`${option.providerId}-${option.modelId}`}
                         type="button"
                         onClick={() => {
-                          setSelectedProviderId(provider.id);
+                          setSelectedProviderId(option.providerId);
+                          setSelectedModelId(option.modelId);
                           setDropdownOpen(false);
                         }}
                         className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs hover:bg-neutral-50 transition-colors ${
-                          provider.id === selectedProviderId ? "bg-amber-50 text-amber-700" : "text-neutral-700"
+                          option.providerId === selectedProviderId && option.modelId === selectedModelId
+                            ? "bg-amber-50 text-amber-700"
+                            : "text-neutral-700"
                         }`}
                       >
                         <div className="flex flex-col gap-0.5 min-w-0">
-                          <span className="font-medium truncate">{provider.name}</span>
-                          <span className="text-[10px] text-neutral-400 truncate">{provider.model}</span>
+                          <span className="font-medium truncate">{option.providerName}</span>
+                          <span className="text-[10px] text-neutral-400 truncate">{option.modelName}</span>
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
-                          {provider.is_multimodal && (
+                          {option.isMultimodal && (
                             <span className="rounded bg-blue-100 px-1 py-0.5 text-[9px] font-medium text-blue-700">
                               多模态
                             </span>
                           )}
-                          {provider.is_default && (
+                          {option.isDefault && (
                             <span className="rounded bg-green-100 px-1 py-0.5 text-[9px] font-medium text-green-700">
                               默认
                             </span>
                           )}
-                           {provider.id === selectedProviderId && (
+                           {option.providerId === selectedProviderId && option.modelId === selectedModelId && (
                              <svg className="h-3.5 w-3.5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                              </svg>

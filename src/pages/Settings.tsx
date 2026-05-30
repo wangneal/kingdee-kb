@@ -26,6 +26,8 @@ import {
   Star,
   Scan,
   X,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -56,12 +58,15 @@ import {
   deleteLLMProvider,
   setDefaultLLMProvider,
   probeAllProviders,
+  probeModelMultimodal,
   getOcrConfig,
   saveOcrConfig,
 } from "../lib/skill-commands";
 import type {
   LLMProviderConfig,
   LLMProtocol,
+  ApiKeyConfig,
+  ModelConfig,
   OcrProviderConfig,
 } from "../lib/skill-types";
 
@@ -1277,6 +1282,7 @@ function LLMProviderList() {
   const [editingProvider, setEditingProvider] = useState<LLMProviderConfig | null>(null);
   const [probing, setProbing] = useState(false);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
 
   const loadProviders = useCallback(async () => {
     try {
@@ -1322,10 +1328,13 @@ function LLMProviderList() {
       const results = await probeAllProviders();
       // Update local state with probe results
       setProviders((prev) =>
-        prev.map((p) => {
-          const result = results.find((r) => r.id === p.id);
-          return result ? { ...p, is_multimodal: result.is_multimodal } : p;
-        })
+        prev.map((p) => ({
+          ...p,
+          models: p.models.map((m) => {
+            const result = results.find((r) => r.provider_id === p.id && r.model_id === m.id);
+            return result ? { ...m, is_multimodal: result.is_multimodal } : m;
+          }),
+        }))
       );
     } catch (err) {
       setActionMsg(`探测失败：${err instanceof Error ? err.message : String(err)}`);
@@ -1334,28 +1343,32 @@ function LLMProviderList() {
     }
   }, []);
 
-  const handleFormSubmit = useCallback(async (data: {
-    id?: string;
-    name: string;
-    protocol: LLMProtocol;
-    api_key: string;
-    base_url: string;
-    model: string;
-  }) => {
+  const handleProbeSingleModel = useCallback(async (providerId: string, modelId: string) => {
     try {
-      // 转换为 camelCase（Tauri v2 自动转换 snake_case → camelCase）
-      const payload = {
-        id: data.id,
-        name: data.name,
-        protocol: data.protocol,
-        apiKey: data.api_key,
-        baseUrl: data.base_url,
-        model: data.model,
-      };
+      const isMultimodal = await probeModelMultimodal(providerId, modelId);
+      setProviders((prev) =>
+        prev.map((p) =>
+          p.id === providerId
+            ? {
+                ...p,
+                models: p.models.map((m) =>
+                  m.id === modelId ? { ...m, is_multimodal: isMultimodal } : m
+                ),
+              }
+            : p
+        )
+      );
+    } catch (err) {
+      setActionMsg(`探测失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, []);
+
+  const handleFormSubmit = useCallback(async (data: LLMProviderInput) => {
+    try {
       if (data.id) {
-        await updateLLMProvider(payload as any);
+        await updateLLMProvider(data);
       } else {
-        await addLLMProvider({ ...payload, id: crypto.randomUUID() } as any);
+        await addLLMProvider({ ...data, id: crypto.randomUUID() });
       }
       await loadProviders();
       setShowForm(false);
@@ -1384,7 +1397,7 @@ function LLMProviderList() {
           <div>
             <h2 className="text-sm font-semibold text-neutral-700">LLM 供应商</h2>
             <p className="mt-0.5 text-xs text-neutral-400">
-              管理大语言模型供应商配置，支持多供应商切换
+              管理大语言模型供应商配置，支持多供应商、多模型、多 API Key
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -1429,95 +1442,16 @@ function LLMProviderList() {
         ) : (
           <div className="space-y-3">
             {providers.map((provider) => (
-              <div
+              <ProviderCard
                 key={provider.id}
-                className={`rounded-lg border p-4 transition-colors ${
-                  provider.is_default
-                    ? "border-[#1A6BD8]/30 bg-blue-50/30"
-                    : "border-neutral-200 bg-white hover:border-neutral-300"
-                }`}
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-neutral-800">
-                        {provider.name}
-                      </span>
-                      {provider.is_default && (
-                        <span className="rounded-full bg-[#1A6BD8] px-2 py-0.5 text-[10px] font-medium text-white">
-                          默认
-                        </span>
-                      )}
-                      <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-medium text-neutral-500">
-                        {PROTOCOL_LABELS[provider.protocol] || provider.protocol}
-                      </span>
-                      {/* Multimodal indicator */}
-                      <span
-                        className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                          provider.is_multimodal === true
-                            ? "bg-green-50 text-green-700"
-                            : provider.is_multimodal === false
-                              ? "bg-red-50 text-red-600"
-                              : "bg-neutral-100 text-neutral-400"
-                        }`}
-                      >
-                        <span
-                          className={`h-1.5 w-1.5 rounded-full ${
-                            provider.is_multimodal === true
-                              ? "bg-green-500"
-                              : provider.is_multimodal === false
-                                ? "bg-red-400"
-                                : "bg-neutral-300"
-                          }`}
-                        />
-                        {provider.is_multimodal === true
-                          ? "多模态"
-                          : provider.is_multimodal === false
-                            ? "纯文本"
-                            : "未探测"}
-                      </span>
-                    </div>
-                    <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-neutral-500">
-                      <span className="flex items-center gap-1">
-                        <Cpu className="h-3 w-3" />
-                        {provider.model}
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <Server className="h-3 w-3" />
-                        {provider.base_url}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1.5 ml-4">
-                    {!provider.is_default && (
-                      <button
-                        type="button"
-                        onClick={() => handleSetDefault(provider.id)}
-                        className="rounded-lg p-1.5 text-neutral-400 hover:bg-amber-50 hover:text-amber-600 transition-colors"
-                        title="设为默认"
-                      >
-                        <Star className="h-4 w-4" />
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => { setEditingProvider(provider); setShowForm(true); }}
-                      className="rounded-lg p-1.5 text-neutral-400 hover:bg-blue-50 hover:text-blue-600 transition-colors"
-                      title="编辑"
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(provider.id)}
-                      className="rounded-lg p-1.5 text-neutral-400 hover:bg-red-50 hover:text-red-600 transition-colors"
-                      title="删除"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-              </div>
+                provider={provider}
+                expanded={expandedProvider === provider.id}
+                onToggleExpand={() => setExpandedProvider(expandedProvider === provider.id ? null : provider.id)}
+                onSetDefault={() => handleSetDefault(provider.id)}
+                onEdit={() => { setEditingProvider(provider); setShowForm(true); }}
+                onDelete={() => handleDelete(provider.id)}
+                onProbeModel={handleProbeSingleModel}
+              />
             ))}
           </div>
         )}
@@ -1535,7 +1469,216 @@ function LLMProviderList() {
   );
 }
 
+/** Provider card with expandable models and API keys */
+function ProviderCard({
+  provider,
+  expanded,
+  onToggleExpand,
+  onSetDefault,
+  onEdit,
+  onDelete,
+  onProbeModel,
+}: {
+  provider: LLMProviderConfig;
+  expanded: boolean;
+  onToggleExpand: () => void;
+  onSetDefault: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  onProbeModel: (providerId: string, modelId: string) => void;
+}) {
+  const defaultModel = provider.models.find((m) => m.is_default) || provider.models[0];
+
+  return (
+    <div
+      className={`rounded-lg border transition-colors ${
+        provider.is_default
+          ? "border-[#1A6BD8]/30 bg-blue-50/30"
+          : "border-neutral-200 bg-white hover:border-neutral-300"
+      }`}
+    >
+      {/* Header */}
+      <div className="flex items-start justify-between p-4">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-medium text-neutral-800">
+              {provider.name}
+            </span>
+            {provider.is_default && (
+              <span className="rounded-full bg-[#1A6BD8] px-2 py-0.5 text-[10px] font-medium text-white">
+                默认
+              </span>
+            )}
+            <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-medium text-neutral-500">
+              {PROTOCOL_LABELS[provider.protocol] || provider.protocol}
+            </span>
+            <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-medium text-neutral-500">
+              {provider.models.length} 模型 · {provider.api_keys.length} Key
+            </span>
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-neutral-500">
+            {defaultModel && (
+              <span className="flex items-center gap-1">
+                <Cpu className="h-3 w-3" />
+                {defaultModel.name}
+                {defaultModel.is_multimodal === true && (
+                  <span className="rounded bg-green-100 px-1 py-0.5 text-[9px] font-medium text-green-700">多模态</span>
+                )}
+              </span>
+            )}
+            <span className="flex items-center gap-1">
+              <Server className="h-3 w-3" />
+              {provider.base_url}
+            </span>
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 ml-4 shrink-0">
+          <button
+            type="button"
+            onClick={onToggleExpand}
+            className="rounded-lg p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 transition-colors"
+            title={expanded ? "收起" : "展开"}
+          >
+            {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </button>
+          {!provider.is_default && (
+            <button
+              type="button"
+              onClick={onSetDefault}
+              className="rounded-lg p-1.5 text-neutral-400 hover:bg-amber-50 hover:text-amber-600 transition-colors"
+              title="设为默认"
+            >
+              <Star className="h-4 w-4" />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onEdit}
+            className="rounded-lg p-1.5 text-neutral-400 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+            title="编辑"
+          >
+            <Pencil className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            className="rounded-lg p-1.5 text-neutral-400 hover:bg-red-50 hover:text-red-600 transition-colors"
+            title="删除"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Expanded: Models and API Keys */}
+      {expanded && (
+        <div className="border-t border-neutral-100 px-4 pb-4 pt-3 space-y-4">
+          {/* Models */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-xs font-semibold text-neutral-600">模型列表</h4>
+            </div>
+            {provider.models.length === 0 ? (
+              <p className="text-xs text-neutral-400">暂无模型</p>
+            ) : (
+              <div className="space-y-1.5">
+                {provider.models.map((model) => (
+                  <div
+                    key={model.id}
+                    className="flex items-center justify-between rounded-lg bg-neutral-50 px-3 py-2"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-xs font-medium text-neutral-700 truncate">{model.name}</span>
+                      {model.is_default && (
+                        <span className="rounded bg-[#1A6BD8] px-1.5 py-0.5 text-[9px] font-medium text-white">默认</span>
+                      )}
+                      <span
+                        className={`flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-medium ${
+                          model.is_multimodal === true
+                            ? "bg-green-50 text-green-700"
+                            : model.is_multimodal === false
+                              ? "bg-red-50 text-red-600"
+                              : "bg-neutral-100 text-neutral-400"
+                        }`}
+                      >
+                        <span
+                          className={`h-1 w-1 rounded-full ${
+                            model.is_multimodal === true
+                              ? "bg-green-500"
+                              : model.is_multimodal === false
+                                ? "bg-red-400"
+                                : "bg-neutral-300"
+                          }`}
+                        />
+                        {model.is_multimodal === true
+                          ? "多模态"
+                          : model.is_multimodal === false
+                            ? "纯文本"
+                            : "未探测"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => onProbeModel(provider.id, model.id)}
+                        className="rounded p-1 text-neutral-400 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+                        title="探测多模态"
+                      >
+                        <Scan className="h-3 w-3" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* API Keys */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-xs font-semibold text-neutral-600">API Keys</h4>
+            </div>
+            {provider.api_keys.length === 0 ? (
+              <p className="text-xs text-neutral-400">暂无 API Key</p>
+            ) : (
+              <div className="space-y-1.5">
+                {provider.api_keys.map((key) => (
+                  <div
+                    key={key.id}
+                    className="flex items-center justify-between rounded-lg bg-neutral-50 px-3 py-2"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Key className="h-3 w-3 text-neutral-400 shrink-0" />
+                      <span className="text-xs font-medium text-neutral-700 truncate">{key.name || "未命名"}</span>
+                      {key.is_default && (
+                        <span className="rounded bg-[#1A6BD8] px-1.5 py-0.5 text-[9px] font-medium text-white">默认</span>
+                      )}
+                      <span className="text-[10px] text-neutral-400 truncate">
+                        {key.key.slice(0, 8)}...{key.key.slice(-4)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Provider Form Dialog ────────────────────────────────────────────────
+
+/** Import for LLMProviderInput type */
+type LLMProviderInput = {
+  id?: string;
+  name: string;
+  protocol: string;
+  baseUrl: string;
+  apiKeys: ApiKeyConfig[];
+  models: ModelConfig[];
+};
 
 function ProviderFormDialog({
   provider,
@@ -1543,61 +1686,135 @@ function ProviderFormDialog({
   onClose,
 }: {
   provider: LLMProviderConfig | null;
-  onSubmit: (data: {
-    id?: string;
-    name: string;
-    protocol: LLMProtocol;
-    api_key: string;
-    base_url: string;
-    model: string;
-  }) => Promise<void>;
+  onSubmit: (data: LLMProviderInput) => Promise<void>;
   onClose: () => void;
 }) {
   const [name, setName] = useState(provider?.name ?? "");
   const [protocol, setProtocol] = useState<LLMProtocol>(provider?.protocol ?? "openai");
-  const [apiKey, setApiKey] = useState(provider?.api_key ?? "");
   const [baseUrl, setBaseUrl] = useState(provider?.base_url ?? PROVIDER_DEFAULTS.openai.base_url);
-  const [model, setModel] = useState(provider?.model ?? PROVIDER_DEFAULTS.openai.model);
   const [showApiKey, setShowApiKey] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // API Keys state
+  const [apiKeys, setApiKeys] = useState<ApiKeyConfig[]>(
+    provider?.api_keys.length
+      ? provider.api_keys
+      : provider?.api_key
+        ? [{ id: crypto.randomUUID(), name: "默认 Key", key: provider.api_key, is_default: true }]
+        : []
+  );
+
+  // Models state
+  const [models, setModels] = useState<ModelConfig[]>(
+    provider?.models.length
+      ? provider.models
+      : provider?.model
+        ? [{ id: crypto.randomUUID(), name: provider.model, is_default: true, is_multimodal: provider.is_multimodal, last_probe_at: provider.last_probe_at }]
+        : []
+  );
 
   const handleProtocolChange = useCallback((newProtocol: LLMProtocol) => {
     setProtocol(newProtocol);
     const defaults = PROVIDER_DEFAULTS[newProtocol];
     if (defaults) {
-      // Auto-fill if current values match old defaults
       const oldDefaults = PROVIDER_DEFAULTS[protocol];
       if (baseUrl === oldDefaults?.base_url || baseUrl === "") {
         setBaseUrl(defaults.base_url);
       }
-      if (model === oldDefaults?.model || model === "") {
-        setModel(defaults.model);
+      // Auto-add default model if empty
+      if (models.length === 0) {
+        setModels([{ id: crypto.randomUUID(), name: defaults.model, is_default: true, is_multimodal: null, last_probe_at: null }]);
       }
     }
-  }, [protocol, baseUrl, model]);
+  }, [protocol, baseUrl, models.length]);
+
+  // API Key management
+  const handleAddApiKey = useCallback(() => {
+    setApiKeys((prev) => [
+      ...prev,
+      { id: crypto.randomUUID(), name: `Key ${prev.length + 1}`, key: "", is_default: prev.length === 0 },
+    ]);
+  }, []);
+
+  const handleUpdateApiKey = useCallback((id: string, updates: Partial<ApiKeyConfig>) => {
+    setApiKeys((prev) =>
+      prev.map((k) => (k.id === id ? { ...k, ...updates } : k))
+    );
+  }, []);
+
+  const handleRemoveApiKey = useCallback((id: string) => {
+    setApiKeys((prev) => {
+      const filtered = prev.filter((k) => k.id !== id);
+      // If removed was default, set first as default
+      if (filtered.length > 0 && !filtered.some((k) => k.is_default)) {
+        filtered[0].is_default = true;
+      }
+      return filtered;
+    });
+  }, []);
+
+  const handleSetDefaultApiKey = useCallback((id: string) => {
+    setApiKeys((prev) =>
+      prev.map((k) => ({ ...k, is_default: k.id === id }))
+    );
+  }, []);
+
+  // Model management
+  const handleAddModel = useCallback(() => {
+    setModels((prev) => [
+      ...prev,
+      { id: crypto.randomUUID(), name: "", is_default: prev.length === 0, is_multimodal: null, last_probe_at: null },
+    ]);
+  }, []);
+
+  const handleUpdateModel = useCallback((id: string, updates: Partial<ModelConfig>) => {
+    setModels((prev) =>
+      prev.map((m) => (m.id === id ? { ...m, ...updates } : m))
+    );
+  }, []);
+
+  const handleRemoveModel = useCallback((id: string) => {
+    setModels((prev) => {
+      const filtered = prev.filter((m) => m.id !== id);
+      // If removed was default, set first as default
+      if (filtered.length > 0 && !filtered.some((m) => m.is_default)) {
+        filtered[0].is_default = true;
+      }
+      return filtered;
+    });
+  }, []);
+
+  const handleSetDefaultModel = useCallback((id: string) => {
+    setModels((prev) =>
+      prev.map((m) => ({ ...m, is_default: m.id === id }))
+    );
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !model.trim()) return;
+    if (!name.trim() || models.length === 0) return;
     setSaving(true);
     try {
       await onSubmit({
         id: provider?.id,
         name: name.trim(),
         protocol,
-        api_key: apiKey,
-        base_url: baseUrl,
-        model: model.trim(),
+        baseUrl,
+        apiKeys: apiKeys.filter((k) => k.key.trim()),
+        models: models.filter((m) => m.name.trim()),
       });
     } finally {
       setSaving(false);
     }
   };
 
+  const hasValidModels = models.some((m) => m.name.trim());
+  const hasValidKeys = protocol === "local" || apiKeys.some((k) => k.key.trim());
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-full max-w-md rounded-xl bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-neutral-100 px-5 py-3">
+      <div className="w-full max-w-lg max-h-[90vh] rounded-xl bg-white shadow-xl flex flex-col">
+        <div className="flex items-center justify-between border-b border-neutral-100 px-5 py-3 shrink-0">
           <h3 className="text-sm font-semibold text-neutral-800">
             {provider ? "编辑供应商" : "添加供应商"}
           </h3>
@@ -1610,7 +1827,7 @@ function ProviderFormDialog({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4 p-5">
+        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-5 space-y-4">
           {/* Name */}
           <div>
             <label className="mb-1.5 block text-xs font-medium text-neutral-600">
@@ -1620,7 +1837,7 @@ function ProviderFormDialog({
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="如：OpenAI GPT-4o"
+              placeholder="如：OpenAI、通义千问"
               required
               className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
             />
@@ -1642,30 +1859,6 @@ function ProviderFormDialog({
             </select>
           </div>
 
-          {/* API Key */}
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-neutral-600">
-              API Key
-            </label>
-            <div className="relative">
-              <input
-                type={showApiKey ? "text" : "password"}
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="sk-..."
-                className="w-full rounded-lg border border-neutral-200 px-3 py-2 pr-10 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-              />
-              <button
-                type="button"
-                onClick={() => setShowApiKey((v) => !v)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
-                tabIndex={-1}
-              >
-                {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </div>
-          </div>
-
           {/* Base URL */}
           <div>
             <label className="mb-1.5 block text-xs font-medium text-neutral-600">
@@ -1680,23 +1873,141 @@ function ProviderFormDialog({
             />
           </div>
 
-          {/* Model */}
+          {/* API Keys */}
+          {protocol !== "local" && (
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs font-medium text-neutral-600">
+                  API Keys <span className="text-red-400">*</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={handleAddApiKey}
+                  className="flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-medium text-[#1A6BD8] hover:bg-blue-50 transition-colors"
+                >
+                  <Plus className="h-3 w-3" />
+                  添加 Key
+                </button>
+              </div>
+              <div className="space-y-2">
+                {apiKeys.map((key) => (
+                  <div key={key.id} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={key.name}
+                      onChange={(e) => handleUpdateApiKey(key.id, { name: e.target.value })}
+                      placeholder="名称"
+                      className="w-24 rounded-lg border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+                    />
+                    <div className="relative flex-1">
+                      <input
+                        type={showApiKey ? "text" : "password"}
+                        value={key.key}
+                        onChange={(e) => handleUpdateApiKey(key.id, { key: e.target.value })}
+                        placeholder="sk-..."
+                        className="w-full rounded-lg border border-neutral-200 px-2 py-1.5 pr-8 text-xs outline-none focus:border-[#1A6BD8]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowApiKey((v) => !v)}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
+                        tabIndex={-1}
+                      >
+                        {showApiKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleSetDefaultApiKey(key.id)}
+                      className={`rounded p-1 transition-colors ${
+                        key.is_default
+                          ? "text-amber-500"
+                          : "text-neutral-300 hover:text-amber-500"
+                      }`}
+                      title="设为默认"
+                    >
+                      <Star className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveApiKey(key.id)}
+                      className="rounded p-1 text-neutral-300 hover:text-red-500 transition-colors"
+                      title="删除"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Models */}
           <div>
-            <label className="mb-1.5 block text-xs font-medium text-neutral-600">
-              模型名称 <span className="text-red-400">*</span>
-            </label>
-            <input
-              type="text"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder="gpt-4o"
-              required
-              className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-            />
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-medium text-neutral-600">
+                模型列表 <span className="text-red-400">*</span>
+              </label>
+              <button
+                type="button"
+                onClick={handleAddModel}
+                className="flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-medium text-[#1A6BD8] hover:bg-blue-50 transition-colors"
+              >
+                <Plus className="h-3 w-3" />
+                添加模型
+              </button>
+            </div>
+            <div className="space-y-2">
+              {models.map((model) => (
+                <div key={model.id} className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={model.name}
+                    onChange={(e) => handleUpdateModel(model.id, { name: e.target.value })}
+                    placeholder={PROVIDER_DEFAULTS[protocol]?.model || "模型名称"}
+                    className="flex-1 rounded-lg border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+                  />
+                  {model.is_multimodal !== null && (
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-[9px] font-medium ${
+                        model.is_multimodal
+                          ? "bg-green-50 text-green-700"
+                          : "bg-red-50 text-red-600"
+                      }`}
+                    >
+                      {model.is_multimodal ? "多模态" : "纯文本"}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleSetDefaultModel(model.id)}
+                    className={`rounded p-1 transition-colors ${
+                      model.is_default
+                        ? "text-amber-500"
+                        : "text-neutral-300 hover:text-amber-500"
+                    }`}
+                    title="设为默认"
+                  >
+                    <Star className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveModel(model.id)}
+                    className="rounded p-1 text-neutral-300 hover:text-red-500 transition-colors"
+                    title="删除"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+            {models.length === 0 && (
+              <p className="mt-1 text-[10px] text-red-500">至少添加一个模型</p>
+            )}
           </div>
 
           {/* Actions */}
-          <div className="flex items-center justify-end gap-3 pt-2">
+          <div className="flex items-center justify-end gap-3 pt-2 border-t border-neutral-100">
             <button
               type="button"
               onClick={onClose}
@@ -1706,7 +2017,7 @@ function ProviderFormDialog({
             </button>
             <button
               type="submit"
-              disabled={saving || !name.trim() || !model.trim()}
+              disabled={saving || !name.trim() || !hasValidModels || !hasValidKeys}
               className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
             >
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}

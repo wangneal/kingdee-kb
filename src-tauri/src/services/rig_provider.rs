@@ -203,14 +203,15 @@ impl HttpClientExt for CompatReqwestClient {
 pub fn build_openai_client(
     config: &LLMProviderConfig,
 ) -> Result<rig_core::providers::openai::Client<CompatReqwestClient>, String> {
-    if config.api_key.is_empty() && config.protocol != LLMProtocol::Local {
+    let api_key = config.get_default_key_value();
+    if api_key.is_empty() && config.protocol != LLMProtocol::Local {
         return Err("API key 为空，无法构建 rig OpenAI client".to_string());
     }
 
-    let api_key = if config.api_key.is_empty() {
+    let api_key = if api_key.is_empty() {
         "unused".to_string()
     } else {
-        config.api_key.clone()
+        api_key
     };
 
     let mut builder = rig_core::providers::openai::Client::builder()
@@ -229,12 +230,13 @@ pub fn build_openai_client(
 pub fn build_anthropic_client(
     config: &LLMProviderConfig,
 ) -> Result<rig_core::providers::anthropic::Client<CompatReqwestClient>, String> {
-    if config.api_key.is_empty() {
+    let api_key = config.get_default_key_value();
+    if api_key.is_empty() {
         return Err("API key 为空，无法构建 rig Anthropic client".to_string());
     }
 
     let mut builder = rig_core::providers::anthropic::Client::builder()
-        .api_key(&config.api_key)
+        .api_key(&api_key)
         .http_client(custom_http_client(&config.base_url)?);
 
     if config.base_url != DEFAULT_ANTHROPIC_BASE_URL && !config.base_url.is_empty() {
@@ -316,7 +318,7 @@ mod tests {
                 .completions_api();
 
             let mut stream = client
-                .agent(&config.model)
+                .agent(&config.get_default_model_name())
                 .max_tokens(32)
                 .temperature(0.0)
                 .build()
@@ -359,7 +361,7 @@ mod tests {
             )));
 
             let mut stream = client
-                .agent(&config.model)
+                .agent(&config.get_default_model_name())
                 .tools(all_rig_tools(
                     None,
                     tmp.path().to_path_buf(),

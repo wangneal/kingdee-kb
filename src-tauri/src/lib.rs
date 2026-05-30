@@ -265,7 +265,6 @@ pub fn run() {
             commands::skill::process_image,
             commands::skill::probe_llm_multimodal,
             // LLM Provider Management
-            commands::llm_provider::is_llm_configured,
             commands::llm_provider::list_llm_providers,
             commands::llm_provider::add_llm_provider,
             commands::llm_provider::update_llm_provider,
@@ -276,6 +275,19 @@ pub fn run() {
             commands::llm_provider::get_ocr_config,
             commands::llm_provider::save_ocr_config,
             commands::llm_provider::clear_ocr_config,
+            commands::llm_provider::add_api_key,
+            commands::llm_provider::update_api_key,
+            commands::llm_provider::delete_provider_api_key,
+            commands::llm_provider::set_default_api_key,
+            commands::llm_provider::add_model,
+            commands::llm_provider::update_model,
+            commands::llm_provider::delete_model,
+            commands::llm_provider::set_default_model,
+            commands::llm_provider::probe_model_multimodal,
+            commands::llm_provider::auto_route_model,
+            commands::llm_provider::list_available_models,
+            commands::llm_provider::get_next_api_key,
+            commands::llm_provider::is_llm_configured,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

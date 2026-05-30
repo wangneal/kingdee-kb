@@ -509,13 +509,13 @@ impl LLMService {
     ) -> Result<String, String> {
         let config = self.get_active_config()?;
 
-        if config.api_key.is_empty() {
+        if config.get_default_key_value().is_empty() {
             return Err("LLM API key not configured".to_string());
         }
 
         let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
         let auth_header = format!("Bearer {}", config.api_key);
-        let model = config.model.clone();
+        let model = config.get_default_model_name().clone();
         let temperature = config.temperature;
         let max_tokens = config.max_tokens;
 
@@ -695,7 +695,7 @@ impl LLMService {
         }
 
         let body = serde_json::json!({
-            "model": config.model,
+            "model": config.get_default_model_name(),
             "messages": api_messages,
             "temperature": config.temperature,
             "max_tokens": RESPONSE_TOKENS,
@@ -877,7 +877,7 @@ impl LLMService {
             .collect();
 
         let body = serde_json::json!({
-            "model": config.model,
+            "model": config.get_default_model_name(),
             "max_tokens": RESPONSE_TOKENS,
             "temperature": config.temperature,
             "system": system_prompt,
@@ -888,7 +888,7 @@ impl LLMService {
         let request = self
             .client
             .post(&url)
-            .header("x-api-key", &config.api_key)
+            .header("x-api-key", &config.get_default_key_value())
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("anthropic-dangerous-direct-browser-access", "true")
             .header("Content-Type", "application/json")
@@ -1121,7 +1121,7 @@ impl LLMService {
         messages: &[ChatMessage],
         config: &LLMProviderConfig,
     ) -> Result<String, String> {
-        if config.api_key.is_empty() {
+        if config.get_default_key_value().is_empty() {
             return Err("LLM API key not configured".to_string());
         }
 
@@ -1159,7 +1159,7 @@ impl LLMService {
             .collect();
 
         let mut body = serde_json::json!({
-            "model": config.model,
+            "model": config.get_default_model_name(),
             "messages": api_messages,
             "temperature": config.temperature,
             "stream": false
@@ -1245,7 +1245,7 @@ impl LLMService {
             .collect();
 
         let mut body = serde_json::json!({
-            "model": config.model,
+            "model": config.get_default_model_name(),
             "max_tokens": RESPONSE_TOKENS,
             "temperature": config.temperature,
             "messages": api_messages
@@ -1260,7 +1260,7 @@ impl LLMService {
             let response = self
                 .client
                 .post(&url)
-                .header("x-api-key", &config.api_key)
+                .header("x-api-key", &config.get_default_key_value())
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .header("anthropic-dangerous-direct-browser-access", "true")
                 .header("Content-Type", "application/json")
@@ -1435,7 +1435,7 @@ impl LLMService {
         }
 
         let body = serde_json::json!({
-            "model": config.model,
+            "model": config.get_default_model_name(),
             "messages": api_messages,
             "temperature": config.temperature,
             "max_tokens": RESPONSE_TOKENS,
@@ -1616,7 +1616,7 @@ impl LLMService {
             .collect();
 
         let body = serde_json::json!({
-            "model": config.model,
+            "model": config.get_default_model_name(),
             "max_tokens": RESPONSE_TOKENS,
             "temperature": config.temperature,
             "system": system_prompt,
@@ -1627,7 +1627,7 @@ impl LLMService {
         let request = self
             .client_for_config(config)?
             .post(&url)
-            .header("x-api-key", &config.api_key)
+            .header("x-api-key", &config.get_default_key_value())
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("anthropic-dangerous-direct-browser-access", "true")
             .header("Content-Type", "application/json")
@@ -1890,7 +1890,7 @@ impl LLMService {
         let config = self.get_active_config()?;
         // Local models (non-standard) are allowed to have empty API key
         let is_local = config.protocol == LLMProtocol::Local;
-        if config.api_key.is_empty() && !is_local {
+        if config.get_default_key_value().is_empty() && !is_local {
             return Err("API Key 未配置".to_string());
         }
 
@@ -1898,7 +1898,7 @@ impl LLMService {
             LLMProtocol::OpenAI | LLMProtocol::Local => {
                 let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
                 let body = serde_json::json!({
-                    "model": config.model,
+                    "model": config.get_default_model_name(),
                     "messages": [{"role": "user", "content": "Hi"}],
                     "max_tokens": 5,
                     "temperature": 0.0
@@ -1926,12 +1926,12 @@ impl LLMService {
                     return Err(format!("API 返回错误 ({})：{}", status, body_text));
                 }
 
-                Ok(format!("连接成功（openai / {}）", config.model))
+                Ok(format!("连接成功（openai / {}）", config.get_default_model_name()))
             }
             LLMProtocol::Anthropic => {
                 let url = format!("{}/messages", config.base_url.trim_end_matches('/'));
                 let body = serde_json::json!({
-                    "model": config.model,
+                    "model": config.get_default_model_name(),
                     "max_tokens": 5,
                     "temperature": 0.0,
                     "messages": [{"role": "user", "content": "Hi"}]
@@ -1941,7 +1941,7 @@ impl LLMService {
                     Duration::from_secs(LLM_CALL_TIMEOUT_SECS),
                     self.client_for_config(&config)?
                         .post(&url)
-                        .header("x-api-key", &config.api_key)
+                        .header("x-api-key", &config.get_default_key_value())
                         .header("anthropic-version", ANTHROPIC_VERSION)
                         .header("anthropic-dangerous-direct-browser-access", "true")
                         .header("Content-Type", "application/json")
@@ -1961,7 +1961,7 @@ impl LLMService {
                     return Err(format!("API 返回错误 ({})：{}", status, body_text));
                 }
 
-                Ok(format!("连接成功（anthropic / {}）", config.model))
+                Ok(format!("连接成功（anthropic / {}）", config.get_default_model_name()))
             }
         }
     }

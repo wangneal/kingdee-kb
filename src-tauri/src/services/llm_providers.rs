@@ -1,14 +1,49 @@
 //! LLM 供应商管理 — 多供应商配置 + 自动选择
 //!
-//! 支持配置多个 LLM 供应商，系统根据任务类型自动选择：
-//!   - 文本对话 → 用户选择的默认供应商
-//!   - 图像理解 → 自动选择支持多模态的供应商
+//! 支持配置多个 LLM 供应商，每个供应商可配置多个 API Key 和多个模型。
+//! 系统根据任务类型自动选择：
+//!   - 文本对话 → 用户选择的默认供应商 + 默认模型
+//!   - 图像理解 → 自动选择支持多模态的模型
 //!   - OCR → 独立的 OCR 配置
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 // ─── 类型定义 ───
+
+/// API Key 配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiKeyConfig {
+    /// 唯一标识
+    pub id: String,
+    /// 显示名称（如 "个人 Key"、"团队 Key"）
+    #[serde(default)]
+    pub name: String,
+    /// API Key 值
+    pub key: String,
+    /// 是否为默认 Key
+    #[serde(default)]
+    pub is_default: bool,
+}
+
+/// 模型配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelConfig {
+    /// 唯一标识
+    pub id: String,
+    /// 模型名称（如 "gpt-4o"、"claude-3-5-sonnet"）
+    pub name: String,
+    /// 是否为默认模型
+    #[serde(default)]
+    pub is_default: bool,
+    /// 是否支持多模态（通过 API 探测）
+    /// None = 未探测，Some(true) = 支持，Some(false) = 不支持
+    #[serde(default)]
+    pub is_multimodal: Option<bool>,
+    /// 最后探测时间
+    #[serde(default)]
+    pub last_probe_at: Option<String>,
+}
 
 /// LLM 供应商配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,26 +54,36 @@ pub struct LLMProviderConfig {
     pub name: String,
     /// 协议类型
     pub protocol: LLMProtocol,
-    /// API Key
-    pub api_key: String,
     /// Base URL
     pub base_url: String,
-    /// 模型名称
-    pub model: String,
     /// 是否为默认供应商
     pub is_default: bool,
-    /// 是否支持多模态（通过 API 探测）
+    /// API Key 列表（新版：支持多个）
     #[serde(default)]
-    pub is_multimodal: Option<bool>,
-    /// 最后探测时间
+    pub api_keys: Vec<ApiKeyConfig>,
+    /// 模型列表（新版：支持多个）
     #[serde(default)]
-    pub last_probe_at: Option<String>,
+    pub models: Vec<ModelConfig>,
     /// 最大上下文窗口（token 数，默认：4096）
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
     /// 生成温度（默认：0.3）
     #[serde(default = "default_temperature")]
     pub temperature: f32,
+
+    // ─── 旧版字段（向后兼容，迁移后不再使用）───
+    /// 旧版单个 API Key
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub api_key: String,
+    /// 旧版单个模型名称
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    /// 旧版多模态状态
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_multimodal: Option<bool>,
+    /// 旧版探测时间
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_probe_at: Option<String>,
 }
 
 impl LLMProviderConfig {
@@ -47,8 +92,90 @@ impl LLMProviderConfig {
         if self.protocol == LLMProtocol::Local {
             return !self.base_url.is_empty();
         }
+        // 新版：检查 api_keys 列表
+        if !self.api_keys.is_empty() {
+            return self.api_keys.iter().any(|k| !k.key.is_empty());
+        }
+        // 旧版兼容
         !self.api_key.is_empty()
     }
+
+    /// 获取默认 API Key
+    pub fn get_default_api_key(&self) -> Option<&ApiKeyConfig> {
+        self.api_keys.iter().find(|k| k.is_default)
+            .or_else(|| self.api_keys.first())
+    }
+
+    /// 获取默认 API Key 值
+    pub fn get_default_key_value(&self) -> String {
+        if let Some(key_config) = self.get_default_api_key() {
+            return key_config.key.clone();
+        }
+        // 旧版兼容
+        self.api_key.clone()
+    }
+
+    /// 获取默认模型
+    pub fn get_default_model(&self) -> Option<&ModelConfig> {
+        self.models.iter().find(|m| m.is_default)
+            .or_else(|| self.models.first())
+    }
+
+    /// 获取默认模型名称
+    pub fn get_default_model_name(&self) -> String {
+        if let Some(model_config) = self.get_default_model() {
+            return model_config.name.clone();
+        }
+        // 旧版兼容
+        self.model.clone()
+    }
+
+    /// 检查是否需要从旧版格式迁移
+    pub fn needs_migration(&self) -> bool {
+        !self.api_key.is_empty() && self.api_keys.is_empty()
+    }
+
+    /// 从旧版格式迁移到新版格式
+    pub fn migrate_from_legacy(&mut self) {
+        if !self.needs_migration() {
+            return;
+        }
+
+        // 迁移 API Key
+        if !self.api_key.is_empty() {
+            self.api_keys = vec![ApiKeyConfig {
+                id: uuid_simple(),
+                name: "默认 Key".to_string(),
+                key: self.api_key.clone(),
+                is_default: true,
+            }];
+            self.api_key.clear();
+        }
+
+        // 迁移模型
+        if !self.model.is_empty() {
+            let is_multimodal = self.is_multimodal;
+            let last_probe_at = self.last_probe_at.clone();
+            self.models = vec![ModelConfig {
+                id: uuid_simple(),
+                name: self.model.clone(),
+                is_default: true,
+                is_multimodal,
+                last_probe_at,
+            }];
+            self.model.clear();
+            self.is_multimodal = None;
+            self.last_probe_at = None;
+        }
+    }
+}
+
+/// 生成简易 UUID（不依赖 uuid crate）
+fn uuid_simple() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let nanos = duration.as_nanos();
+    format!("{:016x}", nanos)
 }
 
 fn default_max_tokens() -> u32 {
@@ -94,6 +221,19 @@ pub enum OcrProviderType {
     Tencent,
 }
 
+/// 可用模型（用于前端选择器）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AvailableModel {
+    pub provider_id: String,
+    pub provider_name: String,
+    pub model_id: String,
+    pub model_name: String,
+    pub is_default: bool,
+    pub is_multimodal: Option<bool>,
+    pub api_key: String,
+    pub base_url: String,
+}
+
 /// 供应商管理器
 pub struct LLMProviderManager {
     /// LLM 供应商列表
@@ -130,7 +270,12 @@ impl LLMProviderManager {
 
         if let Ok(content) = std::fs::read_to_string(&self.config_path) {
             if let Ok(config) = serde_json::from_str::<ProviderConfigFile>(&content) {
-                self.providers = config.providers.unwrap_or_default();
+                let mut providers = config.providers.unwrap_or_default();
+                // 迁移旧版格式
+                for provider in &mut providers {
+                    provider.migrate_from_legacy();
+                }
+                self.providers = providers;
                 self.ocr_config = config.ocr_config;
             }
         }
@@ -180,6 +325,14 @@ impl LLMProviderManager {
         let mut provider = provider;
         if self.providers.is_empty() {
             provider.is_default = true;
+            // 如果有模型，设第一个为默认
+            if let Some(first_model) = provider.models.first_mut() {
+                first_model.is_default = true;
+            }
+            // 如果有 API Key，设第一个为默认
+            if let Some(first_key) = provider.api_keys.first_mut() {
+                first_key.is_default = true;
+            }
         }
 
         self.providers.push(provider);
@@ -219,6 +372,130 @@ impl LLMProviderManager {
         self.save()
     }
 
+    // ─── API Key 管理 ───
+
+    /// 添加 API Key 到供应商
+    pub fn add_api_key(&mut self, provider_id: &str, api_key: ApiKeyConfig) -> Result<(), String> {
+        let provider = self.providers.iter_mut().find(|p| p.id == provider_id)
+            .ok_or_else(|| format!("供应商 '{}' 不存在", provider_id))?;
+
+        // 如果是第一个 Key，设为默认
+        if provider.api_keys.is_empty() {
+            let mut api_key = api_key;
+            api_key.is_default = true;
+            provider.api_keys.push(api_key);
+        } else {
+            provider.api_keys.push(api_key);
+        }
+
+        self.save()
+    }
+
+    /// 更新 API Key
+    pub fn update_api_key(&mut self, provider_id: &str, api_key: ApiKeyConfig) -> Result<(), String> {
+        let provider = self.providers.iter_mut().find(|p| p.id == provider_id)
+            .ok_or_else(|| format!("供应商 '{}' 不存在", provider_id))?;
+
+        let index = provider.api_keys.iter().position(|k| k.id == api_key.id)
+            .ok_or_else(|| format!("API Key '{}' 不存在", api_key.id))?;
+
+        provider.api_keys[index] = api_key;
+        self.save()
+    }
+
+    /// 删除 API Key
+    pub fn delete_api_key(&mut self, provider_id: &str, key_id: &str) -> Result<(), String> {
+        let provider = self.providers.iter_mut().find(|p| p.id == provider_id)
+            .ok_or_else(|| format!("供应商 '{}' 不存在", provider_id))?;
+
+        let index = provider.api_keys.iter().position(|k| k.id == key_id)
+            .ok_or_else(|| format!("API Key '{}' 不存在", key_id))?;
+
+        let was_default = provider.api_keys[index].is_default;
+        provider.api_keys.remove(index);
+
+        // 如果删除的是默认 Key，将第一个设为默认
+        if was_default && !provider.api_keys.is_empty() {
+            provider.api_keys[0].is_default = true;
+        }
+
+        self.save()
+    }
+
+    /// 设置默认 API Key
+    pub fn set_default_api_key(&mut self, provider_id: &str, key_id: &str) -> Result<(), String> {
+        let provider = self.providers.iter_mut().find(|p| p.id == provider_id)
+            .ok_or_else(|| format!("供应商 '{}' 不存在", provider_id))?;
+
+        for key in &mut provider.api_keys {
+            key.is_default = key.id == key_id;
+        }
+
+        self.save()
+    }
+
+    // ─── 模型管理 ───
+
+    /// 添加模型到供应商
+    pub fn add_model(&mut self, provider_id: &str, model: ModelConfig) -> Result<(), String> {
+        let provider = self.providers.iter_mut().find(|p| p.id == provider_id)
+            .ok_or_else(|| format!("供应商 '{}' 不存在", provider_id))?;
+
+        // 如果是第一个模型，设为默认
+        if provider.models.is_empty() {
+            let mut model = model;
+            model.is_default = true;
+            provider.models.push(model);
+        } else {
+            provider.models.push(model);
+        }
+
+        self.save()
+    }
+
+    /// 更新模型
+    pub fn update_model(&mut self, provider_id: &str, model: ModelConfig) -> Result<(), String> {
+        let provider = self.providers.iter_mut().find(|p| p.id == provider_id)
+            .ok_or_else(|| format!("供应商 '{}' 不存在", provider_id))?;
+
+        let index = provider.models.iter().position(|m| m.id == model.id)
+            .ok_or_else(|| format!("模型 '{}' 不存在", model.id))?;
+
+        provider.models[index] = model;
+        self.save()
+    }
+
+    /// 删除模型
+    pub fn delete_model(&mut self, provider_id: &str, model_id: &str) -> Result<(), String> {
+        let provider = self.providers.iter_mut().find(|p| p.id == provider_id)
+            .ok_or_else(|| format!("供应商 '{}' 不存在", provider_id))?;
+
+        let index = provider.models.iter().position(|m| m.id == model_id)
+            .ok_or_else(|| format!("模型 '{}' 不存在", model_id))?;
+
+        let was_default = provider.models[index].is_default;
+        provider.models.remove(index);
+
+        // 如果删除的是默认模型，将第一个设为默认
+        if was_default && !provider.models.is_empty() {
+            provider.models[0].is_default = true;
+        }
+
+        self.save()
+    }
+
+    /// 设置默认模型
+    pub fn set_default_model(&mut self, provider_id: &str, model_id: &str) -> Result<(), String> {
+        let provider = self.providers.iter_mut().find(|p| p.id == provider_id)
+            .ok_or_else(|| format!("供应商 '{}' 不存在", provider_id))?;
+
+        for model in &mut provider.models {
+            model.is_default = model.id == model_id;
+        }
+
+        self.save()
+    }
+
     // ─── OCR 配置 ───
 
     /// 获取 OCR 配置
@@ -240,9 +517,9 @@ impl LLMProviderManager {
 
     // ─── 多模态探测 ───
 
-    /// 探测供应商是否支持多模态
-    pub async fn probe_multimodal(&self, provider: &LLMProviderConfig) -> bool {
-        if provider.api_key.is_empty() {
+    /// 探测指定模型是否支持多模态
+    pub async fn probe_model_multimodal(&self, provider: &LLMProviderConfig, model_name: &str, api_key: &str) -> bool {
+        if api_key.is_empty() {
             return false;
         }
 
@@ -251,9 +528,9 @@ impl LLMProviderManager {
 
         let result = self.client
             .post(format!("{}/chat/completions", provider.base_url))
-            .header("Authorization", format!("Bearer {}", provider.api_key))
+            .header("Authorization", format!("Bearer {}", api_key))
             .json(&serde_json::json!({
-                "model": provider.model,
+                "model": model_name,
                 "messages": [{"role": "user", "content": [
                     {"type": "text", "text": "test"},
                     {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{}", test_img)}}
@@ -264,36 +541,40 @@ impl LLMProviderManager {
             .await;
 
         match result {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    true
-                } else {
-                    // 非成功状态码 → 不支持多模态
-                    // 无论是 400 Bad Request 还是其他错误，都视为不支持
-                    false
-                }
-            }
+            Ok(resp) => resp.status().is_success(),
             Err(_) => false,
         }
     }
 
-    /// 批量探测所有供应商的多模态能力
-    pub async fn probe_all(&mut self) -> Vec<(String, bool)> {
+    /// 探测供应商的默认模型是否支持多模态（旧版兼容）
+    pub async fn probe_multimodal(&self, provider: &LLMProviderConfig) -> bool {
+        let api_key = provider.get_default_key_value();
+        let model_name = provider.get_default_model_name();
+        self.probe_model_multimodal(provider, &model_name, &api_key).await
+    }
+
+    /// 批量探测所有供应商所有模型的多模态能力
+    pub async fn probe_all(&mut self) -> Vec<(String, String, bool)> {
         let mut results = Vec::new();
 
         // 克隆供应商列表以避免借用冲突
         let providers: Vec<LLMProviderConfig> = self.providers.clone();
 
         for provider in &providers {
-            let is_multimodal = self.probe_multimodal(provider).await;
-            results.push((provider.id.clone(), is_multimodal));
+            let api_key = provider.get_default_key_value();
+            for model in &provider.models {
+                let is_multimodal = self.probe_model_multimodal(provider, &model.name, &api_key).await;
+                results.push((provider.id.clone(), model.id.clone(), is_multimodal));
+            }
         }
 
-        // 更新供应商的多模态状态
-        for (id, is_multimodal) in &results {
-            if let Some(provider) = self.providers.iter_mut().find(|p| &p.id == id) {
-                provider.is_multimodal = Some(*is_multimodal);
-                provider.last_probe_at = Some(chrono::Utc::now().to_rfc3339());
+        // 更新模型的多模态状态
+        for (provider_id, model_id, is_multimodal) in &results {
+            if let Some(provider) = self.providers.iter_mut().find(|p| &p.id == provider_id) {
+                if let Some(model) = provider.models.iter_mut().find(|m| &m.id == model_id) {
+                    model.is_multimodal = Some(*is_multimodal);
+                    model.last_probe_at = Some(chrono::Utc::now().to_rfc3339());
+                }
             }
         }
 
@@ -303,20 +584,31 @@ impl LLMProviderManager {
 
     // ─── 自动选择 ───
 
-    /// 获取支持多模态的供应商（用于图像理解）
-    pub fn get_multimodal_provider(&self) -> Option<&LLMProviderConfig> {
-        // 优先返回默认供应商（如果支持多模态）
-        if let Some(default) = self.get_default_provider() {
-            if default.is_multimodal == Some(true) {
-                return Some(default);
+    /// 获取支持多模态的供应商和模型
+    pub fn get_multimodal_model(&self) -> Option<(&LLMProviderConfig, &ModelConfig)> {
+        // 优先返回默认供应商的默认模型（如果支持多模态）
+        if let Some(default_provider) = self.get_default_provider() {
+            if let Some(default_model) = default_provider.get_default_model() {
+                if default_model.is_multimodal == Some(true) {
+                    return Some((default_provider, default_model));
+                }
             }
         }
 
-        // 否则返回任意支持多模态的供应商
-        self.providers.iter().find(|p| p.is_multimodal == Some(true))
+        // 否则返回任意支持多模态的模型
+        for provider in &self.providers {
+            for model in &provider.models {
+                if model.is_multimodal == Some(true) {
+                    return Some((provider, model));
+                }
+            }
+        }
+
+        None
     }
 
     /// 获取供应商的 API 配置（用于 LLM 调用）
+    /// 返回 (api_key, base_url, model_name)
     pub fn get_provider_config(&self, id: Option<&str>) -> Option<(String, String, String)> {
         let provider = if let Some(id) = id {
             self.get_provider(id)
@@ -324,7 +616,123 @@ impl LLMProviderManager {
             self.get_default_provider()
         };
 
-        provider.map(|p| (p.api_key.clone(), p.base_url.clone(), p.model.clone()))
+        provider.map(|p| {
+            let api_key = p.get_default_key_value();
+            let model = p.get_default_model_name();
+            (api_key, p.base_url.clone(), model)
+        })
+    }
+
+    /// 自动路由：根据输入内容选择最佳模型
+    /// 返回 (api_key, base_url, model_name, provider_id, model_id)
+    pub fn auto_route(&self, has_images: bool) -> Option<(String, String, String, String, String)> {
+        if has_images {
+            // 有图片 → 优先选择多模态模型
+            if let Some((provider, model)) = self.get_multimodal_model() {
+                let api_key = provider.get_default_key_value();
+                return Some((
+                    api_key,
+                    provider.base_url.clone(),
+                    model.name.clone(),
+                    provider.id.clone(),
+                    model.id.clone(),
+                ));
+            }
+            // 没有多模态模型 → 降级到默认模型
+        }
+
+        // 默认：使用默认供应商的默认模型
+        let provider = self.get_default_provider()?;
+        let model = provider.get_default_model()?;
+        let api_key = provider.get_default_key_value();
+
+        Some((
+            api_key,
+            provider.base_url.clone(),
+            model.name.clone(),
+            provider.id.clone(),
+            model.id.clone(),
+        ))
+    }
+
+    /// 获取下一个可用的 API Key（故障切换）
+    /// 当前 Key 失败时，尝试同一供应商的其他 Key
+    pub fn get_next_api_key(&self, provider_id: &str, failed_key_id: &str) -> Option<(String, String)> {
+        let provider = self.get_provider(provider_id)?;
+
+        // 找到失败的 Key 索引
+        let failed_index = provider.api_keys.iter().position(|k| k.id == failed_key_id)?;
+
+        // 尝试下一个 Key
+        for (i, key) in provider.api_keys.iter().enumerate() {
+            if i > failed_index && !key.key.is_empty() {
+                return Some((key.id.clone(), key.key.clone()));
+            }
+        }
+
+        // 如果后面没有可用的，从头开始尝试（跳过失败的）
+        for key in &provider.api_keys {
+            if key.id != failed_key_id && !key.key.is_empty() {
+                return Some((key.id.clone(), key.key.clone()));
+            }
+        }
+
+        None
+    }
+
+    /// 获取供应商的所有 API Key（用于故障切换）
+    pub fn get_all_api_keys(&self, provider_id: &str) -> Vec<(String, String)> {
+        let provider = match self.get_provider(provider_id) {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+
+        provider.api_keys
+            .iter()
+            .filter(|k| !k.key.is_empty())
+            .map(|k| (k.id.clone(), k.key.clone()))
+            .collect()
+    }
+
+    /// 标记 API Key 为不可用（临时禁用）
+    pub fn mark_key_unavailable(&mut self, provider_id: &str, key_id: &str) {
+        // 暂时不做持久化，只在内存中标记
+        // 后续可以添加 key_status 字段到 ApiKeyConfig
+        tracing::warn!("API Key {}:{} 标记为不可用", provider_id, key_id);
+    }
+
+    /// 获取所有可用模型列表（用于前端选择器）
+    pub fn list_all_models(&self) -> Vec<AvailableModel> {
+        let mut models = Vec::new();
+
+        for provider in &self.providers {
+            let api_key = provider.get_default_key_value();
+            for model in &provider.models {
+                models.push(AvailableModel {
+                    provider_id: provider.id.clone(),
+                    provider_name: provider.name.clone(),
+                    model_id: model.id.clone(),
+                    model_name: model.name.clone(),
+                    is_default: provider.is_default && model.is_default,
+                    is_multimodal: model.is_multimodal,
+                    api_key: api_key.clone(),
+                    base_url: provider.base_url.clone(),
+                });
+            }
+        }
+
+        // 默认模型排第一
+        models.sort_by(|a, b| {
+            if a.is_default && !b.is_default {
+                std::cmp::Ordering::Less
+            } else if !a.is_default && b.is_default {
+                std::cmp::Ordering::Greater
+            } else {
+                a.provider_name.cmp(&b.provider_name).then(a.model_name.cmp(&b.model_name))
+            }
+        });
+
+        models
     }
 }
 
@@ -354,14 +762,27 @@ mod tests {
             id: "test1".to_string(),
             name: "Test Provider".to_string(),
             protocol: LLMProtocol::OpenAI,
-            api_key: "key1".to_string(),
+            api_key: String::new(),
+            model: String::new(),
             base_url: "https://api.openai.com/v1".to_string(),
-            model: "gpt-4o".to_string(),
             is_default: true,
             is_multimodal: None,
             last_probe_at: None,
             max_tokens: 4096,
             temperature: 0.3,
+            api_keys: vec![ApiKeyConfig {
+                id: "key1".to_string(),
+                name: "默认 Key".to_string(),
+                key: "sk-test".to_string(),
+                is_default: true,
+            }],
+            models: vec![ModelConfig {
+                id: "model1".to_string(),
+                name: "gpt-4o".to_string(),
+                is_default: true,
+                is_multimodal: None,
+                last_probe_at: None,
+            }],
         };
         manager.add_provider(provider).unwrap();
 
@@ -380,6 +801,43 @@ mod tests {
     }
 
     #[test]
+    fn test_legacy_migration() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().to_path_buf();
+
+        // 写入旧版格式配置
+        let legacy_config = serde_json::json!({
+            "providers": [{
+                "id": "legacy1",
+                "name": "Legacy Provider",
+                "protocol": "OpenAI",
+                "api_key": "sk-legacy",
+                "base_url": "https://api.openai.com/v1",
+                "model": "gpt-4",
+                "is_default": true,
+                "is_multimodal": false
+            }]
+        });
+
+        let config_path = data_dir.join("llm_providers.json");
+        std::fs::write(&config_path, serde_json::to_string_pretty(&legacy_config).unwrap()).unwrap();
+
+        // 加载并验证迁移
+        let manager = LLMProviderManager::new(&data_dir);
+        let provider = manager.get_provider("legacy1").unwrap();
+
+        // 应该已迁移到新版格式
+        assert_eq!(provider.api_keys.len(), 1);
+        assert_eq!(provider.api_keys[0].key, "sk-legacy");
+        assert_eq!(provider.models.len(), 1);
+        assert_eq!(provider.models[0].name, "gpt-4");
+        assert_eq!(provider.models[0].is_multimodal, Some(false));
+        // 旧版字段应已清空
+        assert!(provider.api_key.is_empty());
+        assert!(provider.model.is_empty());
+    }
+
+    #[test]
     fn test_multimodal_selection() {
         let temp_dir = tempfile::tempdir().unwrap();
         let data_dir = temp_dir.path().to_path_buf();
@@ -390,32 +848,59 @@ mod tests {
             id: "text-only".to_string(),
             name: "Text Only".to_string(),
             protocol: LLMProtocol::OpenAI,
-            api_key: "key1".to_string(),
+            api_key: String::new(),
+            model: String::new(),
             base_url: "https://api.openai.com/v1".to_string(),
-            model: "gpt-4".to_string(),
             is_default: true,
-            is_multimodal: Some(false),
+            is_multimodal: None,
             last_probe_at: None,
             max_tokens: 4096,
             temperature: 0.3,
+            api_keys: vec![ApiKeyConfig {
+                id: "key1".to_string(),
+                name: "Key".to_string(),
+                key: "sk-key1".to_string(),
+                is_default: true,
+            }],
+            models: vec![ModelConfig {
+                id: "model1".to_string(),
+                name: "gpt-4".to_string(),
+                is_default: true,
+                is_multimodal: Some(false),
+                last_probe_at: None,
+            }],
         }).unwrap();
 
         manager.add_provider(LLMProviderConfig {
             id: "multimodal".to_string(),
             name: "Multimodal".to_string(),
             protocol: LLMProtocol::OpenAI,
-            api_key: "key2".to_string(),
+            api_key: String::new(),
+            model: String::new(),
             base_url: "https://api.openai.com/v1".to_string(),
-            model: "gpt-4o".to_string(),
             is_default: false,
-            is_multimodal: Some(true),
+            is_multimodal: None,
             last_probe_at: None,
             max_tokens: 4096,
             temperature: 0.3,
+            api_keys: vec![ApiKeyConfig {
+                id: "key2".to_string(),
+                name: "Key".to_string(),
+                key: "sk-key2".to_string(),
+                is_default: true,
+            }],
+            models: vec![ModelConfig {
+                id: "model2".to_string(),
+                name: "gpt-4o".to_string(),
+                is_default: true,
+                is_multimodal: Some(true),
+                last_probe_at: None,
+            }],
         }).unwrap();
 
         // 自动选择应返回多模态供应商
-        let selected = manager.get_multimodal_provider().unwrap();
-        assert_eq!(selected.id, "multimodal");
+        let (provider, model) = manager.get_multimodal_model().unwrap();
+        assert_eq!(provider.id, "multimodal");
+        assert_eq!(model.name, "gpt-4o");
     }
 }
