@@ -108,19 +108,34 @@ function extractSourcesFromToolResult(toolName: string, result: string): RAGSour
   if (!name.includes("searchknowledge") && !name.includes("hybridsearch") && !name.includes("knowledge")) {
     return undefined;
   }
-  try {
-    const parsed = JSON.parse(result);
-    const items = Array.isArray(parsed) ? parsed : (parsed?.results ?? parsed?.items ?? []);
-    if (!Array.isArray(items) || items.length === 0) return undefined;
-    return items.slice(0, 8).map((item: Record<string, unknown>) => ({
-      title: String(item.title ?? item.source ?? "未知来源"),
-      section_path: item.section_path ? String(item.section_path) : undefined,
-      content_snippet: item.content ? String(item.content).slice(0, 200) : undefined,
-      score: typeof item.score === "number" ? item.score : 0,
-    }));
-  } catch {
-    return undefined;
+  
+  const sources: RAGSource[] = [];
+  
+  // 解析格式: 【1】title (相关度: 0.xxx, 来源: xxx)\ncontent
+  const regex = /【\d+】(.+?)\s*\(相关度:\s*([\d.]+),\s*来源:\s*(.+?)\)\n([\s\S]*?)(?=【\d+】|$)/g;
+  let match;
+  
+  while ((match = regex.exec(result)) !== null) {
+    sources.push({
+      title: match[1].trim(),
+      section_path: match[3].trim(),
+      content_snippet: match[4].trim().slice(0, 200),
+      score: parseFloat(match[2]) || 0,
+    });
   }
+  
+  // 如果上面的格式没匹配，尝试简单的格式
+  if (sources.length === 0) {
+    const simpleRegex = /【\d+】(.+?)\s*\(相关度:\s*([\d.]+)\)/g;
+    while ((match = simpleRegex.exec(result)) !== null) {
+      sources.push({
+        title: match[1].trim(),
+        score: parseFloat(match[2]) || 0,
+      });
+    }
+  }
+  
+  return sources.length > 0 ? sources.slice(0, 8) : undefined;
 }
 
 /** Build conversation history for multi-turn agent context. */
