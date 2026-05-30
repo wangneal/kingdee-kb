@@ -330,8 +330,8 @@ pub async fn check_image_deps(state: State<'_, AppState>) -> Result<ImageDepsSta
     Ok(ImageDepsStatus {
         ocr_configured: processor.has_ocr(),
         vision_configured: processor.has_vision(),
-        ocr_provider: None, // TODO: 从配置中获取
-        vision_provider: None, // TODO: 从配置中获取
+        ocr_provider: processor.get_ocr_provider(),
+        vision_provider: processor.get_vision_provider(),
     })
 }
 

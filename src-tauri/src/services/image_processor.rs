@@ -133,6 +133,25 @@ impl ImageProcessor {
         self.vision_config.is_some()
     }
 
+    /// 获取 OCR 提供商名称
+    pub fn get_ocr_provider(&self) -> Option<String> {
+        self.ocr_config.as_ref().map(|c| match c.provider {
+            OcrProvider::Baidu => "baidu".to_string(),
+            OcrProvider::Tencent => "tencent".to_string(),
+            OcrProvider::Tesseract => "tesseract".to_string(),
+        })
+    }
+
+    /// 获取多模态 LLM 提供商名称
+    pub fn get_vision_provider(&self) -> Option<String> {
+        self.vision_config.as_ref().map(|c| match c.provider {
+            VisionProvider::Gpt4v => "gpt4v".to_string(),
+            VisionProvider::QwenVl => "qwen_vl".to_string(),
+            VisionProvider::Glm4v => "glm4v".to_string(),
+            VisionProvider::Claude => "claude".to_string(),
+        })
+    }
+
     /// 处理图像
     pub async fn process_image(&self, path: &str) -> Result<ImageContent, ImageError> {
         let start = std::time::Instant::now();
