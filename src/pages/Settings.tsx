@@ -154,9 +154,8 @@ export default function Settings() {
   // Load config, stats; poll model status (auto-load may still be async in progress)
   useEffect(() => {
     let cancelled = false;
-    let retries = 0;
-    const MAX_RETRIES = 60; // up to 60s wait for async model auto-load
 
+    // 立即加载配置，不等待模型
     Promise.all([
       getLLMConfig().catch(() => DEFAULT_CONFIG),
       isLLMConfigured().catch(() => false),
@@ -194,24 +193,25 @@ export default function Settings() {
       } catch { /* ignore */ }
     });
 
-    // Poll model status until ready or timeout
+    // 立即停止加载状态，不等待模型
+    setLoading(false);
+
+    // 异步轮询模型状态（不阻塞页面）
+    let retries = 0;
+    const MAX_RETRIES = 30;
     const pollModelStatus = async () => {
       if (cancelled) return;
       try {
         const status = await getModelStatus();
         if (status) {
           setModelReady(true);
-          setLoading(false);
           return;
         }
       } catch { /* ignore polling errors */ }
       retries++;
-      if (retries >= MAX_RETRIES) {
-        setModelReady(false);
-        setLoading(false);
-        return;
+      if (retries < MAX_RETRIES && !cancelled) {
+        setTimeout(pollModelStatus, 2000);
       }
-      setTimeout(pollModelStatus, 1000);
     };
     pollModelStatus();
 
