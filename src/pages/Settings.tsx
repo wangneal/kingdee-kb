@@ -145,6 +145,12 @@ export default function Settings() {
   const [asrSaving, setAsrSaving] = useState(false);
   const [asrSaveMsg, setAsrSaveMsg] = useState<string | null>(null);
 
+  // kdclub API Key state
+  const [kdclubToken, setKdclubToken] = useState("");
+  const [showKdclubToken, setShowKdclubToken] = useState(false);
+  const [kdclubSaving, setKdclubSaving] = useState(false);
+  const [kdclubSaveMsg, setKdclubSaveMsg] = useState<string | null>(null);
+
   // Load config, stats; poll model status (auto-load may still be async in progress)
   useEffect(() => {
     let cancelled = false;
@@ -178,6 +184,14 @@ export default function Settings() {
           setEmbeddingProviderConfig({ ...DEFAULT_EMBEDDING_PROVIDER_CONFIG, ...parsed });
         }
       } catch { /* ignore parse errors */ }
+
+      // Load kdclub token from localStorage
+      try {
+        const kdclubStored = localStorage.getItem("kdclub_pat_token");
+        if (kdclubStored) {
+          setKdclubToken(kdclubStored);
+        }
+      } catch { /* ignore */ }
     });
 
     // Poll model status until ready or timeout
@@ -1166,9 +1180,294 @@ export default function Settings() {
         </div>
       </section>
 
+      {/* kdclub API Key Card */}
+      <section className="mb-6 rounded-xl border border-neutral-200 bg-white">
+        <div className="border-b border-neutral-100 px-5 py-3">
+          <h2 className="text-sm font-semibold text-neutral-700">
+            金蝶云社区 API
+          </h2>
+          <p className="mt-0.5 text-xs text-neutral-400">
+            配置金蝶云社区 PAT Token，用于产品智能问答功能
+          </p>
+        </div>
+
+        <div className="space-y-4 p-5">
+          <div>
+            <div className="mb-1.5 flex items-center gap-2">
+              <Key className="h-4 w-4 text-neutral-400" />
+              <span className="text-sm font-medium text-neutral-700">PAT Token</span>
+            </div>
+            <div className="relative flex items-center">
+              <input
+                type={showKdclubToken ? "text" : "password"}
+                value={kdclubToken}
+                onChange={(e) => setKdclubToken(e.target.value)}
+                placeholder="kdt_xxxxxxxx..."
+                className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 pr-10 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+              />
+              <button
+                type="button"
+                onClick={() => setShowKdclubToken((v) => !v)}
+                className="absolute right-2 text-neutral-400 hover:text-neutral-600 transition-colors"
+                tabIndex={-1}
+                aria-label={showKdclubToken ? "隐藏 Token" : "显示 Token"}
+              >
+                {showKdclubToken ? (
+                  <EyeOff className="h-4 w-4" />
+                ) : (
+                  <Eye className="h-4 w-4" />
+                )}
+              </button>
+            </div>
+            <p className="mt-1.5 text-[10px] text-neutral-400">
+              在金蝶云社区 → 个人设置 → 访问令牌 获取。格式如 <code className="bg-neutral-100 px-1 rounded">kdt_xxxxxxxx...</code>
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={async () => {
+                setKdclubSaving(true);
+                setKdclubSaveMsg(null);
+                try {
+                  // Save to localStorage (not to file for security)
+                  if (kdclubToken) {
+                    localStorage.setItem("kdclub_pat_token", kdclubToken);
+                  } else {
+                    localStorage.removeItem("kdclub_pat_token");
+                  }
+                  setKdclubSaveMsg("配置已保存");
+                  setTimeout(() => setKdclubSaveMsg(null), 3000);
+                } catch (err) {
+                  setKdclubSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+                }
+                setKdclubSaving(false);
+              }}
+              disabled={kdclubSaving}
+              className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
+            >
+              {kdclubSaving ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              保存配置
+            </button>
+            {kdclubSaveMsg && (
+              <span className="text-xs text-neutral-500">{kdclubSaveMsg}</span>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* Image Processing Card */}
+      <ImageProcessingCard />
+
       {/* Database Backup Card */}
       <DatabaseBackupCard />
     </div>
+  );
+}
+
+// ── Image Processing Card ──────────────────────────────────────────────
+
+function ImageProcessingCard() {
+  const [ocrProvider, setOcrProvider] = useState<string>("baidu");
+  const [ocrApiKey, setOcrApiKey] = useState("");
+  const [ocrSecretKey, setOcrSecretKey] = useState("");
+  const [visionProvider, setVisionProvider] = useState<string>("gpt4v");
+  const [visionApiKey, setVisionApiKey] = useState("");
+  const [visionBaseUrl, setVisionBaseUrl] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  const [showOcrKey, setShowOcrKey] = useState(false);
+  const [showVisionKey, setShowVisionKey] = useState(false);
+
+  // Load config from localStorage
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("image_processing_config");
+      if (stored) {
+        const config = JSON.parse(stored);
+        setOcrProvider(config.ocr_provider || "baidu");
+        setOcrApiKey(config.ocr_api_key || "");
+        setOcrSecretKey(config.ocr_secret_key || "");
+        setVisionProvider(config.vision_provider || "gpt4v");
+        setVisionApiKey(config.vision_api_key || "");
+        setVisionBaseUrl(config.vision_base_url || "");
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    setSaving(true);
+    setSaveMsg(null);
+    try {
+      const config = {
+        ocr_provider: ocrProvider,
+        ocr_api_key: ocrApiKey,
+        ocr_secret_key: ocrSecretKey,
+        vision_provider: visionProvider,
+        vision_api_key: visionApiKey,
+        vision_base_url: visionBaseUrl,
+      };
+      localStorage.setItem("image_processing_config", JSON.stringify(config));
+      setSaveMsg("配置已保存");
+      setTimeout(() => setSaveMsg(null), 3000);
+    } catch (err) {
+      setSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+    setSaving(false);
+  }, [ocrProvider, ocrApiKey, ocrSecretKey, visionProvider, visionApiKey, visionBaseUrl]);
+
+  return (
+    <section className="mb-6 rounded-xl border border-neutral-200 bg-white">
+      <div className="border-b border-neutral-100 px-5 py-3">
+        <h2 className="text-sm font-semibold text-neutral-700">图像处理配置</h2>
+        <p className="mt-0.5 text-xs text-neutral-400">
+          配置 OCR 和多模态 LLM API，用于理解蓝图、操作手册中的图片
+        </p>
+      </div>
+
+      <div className="space-y-6 p-5">
+        {/* OCR 配置 */}
+        <div>
+          <h3 className="mb-3 text-sm font-medium text-neutral-700">OCR 文字识别</h3>
+          
+          <div className="space-y-3">
+            <div>
+              <label className="mb-1.5 block text-xs text-neutral-500">OCR 服务商</label>
+              <select
+                value={ocrProvider}
+                onChange={(e) => setOcrProvider(e.target.value)}
+                className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm"
+              >
+                <option value="baidu">百度 OCR（推荐，中文最强）</option>
+                <option value="tencent">腾讯 OCR</option>
+                <option value="tesseract">本地 Tesseract（需安装）</option>
+              </select>
+            </div>
+
+            {ocrProvider !== "tesseract" && (
+              <>
+                <div>
+                  <label className="mb-1.5 block text-xs text-neutral-500">API Key</label>
+                  <div className="relative">
+                    <input
+                      type={showOcrKey ? "text" : "password"}
+                      value={ocrApiKey}
+                      onChange={(e) => setOcrApiKey(e.target.value)}
+                      placeholder="输入 API Key"
+                      className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 pr-10 text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowOcrKey((v) => !v)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
+                    >
+                      {showOcrKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                {ocrProvider === "baidu" && (
+                  <div>
+                    <label className="mb-1.5 block text-xs text-neutral-500">Secret Key</label>
+                    <input
+                      type="password"
+                      value={ocrSecretKey}
+                      onChange={(e) => setOcrSecretKey(e.target.value)}
+                      placeholder="输入 Secret Key"
+                      className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm"
+                    />
+                  </div>
+                )}
+              </>
+            )}
+
+            {ocrProvider === "tesseract" && (
+              <p className="text-xs text-neutral-400">
+                需要先安装 Tesseract OCR：https://github.com/UB-Mannheim/tesseract/wiki
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* 多模态 LLM 配置 */}
+        <div>
+          <h3 className="mb-3 text-sm font-medium text-neutral-700">多模态 LLM（图表理解）</h3>
+          
+          <div className="space-y-3">
+            <div>
+              <label className="mb-1.5 block text-xs text-neutral-500">LLM 服务商</label>
+              <select
+                value={visionProvider}
+                onChange={(e) => setVisionProvider(e.target.value)}
+                className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm"
+              >
+                <option value="gpt4v">OpenAI GPT-4V（推荐，图表理解最强）</option>
+                <option value="qwen_vl">通义千问 VL（中文优秀）</option>
+                <option value="glm4v">智谱 GLM-4V</option>
+                <option value="claude">Claude Vision</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs text-neutral-500">API Key</label>
+              <div className="relative">
+                <input
+                  type={showVisionKey ? "text" : "password"}
+                  value={visionApiKey}
+                  onChange={(e) => setVisionApiKey(e.target.value)}
+                  placeholder="输入 API Key"
+                  className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 pr-10 text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowVisionKey((v) => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
+                >
+                  {showVisionKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs text-neutral-500">
+                自定义 Base URL（可选）
+              </label>
+              <input
+                type="text"
+                value={visionBaseUrl}
+                onChange={(e) => setVisionBaseUrl(e.target.value)}
+                placeholder="https://api.openai.com/v1"
+                className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm"
+              />
+              <p className="mt-1 text-[10px] text-neutral-400">
+                留空使用默认地址。使用代理或自部署服务时可自定义。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* 保存按钮 */}
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving}
+            className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
+          >
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            保存配置
+          </button>
+          {saveMsg && (
+            <span className="text-xs text-neutral-500">{saveMsg}</span>
+          )}
+        </div>
+      </div>
+    </section>
   );
 }
 

@@ -26,7 +26,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["time", "sync"] }
+tokio = { version = "1", features = ["time", "sync", "process", "macros"] }
 dirs = "6"
 tauri-plugin-keyring-store = "0.2"
 keyring = "3"
@@ -58,6 +58,7 @@ umya-spreadsheet = "2"
 serde_yaml = "0.9"
 pdf-extract = "0.7"
 calamine = "0.26"
+image = "0.25"
 
 # Phase 12: Whisper Voice Recognition
 whisper-rs = { version = "0.16", features = [] }
@@ -89,3 +90,4 @@ rig-core = "0.37"
 thiserror = "2"
 futures = "0.3.32"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

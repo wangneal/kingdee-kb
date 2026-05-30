@@ -8,14 +8,24 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::services::skill_types::{Skill, SkillCategory, SkillMetadata, SkillPhase};
+use crate::services::skill_loader::SkillLoader;
+use crate::services::skill_trigger::{SkillTriggerEngine, SkillMatch, TriggerContext};
+use crate::services::prompt_assembler::PromptAssembler;
+use crate::services::skill_types::{
+    Skill, SkillCategory, SkillFile, SkillFull, SkillMetadata, SkillPhase, SharedResource,
+    parse_skill_md,
+};
 
-/// 技能管理器 — 扫描、加载、缓存技能
+/// 技能管理器 — 扫描、加载、缓存、触发匹配
 pub struct SkillManager {
     /// 按 name 索引的技能
     skills: HashMap<String, Skill>,
     /// 技能目录根路径
     skills_dir: PathBuf,
+    /// 触发引擎（懒加载）
+    trigger_engine: Option<SkillTriggerEngine>,
+    /// 提示组装器
+    prompt_assembler: PromptAssembler,
 }
 
 impl SkillManager {
@@ -24,8 +34,11 @@ impl SkillManager {
         let mut manager = Self {
             skills: HashMap::new(),
             skills_dir,
+            trigger_engine: None,
+            prompt_assembler: PromptAssembler::new(128000), // 默认 128K 上下文窗口
         };
         manager.scan();
+        manager.init_trigger_engine();
         manager
     }
 
@@ -67,6 +80,9 @@ impl SkillManager {
         }
 
         println!("Loaded {} skills", self.skills.len());
+
+        // 重建触发引擎索引
+        self.init_trigger_engine();
     }
 
     /// 从技能目录加载单个技能
@@ -77,7 +93,7 @@ impl SkillManager {
         }
 
         let content = std::fs::read_to_string(&skill_md).ok()?;
-        let (metadata, body) = Self::parse_skill_md(&content);
+        let (metadata, body) = parse_skill_md(&content);
 
         let name = dir
             .file_name()
@@ -95,130 +111,6 @@ impl SkillManager {
             scripts: Self::list_scripts(dir),
             references: Self::list_references(dir),
         })
-    }
-
-    /// 解析 SKILL.md 的 YAML frontmatter 和 Markdown 正文
-    fn parse_skill_md(content: &str) -> (SkillMetadata, String) {
-        let mut metadata = SkillMetadata::default();
-        let body;
-
-        if let Some(rest) = content.strip_prefix("---") {
-            if let Some((frontmatter, rest_body)) = rest.split_once("---") {
-                metadata = Self::parse_yaml_frontmatter(frontmatter);
-                body = rest_body.trim().to_string();
-            } else {
-                body = content.to_string();
-            }
-        } else {
-            body = content.to_string();
-        }
-
-        (metadata, body)
-    }
-
-    /// 简单的 YAML frontmatter 解析（无需引入 serde_yaml 依赖）
-    fn parse_yaml_frontmatter(frontmatter: &str) -> SkillMetadata {
-        let mut meta = SkillMetadata::default();
-        let mut in_description = false;
-        let mut description_lines: Vec<String> = Vec::new();
-
-        for line in frontmatter.lines() {
-            let trimmed = line.trim();
-
-            if in_description {
-                // 描述是多行的，检测下一个 key: value 模式
-                if trimmed.contains(':')
-                    && !trimmed.starts_with(' ')
-                    && !trimmed.starts_with('\t')
-                    && !trimmed.starts_with('-')
-                    && !trimmed.starts_with('>')
-                    && !trimmed.starts_with('|')
-                {
-                    // 结束描述收集
-                    meta.description = Some(description_lines.join(" ").trim().to_string());
-                    description_lines.clear();
-                    in_description = false;
-                } else {
-                    description_lines.push(trimmed.to_string());
-                    continue;
-                }
-            }
-
-            if let Some((key, value)) = trimmed.split_once(':') {
-                let key = key.trim().to_lowercase();
-                let value = value.trim().trim_matches('"').trim_matches('\'');
-
-                match key.as_str() {
-                    "name" => {
-                        meta.name = Some(value.to_string());
-                    }
-                    "description" => {
-                        if value.starts_with('|') {
-                            // 多行描述开始
-                            in_description = true;
-                            // 如果 | 后面还有内容
-                            let rest = value[1..].trim();
-                            if !rest.is_empty() {
-                                description_lines.push(rest.to_string());
-                                #[test]
-                                fn debug_parse_kickoff() {
-                                    let content =
-                                        std::fs::read_to_string("../skills/kickoff-pack/SKILL.md")
-                                            .unwrap();
-                                    let (meta, _body) = SkillManager::parse_skill_md(&content);
-                                    eprintln!("name: {:?}", meta.name);
-                                    eprintln!("desc: {:?}", meta.description);
-                                    eprintln!("category: {:?}", meta.category);
-                                    eprintln!("version: {:?}", meta.version);
-                                    assert!(meta.description.unwrap().contains("启动会PPT"));
-                                    assert!(matches!(meta.category, SkillCategory::Stage));
-                                }
-                            }
-                        } else if value == ">" {
-                            in_description = true;
-                        } else {
-                            meta.description = Some(value.to_string());
-                        }
-                    }
-                    "version" => {
-                        meta.version = Some(value.to_string());
-                    }
-                    "category" => {
-                        meta.category = match value.to_lowercase().as_str() {
-                            "core" => SkillCategory::Core,
-                            "stage" => SkillCategory::Stage,
-                            "mgmt" | "management" => SkillCategory::Management,
-                            "tool" => SkillCategory::Tool,
-                            _ => SkillCategory::Other(value.to_string()),
-                        };
-                    }
-                    "phase" => {
-                        meta.phase = match value.to_lowercase().as_str() {
-                            "all" => SkillPhase::All,
-                            _ => SkillPhase::Specific(value.to_string()),
-                        };
-                    }
-                    "icon" => {
-                        meta.icon = Some(value.to_string());
-                    }
-                    _ => {
-                        // 忽略未知字段
-                    }
-                }
-            }
-        }
-
-        // 处理最后的描述
-        if in_description && !description_lines.is_empty() {
-            meta.description = Some(description_lines.join(" ").trim().to_string());
-        }
-
-        // 如果 name 不存在，从 description 推断
-        if meta.name.is_none() && meta.description.is_some() {
-            meta.name = Some("unknown".to_string());
-        }
-
-        meta
     }
 
     /// 列出技能目录下的脚本文件
@@ -321,102 +213,17 @@ impl SkillManager {
     }
 
     /// 根据用户输入匹配最相关的技能
+    ///
+    /// 委托给触发引擎进行统一的匹配逻辑。
     pub fn match_best(&self, user_input: &str) -> Option<Skill> {
-        let input_lower = user_input.to_lowercase();
-        let mut best_score = 0u32;
-        let mut best_match: Option<&Skill> = None;
-        let mut tied = false;
+        let engine = self.trigger_engine.as_ref()?;
 
-        let mut skills: Vec<_> = self.skills.values().collect();
-        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        let matches = engine.match_by_input(user_input);
+        let best = matches.first()?;
 
-        for skill in skills {
-            let mut score = 0u32;
-            let skill_name = skill.name.to_lowercase();
-
-            if input_lower.contains(&skill_name) {
-                score += 100;
-            }
-
-            if let Some(frontmatter_name) = skill.metadata.name.as_ref() {
-                let frontmatter_name = frontmatter_name.to_lowercase();
-                if frontmatter_name != skill_name && input_lower.contains(&frontmatter_name) {
-                    score += 80;
-                }
-            }
-
-            for alias in skill_aliases(&skill.name) {
-                if input_lower.contains(alias) {
-                    score += 70;
-                }
-            }
-
-            for alias in skill_intent_aliases(&skill.name) {
-                if input_lower.contains(alias) {
-                    score += 85 + alias.chars().count() as u32;
-                }
-            }
-
-            for part in skill
-                .name
-                .split('-')
-                .filter(|part| part.chars().count() >= 4)
-            {
-                if input_lower.contains(part) {
-                    score += 20;
-                }
-            }
-
-            if let Some(ref desc) = skill.metadata.description {
-                let desc_lower = desc.to_lowercase();
-                let has_space = input_lower.contains(' ');
-
-                if has_space {
-                    // 英文/混合查询：按空格分词匹配
-                    for word in input_lower.split_whitespace() {
-                        if word.chars().count() >= 2
-                            && !is_generic_skill_word(word)
-                            && desc_lower.contains(word)
-                        {
-                            score += 25;
-                        }
-                    }
-                } else {
-                    // 中文查询：检查描述是否包含查询或查询子串
-                    if desc_lower.contains(&input_lower) {
-                        score += 50;
-                    }
-                    // 检查 2-4 字子串（滑动窗口）
-                    for len in (2..=4).rev() {
-                        let chars: Vec<char> = input_lower.chars().collect();
-                        if chars.len() >= len {
-                            for w in chars.windows(len) {
-                                let sub: String = w.iter().collect();
-                                if !is_generic_skill_word(&sub) && desc_lower.contains(&sub) {
-                                    score += 15;
-                                }
-                            }
-                        }
-                    }
-                }
-                // 查询关键词在描述中连续出现 → 额外加分
-                let query_no_space = input_lower.replace(' ', "");
-                if query_no_space.chars().count() >= 4 && desc_lower.contains(&query_no_space) {
-                    score += 30;
-                }
-            }
-
-            if score > best_score {
-                best_score = score;
-                best_match = Some(skill);
-                tied = false;
-            } else if score == best_score && score > 0 {
-                tied = true;
-            }
-        }
-
-        if best_score >= 20 && !tied {
-            best_match.cloned()
+        // 返回分数足够高的匹配
+        if best.score >= 2.0 {
+            self.skills.get(&best.skill_id).cloned()
         } else {
             None
         }
@@ -437,9 +244,69 @@ impl SkillManager {
         map
     }
 
+    /// 获取技能目录路径
+    pub fn get_skill_dir(&self, skill_id: &str) -> PathBuf {
+        self.skills_dir.join(skill_id)
+    }
+
+    /// 获取技能根目录路径
+    pub fn get_skills_dir(&self) -> PathBuf {
+        self.skills_dir.clone()
+    }
+
     /// 公开的 SKILL.md 解析方法（供 command 层调用）
     pub fn parse_skill_md_public(content: &str) -> (SkillMetadata, String) {
-        Self::parse_skill_md(content)
+        parse_skill_md(content)
+    }
+
+    // ─── 触发引擎接口 ──────────────────────────────────────
+
+    /// 初始化触发引擎
+    fn init_trigger_engine(&mut self) {
+        let skills: Vec<Skill> = self.skills.values().cloned().collect();
+        self.trigger_engine = Some(SkillTriggerEngine::new(&skills));
+    }
+
+    /// 根据用户输入匹配最佳技能（使用触发引擎）
+    pub fn match_best_skill(&self, context: &TriggerContext) -> Option<SkillMatch> {
+        let engine = self.trigger_engine.as_ref()?;
+
+        let mut all_matches = engine.match_by_input(&context.user_input);
+
+        // 合并路径匹配
+        let path_matches = engine.match_by_paths(&context.accessed_files);
+        all_matches.extend(path_matches);
+
+        // 按分数排序
+        all_matches.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+
+        all_matches.into_iter().next()
+    }
+
+    /// 匹配多个候选技能
+    pub fn match_candidates(&self, user_input: &str, limit: usize) -> Vec<SkillMatch> {
+        let engine = match &self.trigger_engine {
+            Some(e) => e,
+            None => return Vec::new(),
+        };
+
+        let mut matches = engine.match_by_input(user_input);
+        matches.truncate(limit);
+        matches
+    }
+
+    /// 生成技能列表系统提示
+    pub fn build_skill_list_prompt(&self) -> String {
+        let skills: Vec<Skill> = self.skills.values().cloned().collect();
+        self.prompt_assembler.build_skill_list_prompt(&skills)
+    }
+
+    /// 获取技能摘要列表（用于前端展示和提示注入）
+    pub fn get_skill_prompt_entries(
+        &self,
+    ) -> Vec<crate::services::prompt_assembler::SkillPromptEntry> {
+        let skills: Vec<Skill> = self.skills.values().cloned().collect();
+        self.prompt_assembler.build_skill_summaries(&skills)
     }
 
     /// 导入技能：将 SKILL.md 内容写入 skills/<name>/SKILL.md 并重新扫描
@@ -469,6 +336,44 @@ impl SkillManager {
 
         Ok(name.to_string())
     }
+
+    /// 获取技能完整信息（含支撑文件和共享资源）
+    pub fn get_skill_full(&self, name: &str) -> Option<SkillFull> {
+        let skill_dir = self.skills_dir.join(name);
+        if !skill_dir.exists() {
+            return None;
+        }
+        let shared = self.load_shared();
+        SkillLoader::load_skill_full(&skill_dir, &shared)
+    }
+
+    /// 获取所有共享资源
+    pub fn get_shared_resources(&self) -> Vec<SharedResource> {
+        self.load_shared()
+    }
+
+    /// 读取技能目录下的指定文件（安全路径验证）
+    pub fn read_skill_file(&self, skill_name: &str, relative_path: &str) -> Result<String, String> {
+        let skill_dir = self.skills_dir.join(skill_name);
+        if !skill_dir.exists() {
+            return Err(format!("技能 '{}' 不存在", skill_name));
+        }
+        SkillLoader::read_skill_file(&skill_dir, relative_path)
+    }
+
+    /// 获取技能的支撑文件列表
+    pub fn get_skill_files(&self, name: &str) -> Vec<SkillFile> {
+        let skill_dir = self.skills_dir.join(name);
+        if !skill_dir.exists() {
+            return Vec::new();
+        }
+        SkillLoader::load_supporting_files(&skill_dir)
+    }
+
+    /// 内部：加载共享资源（懒加载，不缓存）
+    fn load_shared(&self) -> Vec<SharedResource> {
+        SkillLoader::load_shared_resources(&self.skills_dir)
+    }
 }
 
 fn is_valid_skill_name(name: &str) -> bool {
@@ -479,107 +384,10 @@ fn is_valid_skill_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-fn is_generic_skill_word(word: &str) -> bool {
-    matches!(
-        word,
-        "skill"
-            | "skills"
-            | "project"
-            | "projects"
-            | "generate"
-            | "report"
-            | "reports"
-            | "start"
-            | "when"
-            | "wants"
-            | "user"
-            | "kingdee"
-            | "implementation"
-            | "suite"
-    )
-}
-
-fn skill_intent_aliases(name: &str) -> &'static [&'static str] {
-    match name {
-        "acceptance-pack" => &["验收", "验收报告", "交付物", "项目总结", "盘点交付"],
-        "blueprint-tools" => &["蓝图", "蓝图设计", "业务流程图", "需求规格"],
-        "build-tracker" => &["构建进度", "跟踪构建", "系统配置清单", "配置清单"],
-        "change-manager" => &["变更", "变更申请", "需求变更"],
-        "claude-req-analysis" => &["需求分析", "客户需求", "梳理客户需求"],
-        "data-auditor" => &["数据质量", "数据质量检查", "数据审计"],
-        "data-cleaner" => &["数据清洗", "清洗导入数据", "去重", "格式转换"],
-        "doc-sanitizer" => &["数据脱敏", "文档敏感信息", "敏感信息清理", "文档脱敏"],
-        "doc-tools" => &["word模板", "docx", "填充word", "编辑docx", "文档工具"],
-        "drafter-diagram" => &["架构图", "拓扑图"],
-        "golive-pack" => &["上线", "上线检查", "准备上线", "切换方案", "初始化清单"],
-        "humanizer" => &["去ai味", "去味", "人性化改写", "ai痕迹"],
-        "kdclub-ai-product-qa" => &["星空", "苍穹", "多组织核算", "产品问答", "接口"],
-        "kickoff-pack" => &["启动会", "启动会ppt", "任命书", "启动材料"],
-        "kingdee-ppt" => &["ppt", "演示文稿"],
-        "openai-whisper" => &[
-            "语音转文字",
-            "录音转文本",
-            "录音转纪要",
-            "会议录音转录",
-            "转录",
-        ],
-        "project-dashboard" => &["项目看板", "项目进度可视化", "看板"],
-        "project-init" => &["项目启动", "新建项目", "新建一个项目", "初始化项目"],
-        "project-sync" => &["团队文件同步", "拉取最新文件", "项目同步"],
-        "qa-root-cause-analysis" => &["根因", "根因分析", "5-why", "5why", "质量复盘", "鱼骨图"],
-        "risk-manager" => &["风险", "项目风险", "风险评估"],
-        "skill-updater" => &["检查更新", "更新套件", "技能更新"],
-        "stakeholder-comms" => &["会议纪要", "会议记录", "录音转纪要"],
-        "survey-assistant" => &["调研", "访谈纪要", "需求矩阵", "调研报告", "调研计划"],
-        "test-manager" => &["测试用例", "缺陷", "流程测试"],
-        "ux-flow-designer" => &[
-            "审批流程图",
-            "状态图",
-            "mermaid时序图",
-            "时序图",
-            "用户流程",
-        ],
-        "weekly-report" => &["周报", "工作汇报", "这周工作汇报"],
-        _ => &[],
-    }
-}
-
-fn skill_aliases(name: &str) -> &'static [&'static str] {
-    match name {
-        "acceptance-pack" => &["验收", "验收报告", "交付验收"],
-        "blueprint-tools" => &["蓝图", "业务蓝图", "蓝图设计"],
-        "build-tracker" => &["构建跟踪", "配置清单", "实施构建"],
-        "change-manager" => &["变更", "变更管理", "变更申请"],
-        "claude-req-analysis" => &["需求分析", "需求解析"],
-        "data-auditor" => &["数据审计", "数据质量"],
-        "data-cleaner" => &["数据清洗", "清洗数据", "去重"],
-        "doc-sanitizer" => &["文档脱敏", "脱敏文档"],
-        "doc-tools" => &["文档工具", "文档处理"],
-        "drafter-diagram" => &["流程图", "架构图", "图表"],
-        "golive-pack" => &["上线", "上线切换", "上线方案"],
-        "humanizer" => &["去ai味", "去味", "润色", "ai痕迹"],
-        "kdclub-ai-product-qa" => &["金蝶社区", "产品问答", "社区问答"],
-        "kickoff-pack" => &["启动会", "项目启动", "启动材料"],
-        "kingdee-ppt" => &["ppt", "演示文稿", "汇报材料"],
-        "openai-whisper" => &["语音转写", "录音转写", "whisper"],
-        "project-dashboard" => &["项目看板", "看板"],
-        "project-init" => &["项目初始化", "初始化项目"],
-        "project-sync" => &["项目同步", "同步项目"],
-        "qa-root-cause-analysis" => &["根因分析", "5why", "鱼骨图"],
-        "risk-manager" => &["风险", "风险管理", "风险清单"],
-        "skill-updater" => &["技能更新", "skill更新"],
-        "stakeholder-comms" => &["干系人", "会议纪要", "沟通"],
-        "survey-assistant" => &["调研", "调研助手", "访谈"],
-        "test-manager" => &["测试", "测试用例", "缺陷"],
-        "ux-flow-designer" => &["交互流程", "用户流程", "ux"],
-        "weekly-report" => &["周报", "月报", "项目周报"],
-        _ => &[],
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::skill_types::{parse_skill_md, parse_yaml_frontmatter};
 
     #[test]
     fn test_parse_yaml_frontmatter_simple() {
@@ -587,7 +395,7 @@ mod tests {
 description: "Use when testing"
 version: 1.0"#;
 
-        let meta = SkillManager::parse_yaml_frontmatter(input);
+        let meta = parse_yaml_frontmatter(input);
         assert_eq!(meta.name, Some("test-skill".to_string()));
         assert_eq!(meta.description, Some("Use when testing".to_string()));
         assert_eq!(meta.version, Some("1.0".to_string()));
@@ -600,7 +408,7 @@ description: |
   This skill should be used when
   the user wants to test things"#;
 
-        let meta = SkillManager::parse_yaml_frontmatter(input);
+        let meta = parse_yaml_frontmatter(input);
         assert_eq!(meta.name, Some("test-skill".to_string()));
         assert!(meta
             .description
@@ -619,7 +427,7 @@ description: "在任何创造性工作之前..."
 
 通过自然的对话，帮助用户梳理需求。"#;
 
-        let (meta, body) = SkillManager::parse_skill_md(content);
+        let (meta, body) = parse_skill_md(content);
         assert_eq!(meta.name, Some("brainstorming".to_string()));
         assert!(meta.description.unwrap().contains("创造性"));
         assert!(body.contains("头脑风暴"));

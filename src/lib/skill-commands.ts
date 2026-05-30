@@ -4,8 +4,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Skill,
+  SkillFull,
+  SkillFile,
+  SharedResource,
   SkillStatsResponse,
   SkillScanResult,
+  SkillMatch,
+  TriggerContext,
+  SkillPromptEntry,
+  ExecutionResult,
+  TemplateManifest,
+  ImageDepsStatus,
+  ImageProcessResult,
 } from "./skill-types";
 
 /** 列出所有技能 */
@@ -41,4 +51,101 @@ export async function matchSkill(input: string): Promise<Skill | null> {
 /** 导入新技能：选择 SKILL.md 文件，复制到 skills/ 目录 */
 export async function importSkill(filePath: string): Promise<string> {
   return invoke("import_skill", { file_path: filePath });
+}
+
+/** 获取技能完整信息（含支撑文件和共享资源） */
+export async function getSkillFull(name: string): Promise<SkillFull | null> {
+  return invoke("get_skill_full", { name });
+}
+
+/** 获取所有共享资源 */
+export async function listSharedResources(): Promise<SharedResource[]> {
+  return invoke("list_shared_resources");
+}
+
+/** 读取技能支撑文件内容 */
+export async function readSkillFile(
+  skillName: string,
+  relativePath: string
+): Promise<string> {
+  return invoke("read_skill_file", { skill_name: skillName, relative_path: relativePath });
+}
+
+/** 获取技能支撑文件列表 */
+export async function listSkillFiles(name: string): Promise<SkillFile[]> {
+  return invoke("list_skill_files", { name });
+}
+
+// ─── Phase 2: 触发匹配命令 ──────────────────────────────────
+
+/** 触发技能匹配（使用完整触发上下文） */
+export async function triggerSkillMatch(context: TriggerContext): Promise<SkillMatch[]> {
+  return invoke("trigger_skill_match", { context });
+}
+
+/** 匹配多个候选技能 */
+export async function matchSkillCandidates(
+  input: string,
+  limit?: number
+): Promise<SkillMatch[]> {
+  return invoke("match_skill_candidates", { input, limit });
+}
+
+/** 生成技能列表系统提示 */
+export async function getSkillListPrompt(): Promise<string> {
+  return invoke("get_skill_list_prompt");
+}
+
+/** 获取技能摘要列表（用于前端展示和提示注入） */
+export async function getSkillPromptEntries(): Promise<SkillPromptEntry[]> {
+  return invoke("get_skill_prompt_entries");
+}
+
+// ─── Phase 3: 脚本执行与模板命令 ──────────────────────────────
+
+/** 执行技能脚本 */
+export async function executeSkillScript(
+  skillId: string,
+  scriptPath: string,
+  arguments_: string[]
+): Promise<ExecutionResult> {
+  return invoke("execute_skill_script", {
+    skill_id: skillId,
+    script_path: scriptPath,
+    arguments: arguments_,
+  });
+}
+
+/** 获取模板清单 */
+export async function getTemplateManifest(): Promise<TemplateManifest | null> {
+  return invoke("get_template_manifest");
+}
+
+/** 保存模板清单 */
+export async function saveTemplateManifest(manifest: TemplateManifest): Promise<void> {
+  return invoke("save_template_manifest", { manifest });
+}
+
+// ─── Phase 4: 图像处理命令 ──────────────────────────────────
+
+/** 检查图像处理依赖状态 */
+export async function checkImageDeps(): Promise<ImageDepsStatus> {
+  return invoke("check_image_deps");
+}
+
+/** 保存图像处理 API 配置 */
+export async function saveImageConfig(config: {
+  ocr_provider?: string;
+  ocr_api_key?: string;
+  ocr_secret_key?: string;
+  vision_provider?: string;
+  vision_api_key?: string;
+  vision_base_url?: string;
+}): Promise<void> {
+  return invoke("save_image_config", config);
+}
+
+/** 处理单张图片 */
+export async function processImage(imagePath: string): Promise<ImageProcessResult> {
+  return invoke("process_image", { image_path: imagePath });
 }

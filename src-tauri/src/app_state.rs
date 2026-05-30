@@ -10,6 +10,7 @@ use crate::services::bm25_service::BM25Service;
 use crate::services::desensitize::Desensitizer;
 use crate::services::edition_config::EditionConfig;
 use crate::services::embedding::{EmbeddingService, ModelManager};
+use crate::services::image_processor::ImageProcessor;
 use crate::services::llm_service::LLMService;
 use crate::services::metadata::MetadataStore;
 use crate::services::product_store::ProductStore;
@@ -19,12 +20,15 @@ use crate::services::research_session::ResearchSessionStore;
 use crate::services::rig_agent::RigAgent;
 use crate::services::risk_control::RiskControlStore;
 use crate::services::skill_manager::SkillManager;
+use crate::services::signal_writer::SignalWriter;
+use crate::services::template_manager::TemplateManager;
 use crate::services::vector_index::VectorIndex;
 use crate::services::whisper_service::WhisperService;
 use crate::AsrConfigStore;
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex};
 
 /// 所有 Tauri 命令共享的全局应用状态
@@ -69,6 +73,14 @@ pub struct AppState {
     pub asr_config: Arc<Mutex<AsrConfigStore>>,
     /// 技能管理器（SKILL.md 加载/搜索/匹配）
     pub skill_manager: Arc<Mutex<SkillManager>>,
+    /// 信号写入器（技能系统事件记录）
+    pub signal_writer: Arc<Mutex<SignalWriter>>,
+    /// 模板管理器（Gitee 模板下载和缓存）
+    pub template_manager: Arc<Mutex<TemplateManager>>,
+    /// 图像处理器（OCR + 多模态 LLM）
+    pub image_processor: Arc<Mutex<ImageProcessor>>,
+    /// Agent 会话取消标志（session_id → cancel flag）
+    pub cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
 impl AppState {
@@ -135,6 +147,19 @@ impl AppState {
         let audio_capture = AudioCapture::new(data_dir);
         let asr_config = AsrConfigStore::new(&db_path);
 
+        // 初始化 SignalWriter（技能系统事件记录）
+        let signals_path = data_dir.join("signals.jsonl");
+        let signal_writer = SignalWriter::new(signals_path)
+            .map_err(|e| format!("Failed to create SignalWriter: {}", e))?;
+
+        // 初始化 TemplateManager（模板下载和缓存）
+        let template_cache_dir = data_dir.join("templates");
+        let template_manager = TemplateManager::new(template_cache_dir, String::new());
+
+        // 初始化 ImageProcessor（图像处理）
+        let image_cache_dir = data_dir.join("image_cache");
+        let image_processor = ImageProcessor::new(image_cache_dir);
+
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
             model_manager: Arc::new(Mutex::new(model_manager)),
@@ -156,6 +181,10 @@ impl AppState {
             rig_agent: RigAgent,
             pending_questions,
             skill_manager: Arc::new(Mutex::new(skill_manager)),
+            signal_writer: Arc::new(Mutex::new(signal_writer)),
+            template_manager: Arc::new(Mutex::new(template_manager)),
+            image_processor: Arc::new(Mutex::new(image_processor)),
+            cancel_flags: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -249,6 +278,48 @@ impl AppState {
             audio_capture: Arc::new(Mutex::new(audio_capture)),
             asr_config: Arc::new(Mutex::new(AsrConfigStore::new(&db_path))),
             skill_manager: Arc::new(Mutex::new(SkillManager::new(data_dir.join("skills")))),
+            signal_writer: Arc::new(Mutex::new(
+                SignalWriter::new(data_dir.join("signals.jsonl"))
+                    .unwrap_or_else(|_| {
+                        // 降级到临时目录
+                        let temp = std::env::temp_dir().join("kingdee-kb-signals.jsonl");
+                        SignalWriter::new(temp).expect("Failed to create fallback SignalWriter")
+                    })
+            )),
+            template_manager: Arc::new(Mutex::new(
+                TemplateManager::new(data_dir.join("templates"), String::new())
+            )),
+            image_processor: Arc::new(Mutex::new(
+                ImageProcessor::new(data_dir.join("image_cache"))
+            )),
+            cancel_flags: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl AppState {
+    /// 注册一个取消标志，返回共享的 AtomicBool 传入 agent 循环。
+    pub fn register_cancel_flag(&self, session_id: &str) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        if let Ok(mut flags) = self.cancel_flags.lock() {
+            flags.insert(session_id.to_string(), flag.clone());
+        }
+        flag
+    }
+
+    /// 取消指定会话的 agent 流。
+    pub fn cancel_agent_session(&self, session_id: &str) {
+        if let Ok(flags) = self.cancel_flags.lock() {
+            if let Some(flag) = flags.get(session_id) {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// 移除已完成会话的取消标志（防止内存泄漏）。
+    pub fn remove_cancel_flag(&self, session_id: &str) {
+        if let Ok(mut flags) = self.cancel_flags.lock() {
+            flags.remove(session_id);
         }
     }
 }

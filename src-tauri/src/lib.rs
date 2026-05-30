@@ -6,6 +6,7 @@ mod services;
 
 use std::sync::Mutex;
 use tauri::Manager;
+use tracing_subscriber::EnvFilter;
 
 pub use commands::core::{ensure_data_dir, setup_backend, SetupState};
 pub use services::template_docx;
@@ -62,6 +63,16 @@ impl AsrConfigStore {
 }
 
 pub fn run() {
+    // 初始化 tracing 日志（可通过 RUST_LOG 环境变量控制级别）
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::from_default_env()
+                .add_directive("kingdee_kb=info".parse().unwrap()),
+        )
+        .with_target(true)
+        .with_thread_ids(true)
+        .init();
+
     tauri::Builder::default()
         .setup(|app| {
             app.manage(Mutex::new(SetupState {
@@ -230,6 +241,7 @@ pub fn run() {
             commands::risk_blueprint::analyze_fit_gap,
             commands::risk_blueprint::agent_chat,
             commands::risk_blueprint::answer_question,
+            commands::risk_blueprint::cancel_agent_stream,
             // Skill system
             commands::skill::list_skills,
             commands::skill::get_skill,
@@ -238,6 +250,23 @@ pub fn run() {
             commands::skill::rescan_skills,
             commands::skill::match_skill,
             commands::skill::import_skill,
+            commands::skill::get_skill_full,
+            commands::skill::list_shared_resources,
+            commands::skill::read_skill_file,
+            commands::skill::list_skill_files,
+            // Skill Phase 2: Trigger Matching
+            commands::skill::trigger_skill_match,
+            commands::skill::match_skill_candidates,
+            commands::skill::get_skill_list_prompt,
+            commands::skill::get_skill_prompt_entries,
+            // Skill Phase 3: Script Execution & Templates
+            commands::skill::execute_skill_script,
+            commands::skill::get_template_manifest,
+            commands::skill::save_template_manifest,
+            // Skill Phase 4: Image Processing
+            commands::skill::check_image_deps,
+            commands::skill::save_image_config,
+            commands::skill::process_image,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
