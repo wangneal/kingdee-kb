@@ -16,6 +16,9 @@ import type {
   TemplateManifest,
   ImageDepsStatus,
   ImageProcessResult,
+  LLMProviderConfig,
+  OcrProviderConfig,
+  ProviderProbeResult,
 } from "./skill-types";
 
 /** 列出所有技能 */
@@ -153,4 +156,76 @@ export async function saveImageConfig(config: {
 /** 处理单张图片 */
 export async function processImage(imagePath: string): Promise<ImageProcessResult> {
   return invoke("process_image", { image_path: imagePath });
+}
+
+// ─── LLM 供应商管理命令 ──────────────────────────────────
+
+/** 获取所有 LLM 供应商 */
+export async function listLLMProviders(): Promise<LLMProviderConfig[]> {
+  return invoke("list_llm_providers");
+}
+
+/** 添加 LLM 供应商 */
+export async function addLLMProvider(provider: {
+  id: string;
+  name: string;
+  protocol: string;
+  api_key: string;
+  base_url: string;
+  model: string;
+}): Promise<void> {
+  return invoke("add_llm_provider", provider);
+}
+
+/** 更新 LLM 供应商 */
+export async function updateLLMProvider(provider: {
+  id: string;
+  name: string;
+  protocol: string;
+  api_key: string;
+  base_url: string;
+  model: string;
+}): Promise<void> {
+  return invoke("update_llm_provider", provider);
+}
+
+/** 删除 LLM 供应商 */
+export async function deleteLLMProvider(id: string): Promise<void> {
+  return invoke("delete_llm_provider", { id });
+}
+
+/** 设置默认 LLM 供应商 */
+export async function setDefaultLLMProvider(id: string): Promise<void> {
+  return invoke("set_default_llm_provider", { id });
+}
+
+/** 探测单个供应商的多模态能力 */
+export async function probeProviderMultimodal(id: string): Promise<boolean> {
+  return invoke("probe_provider_multimodal", { id });
+}
+
+/** 批量探测所有供应商的多模态能力 */
+export async function probeAllProviders(): Promise<ProviderProbeResult[]> {
+  return invoke("probe_all_providers");
+}
+
+/** 获取 OCR 配置 */
+export async function getOcrConfig(): Promise<OcrProviderConfig | null> {
+  return invoke("get_ocr_config");
+}
+
+/** 保存 OCR 配置 */
+export async function saveOcrConfig(config: {
+  id: string;
+  name: string;
+  provider: string;
+  api_key: string;
+  secret_key?: string;
+}): Promise<void> {
+  return invoke("save_ocr_config", config);
+}
+
+/** 清除 OCR 配置 */
+export async function clearOcrConfig(): Promise<void> {
+  return invoke("clear_ocr_config");
 }

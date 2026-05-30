@@ -2,6 +2,7 @@ pub mod core;
 pub mod document;
 pub mod embedding;
 pub mod ingestion;
+pub mod llm_provider;
 pub mod media;
 pub mod product;
 pub mod research;

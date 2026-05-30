@@ -11,6 +11,7 @@ use crate::services::desensitize::Desensitizer;
 use crate::services::edition_config::EditionConfig;
 use crate::services::embedding::{EmbeddingService, ModelManager};
 use crate::services::image_processor::ImageProcessor;
+use crate::services::llm_providers::LLMProviderManager;
 use crate::services::llm_service::LLMService;
 use crate::services::metadata::MetadataStore;
 use crate::services::product_store::ProductStore;
@@ -79,6 +80,8 @@ pub struct AppState {
     pub template_manager: Arc<Mutex<TemplateManager>>,
     /// 图像处理器（OCR + 多模态 LLM）
     pub image_processor: Arc<Mutex<ImageProcessor>>,
+    /// LLM 供应商管理器
+    pub llm_providers: Arc<Mutex<LLMProviderManager>>,
     /// Agent 会话取消标志（session_id → cancel flag）
     pub cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
@@ -178,6 +181,9 @@ impl AppState {
             llm_config.2,
         );
 
+        // 初始化 LLM 供应商管理器
+        let llm_providers = LLMProviderManager::new(&data_dir.to_path_buf());
+
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
             model_manager: Arc::new(Mutex::new(model_manager)),
@@ -202,6 +208,7 @@ impl AppState {
             signal_writer: Arc::new(Mutex::new(signal_writer)),
             template_manager: Arc::new(Mutex::new(template_manager)),
             image_processor: Arc::new(Mutex::new(image_processor)),
+            llm_providers: Arc::new(Mutex::new(llm_providers)),
             cancel_flags: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -309,6 +316,9 @@ impl AppState {
             )),
             image_processor: Arc::new(Mutex::new(
                 ImageProcessor::new(String::new(), String::new(), String::new())
+            )),
+            llm_providers: Arc::new(Mutex::new(
+                LLMProviderManager::new(&data_dir.to_path_buf())
             )),
             cancel_flags: Arc::new(Mutex::new(HashMap::new())),
         }

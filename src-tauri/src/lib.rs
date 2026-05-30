@@ -267,6 +267,18 @@ pub fn run() {
             commands::skill::check_image_deps,
             commands::skill::save_image_config,
             commands::skill::process_image,
+            commands::skill::probe_llm_multimodal,
+            // LLM Provider Management
+            commands::llm_provider::list_llm_providers,
+            commands::llm_provider::add_llm_provider,
+            commands::llm_provider::update_llm_provider,
+            commands::llm_provider::delete_llm_provider,
+            commands::llm_provider::set_default_llm_provider,
+            commands::llm_provider::probe_provider_multimodal,
+            commands::llm_provider::probe_all_providers,
+            commands::llm_provider::get_ocr_config,
+            commands::llm_provider::save_ocr_config,
+            commands::llm_provider::clear_ocr_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

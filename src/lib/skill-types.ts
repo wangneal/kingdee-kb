@@ -177,17 +177,46 @@ export interface Template {
 /** 图像类型 */
 export type ImageType = "text_screenshot" | "flowchart" | "architecture" | "table" | "mixed";
 
-/** OCR 提供商 */
-export type OcrProvider = "baidu" | "tencent" | "tesseract";
+/** OCR 提供商类型 */
+export type OcrProviderType = "baidu" | "tencent";
 
-/** 多模态 LLM 提供商 */
-export type VisionProvider = "gpt4v" | "qwen_vl" | "glm4v" | "claude";
+/** LLM 协议类型 */
+export type LLMProtocol = "openai" | "anthropic" | "local";
+
+/** LLM 供应商配置 */
+export interface LLMProviderConfig {
+  id: string;
+  name: string;
+  protocol: LLMProtocol;
+  api_key: string;
+  base_url: string;
+  model: string;
+  is_default: boolean;
+  is_multimodal: boolean | null;
+  last_probe_at: string | null;
+}
+
+/** OCR 供应商配置 */
+export interface OcrProviderConfig {
+  id: string;
+  name: string;
+  provider: OcrProviderType;
+  api_key: string;
+  secret_key: string | null;
+  is_default: boolean;
+}
+
+/** 供应商探测结果 */
+export interface ProviderProbeResult {
+  id: string;
+  is_multimodal: boolean;
+}
 
 /** 图像处理依赖状态 */
 export interface ImageDepsStatus {
   ocr_configured: boolean;
   vision_configured: boolean;
-  ocr_provider: OcrProvider | null;
+  ocr_provider: string | null;
   llm_multimodal: boolean;
 }
 
