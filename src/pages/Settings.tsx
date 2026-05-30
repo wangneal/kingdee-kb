@@ -4,11 +4,8 @@ import {
   Key,
   Server,
   Cpu,
-  Thermometer,
   Hash,
   Loader2,
-  CheckCircle2,
-  XCircle,
   HardDrive,
   RefreshCw,
   Save,
@@ -24,20 +21,20 @@ import {
   Brain,
   Plug,
   Database,
+  Pencil,
+  Trash2,
+  Star,
+  Scan,
+  X,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  getLLMConfig,
-  setLLMConfig,
-  isLLMConfigured,
   getStats,
-  testLLMConnection,
   initModel,
   getModelStatus,
   getDownloadProgress,
   getEmbeddingModelConfig,
   setEmbeddingModelConfig,
-  type LLMConfig,
   type KnowledgeStats,
   type EmbeddingModelConfig,
   type EmbeddingProviderType,
@@ -52,6 +49,21 @@ exportDatabase,
 importDatabase,
 type ImportDbResult,
 } from "../lib/tauri-commands";
+import {
+  listLLMProviders,
+  addLLMProvider,
+  updateLLMProvider,
+  deleteLLMProvider,
+  setDefaultLLMProvider,
+  probeAllProviders,
+  getOcrConfig,
+  saveOcrConfig,
+} from "../lib/skill-commands";
+import type {
+  LLMProviderConfig,
+  LLMProtocol,
+  OcrProviderConfig,
+} from "../lib/skill-types";
 
 const PROVIDER_DEFAULTS: Record<string, { base_url: string; model: string }> = {
   openai: {
@@ -67,14 +79,6 @@ const PROVIDER_DEFAULTS: Record<string, { base_url: string; model: string }> = {
     model: "qwen2.5:7b",
   },
 };
-
-/** Local model presets — popular Chinese-friendly models & servers */
-const LOCAL_PRESETS: { label: string; base_url: string; model: string }[] = [
-  { label: "Ollama + Qwen2.5 7B", base_url: "http://localhost:11434/v1", model: "qwen2.5:7b" },
-  { label: "Ollama + DeepSeek-R1 7B", base_url: "http://localhost:11434/v1", model: "deepseek-r1:7b" },
-  { label: "Ollama + Yi 34B", base_url: "http://localhost:11434/v1", model: "yi:34b" },
-  { label: "llama.cpp server", base_url: "http://localhost:8080/v1", model: "qwen2.5-7b-q4" },
-];
 
 /** Embedding provider definitions — label, default base URL, and recommended models */
 const EMBEDDING_PROVIDERS: Record<EmbeddingProviderType, { label: string; baseUrl: string; models: string[] }> = {
@@ -95,29 +99,9 @@ const DEFAULT_EMBEDDING_PROVIDER_CONFIG: EmbeddingProviderConfig = {
 
 const EMBEDDING_PROVIDER_STORAGE_KEY = 'kingdeekb_embedding_provider_config';
 
-const DEFAULT_CONFIG: LLMConfig = {
-  provider: "openai",
-  api_key: "",
-  base_url: PROVIDER_DEFAULTS.openai.base_url,
-  model: PROVIDER_DEFAULTS.openai.model,
-  max_tokens: 4096,
-  temperature: 0.7,
-};
-
 export default function Settings() {
-  const [config, setConfig] = useState<LLMConfig>(DEFAULT_CONFIG);
-  const [showLocalPresets, setShowLocalPresets] = useState(false);
   const [stats, setStats] = useState<KnowledgeStats | null>(null);
-  const [configured, setConfigured] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{
-    ok: boolean;
-    msg: string;
-  } | null>(null);
-  const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [showApiKey, setShowApiKey] = useState(false);
   const [modelReady, setModelReady] = useState(false);
   const [initializing, setInitializing] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
@@ -161,21 +145,10 @@ export default function Settings() {
 
     // 立即加载配置，不等待模型
     Promise.all([
-      getLLMConfig().catch(() => DEFAULT_CONFIG),
-      isLLMConfigured().catch(() => false),
       getStats().catch(() => null),
       getEmbeddingModelConfig().catch(() => ({})),
-    ]).then(([cfg, configured, s, embeddingCfg]) => {
+    ]).then(([s, embeddingCfg]) => {
       if (cancelled) return;
-      setConfig({
-        provider: cfg.provider ?? "openai",
-        api_key: cfg.api_key,
-        base_url: cfg.base_url,
-        model: cfg.model,
-        max_tokens: cfg.max_tokens,
-        temperature: cfg.temperature,
-      });
-      setConfigured(configured);
       setStats(s);
       setEmbeddingConfig(embeddingCfg);
 
@@ -222,39 +195,6 @@ export default function Settings() {
     listSensitiveKeywords().then(setKeywords).catch(() => {});
     getAsrConfigStatus().then(setAsrConfigStatus).catch(() => {});
     return () => { cancelled = true; };
-  }, []);
-
-  const handleSave = useCallback(async () => {
-    setSaving(true);
-    setSaveMsg(null);
-    try {
-      await setLLMConfig(config);
-      const nowConfigured = await isLLMConfigured();
-      setConfigured(nowConfigured);
-      setSaveMsg("配置已保存");
-      setTimeout(() => setSaveMsg(null), 3000);
-    } catch (err) {
-      setSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setSaving(false);
-    }
-  }, [config]);
-
-  const handleTest = useCallback(async () => {
-    setTesting(true);
-    setTestResult(null);
-    try {
-      // Directly test LLM API connectivity without RAG pipeline
-      const msg = await testLLMConnection();
-      setTestResult({ ok: true, msg });
-    } catch (err) {
-      setTestResult({
-        ok: false,
-        msg: `连接失败：${err instanceof Error ? err.message : String(err)}`,
-      });
-    } finally {
-      setTesting(false);
-    }
   }, []);
 
   const handleRefreshStats = useCallback(async () => {
@@ -428,267 +368,11 @@ export default function Settings() {
       {/* AI 模型 Tab */}
       {activeTab === "ai" && (
         <div className="space-y-6">
-          {/* LLM Configuration Card */}
-          <section className="rounded-xl border border-neutral-200 bg-white">
-        <div className="border-b border-neutral-100 px-5 py-3">
-          <h2 className="text-sm font-semibold text-neutral-700">
-            LLM 配置
-          </h2>
-          <p className="mt-0.5 text-xs text-neutral-400">
-            配置大语言模型 API 连接参数
-          </p>
-        </div>
+          {/* LLM Provider List */}
+          <LLMProviderList />
 
-        <div className="space-y-4 p-5">
-          {/* Provider Selection */}
-          <FieldRow
-            icon={<ArrowLeftRight className="h-4 w-4" />}
-            label="协议"
-            hint="选择 LLM 供应商协议"
-          >
-            <select
-              value={config.provider}
-              onChange={(e) => {
-                const provider = e.target.value as "openai" | "anthropic";
-                const defaults = PROVIDER_DEFAULTS[provider];
-                setConfig((c) => ({
-                  ...c,
-                  provider,
-                  // Auto-fill defaults only if the current values still match the previous provider defaults
-                  base_url:
-                    c.base_url === PROVIDER_DEFAULTS[c.provider]?.base_url
-                      ? defaults.base_url
-                      : c.base_url,
-                  model:
-                    c.model === PROVIDER_DEFAULTS[c.provider]?.model
-                      ? defaults.model
-                      : c.model,
-                }));
-              }}
-              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-            >
-              <option value="openai">OpenAI（Chat Completions）</option>
-              <option value="anthropic">Anthropic（Messages）</option>
-              <option value="local">本地模型（Ollama / llama.cpp）</option>
-            </select>
-          </FieldRow>
-
-          {/* Local model presets */}
-          {config.provider === "local" && (
-            <FieldRow
-              icon={<Cpu className="h-4 w-4" />}
-              label="本地模型预设"
-              hint="一键配置常见中文模型"
-            >
-              <div className="space-y-1">
-                <button
-                  type="button"
-                  onClick={() => setShowLocalPresets((v) => !v)}
-                  className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-600 text-left hover:bg-neutral-50 transition-colors"
-                >
-                  {showLocalPresets ? "收起" : "选择预设..."}
-                </button>
-                {showLocalPresets && (
-                  <div className="rounded-lg border border-neutral-200 bg-white shadow-sm">
-                    {LOCAL_PRESETS.map((preset) => (
-                      <button
-                        key={preset.label}
-                        type="button"
-                        onClick={() => {
-                          setConfig((c) => ({
-                            ...c,
-                            base_url: preset.base_url,
-                            model: preset.model,
-                          }));
-                          setShowLocalPresets(false);
-                        }}
-                        className="block w-full px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-50 first:rounded-t-lg last:rounded-b-lg transition-colors"
-                      >
-                        {preset.label}
-                        <span className="ml-2 text-xs text-neutral-400">
-                          {preset.model}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </FieldRow>
-          )}
-
-          {/* API Key */}
-          <FieldRow
-            icon={<Key className="h-4 w-4" />}
-            label="API Key"
-            hint={configured ? "已配置（密钥已安全存储）" : "未配置"}
-            hintColor={configured ? "text-green-600" : "text-amber-600"}
-          >
-            <div className="relative flex items-center">
-              <input
-                type={showApiKey ? "text" : "password"}
-                value={config.api_key}
-                onChange={(e) =>
-                  setConfig((c) => ({ ...c, api_key: e.target.value }))
-                }
-                placeholder="sk-..."
-                className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 pr-10 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-              />
-              <button
-                type="button"
-                onClick={() => setShowApiKey((v) => !v)}
-                className="absolute right-2 text-neutral-400 hover:text-neutral-600 transition-colors"
-                tabIndex={-1}
-                aria-label={showApiKey ? "隐藏 API Key" : "显示 API Key"}
-              >
-                {showApiKey ? (
-                  <EyeOff className="h-4 w-4" />
-                ) : (
-                  <Eye className="h-4 w-4" />
-                )}
-              </button>
-            </div>
-          </FieldRow>
-
-          {/* Base URL */}
-          <FieldRow
-            icon={<Server className="h-4 w-4" />}
-            label="Endpoint"
-            hint="API 基础地址"
-          >
-            <input
-              type="text"
-              value={config.base_url}
-              onChange={(e) =>
-                setConfig((c) => ({ ...c, base_url: e.target.value }))
-              }
-              placeholder="https://api.openai.com/v1"
-              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-            />
-          </FieldRow>
-
-          {/* Model */}
-          <FieldRow
-            icon={<Cpu className="h-4 w-4" />}
-            label="Model"
-            hint="使用的模型名称"
-          >
-            <input
-              type="text"
-              value={config.model}
-              onChange={(e) =>
-                setConfig((c) => ({ ...c, model: e.target.value }))
-              }
-              placeholder="gpt-4o"
-              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-            />
-          </FieldRow>
-
-          {/* Temperature */}
-          <FieldRow
-            icon={<Thermometer className="h-4 w-4" />}
-            label="Temperature"
-            hint={`${config.temperature.toFixed(1)}（越低越确定）`}
-          >
-            <input
-              type="range"
-              min="0"
-              max="2"
-              step="0.1"
-              value={config.temperature}
-              onChange={(e) =>
-                setConfig((c) => ({
-                  ...c,
-                  temperature: parseFloat(e.target.value),
-                }))
-              }
-              className="w-full accent-[#1A6BD8]"
-            />
-          </FieldRow>
-
-          {/* Max Tokens */}
-          <FieldRow
-            icon={<Hash className="h-4 w-4" />}
-            label="Max Tokens"
-            hint="回答最大 token 数"
-          >
-            <input
-              type="number"
-              min="256"
-              max="128000"
-              step="256"
-              value={config.max_tokens}
-              onChange={(e) =>
-                setConfig((c) => ({
-                  ...c,
-                  max_tokens: parseInt(e.target.value, 10) || 4096,
-                }))
-              }
-              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-            />
-          </FieldRow>
-
-          {/* Action buttons */}
-          <div className="flex items-center gap-3 pt-2">
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={saving}
-              className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
-            >
-              {saving ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Save className="h-4 w-4" />
-              )}
-              保存配置
-            </button>
-
-            <button
-              type="button"
-              onClick={handleTest}
-              disabled={testing || !configured}
-              className="flex items-center gap-1.5 rounded-lg border border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
-            >
-              {testing ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="h-4 w-4" />
-              )}
-              测试连接
-            </button>
-
-            {saveMsg && (
-              <span className="text-xs text-neutral-500">{saveMsg}</span>
-            )}
-          </div>
-
-          {/* Test result */}
-          {testResult && (
-            <div
-              className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${
-                testResult.ok
-                  ? "bg-green-50 text-green-700"
-                  : "bg-red-50 text-red-700"
-              }`}
-            >
-              {testResult.ok ? (
-                <CheckCircle2 className="h-4 w-4" />
-              ) : (
-                <XCircle className="h-4 w-4" />
-              )}
-              {testResult.msg}
-            </div>
-          )}
-
-          {/* Not configured warning */}
-          {!configured && (
-            <div className="flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
-              <AlertTriangle className="h-3.5 w-3.5" />
-              未配置 API Key，AI 对话功能将不可用
-            </div>
-          )}
-        </div>
-        </section>
+          {/* OCR Configuration */}
+          <OcrConfigCard />
 
         {/* Embedding Model Card */}
         <section className="rounded-xl border border-neutral-200 bg-white">
@@ -1515,33 +1199,6 @@ function ImageProcessingCard() {
 
 // ── Helper Components ─────────────────────────────────────────────────────
 
-function FieldRow({
-  icon,
-  label,
-  hint,
-  hintColor = "text-neutral-400",
-  children,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  hint?: string;
-  hintColor?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div>
-      <div className="mb-1.5 flex items-center gap-2">
-        <span className="text-neutral-400">{icon}</span>
-        <span className="text-sm font-medium text-neutral-700">{label}</span>
-        {hint && (
-          <span className={`text-xs ${hintColor}`}>{hint}</span>
-        )}
-      </div>
-      {children}
-    </div>
-  );
-}
-
 function StatCard({
   label,
   value,
@@ -1670,6 +1327,649 @@ function DatabaseBackupCard() {
             <div className="rounded-lg border border-neutral-100 bg-neutral-50 p-2 text-center">
               <p className="text-lg font-semibold text-neutral-800">{importResult.metric_count}</p>
               <p className="text-xs text-neutral-500">健康指标</p>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ── LLM Provider List ──────────────────────────────────────────────────
+
+const PROTOCOL_LABELS: Record<LLMProtocol, string> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  local: "本地模型",
+};
+
+function LLMProviderList() {
+  const [providers, setProviders] = useState<LLMProviderConfig[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editingProvider, setEditingProvider] = useState<LLMProviderConfig | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
+
+  const loadProviders = useCallback(async () => {
+    try {
+      const list = await listLLMProviders();
+      setProviders(list);
+    } catch (err) {
+      console.error("Failed to load providers:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadProviders();
+  }, [loadProviders]);
+
+  const handleDelete = useCallback(async (id: string) => {
+    if (!confirm("确定删除此供应商？")) return;
+    try {
+      await deleteLLMProvider(id);
+      await loadProviders();
+      setActionMsg("已删除");
+      setTimeout(() => setActionMsg(null), 2000);
+    } catch (err) {
+      setActionMsg(`删除失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [loadProviders]);
+
+  const handleSetDefault = useCallback(async (id: string) => {
+    try {
+      await setDefaultLLMProvider(id);
+      await loadProviders();
+      setActionMsg("已设为默认");
+      setTimeout(() => setActionMsg(null), 2000);
+    } catch (err) {
+      setActionMsg(`设置失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [loadProviders]);
+
+  const handleProbe = useCallback(async () => {
+    setProbing(true);
+    try {
+      const results = await probeAllProviders();
+      // Update local state with probe results
+      setProviders((prev) =>
+        prev.map((p) => {
+          const result = results.find((r) => r.id === p.id);
+          return result ? { ...p, is_multimodal: result.is_multimodal } : p;
+        })
+      );
+    } catch (err) {
+      setActionMsg(`探测失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setProbing(false);
+    }
+  }, []);
+
+  const handleFormSubmit = useCallback(async (data: {
+    id?: string;
+    name: string;
+    protocol: LLMProtocol;
+    api_key: string;
+    base_url: string;
+    model: string;
+  }) => {
+    try {
+      if (data.id) {
+        await updateLLMProvider(data as { id: string; name: string; protocol: string; api_key: string; base_url: string; model: string });
+      } else {
+        await addLLMProvider({ ...data, id: crypto.randomUUID() } as { id: string; name: string; protocol: string; api_key: string; base_url: string; model: string });
+      }
+      await loadProviders();
+      setShowForm(false);
+      setEditingProvider(null);
+      setActionMsg(data.id ? "已更新" : "已添加");
+      setTimeout(() => setActionMsg(null), 2000);
+    } catch (err) {
+      setActionMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [loadProviders]);
+
+  if (loading) {
+    return (
+      <section className="rounded-xl border border-neutral-200 bg-white">
+        <div className="flex items-center justify-center p-8">
+          <Loader2 className="h-5 w-5 animate-spin text-neutral-400" />
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded-xl border border-neutral-200 bg-white">
+      <div className="border-b border-neutral-100 px-5 py-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-semibold text-neutral-700">LLM 供应商</h2>
+            <p className="mt-0.5 text-xs text-neutral-400">
+              管理大语言模型供应商配置，支持多供应商切换
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleProbe}
+              disabled={probing || providers.length === 0}
+              className="flex items-center gap-1.5 rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
+            >
+              {probing ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Scan className="h-3.5 w-3.5" />
+              )}
+              探测多模态
+            </button>
+            <button
+              type="button"
+              onClick={() => { setEditingProvider(null); setShowForm(true); }}
+              className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#1558B0] transition-colors"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              添加供应商
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="p-5">
+        {actionMsg && (
+          <div className="mb-3 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700">
+            {actionMsg}
+          </div>
+        )}
+
+        {providers.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-8 text-neutral-400">
+            <Brain className="mb-2 h-8 w-8" />
+            <p className="text-sm">暂无供应商配置</p>
+            <p className="text-xs">点击「添加供应商」开始配置</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {providers.map((provider) => (
+              <div
+                key={provider.id}
+                className={`rounded-lg border p-4 transition-colors ${
+                  provider.is_default
+                    ? "border-[#1A6BD8]/30 bg-blue-50/30"
+                    : "border-neutral-200 bg-white hover:border-neutral-300"
+                }`}
+              >
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-neutral-800">
+                        {provider.name}
+                      </span>
+                      {provider.is_default && (
+                        <span className="rounded-full bg-[#1A6BD8] px-2 py-0.5 text-[10px] font-medium text-white">
+                          默认
+                        </span>
+                      )}
+                      <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-medium text-neutral-500">
+                        {PROTOCOL_LABELS[provider.protocol] || provider.protocol}
+                      </span>
+                      {/* Multimodal indicator */}
+                      <span
+                        className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                          provider.is_multimodal === true
+                            ? "bg-green-50 text-green-700"
+                            : provider.is_multimodal === false
+                              ? "bg-red-50 text-red-600"
+                              : "bg-neutral-100 text-neutral-400"
+                        }`}
+                      >
+                        <span
+                          className={`h-1.5 w-1.5 rounded-full ${
+                            provider.is_multimodal === true
+                              ? "bg-green-500"
+                              : provider.is_multimodal === false
+                                ? "bg-red-400"
+                                : "bg-neutral-300"
+                          }`}
+                        />
+                        {provider.is_multimodal === true
+                          ? "多模态"
+                          : provider.is_multimodal === false
+                            ? "纯文本"
+                            : "未探测"}
+                      </span>
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-neutral-500">
+                      <span className="flex items-center gap-1">
+                        <Cpu className="h-3 w-3" />
+                        {provider.model}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <Server className="h-3 w-3" />
+                        {provider.base_url}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 ml-4">
+                    {!provider.is_default && (
+                      <button
+                        type="button"
+                        onClick={() => handleSetDefault(provider.id)}
+                        className="rounded-lg p-1.5 text-neutral-400 hover:bg-amber-50 hover:text-amber-600 transition-colors"
+                        title="设为默认"
+                      >
+                        <Star className="h-4 w-4" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => { setEditingProvider(provider); setShowForm(true); }}
+                      className="rounded-lg p-1.5 text-neutral-400 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+                      title="编辑"
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(provider.id)}
+                      className="rounded-lg p-1.5 text-neutral-400 hover:bg-red-50 hover:text-red-600 transition-colors"
+                      title="删除"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Provider Form Dialog */}
+      {showForm && (
+        <ProviderFormDialog
+          provider={editingProvider}
+          onSubmit={handleFormSubmit}
+          onClose={() => { setShowForm(false); setEditingProvider(null); }}
+        />
+      )}
+    </section>
+  );
+}
+
+// ── Provider Form Dialog ────────────────────────────────────────────────
+
+function ProviderFormDialog({
+  provider,
+  onSubmit,
+  onClose,
+}: {
+  provider: LLMProviderConfig | null;
+  onSubmit: (data: {
+    id?: string;
+    name: string;
+    protocol: LLMProtocol;
+    api_key: string;
+    base_url: string;
+    model: string;
+  }) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(provider?.name ?? "");
+  const [protocol, setProtocol] = useState<LLMProtocol>(provider?.protocol ?? "openai");
+  const [apiKey, setApiKey] = useState(provider?.api_key ?? "");
+  const [baseUrl, setBaseUrl] = useState(provider?.base_url ?? PROVIDER_DEFAULTS.openai.base_url);
+  const [model, setModel] = useState(provider?.model ?? PROVIDER_DEFAULTS.openai.model);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const handleProtocolChange = useCallback((newProtocol: LLMProtocol) => {
+    setProtocol(newProtocol);
+    const defaults = PROVIDER_DEFAULTS[newProtocol];
+    if (defaults) {
+      // Auto-fill if current values match old defaults
+      const oldDefaults = PROVIDER_DEFAULTS[protocol];
+      if (baseUrl === oldDefaults?.base_url || baseUrl === "") {
+        setBaseUrl(defaults.base_url);
+      }
+      if (model === oldDefaults?.model || model === "") {
+        setModel(defaults.model);
+      }
+    }
+  }, [protocol, baseUrl, model]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim() || !model.trim()) return;
+    setSaving(true);
+    try {
+      await onSubmit({
+        id: provider?.id,
+        name: name.trim(),
+        protocol,
+        api_key: apiKey,
+        base_url: baseUrl,
+        model: model.trim(),
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="w-full max-w-md rounded-xl bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b border-neutral-100 px-5 py-3">
+          <h3 className="text-sm font-semibold text-neutral-800">
+            {provider ? "编辑供应商" : "添加供应商"}
+          </h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4 p-5">
+          {/* Name */}
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-neutral-600">
+              供应商名称 <span className="text-red-400">*</span>
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="如：OpenAI GPT-4o"
+              required
+              className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+            />
+          </div>
+
+          {/* Protocol */}
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-neutral-600">
+              协议
+            </label>
+            <select
+              value={protocol}
+              onChange={(e) => handleProtocolChange(e.target.value as LLMProtocol)}
+              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+            >
+              <option value="openai">OpenAI（Chat Completions）</option>
+              <option value="anthropic">Anthropic（Messages）</option>
+              <option value="local">本地模型（Ollama / llama.cpp）</option>
+            </select>
+          </div>
+
+          {/* API Key */}
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-neutral-600">
+              API Key
+            </label>
+            <div className="relative">
+              <input
+                type={showApiKey ? "text" : "password"}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="sk-..."
+                className="w-full rounded-lg border border-neutral-200 px-3 py-2 pr-10 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey((v) => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
+                tabIndex={-1}
+              >
+                {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+
+          {/* Base URL */}
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-neutral-600">
+              Endpoint URL
+            </label>
+            <input
+              type="text"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="https://api.openai.com/v1"
+              className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+            />
+          </div>
+
+          {/* Model */}
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-neutral-600">
+              模型名称 <span className="text-red-400">*</span>
+            </label>
+            <input
+              type="text"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder="gpt-4o"
+              required
+              className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+            />
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-50 transition-colors"
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              disabled={saving || !name.trim() || !model.trim()}
+              className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              {provider ? "保存修改" : "添加"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ── OCR Config Card ─────────────────────────────────────────────────────
+
+function OcrConfigCard() {
+  const [ocrConfig, setOcrConfig] = useState<OcrProviderConfig | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [provider, setProvider] = useState<string>("baidu");
+  const [name, setName] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [secretKey, setSecretKey] = useState("");
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    getOcrConfig()
+      .then((cfg) => {
+        setOcrConfig(cfg);
+        if (cfg) {
+          setProvider(cfg.provider);
+          setName(cfg.name);
+          setApiKey(cfg.api_key);
+          setSecretKey(cfg.secret_key ?? "");
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    setSaving(true);
+    setSaveMsg(null);
+    try {
+      await saveOcrConfig({
+        id: ocrConfig?.id ?? crypto.randomUUID(),
+        name: name.trim() || `${provider === "baidu" ? "百度" : "腾讯"} OCR`,
+        provider,
+        api_key: apiKey,
+        secret_key: secretKey || undefined,
+      });
+      const updated = await getOcrConfig();
+      setOcrConfig(updated);
+      setShowForm(false);
+      setSaveMsg("OCR 配置已保存");
+      setTimeout(() => setSaveMsg(null), 3000);
+    } catch (err) {
+      setSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSaving(false);
+    }
+  }, [ocrConfig, provider, name, apiKey, secretKey]);
+
+  if (loading) {
+    return (
+      <section className="rounded-xl border border-neutral-200 bg-white">
+        <div className="flex items-center justify-center p-8">
+          <Loader2 className="h-5 w-5 animate-spin text-neutral-400" />
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded-xl border border-neutral-200 bg-white">
+      <div className="border-b border-neutral-100 px-5 py-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-semibold text-neutral-700">OCR 文字识别</h2>
+            <p className="mt-0.5 text-xs text-neutral-400">
+              配置 OCR 服务，用于图片文字提取
+            </p>
+          </div>
+          {ocrConfig && (
+            <span className="flex items-center gap-1 rounded-full bg-green-50 px-2.5 py-0.5 text-xs font-medium text-green-700">
+              <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
+              已配置
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="p-5">
+        {ocrConfig && !showForm ? (
+          <div className="space-y-3">
+            <div className="rounded-lg border border-neutral-200 p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-neutral-800">{ocrConfig.name}</p>
+                  <p className="mt-1 text-xs text-neutral-500">
+                    服务商：{ocrConfig.provider === "baidu" ? "百度 OCR" : "腾讯 OCR"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowForm(true)}
+                  className="rounded-lg p-1.5 text-neutral-400 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+                  title="编辑"
+                >
+                  <Pencil className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+            {saveMsg && (
+              <span className="text-xs text-green-600">{saveMsg}</span>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-neutral-600">OCR 服务商</label>
+              <select
+                value={provider}
+                onChange={(e) => setProvider(e.target.value)}
+                className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+              >
+                <option value="baidu">百度 OCR（推荐，中文最强）</option>
+                <option value="tencent">腾讯 OCR</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-neutral-600">名称</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder={provider === "baidu" ? "百度 OCR" : "腾讯 OCR"}
+                className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-neutral-600">API Key</label>
+              <div className="relative">
+                <input
+                  type={showApiKey ? "text" : "password"}
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="输入 API Key"
+                  className="w-full rounded-lg border border-neutral-200 px-3 py-2 pr-10 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKey((v) => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
+                  tabIndex={-1}
+                >
+                  {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+
+            {provider === "baidu" && (
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-neutral-600">Secret Key</label>
+                <input
+                  type="password"
+                  value={secretKey}
+                  onChange={(e) => setSecretKey(e.target.value)}
+                  placeholder="输入 Secret Key"
+                  className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+                />
+              </div>
+            )}
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={saving || !apiKey.trim()}
+                className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
+              >
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                保存配置
+              </button>
+              {ocrConfig && (
+                <button
+                  type="button"
+                  onClick={() => setShowForm(false)}
+                  className="rounded-lg border border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-50 transition-colors"
+                >
+                  取消
+                </button>
+              )}
+              {saveMsg && (
+                <span className="text-xs text-red-600">{saveMsg}</span>
+              )}
             </div>
           </div>
         )}

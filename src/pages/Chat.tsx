@@ -13,37 +13,22 @@ import {
   X,
   FileText,
   Image as ImageIcon,
+  StopCircle,
 } from "lucide-react";
 import {
+  useAgent,
+  DEFAULT_SLOT,
+  buildAgentHistory,
+  type AgentMessage,
+} from "../contexts/AgentContext";
+import {
   isLLMConfigured,
-  agentChat,
   extractFileText,
   ingestFile,
-  listenReActEvents,
-  answerQuestion,
   saveChatMemory,
-  type ReActEvent,
-  type ClarificationPayload,
-  type ChatMessage,
 } from "../lib/tauri-commands";
-
-interface DisplayMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  streaming?: boolean;
-  error?: boolean;
-  reactTrace?: ReActEvent[];
-  hiddenContext?: string;
-  clarification?: ClarificationPayload;
-  /** true after the user has answered this clarification question */
-  clarificationAnswered?: boolean;
-}
-
-interface ReActTrace {
-  thinking: string;
-  toolCalls: { name: string; args: string; result: string }[];
-}
+import { listLLMProviders } from "../lib/skill-commands";
+import type { LLMProviderConfig } from "../lib/skill-types";
 
 interface ChatAttachment {
   id: string;
@@ -80,18 +65,18 @@ const DOCUMENT_EXTENSIONS = new Set([
 ]);
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "bmp", "gif"]);
 
-function loadChatHistory(): DisplayMessage[] {
+function loadChatHistory(): AgentMessage[] {
   try {
     const raw = localStorage.getItem(CHAT_STORAGE_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw) as DisplayMessage[];
+    const parsed = JSON.parse(raw) as AgentMessage[];
     return parsed.filter((m) => m.id && m.role);
   } catch {
     return [];
   }
 }
 
-function saveChatHistory(messages: DisplayMessage[]) {
+function saveChatHistory(messages: AgentMessage[]) {
   try {
     const clean = messages.map((m) => ({ ...m, streaming: false }));
     const trimmed = clean.length > MAX_STORED_MESSAGES
@@ -101,34 +86,6 @@ function saveChatHistory(messages: DisplayMessage[]) {
   } catch {
     // ignore
   }
-}
-
-function buildAgentHistory(messages: DisplayMessage[]): ChatMessage[] {
-  return messages
-    .filter((m) => !m.streaming && !m.error && !m.clarification)
-    .map((m) => {
-      const hidden = m.hiddenContext ? `\n\n【上一轮工具上下文】\n${m.hiddenContext}` : "";
-      return {
-        role: m.role,
-        content: `${m.content}${hidden}`.trim(),
-      };
-    })
-    .filter((m) => m.content.length > 0)
-    .slice(-12);
-}
-
-function summarizeToolResult(toolName: string, result: string): string {
-  if (!result.trim()) return "";
-  const important = result
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) =>
-      /输出目录|沙箱目录|生成|文件|路径|output|sandbox|\.pptx|\.docx|\.xlsx|\.html|\.pdf/i.test(line)
-    )
-    .join("\n");
-  const text = important || result;
-  const clipped = text.length > 2000 ? `${text.slice(0, 2000)}\n...[truncated]` : text;
-  return `工具 ${toolName} 结果摘要:\n${clipped}`;
 }
 
 function summarizeToolArgs(args: string): string {
@@ -149,21 +106,33 @@ function summarizeToolArgs(args: string): string {
 }
 
 export default function Chat() {
-  const [messages, setMessages] = useState<DisplayMessage[]>(loadChatHistory);
+  const agent = useAgent();
+  const slot = agent.slots.get("chat") ?? DEFAULT_SLOT;
+  const { messages, loading, currentTrace } = slot;
+
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
-  const [loading, setLoading] = useState(false);
   const [attaching, setAttaching] = useState(false);
   const [llmReady, setLlmReady] = useState<boolean | null>(null);
-  const [currentTrace, setCurrentTrace] = useState<ReActTrace>({
-    thinking: "",
-    toolCalls: [],
-  });
+  const [providers, setProviders] = useState<LLMProviderConfig[]>([]);
+  const [selectedProviderId, setSelectedProviderId] = useState<string>("");
+  const [dropdownOpen, setDropdownOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const currentSessionId = useRef<string | null>(null);
-  const latestToolName = useRef<string>("");
-  const unsubRef = useRef<(() => void) | null>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Load chat history from localStorage into slot on mount
+  const didLoadRef = useRef(false);
+  useEffect(() => {
+    if (didLoadRef.current) return;
+    didLoadRef.current = true;
+    if (slot.messages.length === 0) {
+      const history = loadChatHistory();
+      if (history.length > 0) {
+        agent.updateMessages("chat", () => history);
+      }
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Check LLM on mount
   useEffect(() => {
@@ -172,131 +141,22 @@ export default function Chat() {
       .catch(() => setLlmReady(false));
   }, []);
 
-  // Subscribe to ReAct events (filtered by session)
+  // Load LLM providers on mount
   useEffect(() => {
-    let cancelled = false;
-    listenReActEvents((event) => {
-      // Check session_id in both snake_case and camelCase (Tauri v2 may convert)
-      const eventSessionId = event.session_id || event.sessionId;
-      if (eventSessionId !== currentSessionId.current) return;
-      switch (event.type) {
-        case "thinking":
-          setCurrentTrace((prev) => ({ ...prev, thinking: prev.thinking + event.content }));
-          break;
-        case "tool_call":
-          latestToolName.current = event.name;
-          setCurrentTrace((prev) => ({
-            ...prev,
-            toolCalls: [
-              ...prev.toolCalls,
-              { name: event.name, args: event.args, result: "" },
-            ],
-          }));
-          break;
-        case "tool_result":
-          setCurrentTrace((prev) => {
-            const calls = [...prev.toolCalls];
-            const last = calls[calls.length - 1];
-            if (last && !last.result) {
-              calls[calls.length - 1] = { ...last, result: event.result };
-            }
-            return { ...prev, toolCalls: calls };
-          });
-          setMessages((prev) => {
-            const lastMessage = prev[prev.length - 1];
-            if (!lastMessage || lastMessage.role !== "assistant" || !lastMessage.streaming) {
-              return prev;
-            }
-            const summary = summarizeToolResult(event.name || latestToolName.current || "tool", event.result);
-            if (!summary) return prev;
-            return [
-              ...prev.slice(0, -1),
-              {
-                ...lastMessage,
-                hiddenContext: [lastMessage.hiddenContext, summary].filter(Boolean).join("\n\n"),
-              },
-            ];
-          });
-          break;
-        case "text_delta":
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (last && last.role === "assistant" && last.streaming) {
-              return [
-                ...prev.slice(0, -1),
-                { ...last, content: last.content + event.content },
-              ];
-            }
-            return [
-              ...prev,
-              {
-                id: nextId(),
-                role: "assistant",
-                content: event.content,
-                streaming: true,
-              },
-            ];
-          });
-          break;
-        case "done":
-          setMessages((prev) => {
-            const updated = prev.map((m) =>
-              m.streaming ? { ...m, streaming: false, reactTrace: undefined } : m
-            );
-            // Save conversation to memory after chat completes (non-blocking)
-            const conversation = updated
-              .filter((m) => !m.error)
-              .map((m) => ({ role: m.role, content: m.content }));
-            saveChatMemory(conversation).catch((e) =>
-              console.warn("[Chat] Failed to save chat memory:", e)
-            );
-            return updated;
-          });
-          setCurrentTrace({ thinking: "", toolCalls: [] });
-          setLoading(false);
-          break;
-        case "clarification":
-          setMessages((prev) => {
-            const clarPayload = event.payload;
-            const last = prev[prev.length - 1];
-            const clarMsg: DisplayMessage = {
-              id: nextId(),
-              role: "assistant",
-              content: clarPayload.prompt,
-              clarification: clarPayload,
-            };
-            if (last && last.role === "assistant" && last.streaming) {
-              return [
-                ...prev.slice(0, -1),
-                { ...last, streaming: false, ...clarMsg },
-              ];
-            }
-            return [...prev, clarMsg];
-          });
-          setCurrentTrace({ thinking: "", toolCalls: [] });
-          setLoading(false);
-          break;
-        case "error":
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.streaming
-                ? { ...m, content: m.content || "请求失败：" + event.message, streaming: false, error: true }
-                : m
-            )
-          );
-          setCurrentTrace({ thinking: "", toolCalls: [] });
-          setLoading(false);
-          break;
-      }
-    }).then((unsub) => {
-      if (cancelled) { unsub(); return; }
-      unsubRef.current = unsub;
-    });
-    return () => {
-      cancelled = true;
-      currentSessionId.current = null;
-      unsubRef.current?.();
-    };
+    listLLMProviders()
+      .then((fetchedProviders) => {
+        setProviders(fetchedProviders);
+        // Pre-select default provider
+        const defaultProvider = fetchedProviders.find((p) => p.is_default);
+        if (defaultProvider) {
+          setSelectedProviderId(defaultProvider.id);
+        } else if (fetchedProviders.length > 0) {
+          setSelectedProviderId(fetchedProviders[0].id);
+        }
+      })
+      .catch((err) => {
+        console.warn("[Chat] Failed to load LLM providers:", err);
+      });
   }, []);
 
   // Auto-scroll
@@ -305,6 +165,17 @@ export default function Chat() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, currentTrace]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
@@ -320,40 +191,12 @@ export default function Chat() {
       .filter(Boolean)
       .join("\n\n");
 
-    const userMsg: DisplayMessage = { id: nextId(), role: "user", content: visibleText };
-    const assistantId = nextId();
-    const assistantMsg: DisplayMessage = {
-      id: assistantId,
-      role: "assistant",
-      content: "",
-      streaming: true,
-    };
-
-    setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setInput("");
     setAttachments([]);
-    setLoading(true);
-    setCurrentTrace({ thinking: "", toolCalls: [] });
 
-    try {
-      // Generate session ID first and set it before calling agentChat
-      // because events may arrive before agentChat returns
-      const sid = nextId();
-      currentSessionId.current = sid;
-      const history = buildAgentHistory(messages);
-      await agentChat(outboundText, sid, undefined, undefined, history);
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? { ...m, content: "请求失败：" + errorMsg, streaming: false, error: true }
-            : m
-        )
-      );
-      setLoading(false);
-    }
-  }, [input, attachments, loading, attaching, messages]);
+    const history = buildAgentHistory(messages);
+    await agent.sendMessage("chat", outboundText, { displayText: visibleText, history });
+  }, [input, attachments, loading, attaching, messages, agent]);
 
   const handleAttach = useCallback(async () => {
     if (loading || attaching) return;
@@ -390,7 +233,7 @@ export default function Chat() {
       const next = paths.map(createAttachment);
       setAttachments((prev) => [...prev, ...next]);
     } catch (err) {
-      setMessages((prev) => [
+      agent.updateMessages("chat", (prev) => [
         ...prev,
         {
           id: nextId(),
@@ -400,49 +243,21 @@ export default function Chat() {
         },
       ]);
     }
-  }, [loading, attaching]);
+  }, [loading, attaching, agent]);
 
   const removeAttachment = useCallback((id: string) => {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
-  // Answer a pending clarification question (resolves the blocked question tool)
+  // Cancel running agent stream
+  const handleCancel = useCallback(async () => {
+    await agent.cancelSession("chat");
+  }, [agent]);
+
+  // Answer a pending clarification question
   const handleClarify = useCallback(async (questionId: string, answer: string) => {
-    // 1. Mark the clarification as answered (disables UI)
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.clarification?.question_id === questionId
-          ? { ...m, clarificationAnswered: true }
-          : m
-      )
-    );
-
-    // 2. Add user's answer as a visible message
-    const answerMsg: DisplayMessage = {
-      id: nextId(),
-      role: "user",
-      content: answer,
-    };
-    const assistantMsg: DisplayMessage = {
-      id: nextId(),
-      role: "assistant",
-      content: "",
-      streaming: true,
-    };
-    setMessages((prev) => [...prev, answerMsg, assistantMsg]);
-
-    // 3. Show loading state (agent is processing the answer)
-    setLoading(true);
-    setCurrentTrace({ thinking: "", toolCalls: [] });
-
-    // 4. Send answer to backend
-    try {
-      await answerQuestion(questionId, answer);
-    } catch (err) {
-      console.error("[Chat] Failed to answer question:", err);
-      setLoading(false);
-    }
-  }, []);
+    await agent.answerClarification("chat", questionId, answer);
+  }, [agent]);
 
   // Save to localStorage debounced
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -452,10 +267,27 @@ export default function Chat() {
     return () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current); };
   }, [messages]);
 
+  // Save chat memory when session completes (loading transitions true → false)
+  const prevLoadingRef = useRef(loading);
+  useEffect(() => {
+    if (prevLoadingRef.current && !loading && messages.length > 0) {
+      const lastMsg = messages[messages.length - 1];
+      if (lastMsg.role === "assistant" && !lastMsg.error) {
+        const conversation = messages
+          .filter((m) => !m.error)
+          .map((m) => ({ role: m.role, content: m.content }));
+        saveChatMemory(conversation).catch((e) =>
+          console.warn("[Chat] Failed to save chat memory:", e)
+        );
+      }
+    }
+    prevLoadingRef.current = loading;
+  }, [loading, messages]);
+
   const handleClear = useCallback(() => {
-    setMessages([]);
+    agent.clearSlot("chat");
     localStorage.removeItem(CHAT_STORAGE_KEY);
-  }, []);
+  }, [agent]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -569,6 +401,82 @@ export default function Chat() {
                 <Paperclip className="h-4 w-4" />
               )}
             </button>
+
+            {/* Model Selector */}
+            {providers.length > 0 && (
+              <div ref={dropdownRef} className="relative shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setDropdownOpen(!dropdownOpen)}
+                  disabled={loading}
+                  className="flex h-10 items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  title="选择模型"
+                >
+                  <Brain className="h-3.5 w-3.5 text-amber-600" />
+                  <span className="max-w-[120px] truncate">
+                    {providers.find((p) => p.id === selectedProviderId)?.model || "选择模型"}
+                  </span>
+                  {providers.find((p) => p.id === selectedProviderId)?.is_multimodal && (
+                    <span className="rounded bg-blue-100 px-1 py-0.5 text-[9px] font-medium text-blue-700">
+                      多模态
+                    </span>
+                  )}
+                   <svg
+                     className={`h-3 w-3 text-neutral-400 transition-transform ${dropdownOpen ? "rotate-180" : ""}`}
+                     fill="none"
+                     viewBox="0 0 24 24"
+                     stroke="currentColor"
+                     aria-hidden="true"
+                   >
+                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                   </svg>
+                </button>
+
+                {dropdownOpen && (
+                  <div className="absolute bottom-full left-0 z-50 mb-1 w-64 rounded-lg border border-neutral-200 bg-white py-1 shadow-lg">
+                    <div className="px-3 py-1.5 text-[10px] font-medium text-neutral-400 uppercase tracking-wider">
+                      选择模型
+                    </div>
+                    {providers.map((provider) => (
+                      <button
+                        key={provider.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedProviderId(provider.id);
+                          setDropdownOpen(false);
+                        }}
+                        className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs hover:bg-neutral-50 transition-colors ${
+                          provider.id === selectedProviderId ? "bg-amber-50 text-amber-700" : "text-neutral-700"
+                        }`}
+                      >
+                        <div className="flex flex-col gap-0.5 min-w-0">
+                          <span className="font-medium truncate">{provider.name}</span>
+                          <span className="text-[10px] text-neutral-400 truncate">{provider.model}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {provider.is_multimodal && (
+                            <span className="rounded bg-blue-100 px-1 py-0.5 text-[9px] font-medium text-blue-700">
+                              多模态
+                            </span>
+                          )}
+                          {provider.is_default && (
+                            <span className="rounded bg-green-100 px-1 py-0.5 text-[9px] font-medium text-green-700">
+                              默认
+                            </span>
+                          )}
+                           {provider.id === selectedProviderId && (
+                             <svg className="h-3.5 w-3.5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                             </svg>
+                           )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             <textarea
               ref={inputRef}
               value={input}
@@ -591,6 +499,16 @@ export default function Chat() {
                 <Send className="h-4 w-4" />
               )}
             </button>
+            {loading && (
+              <button
+                type="button"
+                onClick={handleCancel}
+                title="取消生成"
+                className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors"
+              >
+                <StopCircle className="h-4 w-4" />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -823,7 +741,7 @@ function AttachmentChip({
 
 // ── Message Bubble Component ──────────────────────────────────────────────
 
-function MessageBubble({ message, onClarify }: { message: DisplayMessage; onClarify: (questionId: string, answer: string) => void }) {
+function MessageBubble({ message, onClarify }: { message: AgentMessage; onClarify: (questionId: string, answer: string) => void }) {
   const isUser = message.role === "user";
   const [freeInput, setFreeInput] = useState("");
 
