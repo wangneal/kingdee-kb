@@ -1,6 +1,6 @@
-use rig_core::{completion::ToolDefinition, tool::Tool};
 use rig_core::tool::ToolDyn;
 use rig_core::wasm_compat::WasmBoxedFuture;
+use rig_core::{completion::ToolDefinition, tool::Tool};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 
-use crate::services::agent_timeout::{MAX_RETRIES, retry_delay};
+use crate::services::agent_timeout::{retry_delay, MAX_RETRIES};
 
 /// 用户回答澄清问题的超时时间（秒）
 const QUESTION_TIMEOUT_SECS: u64 = 300; // 5 分钟
@@ -51,7 +51,10 @@ impl ToolDyn for RetryToolWrapper {
         self.inner.definition(prompt)
     }
 
-    fn call<'a>(&'a self, args: String) -> WasmBoxedFuture<'a, Result<String, rig_core::tool::ToolError>> {
+    fn call<'a>(
+        &'a self,
+        args: String,
+    ) -> WasmBoxedFuture<'a, Result<String, rig_core::tool::ToolError>> {
         Box::pin(async move {
             let tool_name = self.inner.name();
             let mut last_error = None;
@@ -2511,7 +2514,9 @@ pub fn all_rig_tools(
             llm.clone(),
             risk_store,
         ))),
-        Box::new(RetryToolWrapper::new(ExtractBlueprintTool::new(llm.clone()))),
+        Box::new(RetryToolWrapper::new(ExtractBlueprintTool::new(
+            llm.clone(),
+        ))),
         Box::new(RetryToolWrapper::new(RecommendQuestionsTool::new(llm))),
         // UseSkillTool runs skills — side effect, no retry
         Box::new(UseSkillTool { skill_manager }),

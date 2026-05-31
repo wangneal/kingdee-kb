@@ -1377,6 +1377,7 @@ function LLMProviderList() {
       setTimeout(() => setActionMsg(null), 2000);
     } catch (err) {
       setActionMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+      throw err;
     }
   }, [loadProviders]);
 
@@ -1694,6 +1695,7 @@ function ProviderFormDialog({
   const [baseUrl, setBaseUrl] = useState(provider?.base_url ?? PROVIDER_DEFAULTS.openai.base_url);
   const [showApiKey, setShowApiKey] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // API Keys state
   const [apiKeys, setApiKeys] = useState<ApiKeyConfig[]>(
@@ -1794,6 +1796,7 @@ function ProviderFormDialog({
     e.preventDefault();
     if (!name.trim() || models.length === 0) return;
     setSaving(true);
+    setError(null);
     try {
       await onSubmit({
         id: provider?.id,
@@ -1803,6 +1806,8 @@ function ProviderFormDialog({
         apiKeys: apiKeys.filter((k) => k.key.trim()),
         models: models.filter((m) => m.name.trim()),
       });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
     }
@@ -1828,6 +1833,12 @@ function ProviderFormDialog({
         </div>
 
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-5 space-y-4">
+          {error && (
+            <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-600 flex items-center gap-1.5 shrink-0 animate-fadeIn">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              <span>{error}</span>
+            </div>
+          )}
           {/* Name */}
           <div>
             <label className="mb-1.5 block text-xs font-medium text-neutral-600">

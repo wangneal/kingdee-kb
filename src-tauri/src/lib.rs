@@ -66,8 +66,7 @@ pub fn run() {
     // 初始化 tracing 日志（可通过 RUST_LOG 环境变量控制级别）
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::from_default_env()
-                .add_directive("kingdee_kb=info".parse().unwrap()),
+            EnvFilter::from_default_env().add_directive("kingdee_kb=info".parse().unwrap()),
         )
         .with_target(true)
         .with_thread_ids(true)

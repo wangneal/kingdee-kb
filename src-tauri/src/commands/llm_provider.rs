@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::app_state::AppState;
-use crate::services::llm_providers::{ApiKeyConfig, LLMProviderConfig, LLMProtocol, ModelConfig, OcrProviderConfig, OcrProviderType};
+use crate::services::llm_providers::{
+    ApiKeyConfig, LLMProtocol, LLMProviderConfig, ModelConfig, OcrProviderConfig, OcrProviderType,
+};
 
 // ─── LLM 供应商命令 ───
 
@@ -17,7 +19,9 @@ pub async fn is_llm_configured(state: State<'_, AppState>) -> Result<bool, Strin
 
 /// 获取所有 LLM 供应商
 #[tauri::command]
-pub async fn list_llm_providers(state: State<'_, AppState>) -> Result<Vec<LLMProviderConfig>, String> {
+pub async fn list_llm_providers(
+    state: State<'_, AppState>,
+) -> Result<Vec<LLMProviderConfig>, String> {
     let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
     Ok(manager.list_providers().to_vec())
 }
@@ -33,7 +37,7 @@ pub async fn add_llm_provider(
     api_keys: Vec<ApiKeyConfig>,
     models: Vec<ModelConfig>,
 ) -> Result<(), String> {
-    let protocol = match protocol.as_str() {
+    let protocol = match protocol.to_lowercase().as_str() {
         "openai" => LLMProtocol::OpenAI,
         "anthropic" => LLMProtocol::Anthropic,
         "local" => LLMProtocol::Local,
@@ -76,7 +80,7 @@ pub async fn update_llm_provider(
     api_keys: Vec<ApiKeyConfig>,
     models: Vec<ModelConfig>,
 ) -> Result<(), String> {
-    let protocol = match protocol.as_str() {
+    let protocol = match protocol.to_lowercase().as_str() {
         "openai" => LLMProtocol::OpenAI,
         "anthropic" => LLMProtocol::Anthropic,
         "local" => LLMProtocol::Local,
@@ -86,7 +90,10 @@ pub async fn update_llm_provider(
     // 保留原有的 is_default 状态
     let is_default = {
         let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
-        manager.get_provider(&id).map(|p| p.is_default).unwrap_or(false)
+        manager
+            .get_provider(&id)
+            .map(|p| p.is_default)
+            .unwrap_or(false)
     };
 
     let provider = LLMProviderConfig {
@@ -128,7 +135,10 @@ pub async fn delete_llm_provider(state: State<'_, AppState>, id: String) -> Resu
 
 /// 设置默认 LLM 供应商
 #[tauri::command]
-pub async fn set_default_llm_provider(state: State<'_, AppState>, id: String) -> Result<(), String> {
+pub async fn set_default_llm_provider(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
     let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
     manager.set_default(&id)?;
 
@@ -237,7 +247,8 @@ pub async fn update_model(
     // 保留原有的探测状态
     let (is_multimodal, last_probe_at) = {
         let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
-        manager.get_provider(&provider_id)
+        manager
+            .get_provider(&provider_id)
             .and_then(|p| p.models.iter().find(|m| m.id == id))
             .map(|m| (m.is_multimodal, m.last_probe_at.clone()))
             .unwrap_or((None, None))
@@ -289,10 +300,14 @@ pub async fn probe_model_multimodal(
     // 克隆供应商数据，避免在 await 时持有 MutexGuard
     let (provider, model_name, api_key) = {
         let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
-        let provider = manager.get_provider(&provider_id)
+        let provider = manager
+            .get_provider(&provider_id)
             .ok_or_else(|| format!("供应商 '{}' 不存在", provider_id))?
             .clone();
-        let model = provider.models.iter().find(|m| m.id == model_id)
+        let model = provider
+            .models
+            .iter()
+            .find(|m| m.id == model_id)
             .ok_or_else(|| format!("模型 '{}' 不存在", model_id))?
             .clone();
         let api_key = provider.get_default_key_value();
@@ -301,16 +316,22 @@ pub async fn probe_model_multimodal(
 
     // 创建临时管理器进行探测
     let temp_manager = crate::services::llm_providers::LLMProviderManager::new(&state.data_dir);
-    Ok(temp_manager.probe_model_multimodal(&provider, &model_name, &api_key).await)
+    Ok(temp_manager
+        .probe_model_multimodal(&provider, &model_name, &api_key)
+        .await)
 }
 
 /// 探测单个供应商的多模态能力（使用默认模型，旧版兼容）
 #[tauri::command]
-pub async fn probe_provider_multimodal(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+pub async fn probe_provider_multimodal(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<bool, String> {
     // 克隆供应商数据，避免在 await 时持有 MutexGuard
     let provider = {
         let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
-        manager.get_provider(&id)
+        manager
+            .get_provider(&id)
             .ok_or_else(|| format!("供应商 '{}' 不存在", id))?
             .clone()
     };
@@ -322,7 +343,9 @@ pub async fn probe_provider_multimodal(state: State<'_, AppState>, id: String) -
 
 /// 批量探测所有供应商所有模型的多模态能力
 #[tauri::command]
-pub async fn probe_all_providers(state: State<'_, AppState>) -> Result<Vec<ModelProbeResult>, String> {
+pub async fn probe_all_providers(
+    state: State<'_, AppState>,
+) -> Result<Vec<ModelProbeResult>, String> {
     // 克隆供应商列表，避免在 await 时持有 MutexGuard
     let providers = {
         let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
@@ -337,7 +360,9 @@ pub async fn probe_all_providers(state: State<'_, AppState>) -> Result<Vec<Model
     for provider in &providers {
         let api_key = provider.get_default_key_value();
         for model in &provider.models {
-            let is_multimodal = temp_manager.probe_model_multimodal(provider, &model.name, &api_key).await;
+            let is_multimodal = temp_manager
+                .probe_model_multimodal(provider, &model.name, &api_key)
+                .await;
             results.push(ModelProbeResult {
                 provider_id: provider.id.clone(),
                 model_id: model.id.clone(),
@@ -350,7 +375,11 @@ pub async fn probe_all_providers(state: State<'_, AppState>) -> Result<Vec<Model
     {
         let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
         for result in &results {
-            if let Some(provider) = manager.list_providers().iter().find(|p| p.id == result.provider_id) {
+            if let Some(provider) = manager
+                .list_providers()
+                .iter()
+                .find(|p| p.id == result.provider_id)
+            {
                 let mut updated = provider.clone();
                 if let Some(model) = updated.models.iter_mut().find(|m| m.id == result.model_id) {
                     model.is_multimodal = Some(result.is_multimodal);
@@ -368,7 +397,9 @@ pub async fn probe_all_providers(state: State<'_, AppState>) -> Result<Vec<Model
 
 /// 获取 OCR 配置
 #[tauri::command]
-pub async fn get_ocr_config(state: State<'_, AppState>) -> Result<Option<OcrProviderConfig>, String> {
+pub async fn get_ocr_config(
+    state: State<'_, AppState>,
+) -> Result<Option<OcrProviderConfig>, String> {
     let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
     Ok(manager.get_ocr_config().cloned())
 }
@@ -441,14 +472,17 @@ pub async fn list_available_models(
     let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
     let models = manager.list_all_models();
 
-    Ok(models.into_iter().map(|m| AvailableModelResult {
-        provider_id: m.provider_id,
-        provider_name: m.provider_name,
-        model_id: m.model_id,
-        model_name: m.model_name,
-        is_default: m.is_default,
-        is_multimodal: m.is_multimodal,
-    }).collect())
+    Ok(models
+        .into_iter()
+        .map(|m| AvailableModelResult {
+            provider_id: m.provider_id,
+            provider_name: m.provider_name,
+            model_id: m.model_id,
+            model_name: m.model_name,
+            is_default: m.is_default,
+            is_multimodal: m.is_multimodal,
+        })
+        .collect())
 }
 
 /// 获取下一个可用的 API Key（故障切换）
@@ -460,10 +494,7 @@ pub async fn get_next_api_key(
 ) -> Result<Option<NextApiKeyResult>, String> {
     let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
     match manager.get_next_api_key(&provider_id, &failed_key_id) {
-        Some((key_id, key_value)) => Ok(Some(NextApiKeyResult {
-            key_id,
-            key_value,
-        })),
+        Some((key_id, key_value)) => Ok(Some(NextApiKeyResult { key_id, key_value })),
         None => Ok(None),
     }
 }
@@ -471,7 +502,10 @@ pub async fn get_next_api_key(
 // ─── 辅助函数 ───
 
 /// 同步 ImageProcessor 的 LLM 配置
-fn sync_image_processor(state: &AppState, manager: &crate::services::llm_providers::LLMProviderManager) {
+fn sync_image_processor(
+    state: &AppState,
+    manager: &crate::services::llm_providers::LLMProviderManager,
+) {
     if let Some(default) = manager.get_default_provider() {
         let api_key = default.get_default_key_value();
         let base_url = default.base_url.clone();

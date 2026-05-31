@@ -16,8 +16,8 @@ use tracing::{debug, error, info};
 use crate::services::agent_timeout::AGENT_SESSION_TIMEOUT_SECS;
 use crate::services::bm25_service::BM25Service;
 use crate::services::embedding::EmbeddingService;
-use crate::services::llm_service::{ChatMessage, LLMService};
 use crate::services::llm_providers::LLMProtocol;
+use crate::services::llm_service::{ChatMessage, LLMService};
 use crate::services::metadata::MetadataStore;
 use crate::services::product_store::ProductStore;
 use crate::services::question_tool::PendingQuestions;
@@ -41,7 +41,12 @@ pub struct AgentCancelFlag {
 impl AgentCancelFlag {
     pub fn new() -> (Self, Arc<AtomicBool>) {
         let flag = Arc::new(AtomicBool::new(false));
-        (Self { cancelled: flag.clone() }, flag)
+        (
+            Self {
+                cancelled: flag.clone(),
+            },
+            flag,
+        )
     }
 
     pub fn cancel(&self) {
@@ -278,110 +283,123 @@ impl RigAgent {
         let timeout_sender = sender.clone();
         let timeout_sid = sid.clone();
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(AGENT_SESSION_TIMEOUT_SECS),
-            async {
-                let mut rate_limiter = ToolRateLimiter::new(30);
-                match config.protocol {
-                    LLMProtocol::OpenAI | LLMProtocol::Local => {
-                        let client = match build_openai_client(&config) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                let _ = sender.send(ReActEvent::Error {
-                                    session_id: sid,
-                                    message: e,
-                                });
-                                return;
-                            }
-                        };
+        let result = tokio::time::timeout(Duration::from_secs(AGENT_SESSION_TIMEOUT_SECS), async {
+            let mut rate_limiter = ToolRateLimiter::new(30);
+            match config.protocol {
+                LLMProtocol::OpenAI | LLMProtocol::Local => {
+                    let client = match build_openai_client(&config) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let _ = sender.send(ReActEvent::Error {
+                                session_id: sid,
+                                message: e,
+                            });
+                            return;
+                        }
+                    };
 
-                        // 使用传统的 Chat Completions API（/v1/chat/completions）
-                        // 而不是新的 Responses API（/v1/responses）
-                        let completions_client = client.completions_api();
+                    // 使用传统的 Chat Completions API（/v1/chat/completions）
+                    // 而不是新的 Responses API（/v1/responses）
+                    let completions_client = client.completions_api();
 
-                        let mut tools = all_rig_tools(
-                            project_id,
-                            data_dir.clone(),
-                            llm.clone(),
-                            embedding.clone(),
-                            vector_index.clone(),
-                            bm25.clone(),
-                            metadata.clone(),
-                            products.clone(),
-                            risk_store.clone(),
-                            skill_manager.clone(),
-                            risk_project_id,
-                        );
-                        tools.extend(runtime_rig_tools(
-                            pending.clone(),
-                            sender.clone(),
-                            sid.clone(),
-                            skill_manager.clone(),
-                            data_dir.clone(),
-                        ));
+                    let mut tools = all_rig_tools(
+                        project_id,
+                        data_dir.clone(),
+                        llm.clone(),
+                        embedding.clone(),
+                        vector_index.clone(),
+                        bm25.clone(),
+                        metadata.clone(),
+                        products.clone(),
+                        risk_store.clone(),
+                        skill_manager.clone(),
+                        risk_project_id,
+                    );
+                    tools.extend(runtime_rig_tools(
+                        pending.clone(),
+                        sender.clone(),
+                        sid.clone(),
+                        skill_manager.clone(),
+                        data_dir.clone(),
+                    ));
 
-                        let mut stream = completions_client
-                            .agent(model)
-                            .preamble(&system_prompt)
-                            .tools(tools)
-                            .temperature(temperature)
-                            .max_tokens(max_tokens)
-                            .default_max_turns(PRACTICALLY_UNLIMITED_TURNS)
-                            .build()
-                            .stream_prompt(prompt.as_str())
-                            .await;
+                    let mut stream = completions_client
+                        .agent(model)
+                        .preamble(&system_prompt)
+                        .tools(tools)
+                        .temperature(temperature)
+                        .max_tokens(max_tokens)
+                        .default_max_turns(PRACTICALLY_UNLIMITED_TURNS)
+                        .build()
+                        .stream_prompt(prompt.as_str())
+                        .await;
 
-                        Self::drain_stream(&mut stream, &sender, &sid, started_at, &mut rate_limiter, cancel_flag.clone()).await;
-                    }
-                    LLMProtocol::Anthropic => {
-                        let client = match build_anthropic_client(&config) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                let _ = sender.send(ReActEvent::Error {
-                                    session_id: sid,
-                                    message: e,
-                                });
-                                return;
-                            }
-                        };
-
-                        let mut tools = all_rig_tools(
-                            project_id,
-                            data_dir.clone(),
-                            llm.clone(),
-                            embedding.clone(),
-                            vector_index.clone(),
-                            bm25.clone(),
-                            metadata.clone(),
-                            products.clone(),
-                            risk_store.clone(),
-                            skill_manager.clone(),
-                            risk_project_id,
-                        );
-                        tools.extend(runtime_rig_tools(
-                            pending.clone(),
-                            sender.clone(),
-                            sid.clone(),
-                            skill_manager.clone(),
-                            data_dir.clone(),
-                        ));
-
-                        let mut stream = client
-                            .agent(model)
-                            .preamble(&system_prompt)
-                            .tools(tools)
-                            .temperature(temperature)
-                            .max_tokens(max_tokens)
-                            .default_max_turns(PRACTICALLY_UNLIMITED_TURNS)
-                            .build()
-                            .stream_prompt(prompt.as_str())
-                            .await;
-
-                        Self::drain_stream(&mut stream, &sender, &sid, started_at, &mut rate_limiter, cancel_flag).await;
-                    }
+                    Self::drain_stream(
+                        &mut stream,
+                        &sender,
+                        &sid,
+                        started_at,
+                        &mut rate_limiter,
+                        cancel_flag.clone(),
+                    )
+                    .await;
                 }
-            },
-        )
+                LLMProtocol::Anthropic => {
+                    let client = match build_anthropic_client(&config) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let _ = sender.send(ReActEvent::Error {
+                                session_id: sid,
+                                message: e,
+                            });
+                            return;
+                        }
+                    };
+
+                    let mut tools = all_rig_tools(
+                        project_id,
+                        data_dir.clone(),
+                        llm.clone(),
+                        embedding.clone(),
+                        vector_index.clone(),
+                        bm25.clone(),
+                        metadata.clone(),
+                        products.clone(),
+                        risk_store.clone(),
+                        skill_manager.clone(),
+                        risk_project_id,
+                    );
+                    tools.extend(runtime_rig_tools(
+                        pending.clone(),
+                        sender.clone(),
+                        sid.clone(),
+                        skill_manager.clone(),
+                        data_dir.clone(),
+                    ));
+
+                    let mut stream = client
+                        .agent(model)
+                        .preamble(&system_prompt)
+                        .tools(tools)
+                        .temperature(temperature)
+                        .max_tokens(max_tokens)
+                        .default_max_turns(PRACTICALLY_UNLIMITED_TURNS)
+                        .build()
+                        .stream_prompt(prompt.as_str())
+                        .await;
+
+                    Self::drain_stream(
+                        &mut stream,
+                        &sender,
+                        &sid,
+                        started_at,
+                        &mut rate_limiter,
+                        cancel_flag,
+                    )
+                    .await;
+                }
+            }
+        })
         .await;
 
         if result.is_err() {
@@ -415,7 +433,10 @@ impl RigAgent {
 
         while let Some(item) = stream.next().await {
             // 检查取消标志
-            if cancel_flag.as_ref().map_or(false, |f| f.load(Ordering::SeqCst)) {
+            if cancel_flag
+                .as_ref()
+                .map_or(false, |f| f.load(Ordering::SeqCst))
+            {
                 let _ = sender.send(ReActEvent::Error {
                     session_id: sid.to_string(),
                     message: "用户已取消操作".to_string(),
@@ -450,7 +471,8 @@ impl RigAgent {
                             if !rate_limiter.check_and_record() {
                                 let _ = sender.send(ReActEvent::Error {
                                     session_id: sid.to_string(),
-                                    message: "工具调用过于频繁（每分钟上限30次），请稍后重试".to_string(),
+                                    message: "工具调用过于频繁（每分钟上限30次），请稍后重试"
+                                        .to_string(),
                                 });
                                 return;
                             }
@@ -594,7 +616,7 @@ fn looks_like_output_limit_error(raw: &str) -> bool {
 /// 检测用户消息中是否包含图片引用
 fn detect_images_in_message(message: &str) -> bool {
     let lower = message.to_lowercase();
-    
+
     // 检测图片文件路径
     let image_extensions = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"];
     for ext in &image_extensions {
@@ -602,12 +624,12 @@ fn detect_images_in_message(message: &str) -> bool {
             return true;
         }
     }
-    
+
     // 检测 base64 图片数据
     if lower.contains("data:image/") || lower.contains("base64,") {
         return true;
     }
-    
+
     // 检测图片相关关键词
     let image_keywords = ["图片", "图像", "截图", "附件", "上传", "图片附件"];
     for keyword in &image_keywords {
@@ -615,7 +637,7 @@ fn detect_images_in_message(message: &str) -> bool {
             return true;
         }
     }
-    
+
     false
 }
 

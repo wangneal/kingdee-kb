@@ -1,4 +1,4 @@
-use crate::services::llm_providers::{LLMProviderConfig, LLMProtocol};
+use crate::services::llm_providers::{LLMProtocol, LLMProviderConfig};
 use bytes::Bytes;
 use futures::StreamExt;
 use rig_core::http_client::{self, HttpClientExt, MultipartForm, Request, Response};
@@ -32,6 +32,36 @@ fn custom_http_client(base_url: &str) -> Result<CompatReqwestClient, String> {
         .map_err(|e| format!("构建兼容 HTTP client 失败: {}", e))
 }
 
+fn is_official_anthropic_host(host: Option<&str>) -> bool {
+    host.map(|h| h.eq_ignore_ascii_case("api.anthropic.com"))
+        .unwrap_or(false)
+}
+
+fn normalize_anthropic_auth_headers(
+    uri: &rig_core::http_client::Uri,
+    headers: &mut rig_core::http_client::HeaderMap,
+) {
+    let Some(x_api_key) = headers.get("x-api-key").cloned() else {
+        return;
+    };
+
+    if is_official_anthropic_host(uri.host()) {
+        headers.remove("Authorization");
+        return;
+    }
+
+    headers.remove("x-api-key");
+    if !headers.contains_key("Authorization") {
+        if let Ok(key_str) = x_api_key.to_str() {
+            if let Ok(auth_val) =
+                rig_core::http_client::HeaderValue::from_str(&format!("Bearer {}", key_str))
+            {
+                headers.insert("Authorization", auth_val);
+            }
+        }
+    }
+}
+
 fn instance_error<E>(error: E) -> http_client::Error
 where
     E: std::error::Error + Send + Sync + 'static,
@@ -48,7 +78,8 @@ impl CompatReqwestClient {
         T: Into<Bytes>,
         U: From<Bytes> + Send + 'static,
     {
-        let (parts, body) = req.into_parts();
+        let (mut parts, body) = req.into_parts();
+        normalize_anthropic_auth_headers(&parts.uri, &mut parts.headers);
         let req = self
             .inner
             .request(parts.method, parts.uri.to_string())
@@ -95,7 +126,8 @@ impl HttpClientExt for CompatReqwestClient {
         U: Send + 'static,
     {
         let client = self.inner.clone();
-        let (parts, body) = req.into_parts();
+        let (mut parts, body) = req.into_parts();
+        normalize_anthropic_auth_headers(&parts.uri, &mut parts.headers);
         let body: Bytes = body.into();
         let req = client
             .request(parts.method, parts.uri.to_string())
@@ -161,7 +193,8 @@ impl HttpClientExt for CompatReqwestClient {
         T: Into<Bytes>,
     {
         let client = self.clone();
-        let (parts, body) = req.into_parts();
+        let (mut parts, body) = req.into_parts();
+        normalize_anthropic_auth_headers(&parts.uri, &mut parts.headers);
         let body: Bytes = body.into();
         async move {
             let req = client
@@ -240,7 +273,12 @@ pub fn build_anthropic_client(
         .http_client(custom_http_client(&config.base_url)?);
 
     if config.base_url != DEFAULT_ANTHROPIC_BASE_URL && !config.base_url.is_empty() {
-        builder = builder.base_url(config.base_url.trim_end_matches('/'));
+        let base_url = if config.base_url.contains("/v1") {
+            config.base_url.trim_end_matches('/').to_string()
+        } else {
+            format!("{}/v1", config.base_url.trim_end_matches('/'))
+        };
+        builder = builder.base_url(&base_url);
     }
 
     builder
@@ -258,7 +296,7 @@ mod tests {
 
     use crate::services::bm25_service::BM25Service;
     use crate::services::embedding::EmbeddingService;
-    use crate::services::llm_providers::{LLMProviderConfig, LLMProtocol, LLMProviderManager};
+    use crate::services::llm_providers::{LLMProviderConfig, LLMProviderManager};
     use crate::services::llm_service::LLMService;
     use crate::services::metadata::MetadataStore;
     use crate::services::product_store::ProductStore;
@@ -352,9 +390,9 @@ mod tests {
             let tmp = tempfile::tempdir().expect("tempdir");
             let (embedding, vector_index, bm25, metadata, products, risk_store) =
                 test_tool_deps(tmp.path());
-            let providers = Arc::new(std::sync::Mutex::new(
-                LLMProviderManager::new(&tmp.path().to_path_buf())
-            ));
+            let providers = Arc::new(std::sync::Mutex::new(LLMProviderManager::new(
+                &tmp.path().to_path_buf(),
+            )));
             let llm = LLMService::new(providers);
             let skill_manager = Arc::new(std::sync::Mutex::new(SkillManager::new(
                 tmp.path().join("skills"),

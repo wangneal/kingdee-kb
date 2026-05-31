@@ -184,9 +184,9 @@ impl ImageProcessor {
         let text = match img_type {
             ImageType::TextScreenshot => {
                 if let Some(ref config) = self.ocr_config {
-                    self.ocr(&img_base64, config).await?
+                    self.ocr(&img_base64, Some(path), config).await?
                 } else {
-                    self.vision_ocr(&img_base64).await?
+                    self.vision_ocr(&img_base64, Some(path)).await?
                 }
             }
             ImageType::Flowchart | ImageType::Architecture => {
@@ -195,17 +195,27 @@ impl ImageProcessor {
                 } else {
                     "请详细描述这个架构图：组件名称、关系依赖、数据流向、设计思路"
                 };
-                self.vision(&img_base64, prompt).await?
+                self.vision(&img_base64, Some(path), prompt).await?
             }
             ImageType::Table => {
-                self.vision(&img_base64, "请将表格提取为结构化文本，保留行列关系").await?
+                self.vision(
+                    &img_base64,
+                    Some(path),
+                    "请将表格提取为结构化文本，保留行列关系",
+                )
+                .await?
             }
             ImageType::Mixed => {
-                self.vision(&img_base64, "请描述这张图片的内容").await?
+                self.vision(&img_base64, Some(path), "请描述这张图片的内容")
+                    .await?
             }
         };
 
-        Ok(ImageContent { image_type: img_type, text, processing_time_ms: start.elapsed().as_millis() as u64 })
+        Ok(ImageContent {
+            image_type: img_type,
+            text,
+            processing_time_ms: start.elapsed().as_millis() as u64,
+        })
     }
 
     fn classify_image(&self, img_bytes: &[u8]) -> Result<ImageType, ImageError> {
@@ -223,60 +233,121 @@ impl ImageProcessor {
         }
     }
 
-    async fn ocr(&self, img_base64: &str, config: &OcrConfig) -> Result<String, ImageError> {
+    async fn ocr(
+        &self,
+        img_base64: &str,
+        local_path: Option<&str>,
+        config: &OcrConfig,
+    ) -> Result<String, ImageError> {
         match config.provider {
             OcrProvider::Baidu => self.ocr_baidu(img_base64, config).await,
             OcrProvider::Tencent => self.ocr_tencent(img_base64, config).await,
-            OcrProvider::Llm => self.vision_ocr(img_base64).await,
+            OcrProvider::Llm => self.vision_ocr(img_base64, local_path).await,
         }
     }
 
-    async fn vision_ocr(&self, img_base64: &str) -> Result<String, ImageError> {
-        self.vision(img_base64, "请识别并提取图片中的所有文字，保持原始格式").await
+    async fn vision_ocr(
+        &self,
+        img_base64: &str,
+        local_path: Option<&str>,
+    ) -> Result<String, ImageError> {
+        self.vision(
+            img_base64,
+            local_path,
+            "请识别并提取图片中的所有文字，保持原始格式",
+        )
+        .await
     }
 
     async fn ocr_baidu(&self, img_base64: &str, config: &OcrConfig) -> Result<String, ImageError> {
         let token = self.get_baidu_token(config).await?;
-        let resp = self.client
+        let resp = self
+            .client
             .post("https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic")
             .query(&[("access_token", &token)])
             .form(&[("image", img_base64)])
-            .send().await.map_err(|e| ImageError::ApiError(e.to_string()))?;
-        let result: serde_json::Value = resp.json().await.map_err(|e| ImageError::ApiError(e.to_string()))?;
-        let words: Vec<String> = result["words_result"].as_array().map_or(&[][..], |v| v)
-            .iter().map(|w| w["words"].as_str().unwrap_or("").to_string()).collect();
+            .send()
+            .await
+            .map_err(|e| ImageError::ApiError(e.to_string()))?;
+        let result: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ImageError::ApiError(e.to_string()))?;
+        let words: Vec<String> = result["words_result"]
+            .as_array()
+            .map_or(&[][..], |v| v)
+            .iter()
+            .map(|w| w["words"].as_str().unwrap_or("").to_string())
+            .collect();
         Ok(words.join("\n"))
     }
 
     async fn get_baidu_token(&self, config: &OcrConfig) -> Result<String, ImageError> {
-        let secret = config.secret_key.as_ref().ok_or(ImageError::OcrNotConfigured)?;
-        let resp = self.client
+        let secret = config
+            .secret_key
+            .as_ref()
+            .ok_or(ImageError::OcrNotConfigured)?;
+        let resp = self
+            .client
             .post("https://aip.baidubce.com/oauth/2.0/token")
-            .query(&[("grant_type", "client_credentials"), ("client_id", &config.api_key), ("client_secret", secret)])
-            .send().await.map_err(|e| ImageError::ApiError(e.to_string()))?;
-        let result: serde_json::Value = resp.json().await.map_err(|e| ImageError::ApiError(e.to_string()))?;
-        result["access_token"].as_str().map(|s| s.to_string())
+            .query(&[
+                ("grant_type", "client_credentials"),
+                ("client_id", &config.api_key),
+                ("client_secret", secret),
+            ])
+            .send()
+            .await
+            .map_err(|e| ImageError::ApiError(e.to_string()))?;
+        let result: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ImageError::ApiError(e.to_string()))?;
+        result["access_token"]
+            .as_str()
+            .map(|s| s.to_string())
             .ok_or_else(|| ImageError::ApiError("获取百度 token 失败".to_string()))
     }
 
-    async fn ocr_tencent(&self, img_base64: &str, config: &OcrConfig) -> Result<String, ImageError> {
-        let resp = self.client
+    async fn ocr_tencent(
+        &self,
+        img_base64: &str,
+        config: &OcrConfig,
+    ) -> Result<String, ImageError> {
+        let resp = self
+            .client
             .post("https://ocr.tencentcloudapi.com")
             .header("Content-Type", "application/json")
             .header("X-TC-Action", "GeneralBasicOCR")
             .header("X-TC-Version", "2018-11-19")
             .header("X-TC-Region", "ap-guangzhou")
-            .header("Authorization", format!("TC3-HMAC-SHA256 Credential={}", config.api_key))
+            .header(
+                "Authorization",
+                format!("TC3-HMAC-SHA256 Credential={}", config.api_key),
+            )
             .json(&serde_json::json!({"ImageBase64": img_base64}))
-            .send().await.map_err(|e| ImageError::ApiError(e.to_string()))?;
-        let result: serde_json::Value = resp.json().await.map_err(|e| ImageError::ApiError(e.to_string()))?;
-        let words: Vec<String> = result["Response"]["TextDetections"].as_array().map_or(&[][..], |v| v)
-            .iter().map(|w| w["DetectedText"].as_str().unwrap_or("").to_string()).collect();
+            .send()
+            .await
+            .map_err(|e| ImageError::ApiError(e.to_string()))?;
+        let result: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ImageError::ApiError(e.to_string()))?;
+        let words: Vec<String> = result["Response"]["TextDetections"]
+            .as_array()
+            .map_or(&[][..], |v| v)
+            .iter()
+            .map(|w| w["DetectedText"].as_str().unwrap_or("").to_string())
+            .collect();
         Ok(words.join("\n"))
     }
 
     /// LLM 图像理解（自动选择：主 LLM 或备用配置）
-    async fn vision(&self, img_base64: &str, prompt: &str) -> Result<String, ImageError> {
+    async fn vision(
+        &self,
+        img_base64: &str,
+        local_path: Option<&str>,
+        prompt: &str,
+    ) -> Result<String, ImageError> {
         let (api_key, base_url, model) = if self.is_llm_multimodal() {
             (&self.llm_api_key, &self.llm_base_url, &self.llm_model)
         } else if let Some(ref fb) = self.vision_fallback {
@@ -289,8 +360,10 @@ impl ImageProcessor {
             return Err(ImageError::LlmNotConfigured);
         }
 
+        let url = format!("{}/chat/completions", base_url);
+        // 1. 尝试使用 Base64
         let resp = self.client
-            .post(format!("{}/chat/completions", base_url))
+            .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
             .json(&serde_json::json!({
                 "model": model,
@@ -300,10 +373,97 @@ impl ImageProcessor {
                 ]}],
                 "max_tokens": 1000
             }))
-            .send().await.map_err(|e| ImageError::ApiError(e.to_string()))?;
+            .send()
+            .await;
 
-        let result: serde_json::Value = resp.json().await.map_err(|e| ImageError::ApiError(e.to_string()))?;
-        result["choices"][0]["message"]["content"].as_str()
+        let mut success_resp = None;
+        match resp {
+            Ok(r) => {
+                if r.status().is_success() {
+                    success_resp = Some(r);
+                } else {
+                    let status = r.status();
+                    let err_text = r.text().await.unwrap_or_default();
+                    tracing::warn!(
+                        "Vision request with Base64 failed for model {}. Status: {}, Response: {}",
+                        model,
+                        status,
+                        err_text
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Vision request with Base64 HTTP error for model {}: {:?}",
+                    model,
+                    e
+                );
+            }
+        }
+
+        // 2. 如果 Base64 失败并且有本地路径，尝试本地 file:/// 绝对路径
+        if success_resp.is_none() {
+            if let Some(path) = local_path {
+                let absolute_path = std::path::Path::new(path)
+                    .canonicalize()
+                    .unwrap_or_else(|_| std::path::PathBuf::from(path));
+                let file_url = format!(
+                    "file:///{}",
+                    absolute_path.to_string_lossy().replace('\\', "/")
+                );
+                tracing::info!(
+                    "Attempting vision request with local file path fallback for model {}: {}",
+                    model,
+                    file_url
+                );
+
+                let resp_local = self
+                    .client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", api_key))
+                    .json(&serde_json::json!({
+                        "model": model,
+                        "messages": [{"role": "user", "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": file_url}}
+                        ]}],
+                        "max_tokens": 1000
+                    }))
+                    .send()
+                    .await;
+
+                match resp_local {
+                    Ok(r) => {
+                        if r.status().is_success() {
+                            success_resp = Some(r);
+                        } else {
+                            let status = r.status();
+                            let err_text = r.text().await.unwrap_or_default();
+                            tracing::warn!("Vision request with local path failed for model {}. Status: {}, Response: {}", model, status, err_text);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Vision request with local path HTTP error for model {}: {:?}",
+                            model,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
+        let resp = success_resp.ok_or_else(|| {
+            ImageError::ApiError(
+                "多模态图像识别请求失败（Base64 与本地路径均无法成功）".to_string(),
+            )
+        })?;
+        let result: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ImageError::ApiError(e.to_string()))?;
+        result["choices"][0]["message"]["content"]
+            .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| ImageError::ApiError("LLM 返回为空".to_string()))
     }
@@ -338,12 +498,19 @@ mod tests {
 
     #[test]
     fn test_image_type_serialization() {
-        assert_eq!(serde_json::to_string(&ImageType::Flowchart).unwrap(), "\"Flowchart\"");
+        assert_eq!(
+            serde_json::to_string(&ImageType::Flowchart).unwrap(),
+            "\"Flowchart\""
+        );
     }
 
     #[test]
     fn test_image_content_serialization() {
-        let content = ImageContent { image_type: ImageType::TextScreenshot, text: "Hello".to_string(), processing_time_ms: 100 };
+        let content = ImageContent {
+            image_type: ImageType::TextScreenshot,
+            text: "Hello".to_string(),
+            processing_time_ms: 100,
+        };
         assert!(serde_json::to_string(&content).unwrap().contains("Hello"));
     }
 
@@ -352,6 +519,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path().join("test.png");
         std::fs::write(&path, b"fake image data").unwrap();
-        assert!(!ImageProcessor::compute_image_hash(path.to_str().unwrap()).unwrap().is_empty());
+        assert!(!ImageProcessor::compute_image_hash(path.to_str().unwrap())
+            .unwrap()
+            .is_empty());
     }
 }

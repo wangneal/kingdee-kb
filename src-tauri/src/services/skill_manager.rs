@@ -8,12 +8,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::services::skill_loader::SkillLoader;
-use crate::services::skill_trigger::{SkillTriggerEngine, SkillMatch, TriggerContext};
 use crate::services::prompt_assembler::PromptAssembler;
+use crate::services::skill_loader::SkillLoader;
+use crate::services::skill_trigger::{SkillMatch, SkillTriggerEngine, TriggerContext};
 use crate::services::skill_types::{
-    Skill, SkillCategory, SkillFile, SkillFull, SkillMetadata, SkillPhase, SharedResource,
-    parse_skill_md,
+    parse_skill_md, SharedResource, Skill, SkillCategory, SkillFile, SkillFull, SkillMetadata,
+    SkillPhase,
 };
 
 /// 技能管理器 — 扫描、加载、缓存、触发匹配

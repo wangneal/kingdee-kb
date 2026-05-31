@@ -62,10 +62,7 @@ impl SubstitutionContext {
         }
 
         // ${CLAUDE_SKILL_DIR} → 技能目录绝对路径
-        result = result.replace(
-            "${CLAUDE_SKILL_DIR}",
-            &self.skill_dir.to_string_lossy(),
-        );
+        result = result.replace("${CLAUDE_SKILL_DIR}", &self.skill_dir.to_string_lossy());
 
         // ${CLAUDE_SESSION_ID} → 会话 ID
         result = result.replace("${CLAUDE_SESSION_ID}", &self.session_id);
@@ -199,7 +196,9 @@ impl SkillExecutor {
             #[cfg(target_os = "windows")]
             {
                 let (cmd, args) = match interpreter {
-                    "python" | "python3" => ("python", vec![script_path.to_string_lossy().to_string()]),
+                    "python" | "python3" => {
+                        ("python", vec![script_path.to_string_lossy().to_string()])
+                    }
                     "bash" | "sh" => ("bash", vec![script_path.to_string_lossy().to_string()]),
                     "powershell" => (
                         "powershell",
@@ -272,8 +271,7 @@ impl SkillExecutor {
         let filename = format!("skill_script_{}.{}", uuid::Uuid::new_v4(), ext);
         let script_path = temp_dir.join(filename);
 
-        std::fs::write(&script_path, content)
-            .map_err(|e| ExecutorError::IoError(e.to_string()))?;
+        std::fs::write(&script_path, content).map_err(|e| ExecutorError::IoError(e.to_string()))?;
 
         Ok(script_path)
     }
@@ -286,7 +284,7 @@ impl SkillExecutor {
         let forbidden = [
             "rm -rf /",
             "rm -rf /*",
-            ":(){:|:&};:",   // fork bomb
+            ":(){:|:&};:", // fork bomb
             "dd if=/dev/zero",
             "mkfs",
             "format c:",
@@ -377,10 +375,14 @@ mod tests {
         };
 
         #[cfg(target_os = "windows")]
-        let result = executor.execute_inline_command("echo hello", &context).await;
+        let result = executor
+            .execute_inline_command("echo hello", &context)
+            .await;
 
         #[cfg(not(target_os = "windows"))]
-        let result = executor.execute_inline_command("echo hello", &context).await;
+        let result = executor
+            .execute_inline_command("echo hello", &context)
+            .await;
 
         assert!(result.is_ok());
         let result = result.unwrap();

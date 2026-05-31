@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 
 use crate::services::skill_types::{
-    SharedResource, Skill, SkillFile, SkillFileType, SkillFull, parse_skill_md,
+    parse_skill_md, SharedResource, Skill, SkillFile, SkillFileType, SkillFull,
 };
 
 /// 技能加载器（无状态，所有方法均为纯函数）
@@ -115,9 +115,7 @@ impl SkillLoader {
             match ext.to_lowercase().as_str() {
                 "json" | "yaml" | "yml" | "toml" => return SkillFileType::Config,
                 "md" | "txt" => return SkillFileType::Reference,
-                "py" | "sh" | "js" | "ts" | "ps1" | "bat" | "cmd" => {
-                    return SkillFileType::Script
-                }
+                "py" | "sh" | "js" | "ts" | "ps1" | "bat" | "cmd" => return SkillFileType::Script,
                 "png" | "jpg" | "jpeg" | "gif" | "svg" | "ico" | "webp" => {
                     return SkillFileType::Asset
                 }

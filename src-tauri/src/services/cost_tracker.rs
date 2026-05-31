@@ -23,8 +23,10 @@ impl CostTracker {
 
     /// 记录一次 LLM 调用的 token 用量
     pub fn record_llm_call(&self, input_tokens: u64, output_tokens: u64) {
-        self.total_input_tokens.fetch_add(input_tokens, Ordering::Relaxed);
-        self.total_output_tokens.fetch_add(output_tokens, Ordering::Relaxed);
+        self.total_input_tokens
+            .fetch_add(input_tokens, Ordering::Relaxed);
+        self.total_output_tokens
+            .fetch_add(output_tokens, Ordering::Relaxed);
         self.total_llm_calls.fetch_add(1, Ordering::Relaxed);
 
         info!(

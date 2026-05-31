@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use crate::services::skill_types::{Skill, extract_triggers_from_body};
+use crate::services::skill_types::{extract_triggers_from_body, Skill};
 
 /// 编译后的正则表达式（全局缓存）
 static EN_WORD_REGEX: OnceLock<regex::Regex> = OnceLock::new();
@@ -322,10 +322,7 @@ mod tests {
 
     #[test]
     fn test_alias_matching() {
-        let skills = vec![create_test_skill(
-            "humanizer",
-            "AI文案去味 24种模式检测",
-        )];
+        let skills = vec![create_test_skill("humanizer", "AI文案去味 24种模式检测")];
 
         let engine = SkillTriggerEngine::new(&skills);
         let matches = engine.match_by_input("这段文字去AI味");

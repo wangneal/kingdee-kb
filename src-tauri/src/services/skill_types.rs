@@ -221,7 +221,10 @@ pub fn parse_yaml_frontmatter(frontmatter: &str) -> SkillMetadata {
                     meta.paths.push(item.to_string());
                 }
                 continue;
-            } else if trimmed.contains(':') && !trimmed.starts_with(' ') && !trimmed.starts_with('\t') {
+            } else if trimmed.contains(':')
+                && !trimmed.starts_with(' ')
+                && !trimmed.starts_with('\t')
+            {
                 // 新的 key: value，结束 paths 收集
                 in_paths = false;
             } else {
@@ -348,8 +351,8 @@ pub fn extract_triggers_from_body(body: &str) -> Vec<String> {
             let trigger = trimmed
                 .trim_start_matches('-')
                 .trim()
-                .trim_matches('\u{201c}')  // "
-                .trim_matches('\u{201d}')  // "
+                .trim_matches('\u{201c}') // "
+                .trim_matches('\u{201d}') // "
                 .trim_matches('"');
             if !trigger.is_empty() {
                 triggers.push(trigger.to_string());

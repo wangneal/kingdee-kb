@@ -20,8 +20,8 @@ use crate::services::research_indexer::ResearchIndexer;
 use crate::services::research_session::ResearchSessionStore;
 use crate::services::rig_agent::RigAgent;
 use crate::services::risk_control::RiskControlStore;
-use crate::services::skill_manager::SkillManager;
 use crate::services::signal_writer::SignalWriter;
+use crate::services::skill_manager::SkillManager;
 use crate::services::template_manager::TemplateManager;
 use crate::services::vector_index::VectorIndex;
 use crate::services::whisper_service::WhisperService;
@@ -61,7 +61,7 @@ pub struct AppState {
     /// 风险控制存储（需求蔓延警报/爆雷预警/话术库）
     pub risk_control_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
     /// 数据脱敏器（本地敏感信息过滤）
-    pub desensitizer: Desensitizer,
+    pub desensitizer: Arc<Desensitizer>,
     /// Rig Agent（新推理引擎 — 基于 rig 的原生 function calling）
     pub rig_agent: RigAgent,
     /// 问题工具的待处理问题（跨进程状态）
@@ -142,7 +142,7 @@ impl AppState {
         let risk_control_store =
             Arc::new(tokio::sync::Mutex::new(RiskControlStore::new(&db_path)?));
 
-        let desensitizer = Desensitizer::new();
+        let desensitizer = Arc::new(Desensitizer::new());
 
         let pending_questions = question_tool::create_pending_questions();
 
@@ -165,14 +165,21 @@ impl AppState {
         // 初始化 ImageProcessor（图像处理，从 LLMProviderManager 获取配置）
         let image_processor = {
             let mgr = llm_providers.lock().map_err(|e| e.to_string())?;
-            let (api_key, base_url, model) = mgr.get_default_provider()
-                .map(|p| (p.api_key.clone(), p.base_url.clone(), p.model.clone()))
+            let (api_key, base_url, model) = mgr
+                .get_default_provider()
+                .map(|p| {
+                    (
+                        p.get_default_key_value(),
+                        p.base_url.clone(),
+                        p.get_default_model_name(),
+                    )
+                })
                 .unwrap_or_default();
             ImageProcessor::new(api_key, base_url, model)
         };
 
-        // 初始化 LLM 服务（从 LLMProviderManager 获取配置）
-        let llm = LLMService::new(llm_providers.clone());
+        // 初始化 LLM 服务（从 LLMProviderManager 获取配置并传入数据脱敏器）
+        let llm = LLMService::with_desensitizer(llm_providers.clone(), desensitizer.clone());
 
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
@@ -265,17 +272,15 @@ impl AppState {
             },
         ));
 
-        let desensitizer = Desensitizer::new();
+        let desensitizer = Arc::new(Desensitizer::new());
 
         let pending_questions = question_tool::create_pending_questions();
 
         let whisper_service = WhisperService::new();
         let audio_capture = AudioCapture::new(data_dir);
 
-        let llm_providers = Arc::new(Mutex::new(
-            LLMProviderManager::new(&data_dir.to_path_buf())
-        ));
-        let llm = LLMService::new(llm_providers.clone());
+        let llm_providers = Arc::new(Mutex::new(LLMProviderManager::new(&data_dir.to_path_buf())));
+        let llm = LLMService::with_desensitizer(llm_providers.clone(), desensitizer.clone());
 
         Self {
             data_dir: data_dir.to_path_buf(),
@@ -299,19 +304,21 @@ impl AppState {
             asr_config: Arc::new(Mutex::new(AsrConfigStore::new(&db_path))),
             skill_manager: Arc::new(Mutex::new(SkillManager::new(data_dir.join("skills")))),
             signal_writer: Arc::new(Mutex::new(
-                SignalWriter::new(data_dir.join("signals.jsonl"))
-                    .unwrap_or_else(|_| {
-                        // 降级到临时目录
-                        let temp = std::env::temp_dir().join("kingdee-kb-signals.jsonl");
-                        SignalWriter::new(temp).expect("Failed to create fallback SignalWriter")
-                    })
+                SignalWriter::new(data_dir.join("signals.jsonl")).unwrap_or_else(|_| {
+                    // 降级到临时目录
+                    let temp = std::env::temp_dir().join("kingdee-kb-signals.jsonl");
+                    SignalWriter::new(temp).expect("Failed to create fallback SignalWriter")
+                }),
             )),
-            template_manager: Arc::new(Mutex::new(
-                TemplateManager::new(data_dir.join("templates"), String::new())
-            )),
-            image_processor: Arc::new(Mutex::new(
-                ImageProcessor::new(String::new(), String::new(), String::new())
-            )),
+            template_manager: Arc::new(Mutex::new(TemplateManager::new(
+                data_dir.join("templates"),
+                String::new(),
+            ))),
+            image_processor: Arc::new(Mutex::new(ImageProcessor::new(
+                String::new(),
+                String::new(),
+                String::new(),
+            ))),
             llm_providers,
             cancel_flags: Arc::new(Mutex::new(HashMap::new())),
         }

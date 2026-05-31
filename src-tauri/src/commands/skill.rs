@@ -8,11 +8,11 @@ use std::path::PathBuf;
 use tauri::State;
 
 use crate::app_state::AppState;
-use crate::services::skill_types::{Skill, SkillFull, SharedResource, SkillFile};
-use crate::services::skill_trigger::{SkillMatch, TriggerContext};
 use crate::services::prompt_assembler::SkillPromptEntry;
-use crate::services::skill_executor::{ExecutionResult, SubstitutionContext};
 use crate::services::signal_writer::SignalEvent;
+use crate::services::skill_executor::{ExecutionResult, SubstitutionContext};
+use crate::services::skill_trigger::{SkillMatch, TriggerContext};
+use crate::services::skill_types::{SharedResource, Skill, SkillFile, SkillFull};
 use crate::services::template_manager::TemplateManifest;
 
 /// 列出所有技能
@@ -96,14 +96,19 @@ pub async fn import_skill(state: State<'_, AppState>, file_path: String) -> Resu
 
 /// 获取技能完整信息（含支撑文件和共享资源）
 #[tauri::command]
-pub async fn get_skill_full(state: State<'_, AppState>, name: String) -> Result<Option<SkillFull>, String> {
+pub async fn get_skill_full(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<Option<SkillFull>, String> {
     let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
     Ok(manager.get_skill_full(&name))
 }
 
 /// 获取所有共享资源
 #[tauri::command]
-pub async fn list_shared_resources(state: State<'_, AppState>) -> Result<Vec<SharedResource>, String> {
+pub async fn list_shared_resources(
+    state: State<'_, AppState>,
+) -> Result<Vec<SharedResource>, String> {
     let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
     Ok(manager.get_shared_resources())
 }
@@ -121,7 +126,10 @@ pub async fn read_skill_file(
 
 /// 获取技能支撑文件列表
 #[tauri::command]
-pub async fn list_skill_files(state: State<'_, AppState>, name: String) -> Result<Vec<SkillFile>, String> {
+pub async fn list_skill_files(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<Vec<SkillFile>, String> {
     let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
     Ok(manager.get_skill_files(&name))
 }
@@ -294,8 +302,8 @@ pub async fn get_template_manifest(
         return Ok(None);
     }
 
-    let content = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("读取模板清单失败: {}", e))?;
+    let content =
+        std::fs::read_to_string(&manifest_path).map_err(|e| format!("读取模板清单失败: {}", e))?;
 
     let manifest: TemplateManifest =
         serde_json::from_str(&content).map_err(|e| format!("解析模板清单失败: {}", e))?;
@@ -311,11 +319,10 @@ pub async fn save_template_manifest(
 ) -> Result<(), String> {
     let manifest_path = state.data_dir.join("template-manifest.json");
 
-    let content =
-        serde_json::to_string_pretty(&manifest).map_err(|e| format!("序列化模板清单失败: {}", e))?;
+    let content = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| format!("序列化模板清单失败: {}", e))?;
 
-    std::fs::write(&manifest_path, content)
-        .map_err(|e| format!("写入模板清单失败: {}", e))?;
+    std::fs::write(&manifest_path, content).map_err(|e| format!("写入模板清单失败: {}", e))?;
 
     Ok(())
 }
@@ -326,7 +333,7 @@ pub async fn save_template_manifest(
 #[tauri::command]
 pub async fn check_image_deps(state: State<'_, AppState>) -> Result<ImageDepsStatus, String> {
     let processor = state.image_processor.lock().map_err(|e| e.to_string())?;
-    
+
     Ok(ImageDepsStatus {
         ocr_configured: processor.has_ocr(),
         vision_configured: processor.can_process_images(),
@@ -342,14 +349,19 @@ pub async fn probe_llm_multimodal(state: State<'_, AppState>) -> Result<bool, St
     let (llm_api_key, llm_base_url, llm_model) = {
         let mgr = state.llm_providers.lock().map_err(|e| e.to_string())?;
         mgr.get_default_provider()
-            .map(|p| (p.api_key.clone(), p.base_url.clone(), p.model.clone()))
+            .map(|p| {
+                (
+                    p.get_default_key_value(),
+                    p.base_url.clone(),
+                    p.get_default_model_name(),
+                )
+            })
             .unwrap_or_default()
     };
-    
+
     // 创建临时处理器进行探测
-    let processor = crate::services::image_processor::ImageProcessor::new(
-        llm_api_key, llm_base_url, llm_model
-    );
+    let processor =
+        crate::services::image_processor::ImageProcessor::new(llm_api_key, llm_base_url, llm_model);
     Ok(processor.probe_multimodal().await)
 }
 
@@ -365,7 +377,7 @@ pub async fn save_image_config(
     vision_fallback_model: Option<String>,
 ) -> Result<(), String> {
     let mut processor = state.image_processor.lock().map_err(|e| e.to_string())?;
-    
+
     // 配置 OCR
     if let (Some(provider), Some(api_key)) = (ocr_provider, ocr_api_key) {
         let ocr_provider = match provider.as_str() {
@@ -374,7 +386,7 @@ pub async fn save_image_config(
             "llm" => crate::services::image_processor::OcrProvider::Llm,
             _ => return Err(format!("不支持的 OCR 提供商: {}", provider)),
         };
-        
+
         let config = crate::services::image_processor::OcrConfig {
             provider: ocr_provider,
             api_key,
@@ -382,9 +394,13 @@ pub async fn save_image_config(
         };
         processor.set_ocr_config(config);
     }
-    
+
     // 配置备用 Vision（当主 LLM 不支持多模态时使用）
-    if let (Some(api_key), Some(base_url), Some(model)) = (vision_fallback_api_key, vision_fallback_base_url, vision_fallback_model) {
+    if let (Some(api_key), Some(base_url), Some(model)) = (
+        vision_fallback_api_key,
+        vision_fallback_base_url,
+        vision_fallback_model,
+    ) {
         let config = crate::services::image_processor::VisionFallback {
             api_key,
             base_url,
@@ -392,7 +408,7 @@ pub async fn save_image_config(
         };
         processor.set_vision_fallback(config);
     }
-    
+
     Ok(())
 }
 
@@ -413,27 +429,28 @@ pub async fn process_image(
             processor.can_process_images(),
         )
     };
-    
+
     if !can_process {
         return Err("请先配置 OCR 或确保 LLM 支持多模态".to_string());
     }
-    
+
     // 创建使用相同配置的新处理器实例
-    let mut processor = crate::services::image_processor::ImageProcessor::new(
-        llm_api_key, llm_base_url, llm_model
-    );
+    let mut processor =
+        crate::services::image_processor::ImageProcessor::new(llm_api_key, llm_base_url, llm_model);
     if let Some(ocr) = ocr_config {
         processor.set_ocr_config(ocr);
     }
-    
+
     let result = processor
         .process_image(&image_path)
         .await
         .map_err(|e| e.to_string())?;
-    
+
     Ok(ImageProcessResult {
         image_type: match result.image_type {
-            crate::services::image_processor::ImageType::TextScreenshot => "text_screenshot".to_string(),
+            crate::services::image_processor::ImageType::TextScreenshot => {
+                "text_screenshot".to_string()
+            }
             crate::services::image_processor::ImageType::Flowchart => "flowchart".to_string(),
             crate::services::image_processor::ImageType::Architecture => "architecture".to_string(),
             crate::services::image_processor::ImageType::Table => "table".to_string(),

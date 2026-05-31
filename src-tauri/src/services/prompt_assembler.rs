@@ -5,7 +5,7 @@
 //!   - 控制 token 预算（上下文窗口的 1%）
 //!   - 支持压缩模式
 
-use crate::services::skill_types::{Skill, extract_triggers_from_body};
+use crate::services::skill_types::{extract_triggers_from_body, Skill};
 
 /// 系统提示组装器
 pub struct PromptAssembler {
@@ -41,7 +41,11 @@ impl PromptAssembler {
         // 按分类排序
         let mut sorted_skills: Vec<&Skill> = skills.iter().collect();
         sorted_skills.sort_by(|a, b| {
-            let cat_ord = a.metadata.category.to_string().cmp(&b.metadata.category.to_string());
+            let cat_ord = a
+                .metadata
+                .category
+                .to_string()
+                .cmp(&b.metadata.category.to_string());
             if cat_ord == std::cmp::Ordering::Equal {
                 a.name.cmp(&b.name)
             } else {
@@ -91,11 +95,7 @@ impl PromptAssembler {
             .map(|s| SkillPromptEntry {
                 id: s.name.clone(),
                 name: s.metadata.name.clone().unwrap_or_else(|| s.name.clone()),
-                description: s
-                    .metadata
-                    .description
-                    .clone()
-                    .unwrap_or_default(),
+                description: s.metadata.description.clone().unwrap_or_default(),
                 category: s.metadata.category.to_string(),
                 phase: match &s.metadata.phase {
                     crate::services::skill_types::SkillPhase::All => Some("all".to_string()),
@@ -108,7 +108,11 @@ impl PromptAssembler {
 
     /// 格式化单个技能条目（完整版）
     fn format_skill_entry(&self, skill: &Skill) -> String {
-        let mut entry = format!("- **{}**: {}", skill.name, Self::truncate(&skill.metadata.description.clone().unwrap_or_default(), 100));
+        let mut entry = format!(
+            "- **{}**: {}",
+            skill.name,
+            Self::truncate(&skill.metadata.description.clone().unwrap_or_default(), 100)
+        );
 
         let triggers = extract_triggers_from_body(&skill.body);
         if !triggers.is_empty() {

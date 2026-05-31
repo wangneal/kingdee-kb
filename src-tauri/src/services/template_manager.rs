@@ -91,7 +91,10 @@ impl TemplateManager {
 
     /// 下载模板
     pub async fn download_template(&self, template_id: &str) -> Result<PathBuf, TemplateError> {
-        let manifest = self.manifest.as_ref().ok_or(TemplateError::ManifestNotLoaded)?;
+        let manifest = self
+            .manifest
+            .as_ref()
+            .ok_or(TemplateError::ManifestNotLoaded)?;
 
         // 查找模板
         let template = manifest
@@ -135,8 +138,7 @@ impl TemplateManager {
         std::fs::create_dir_all(&self.cache_dir)
             .map_err(|e| TemplateError::IoError(e.to_string()))?;
 
-        std::fs::write(&cache_path, &bytes)
-            .map_err(|e| TemplateError::IoError(e.to_string()))?;
+        std::fs::write(&cache_path, &bytes).map_err(|e| TemplateError::IoError(e.to_string()))?;
 
         Ok(cache_path)
     }
@@ -146,7 +148,10 @@ impl TemplateManager {
         &self,
         phase: &str,
     ) -> Result<Vec<PathBuf>, TemplateError> {
-        let manifest = self.manifest.as_ref().ok_or(TemplateError::ManifestNotLoaded)?;
+        let manifest = self
+            .manifest
+            .as_ref()
+            .ok_or(TemplateError::ManifestNotLoaded)?;
 
         let phase_templates = manifest
             .phases

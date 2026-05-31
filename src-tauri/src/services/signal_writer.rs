@@ -63,7 +63,11 @@ impl SignalWriter {
     /// 读取最近的 N 条事件
     pub fn read_recent(&self, count: usize) -> Result<Vec<SignalEvent>, std::io::Error> {
         let all = self.read_all()?;
-        let start = if all.len() > count { all.len() - count } else { 0 };
+        let start = if all.len() > count {
+            all.len() - count
+        } else {
+            0
+        };
         Ok(all[start..].to_vec())
     }
 
