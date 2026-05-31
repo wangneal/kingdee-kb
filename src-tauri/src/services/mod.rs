@@ -49,6 +49,7 @@ pub mod template_pptx;
 pub mod template_scanner;
 pub mod template_schema;
 pub mod template_xlsx;
+pub mod token;
 pub mod text_cleaner;
 pub mod tool_policy;
 pub mod traits;
