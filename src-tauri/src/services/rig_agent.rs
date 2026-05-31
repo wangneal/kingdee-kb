@@ -263,7 +263,7 @@ impl RigAgent {
             crate::services::tool_policy::agent_tool_policy_prompt()
         );
 
-        let model = &config.model;
+        let model = config.get_default_model_name();
         let temperature = config.temperature as f64;
         let max_tokens = agent_output_tokens(config.max_tokens);
         let prompt = build_prompt_with_history(history, user_message);
@@ -324,7 +324,7 @@ impl RigAgent {
                     ));
 
                     let mut stream = completions_client
-                        .agent(model)
+                        .agent(&model)
                         .preamble(&system_prompt)
                         .tools(tools)
                         .temperature(temperature)
@@ -378,7 +378,7 @@ impl RigAgent {
                     ));
 
                     let mut stream = client
-                        .agent(model)
+                        .agent(&model)
                         .preamble(&system_prompt)
                         .tools(tools)
                         .temperature(temperature)

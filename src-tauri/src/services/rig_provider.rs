@@ -41,24 +41,11 @@ fn normalize_anthropic_auth_headers(
     uri: &rig_core::http_client::Uri,
     headers: &mut rig_core::http_client::HeaderMap,
 ) {
-    let Some(x_api_key) = headers.get("x-api-key").cloned() else {
-        return;
-    };
-
+    // Anthropic-compatible providers, including MiMo Token Plan, usually
+    // follow Anthropic's `x-api-key` header. The official endpoint is strict
+    // about not receiving an extra Bearer token.
     if is_official_anthropic_host(uri.host()) {
         headers.remove("Authorization");
-        return;
-    }
-
-    headers.remove("x-api-key");
-    if !headers.contains_key("Authorization") {
-        if let Ok(key_str) = x_api_key.to_str() {
-            if let Ok(auth_val) =
-                rig_core::http_client::HeaderValue::from_str(&format!("Bearer {}", key_str))
-            {
-                headers.insert("Authorization", auth_val);
-            }
-        }
     }
 }
 

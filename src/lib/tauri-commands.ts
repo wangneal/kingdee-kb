@@ -993,8 +993,8 @@ export async function recordHealthMetric(
   notes: string
 ): Promise<number> {
   return invoke("record_health_metric", {
-    project_id: projectId,
-    indicator_type: indicatorType,
+    projectId,
+    indicatorType,
     value,
     notes,
   });
@@ -1002,7 +1002,7 @@ export async function recordHealthMetric(
 
 // 健康风险报告
 export async function generateRiskReport(projectId: number, context: string): Promise<string> {
-  return invoke("generate_risk_report", { project_id: projectId, context });
+  return invoke("generate_risk_report", { projectId, context });
 }
 
 // 防身话术
@@ -1018,8 +1018,8 @@ export async function extractScopeFromDocument(
   docId: number
 ): Promise<CandidateScopeItem[]> {
   return invoke("extract_scope_from_document", {
-    project_id: projectId,
-    doc_id: docId,
+    projectId,
+    docId,
   });
 }
 
@@ -1027,16 +1027,16 @@ export async function confirmScopeItems(
   projectId: number,
   items: CandidateScopeItem[]
 ): Promise<number> {
-  return invoke("confirm_scope_items", { project_id: projectId, items });
+  return invoke("confirm_scope_items", { projectId, items });
 }
 
 // 整库备份
 export async function exportDatabase(targetPath: string): Promise<void> {
-  return invoke("export_database", { target_path: targetPath });
+  return invoke("export_database", { targetPath });
 }
 
 export async function importDatabase(backupPath: string): Promise<ImportDbResult> {
-  return invoke("import_database", { backup_path: backupPath });
+  return invoke("import_database", { backupPath });
 }
 
 // ─── Phase 12b: 在线 ASR Provider ───
@@ -1074,8 +1074,8 @@ export async function recognizeAudioWithProvider(
   language?: string
 ): Promise<AsrResult> {
   return invoke("recognize_audio_with_provider", {
-    provider_type: providerType,
-    audio_data: audioData,
+    providerType,
+    audioData,
     language: language ?? null,
   });
 }

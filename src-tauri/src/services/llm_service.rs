@@ -105,8 +105,9 @@ fn with_anthropic_headers(
     url: &str,
     api_key: &str,
 ) -> reqwest::RequestBuilder {
+    let request = request.header("x-api-key", api_key);
     let request = if is_official_anthropic_url(url) {
-        request.header("x-api-key", api_key)
+        request
     } else {
         request.header("Authorization", format!("Bearer {}", api_key))
     };
