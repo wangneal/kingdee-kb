@@ -3,6 +3,7 @@ pub mod audio_capture;
 pub mod bm25_service;
 pub mod chinese_postprocess;
 pub mod chunker;
+pub mod context_budget;
 pub mod cost_tracker;
 pub mod deliverable_recipes;
 pub mod desensitize;
