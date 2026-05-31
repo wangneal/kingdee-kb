@@ -1,8 +1,6 @@
 //! 统一 Token 计数模块
 //! 全项目所有 token 计算统一通过此模块，替代现有三套标准。
 
-use std::hash::{Hash, Hasher};
-
 /// Token 计数错误
 #[derive(Debug)]
 pub enum TokenError {

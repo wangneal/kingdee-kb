@@ -98,7 +98,7 @@ mod tests {
     #[test]
     fn test_retain_recent_truncates() {
         let msgs = vec![
-            ChatMessage { role: "user".into(), content: "hello".repeat(1000), id: None, token_count: None },
+            ChatMessage { role: "user".into(), content: "hello".repeat(1000) },
         ];
         let result = retain_recent(&msgs, 10);
         assert!(result.len() <= 1);

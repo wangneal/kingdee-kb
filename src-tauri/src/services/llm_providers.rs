@@ -1251,6 +1251,7 @@ mod tests {
                 is_default: true,
                 is_multimodal: None,
                 last_probe_at: None,
+                ..Default::default()
             }],
         };
         manager.add_provider(provider).unwrap();
@@ -1342,6 +1343,7 @@ mod tests {
                     is_default: true,
                     is_multimodal: Some(false),
                     last_probe_at: None,
+                    ..Default::default()
                 }],
             })
             .unwrap();
