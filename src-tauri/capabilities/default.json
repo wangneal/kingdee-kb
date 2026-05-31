@@ -9,6 +9,10 @@
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
     "global-shortcut:allow-is-registered",
-    "dialog:default"
+    "dialog:default",
+    "fs:allow-mkdir",
+    "fs:allow-write-file",
+    "fs:allow-exists",
+    "fs:scope-temp-recursive"
   ]
 }

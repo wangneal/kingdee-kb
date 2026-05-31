@@ -37,6 +37,10 @@ import {
 } from "../lib/tauri-commands";
 import { listLLMProviders, processImage } from "../lib/skill-commands";
 import type { LLMProviderConfig } from "../lib/skill-types";
+import {
+  extractFilesFromPasteEvent,
+  extractFilesFromDropEvent,
+} from "../lib/clipboard-files";
 
 interface ChatAttachment {
   id: string;
@@ -48,6 +52,8 @@ interface ChatAttachment {
   extractedText?: string;
   charCount?: number;
   error?: string;
+  /** data URL for preview (temp files that convertFileSrc can't access) */
+  previewUrl?: string;
 }
 
 function nextId(): string {
@@ -129,6 +135,7 @@ export default function Chat() {
   const [selectedProviderId, setSelectedProviderId] = useState<string>("");
   const [selectedModelId, setSelectedModelId] = useState<string>("");
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -296,6 +303,69 @@ export default function Chat() {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
+  const addFilesAsAttachments = useCallback(
+    (files: import("../lib/clipboard-files").PastedFile[]) => {
+      const newAttachments = files.map((f) => {
+        const att = createAttachment(f.path);
+        return f.previewUrl ? { ...att, previewUrl: f.previewUrl } : att;
+      });
+      setAttachments((prev) => [...prev, ...newAttachments]);
+    },
+    [],
+  );
+
+  const handlePaste = useCallback(
+    async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const cd = e.nativeEvent.clipboardData;
+      const fileCount = cd?.files.length ?? 0;
+      console.log("[Paste] files:", fileCount, cd?.types, cd?.items ? Array.from(cd.items).map((i) => `${i.kind}/${i.type}`) : []);
+      if (fileCount === 0) return; // plain text — let browser handle
+
+      const files = await extractFilesFromPasteEvent(e.nativeEvent);
+      console.log("[Paste] extracted:", files.length, files.map((f) => f.name));
+      if (files.length === 0) return;
+      e.preventDefault();
+      addFilesAsAttachments(files);
+    },
+    [addFilesAsAttachments],
+  );
+
+  const dragCounterRef = useRef(0);
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current === 0) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback(
+    async (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDragging(false);
+      dragCounterRef.current = 0;
+
+      const files = await extractFilesFromDropEvent(e.nativeEvent);
+      if (files.length === 0) return;
+      addFilesAsAttachments(files);
+    },
+    [addFilesAsAttachments],
+  );
+
   // Cancel running agent stream
   const handleCancel = useCallback(async () => {
     await agent.cancelSession("chat");
@@ -442,7 +512,22 @@ export default function Chat() {
       </div>
 
       {/* Input bar */}
-      <div className="border-t border-neutral-200 bg-white p-4">
+      <div
+        className={`relative border-t border-neutral-200 bg-white p-4 transition-colors ${
+          isDragging ? 'border-blue-400 bg-blue-50/50' : ''
+        }`}
+        onDragOver={handleDragOver}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {isDragging && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+            <span className="rounded-lg border-2 border-dashed border-blue-400 bg-blue-50/80 px-6 py-3 text-sm font-medium text-blue-600">
+              松开以添加附件
+            </span>
+          </div>
+        )}
         <div className="mx-auto max-w-3xl">
           {attachments.length > 0 && (
             <div className="mb-3 flex flex-wrap gap-2">
@@ -563,7 +648,8 @@ export default function Chat() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="输入问题，或先添加文档/图片附件..."
+              onPaste={handlePaste}
+              placeholder="输入问题，或先添加文档/图片附件…"
               rows={1}
               disabled={loading}
               className="flex-1 resize-none rounded-lg border border-neutral-200 bg-white px-4 py-2.5 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 disabled:opacity-50"
@@ -824,7 +910,8 @@ function AttachmentChip({
   attachment: ChatAttachment;
   onRemove: () => void;
 }) {
-  const preview = attachment.kind === "image" ? convertFileSrc(attachment.path) : undefined;
+  const preview = attachment.previewUrl
+    || (attachment.kind === "image" ? convertFileSrc(attachment.path) : undefined);
   const statusText =
     attachment.status === "ingesting"
       ? "入库中"

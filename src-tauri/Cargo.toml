@@ -81,6 +81,9 @@ ffmpeg-sidecar = "2"
 # Global Shortcut (OS-level Alt+Space)
 tauri-plugin-global-shortcut = "2"
 
+# Clipboard file paste: write temporary files from frontend
+tauri-plugin-fs = "2"
+
 # ReAct Agent
 async-trait = "0.1"
 
