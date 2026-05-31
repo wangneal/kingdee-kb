@@ -51,6 +51,7 @@ pub mod template_xlsx;
 pub mod text_cleaner;
 pub mod tool_policy;
 pub mod traits;
+pub mod types;
 pub mod vector_index;
 pub mod video_transcriber;
 pub mod whisper_service;
