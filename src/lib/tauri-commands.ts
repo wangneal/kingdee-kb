@@ -105,8 +105,9 @@ export interface RAGResponse {
 }
 
 // ── Tauri command wrappers ───────────────────────────────────────────────────
-// NOTE: Tauri v2 invoke() does NOT auto-convert camelCase↔snake_case.
-// All parameter keys MUST match the Rust function parameter names exactly (snake_case).
+// NOTE: Tauri v2 #[tauri::command] defaults to rename_all="camelCase".
+// JS invoke() must use camelCase keys (e.g. filePath, not file_path).
+// Rust function params stay snake_case; the macro handles the mapping.
 
 /** Check if any LLM provider is configured with a valid API key */
 export async function isLLMConfigured(): Promise<boolean> {
