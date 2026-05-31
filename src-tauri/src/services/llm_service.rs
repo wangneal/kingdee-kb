@@ -347,6 +347,28 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+/// 消息上下文状态 — 独立于 ChatMessage 的扩展信息
+#[derive(Debug, Clone, Default)]
+pub struct MessageContext {
+    /// 消息唯一 ID
+    pub id: Option<String>,
+    /// token 计数缓存
+    pub token_count: Option<u32>,
+}
+
+impl MessageContext {
+    pub fn new_with_id() -> Self {
+        Self { id: Some(uuid::Uuid::new_v4().to_string()), token_count: None }
+    }
+    pub fn compute_token_count(&mut self, content: &str) {
+        if self.token_count.is_none() {
+            let ch = content.chars().filter(|c| !c.is_ascii()).count();
+            let ascii = content.len() - ch;
+            self.token_count = Some((ch as f32 / 1.5 + ascii as f32 / 4.0) as u32);
+        }
+    }
+}
+
 // 鈹€鈹€鈹€ SSE 浜嬩欢 鈹€鈹€鈹€
 
 /// 鏉ヨ嚜 LLM 鐨勫崟涓?SSE 娴佸紡鍒嗗潡
