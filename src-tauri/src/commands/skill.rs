@@ -372,9 +372,6 @@ pub async fn save_image_config(
     ocr_provider: Option<String>,
     ocr_api_key: Option<String>,
     ocr_secret_key: Option<String>,
-    vision_fallback_api_key: Option<String>,
-    vision_fallback_base_url: Option<String>,
-    vision_fallback_model: Option<String>,
 ) -> Result<(), String> {
     let mut processor = state.image_processor.lock().map_err(|e| e.to_string())?;
 
@@ -393,20 +390,6 @@ pub async fn save_image_config(
             secret_key: ocr_secret_key,
         };
         processor.set_ocr_config(config);
-    }
-
-    // 配置备用 Vision（当主 LLM 不支持多模态时使用）
-    if let (Some(api_key), Some(base_url), Some(model)) = (
-        vision_fallback_api_key,
-        vision_fallback_base_url,
-        vision_fallback_model,
-    ) {
-        let config = crate::services::image_processor::VisionFallback {
-            api_key,
-            base_url,
-            model,
-        };
-        processor.set_vision_fallback(config);
     }
 
     Ok(())

@@ -43,20 +43,12 @@ pub enum OcrProvider {
     Llm,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VisionFallback {
-    pub api_key: String,
-    pub base_url: String,
-    pub model: String,
-}
-
 pub struct ImageProcessor {
     ocr_config: Option<OcrConfig>,
     client: reqwest::Client,
     llm_api_key: String,
     llm_base_url: String,
     llm_model: String,
-    vision_fallback: Option<VisionFallback>,
     llm_multimodal: Arc<AtomicBool>,
     probed: Arc<AtomicBool>,
 }
@@ -69,7 +61,6 @@ impl ImageProcessor {
             llm_api_key,
             llm_base_url,
             llm_model,
-            vision_fallback: None,
             llm_multimodal: Arc::new(AtomicBool::new(false)),
             probed: Arc::new(AtomicBool::new(false)),
         }
@@ -77,10 +68,6 @@ impl ImageProcessor {
 
     pub fn set_ocr_config(&mut self, config: OcrConfig) {
         self.ocr_config = Some(config);
-    }
-
-    pub fn set_vision_fallback(&mut self, config: VisionFallback) {
-        self.vision_fallback = Some(config);
     }
 
     /// 获取 LLM API Key
@@ -157,7 +144,7 @@ impl ImageProcessor {
     }
 
     pub fn can_process_images(&self) -> bool {
-        self.is_llm_multimodal() || self.vision_fallback.is_some() || self.ocr_config.is_some()
+        self.is_llm_multimodal() || self.ocr_config.is_some()
     }
 
     pub fn get_ocr_provider(&self) -> Option<String> {
@@ -341,20 +328,20 @@ impl ImageProcessor {
         Ok(words.join("\n"))
     }
 
-    /// LLM 图像理解（自动选择：主 LLM 或备用配置）
+    /// LLM 图像理解（使用主 LLM 的多模态能力）
     async fn vision(
         &self,
         img_base64: &str,
         local_path: Option<&str>,
         prompt: &str,
     ) -> Result<String, ImageError> {
-        let (api_key, base_url, model) = if self.is_llm_multimodal() {
-            (&self.llm_api_key, &self.llm_base_url, &self.llm_model)
-        } else if let Some(ref fb) = self.vision_fallback {
-            (&fb.api_key, &fb.base_url, &fb.model)
-        } else {
+        if !self.is_llm_multimodal() {
             return Err(ImageError::LlmNotMultimodal);
-        };
+        }
+
+        let api_key = &self.llm_api_key;
+        let base_url = &self.llm_base_url;
+        let model = &self.llm_model;
 
         if api_key.is_empty() {
             return Err(ImageError::LlmNotConfigured);

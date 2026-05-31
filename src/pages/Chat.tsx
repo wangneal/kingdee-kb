@@ -316,13 +316,7 @@ export default function Chat() {
 
   const handlePaste = useCallback(
     async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-      const cd = e.nativeEvent.clipboardData;
-      const fileCount = cd?.files.length ?? 0;
-      console.log("[Paste] files:", fileCount, cd?.types, cd?.items ? Array.from(cd.items).map((i) => `${i.kind}/${i.type}`) : []);
-      if (fileCount === 0) return; // plain text — let browser handle
-
       const files = await extractFilesFromPasteEvent(e.nativeEvent);
-      console.log("[Paste] extracted:", files.length, files.map((f) => f.name));
       if (files.length === 0) return;
       e.preventDefault();
       addFilesAsAttachments(files);
@@ -452,7 +446,7 @@ export default function Chat() {
 
       {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4">
-        <div className="mx-auto max-w-3xl space-y-4">
+        <div className="space-y-4">
           {messages.length === 0 && !loading ? (
             <div className="flex flex-col items-center justify-center pt-20 text-center">
               <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-amber-50">
@@ -528,7 +522,7 @@ export default function Chat() {
             </span>
           </div>
         )}
-        <div className="mx-auto max-w-3xl">
+        <div>
           {attachments.length > 0 && (
             <div className="mb-3 flex flex-wrap gap-2">
               {attachments.map((attachment) => (
