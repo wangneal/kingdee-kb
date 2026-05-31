@@ -40,9 +40,35 @@ npm-debug.log*
 test-results/
 playwright-report/
 
-# Planning docs are tracked per config.json (commit_docs: true)
+# GSD planning framework
+.planning/
+
+# OpenCode framework skills
+.opencode/
+
+# Embedding model cache (运行时自动下载)
+.fastembed_cache/
+
+# AI model binaries
+models/*.bin
+
+# CLI tool cache
+.antigravitycli/
+
+# GSD temporary files
+PLAN.md
 SPEC.md
 task-summary-*.md
+
+# Office temp lock files
+~$*.docx
+~$*.xlsx
+~$*.pptx
+~$*.xls
+~$*.doc
+
+# Cargo review logs
+cargo-*-review.log
 
 # Playwright test output
 test-results/
