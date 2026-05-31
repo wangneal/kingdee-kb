@@ -226,7 +226,7 @@ export async function setEmbeddingModelConfig(
   customModelDir?: string | null
 ): Promise<boolean> {
   return invoke("set_embedding_model_config", {
-    custom_model_dir: customModelDir ?? null,
+    customModelDir: customModelDir ?? null,
   });
 }
 
@@ -419,11 +419,11 @@ export interface ProductMeta {
 // ── Phase 9+ command wrappers ────────────────────────────────────────────────
 
 export async function scanTemplates(templateDir?: string): Promise<TemplateInfo[]> {
-  return invoke("scan_templates", { template_dir: templateDir ?? null });
+  return invoke("scan_templates", { templateDir: templateDir ?? null });
 }
 
 export async function extractTemplateFields(filePath: string): Promise<FieldInfo[]> {
-  return invoke("extract_template_fields", { file_path: filePath });
+  return invoke("extract_template_fields", { filePath });
 }
 
 export async function getTemplateSchema(
@@ -434,11 +434,11 @@ export async function getTemplateSchema(
   writeSidecar?: boolean
 ): Promise<TemplateSchema> {
   return invoke("get_template_schema", {
-    template_id: templateId,
-    template_name: templateName,
-    file_path: filePath,
+    templateId,
+    templateName,
+    filePath,
     phase,
-    write_sidecar: writeSidecar ?? false,
+    writeSidecar: writeSidecar ?? false,
   });
 }
 
@@ -451,7 +451,7 @@ export async function generateDoc(request: GenerateDocRequest): Promise<Generate
 }
 
 export async function getDeliverableRecipe(templateId: string): Promise<DeliverableRecipe> {
-  return invoke("get_deliverable_recipe", { template_id: templateId });
+  return invoke("get_deliverable_recipe", { templateId });
 }
 
 export async function listProducts(project?: string): Promise<ProductMeta[]> {
@@ -657,7 +657,7 @@ export interface ProjectHealthScore {
 // ── P2: 蓝图提炼 / Fit-Gap / 脱敏 ──────────────────────────────────────
 
 export async function extractBlueprint(researchContext: string): Promise<string> {
-  return invoke("extract_blueprint", { research_context: researchContext });
+  return invoke("extract_blueprint", { researchContext });
 }
 
 export async function analyzeFitGap(requirements: string): Promise<string> {
@@ -844,7 +844,7 @@ export interface VideoPipelineResult {
 export async function transcribeVideoFile(
   videoPath: string,
 ): Promise<VideoTranscriptionResult> {
-  return invoke("transcribe_video_file", { video_path: videoPath });
+  return invoke("transcribe_video_file", { videoPath });
 }
 
 /** Full video pipeline: transcribe → ingest into KB → optional meeting minutes. */
@@ -854,9 +854,9 @@ export async function transcribeAndIngestVideo(
   generateMinutes: boolean,
 ): Promise<VideoPipelineResult> {
   return invoke("transcribe_and_ingest_video", {
-    video_path: videoPath,
+    videoPath,
     project,
-    generate_minutes: generateMinutes,
+    generateMinutes,
   });
 }
 
@@ -935,8 +935,8 @@ export async function createRiskProject(
 ): Promise<number> {
   return invoke("create_risk_project", {
     name,
-    client_name: clientName ?? "",
-    kb_project: kbProject ?? "",
+    clientName: clientName ?? "",
+    kbProject: kbProject ?? "",
   });
 }
 
@@ -945,12 +945,12 @@ export async function listRiskProjects(): Promise<RiskProject[]> {
 }
 
 export async function deleteRiskProject(projectId: number): Promise<void> {
-  return invoke("delete_risk_project", { project_id: projectId });
+  return invoke("delete_risk_project", { projectId });
 }
 
 // 合同范围
 export async function listScopeItems(projectId: number): Promise<ContractScopeItem[]> {
-  return invoke("list_scope_items", { project_id: projectId });
+  return invoke("list_scope_items", { projectId });
 }
 
 export async function addScopeItem(
@@ -961,16 +961,16 @@ export async function addScopeItem(
   detail: string
 ): Promise<number> {
   return invoke("add_scope_item", {
-    project_id: projectId,
+    projectId,
     category,
     description,
-    is_in_scope: isInScope,
+    isInScope,
     detail,
   });
 }
 
 export async function deleteScopeItem(itemId: number): Promise<void> {
-  return invoke("delete_scope_item", { item_id: itemId });
+  return invoke("delete_scope_item", { itemId });
 }
 
 // 需求蔓延检查
@@ -978,12 +978,12 @@ export async function checkScopeCreep(
   projectId: number,
   requirement: string
 ): Promise<ScopeCreepResult> {
-  return invoke("check_scope_creep", { project_id: projectId, requirement });
+  return invoke("check_scope_creep", { projectId, requirement });
 }
 
 // 项目健康度
 export async function getProjectHealth(projectId: number): Promise<ProjectHealthScore> {
-  return invoke("get_project_health", { project_id: projectId });
+  return invoke("get_project_health", { projectId });
 }
 
 export async function recordHealthMetric(

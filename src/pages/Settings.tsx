@@ -26,8 +26,6 @@ import {
   Star,
   Scan,
   X,
-  ChevronUp,
-  ChevronDown,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -1278,18 +1276,18 @@ const PROTOCOL_LABELS: Record<LLMProtocol, string> = {
 function LLMProviderList() {
   const [providers, setProviders] = useState<LLMProviderConfig[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [editingProvider, setEditingProvider] = useState<LLMProviderConfig | null>(null);
-  const [probing, setProbing] = useState(false);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
-  const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
+  const [dialogProvider, setDialogProvider] = useState<LLMProviderConfig | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [probing, setProbing] = useState(false);
 
   const loadProviders = useCallback(async () => {
+    setLoading(true);
     try {
-      const list = await listLLMProviders();
-      setProviders(list);
-    } catch (err) {
-      console.error("Failed to load providers:", err);
+      const items = await listLLMProviders();
+      setProviders(items);
+    } catch (error) {
+      setActionMsg(error instanceof Error ? error.message : String(error));
     } finally {
       setLoading(false);
     }
@@ -1299,126 +1297,81 @@ function LLMProviderList() {
     loadProviders();
   }, [loadProviders]);
 
-  const handleDelete = useCallback(async (id: string) => {
+  const handleProbeAll = async () => {
+    setProbing(true);
+    setActionMsg("正在检测所有供应商...");
+    try {
+      const results = await probeAllProviders();
+      setProviders((prev) =>
+        prev.map((provider) => ({
+          ...provider,
+          models: provider.models.map((model) => {
+            const result = results.find((item) => item.provider_id === provider.id && item.model_id === model.id);
+            return result ? { ...model, is_multimodal: result.is_multimodal } : model;
+          }),
+        })),
+      );
+      setActionMsg("检测完成");
+    } catch (error) {
+      setActionMsg(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProbing(false);
+    }
+  };
+
+  const handleSetDefault = async (id: string) => {
+    try {
+      await setDefaultLLMProvider(id);
+      await loadProviders();
+      setActionMsg("已设为默认供应商");
+    } catch (error) {
+      setActionMsg(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const handleDelete = async (id: string) => {
     if (!confirm("确定删除此供应商？")) return;
     try {
       await deleteLLMProvider(id);
       await loadProviders();
       setActionMsg("已删除");
-      setTimeout(() => setActionMsg(null), 2000);
-    } catch (err) {
-      setActionMsg(`删除失败：${err instanceof Error ? err.message : String(err)}`);
+    } catch (error) {
+      setActionMsg(error instanceof Error ? error.message : String(error));
     }
-  }, [loadProviders]);
+  };
 
-  const handleSetDefault = useCallback(async (id: string) => {
-    try {
-      await setDefaultLLMProvider(id);
-      await loadProviders();
-      setActionMsg("已设为默认");
-      setTimeout(() => setActionMsg(null), 2000);
-    } catch (err) {
-      setActionMsg(`设置失败：${err instanceof Error ? err.message : String(err)}`);
-    }
-  }, [loadProviders]);
-
-  const handleProbe = useCallback(async () => {
-    setProbing(true);
-    try {
-      const results = await probeAllProviders();
-      // Update local state with probe results
-      setProviders((prev) =>
-        prev.map((p) => ({
-          ...p,
-          models: p.models.map((m) => {
-            const result = results.find((r) => r.provider_id === p.id && r.model_id === m.id);
-            return result ? { ...m, is_multimodal: result.is_multimodal } : m;
-          }),
-        }))
-      );
-    } catch (err) {
-      setActionMsg(`探测失败：${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setProbing(false);
-    }
-  }, []);
-
-  const handleProbeSingleModel = useCallback(async (providerId: string, modelId: string) => {
-    try {
-      const isMultimodal = await probeModelMultimodal(providerId, modelId);
-      setProviders((prev) =>
-        prev.map((p) =>
-          p.id === providerId
-            ? {
-                ...p,
-                models: p.models.map((m) =>
-                  m.id === modelId ? { ...m, is_multimodal: isMultimodal } : m
-                ),
-              }
-            : p
-        )
-      );
-    } catch (err) {
-      setActionMsg(`探测失败：${err instanceof Error ? err.message : String(err)}`);
-    }
-  }, []);
-
-  const handleFormSubmit = useCallback(async (data: LLMProviderInput) => {
-    try {
-      if (data.id) {
-        await updateLLMProvider(data);
-      } else {
-        await addLLMProvider({ ...data, id: crypto.randomUUID() });
-      }
-      await loadProviders();
-      setShowForm(false);
-      setEditingProvider(null);
-      setActionMsg(data.id ? "已更新" : "已添加");
-      setTimeout(() => setActionMsg(null), 2000);
-    } catch (err) {
-      setActionMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`);
-      throw err;
-    }
-  }, [loadProviders]);
-
-  if (loading) {
-    return (
-      <section className="rounded-xl border border-neutral-200 bg-white">
-        <div className="flex items-center justify-center p-8">
-          <Loader2 className="h-5 w-5 animate-spin text-neutral-400" />
-        </div>
-      </section>
-    );
-  }
+  const handleSaved = async () => {
+    setDialogOpen(false);
+    setDialogProvider(null);
+    await loadProviders();
+    setActionMsg("供应商配置已保存");
+  };
 
   return (
     <section className="rounded-xl border border-neutral-200 bg-white">
       <div className="border-b border-neutral-100 px-5 py-3">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-sm font-semibold text-neutral-700">LLM 供应商</h2>
-            <p className="mt-0.5 text-xs text-neutral-400">
-              管理大语言模型供应商配置，支持多供应商、多模型、多 API Key
-            </p>
+            <p className="mt-0.5 text-xs text-neutral-400">管理大语言模型供应商配置，支持多供应商、多模型、多 API Key。</p>
           </div>
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={handleProbe}
+              onClick={handleProbeAll}
               disabled={probing || providers.length === 0}
-              className="flex items-center gap-1.5 rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
+              className="flex items-center gap-1.5 rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-600 transition-colors hover:bg-neutral-50 disabled:opacity-50"
             >
-              {probing ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Scan className="h-3.5 w-3.5" />
-              )}
-              探测多模态
+              {probing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scan className="h-3.5 w-3.5" />}
+              多模态检测
             </button>
             <button
               type="button"
-              onClick={() => { setEditingProvider(null); setShowForm(true); }}
-              className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#1558B0] transition-colors"
+              onClick={() => {
+                setDialogProvider(null);
+                setDialogOpen(true);
+              }}
+              className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-[#1558B0]"
             >
               <Plus className="h-3.5 w-3.5" />
               添加供应商
@@ -1428,13 +1381,13 @@ function LLMProviderList() {
       </div>
 
       <div className="p-5">
-        {actionMsg && (
-          <div className="mb-3 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700">
-            {actionMsg}
-          </div>
-        )}
+        {actionMsg && <div className="mb-3 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700">{actionMsg}</div>}
 
-        {providers.length === 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center p-8">
+            <Loader2 className="h-5 w-5 animate-spin text-neutral-400" />
+          </div>
+        ) : providers.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-8 text-neutral-400">
             <Brain className="mb-2 h-8 w-8" />
             <p className="text-sm">暂无供应商配置</p>
@@ -1446,591 +1399,291 @@ function LLMProviderList() {
               <ProviderCard
                 key={provider.id}
                 provider={provider}
-                expanded={expandedProvider === provider.id}
-                onToggleExpand={() => setExpandedProvider(expandedProvider === provider.id ? null : provider.id)}
-                onSetDefault={() => handleSetDefault(provider.id)}
-                onEdit={() => { setEditingProvider(provider); setShowForm(true); }}
+                onEdit={() => {
+                  setDialogProvider(provider);
+                  setDialogOpen(true);
+                }}
                 onDelete={() => handleDelete(provider.id)}
-                onProbeModel={handleProbeSingleModel}
+                onSetDefault={() => handleSetDefault(provider.id)}
               />
             ))}
           </div>
         )}
       </div>
 
-      {/* Provider Form Dialog */}
-      {showForm && (
+      {dialogOpen && (
         <ProviderFormDialog
-          provider={editingProvider}
-          onSubmit={handleFormSubmit}
-          onClose={() => { setShowForm(false); setEditingProvider(null); }}
+          provider={dialogProvider}
+          onClose={() => {
+            setDialogOpen(false);
+            setDialogProvider(null);
+          }}
+          onSaved={handleSaved}
         />
       )}
     </section>
   );
 }
 
-/** Provider card with expandable models and API keys */
 function ProviderCard({
   provider,
-  expanded,
-  onToggleExpand,
-  onSetDefault,
   onEdit,
   onDelete,
-  onProbeModel,
+  onSetDefault,
 }: {
   provider: LLMProviderConfig;
-  expanded: boolean;
-  onToggleExpand: () => void;
-  onSetDefault: () => void;
   onEdit: () => void;
   onDelete: () => void;
-  onProbeModel: (providerId: string, modelId: string) => void;
+  onSetDefault: () => void;
 }) {
-  const defaultModel = provider.models.find((m) => m.is_default) || provider.models[0];
+  const defaultModel = provider.models.find((model) => model.is_default) ?? provider.models[0];
+  const defaultKey = provider.api_keys.find((key) => key.is_default) ?? provider.api_keys[0];
 
   return (
-    <div
-      className={`rounded-lg border transition-colors ${
-        provider.is_default
-          ? "border-[#1A6BD8]/30 bg-blue-50/30"
-          : "border-neutral-200 bg-white hover:border-neutral-300"
-      }`}
-    >
-      {/* Header */}
-      <div className="flex items-start justify-between p-4">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-medium text-neutral-800">
-              {provider.name}
-            </span>
-            {provider.is_default && (
-              <span className="rounded-full bg-[#1A6BD8] px-2 py-0.5 text-[10px] font-medium text-white">
-                默认
-              </span>
-            )}
-            <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-medium text-neutral-500">
-              {PROTOCOL_LABELS[provider.protocol] || provider.protocol}
-            </span>
-            <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-medium text-neutral-500">
-              {provider.models.length} 模型 · {provider.api_keys.length} Key
-            </span>
+    <div className={`rounded-lg border p-4 transition-colors ${provider.is_default ? "border-[#1A6BD8]/30 bg-blue-50/30" : "border-neutral-200 bg-white hover:border-neutral-300"}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="truncate text-sm font-semibold text-neutral-800">{provider.name}</h3>
+            {provider.is_default && <span className="rounded-full bg-[#1A6BD8] px-2 py-0.5 text-[10px] font-medium text-white">默认</span>}
+            <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-medium text-neutral-500">{PROTOCOL_LABELS[provider.protocol] ?? provider.protocol}</span>
+            <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-medium text-neutral-500">{provider.models.length} 模型 · {provider.api_keys.length} Key</span>
           </div>
-          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-neutral-500">
-            {defaultModel && (
-              <span className="flex items-center gap-1">
-                <Cpu className="h-3 w-3" />
-                {defaultModel.name}
-                {defaultModel.is_multimodal === true && (
-                  <span className="rounded bg-green-100 px-1 py-0.5 text-[9px] font-medium text-green-700">多模态</span>
-                )}
-              </span>
-            )}
-            <span className="flex items-center gap-1">
-              <Server className="h-3 w-3" />
-              {provider.base_url}
-            </span>
+          <div className="mt-2 grid gap-1 text-xs text-neutral-500 md:grid-cols-2">
+            <span className="truncate">默认模型：{defaultModel?.name || provider.model || "未设置"}</span>
+            <span className="truncate">默认 Key：{defaultKey?.name || (provider.api_key ? "旧版 Key" : "未设置")}</span>
+            <span className="truncate md:col-span-2">Base URL：{provider.base_url || "未设置"}</span>
           </div>
         </div>
-        <div className="flex items-center gap-1.5 ml-4 shrink-0">
-          <button
-            type="button"
-            onClick={onToggleExpand}
-            className="rounded-lg p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 transition-colors"
-            title={expanded ? "收起" : "展开"}
-          >
-            {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-          </button>
+        <div className="ml-2 flex shrink-0 items-center gap-1.5">
           {!provider.is_default && (
-            <button
-              type="button"
-              onClick={onSetDefault}
-              className="rounded-lg p-1.5 text-neutral-400 hover:bg-amber-50 hover:text-amber-600 transition-colors"
-              title="设为默认"
-            >
+            <button type="button" onClick={onSetDefault} className="rounded-lg p-1.5 text-neutral-400 transition-colors hover:bg-amber-50 hover:text-amber-600" title="设为默认">
               <Star className="h-4 w-4" />
             </button>
           )}
-          <button
-            type="button"
-            onClick={onEdit}
-            className="rounded-lg p-1.5 text-neutral-400 hover:bg-blue-50 hover:text-blue-600 transition-colors"
-            title="编辑"
-          >
+          <button type="button" onClick={onEdit} className="rounded-lg p-1.5 text-neutral-400 transition-colors hover:bg-blue-50 hover:text-blue-600" title="编辑">
             <Pencil className="h-4 w-4" />
           </button>
-          <button
-            type="button"
-            onClick={onDelete}
-            className="rounded-lg p-1.5 text-neutral-400 hover:bg-red-50 hover:text-red-600 transition-colors"
-            title="删除"
-          >
+          <button type="button" onClick={onDelete} className="rounded-lg p-1.5 text-neutral-400 transition-colors hover:bg-red-50 hover:text-red-600" title="删除">
             <Trash2 className="h-4 w-4" />
           </button>
         </div>
       </div>
-
-      {/* Expanded: Models and API Keys */}
-      {expanded && (
-        <div className="border-t border-neutral-100 px-4 pb-4 pt-3 space-y-4">
-          {/* Models */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="text-xs font-semibold text-neutral-600">模型列表</h4>
-            </div>
-            {provider.models.length === 0 ? (
-              <p className="text-xs text-neutral-400">暂无模型</p>
-            ) : (
-              <div className="space-y-1.5">
-                {provider.models.map((model) => (
-                  <div
-                    key={model.id}
-                    className="flex items-center justify-between rounded-lg bg-neutral-50 px-3 py-2"
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-xs font-medium text-neutral-700 truncate">{model.name}</span>
-                      {model.is_default && (
-                        <span className="rounded bg-[#1A6BD8] px-1.5 py-0.5 text-[9px] font-medium text-white">默认</span>
-                      )}
-                      <span
-                        className={`flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-medium ${
-                          model.is_multimodal === true
-                            ? "bg-green-50 text-green-700"
-                            : model.is_multimodal === false
-                              ? "bg-red-50 text-red-600"
-                              : "bg-neutral-100 text-neutral-400"
-                        }`}
-                      >
-                        <span
-                          className={`h-1 w-1 rounded-full ${
-                            model.is_multimodal === true
-                              ? "bg-green-500"
-                              : model.is_multimodal === false
-                                ? "bg-red-400"
-                                : "bg-neutral-300"
-                          }`}
-                        />
-                        {model.is_multimodal === true
-                          ? "多模态"
-                          : model.is_multimodal === false
-                            ? "纯文本"
-                            : "未探测"}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => onProbeModel(provider.id, model.id)}
-                        className="rounded p-1 text-neutral-400 hover:bg-blue-50 hover:text-blue-600 transition-colors"
-                        title="探测多模态"
-                      >
-                        <Scan className="h-3 w-3" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* API Keys */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="text-xs font-semibold text-neutral-600">API Keys</h4>
-            </div>
-            {provider.api_keys.length === 0 ? (
-              <p className="text-xs text-neutral-400">暂无 API Key</p>
-            ) : (
-              <div className="space-y-1.5">
-                {provider.api_keys.map((key) => (
-                  <div
-                    key={key.id}
-                    className="flex items-center justify-between rounded-lg bg-neutral-50 px-3 py-2"
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Key className="h-3 w-3 text-neutral-400 shrink-0" />
-                      <span className="text-xs font-medium text-neutral-700 truncate">{key.name || "未命名"}</span>
-                      {key.is_default && (
-                        <span className="rounded bg-[#1A6BD8] px-1.5 py-0.5 text-[9px] font-medium text-white">默认</span>
-                      )}
-                      <span className="text-[10px] text-neutral-400 truncate">
-                        {key.key.slice(0, 8)}...{key.key.slice(-4)}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
-// ── Provider Form Dialog ────────────────────────────────────────────────
-
-/** Import for LLMProviderInput type */
-type LLMProviderInput = {
-  id?: string;
-  name: string;
-  protocol: string;
-  baseUrl: string;
-  apiKeys: ApiKeyConfig[];
-  models: ModelConfig[];
-};
+function ProviderTextInput({
+  label,
+  value,
+  onChange,
+  type = "text",
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: string;
+  placeholder?: string;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-xs font-medium text-neutral-600">{label}</span>
+      <input
+        type={type}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+      />
+    </label>
+  );
+}
 
 function ProviderFormDialog({
   provider,
-  onSubmit,
   onClose,
+  onSaved,
 }: {
   provider: LLMProviderConfig | null;
-  onSubmit: (data: LLMProviderInput) => Promise<void>;
   onClose: () => void;
+  onSaved: () => void;
 }) {
+  const defaultProtocol = provider?.protocol ?? "openai";
+  const providerDefaults = PROVIDER_DEFAULTS[defaultProtocol];
   const [name, setName] = useState(provider?.name ?? "");
-  const [protocol, setProtocol] = useState<LLMProtocol>(provider?.protocol ?? "openai");
-  const [baseUrl, setBaseUrl] = useState(provider?.base_url ?? PROVIDER_DEFAULTS.openai.base_url);
-  const [showApiKey, setShowApiKey] = useState(false);
+  const [protocol, setProtocol] = useState<LLMProtocol>(defaultProtocol);
+  const [baseUrl, setBaseUrl] = useState(provider?.base_url ?? providerDefaults.base_url);
+  const [apiKey, setApiKey] = useState("");
+  const [modelsText, setModelsText] = useState(provider?.models.map((model) => model.name).join("\n") ?? providerDefaults.model);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
 
-  // API Keys state
-  const [apiKeys, setApiKeys] = useState<ApiKeyConfig[]>(
-    provider?.api_keys.length
-      ? provider.api_keys
-      : provider?.api_key
-        ? [{ id: crypto.randomUUID(), name: "默认 Key", key: provider.api_key, is_default: true }]
-        : []
-  );
-
-  // Models state
-  const [models, setModels] = useState<ModelConfig[]>(
-    provider?.models.length
-      ? provider.models
-      : provider?.model
-        ? [{ id: crypto.randomUUID(), name: provider.model, is_default: true, is_multimodal: provider.is_multimodal, last_probe_at: provider.last_probe_at }]
-        : []
-  );
-
-  const handleProtocolChange = useCallback((newProtocol: LLMProtocol) => {
-    setProtocol(newProtocol);
-    const defaults = PROVIDER_DEFAULTS[newProtocol];
-    if (defaults) {
-      const oldDefaults = PROVIDER_DEFAULTS[protocol];
-      if (baseUrl === oldDefaults?.base_url || baseUrl === "") {
-        setBaseUrl(defaults.base_url);
-      }
-      // Auto-add default model if empty
-      if (models.length === 0) {
-        setModels([{ id: crypto.randomUUID(), name: defaults.model, is_default: true, is_multimodal: null, last_probe_at: null }]);
-      }
+  const handleProtocolChange = (nextProtocol: LLMProtocol) => {
+    setProtocol(nextProtocol);
+    if (!provider) {
+      setBaseUrl(PROVIDER_DEFAULTS[nextProtocol].base_url);
+      setModelsText(PROVIDER_DEFAULTS[nextProtocol].model);
     }
-  }, [protocol, baseUrl, models.length]);
+  };
 
-  // API Key management
-  const handleAddApiKey = useCallback(() => {
-    setApiKeys((prev) => [
-      ...prev,
-      { id: crypto.randomUUID(), name: `Key ${prev.length + 1}`, key: "", is_default: prev.length === 0 },
-    ]);
-  }, []);
-
-  const handleUpdateApiKey = useCallback((id: string, updates: Partial<ApiKeyConfig>) => {
-    setApiKeys((prev) =>
-      prev.map((k) => (k.id === id ? { ...k, ...updates } : k))
-    );
-  }, []);
-
-  const handleRemoveApiKey = useCallback((id: string) => {
-    setApiKeys((prev) => {
-      const filtered = prev.filter((k) => k.id !== id);
-      // If removed was default, set first as default
-      if (filtered.length > 0 && !filtered.some((k) => k.is_default)) {
-        filtered[0].is_default = true;
-      }
-      return filtered;
-    });
-  }, []);
-
-  const handleSetDefaultApiKey = useCallback((id: string) => {
-    setApiKeys((prev) =>
-      prev.map((k) => ({ ...k, is_default: k.id === id }))
-    );
-  }, []);
-
-  // Model management
-  const handleAddModel = useCallback(() => {
-    setModels((prev) => [
-      ...prev,
-      { id: crypto.randomUUID(), name: "", is_default: prev.length === 0, is_multimodal: null, last_probe_at: null },
-    ]);
-  }, []);
-
-  const handleUpdateModel = useCallback((id: string, updates: Partial<ModelConfig>) => {
-    setModels((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, ...updates } : m))
-    );
-  }, []);
-
-  const handleRemoveModel = useCallback((id: string) => {
-    setModels((prev) => {
-      const filtered = prev.filter((m) => m.id !== id);
-      // If removed was default, set first as default
-      if (filtered.length > 0 && !filtered.some((m) => m.is_default)) {
-        filtered[0].is_default = true;
-      }
-      return filtered;
-    });
-  }, []);
-
-  const handleSetDefaultModel = useCallback((id: string) => {
-    setModels((prev) =>
-      prev.map((m) => ({ ...m, is_default: m.id === id }))
-    );
-  }, []);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim() || models.length === 0) return;
-    setSaving(true);
-    setError(null);
+  const handleProbeModel = async (modelId: string) => {
+    if (!provider) {
+      setMessage("请先保存供应商后再检测模型");
+      return;
+    }
+    setMessage("正在检测模型...");
     try {
-      await onSubmit({
+      const isMultimodal = await probeModelMultimodal(provider.id, modelId);
+      setMessage(isMultimodal ? "检测通过：支持多模态" : "检测完成：纯文本模型");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    setMessage(null);
+
+    const modelNames = modelsText
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    if (!name.trim()) {
+      setMessage("请输入供应商名称");
+      setSaving(false);
+      return;
+    }
+
+    if (modelNames.length === 0) {
+      setMessage("请至少填写一个模型名称");
+      setSaving(false);
+      return;
+    }
+
+    const existingKeys = provider?.api_keys ?? [];
+    const apiKeys: ApiKeyConfig[] = apiKey.trim()
+      ? [{ id: existingKeys[0]?.id ?? crypto.randomUUID(), name: existingKeys[0]?.name ?? "默认 Key", key: apiKey.trim(), is_default: true }]
+      : existingKeys;
+
+    if (protocol !== "local" && apiKeys.length === 0 && !provider?.api_key) {
+      setMessage("请填写 API Key");
+      setSaving(false);
+      return;
+    }
+
+    const models: ModelConfig[] = modelNames.map((modelName, index) => {
+      const existing = provider?.models.find((model) => model.name === modelName);
+      return {
+        id: existing?.id ?? crypto.randomUUID(),
+        name: modelName,
+        is_default: index === 0,
+        is_multimodal: existing?.is_multimodal ?? null,
+        last_probe_at: existing?.last_probe_at ?? null,
+      };
+    });
+
+    try {
+      const payload = {
         id: provider?.id,
         name: name.trim(),
         protocol,
-        baseUrl,
-        apiKeys: apiKeys.filter((k) => k.key.trim()),
-        models: models.filter((m) => m.name.trim()),
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+        baseUrl: baseUrl.trim(),
+        apiKeys,
+        models,
+      };
+      if (provider) {
+        await updateLLMProvider(payload);
+      } else {
+        await addLLMProvider(payload);
+      }
+      await onSaved();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setSaving(false);
     }
   };
 
-  const hasValidModels = models.some((m) => m.name.trim());
-  const hasValidKeys = protocol === "local" || apiKeys.some((k) => k.key.trim());
+  const modelRows = provider?.models ?? [];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-full max-w-lg max-h-[90vh] rounded-xl bg-white shadow-xl flex flex-col">
-        <div className="flex items-center justify-between border-b border-neutral-100 px-5 py-3 shrink-0">
-          <h3 className="text-sm font-semibold text-neutral-800">
-            {provider ? "编辑供应商" : "添加供应商"}
-          </h3>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600"
-          >
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="flex max-h-[90vh] w-full max-w-lg flex-col rounded-xl bg-white shadow-xl">
+        <div className="flex shrink-0 items-center justify-between border-b border-neutral-100 px-5 py-3">
+          <h3 className="text-sm font-semibold text-neutral-800">{provider ? "编辑供应商" : "添加供应商"}</h3>
+          <button type="button" onClick={onClose} className="rounded-lg p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600" title="关闭">
             <X className="h-4 w-4" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-5 space-y-4">
-          {error && (
-            <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-600 flex items-center gap-1.5 shrink-0 animate-fadeIn">
-              <AlertTriangle className="h-3.5 w-3.5" />
-              <span>{error}</span>
-            </div>
-          )}
-          {/* Name */}
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-neutral-600">
-              供应商名称 <span className="text-red-400">*</span>
-            </label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="如：OpenAI、通义千问"
-              required
-              className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-            />
-          </div>
+        <form onSubmit={handleSubmit} className="flex-1 space-y-4 overflow-y-auto p-5">
+          <ProviderTextInput label="供应商名称" value={name} onChange={setName} placeholder="例如 OpenAI、MiMo、通义千问" />
 
-          {/* Protocol */}
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-neutral-600">
-              协议
-            </label>
+          <label className="block">
+            <span className="mb-1.5 block text-xs font-medium text-neutral-600">协议</span>
             <select
               value={protocol}
-              onChange={(e) => handleProtocolChange(e.target.value as LLMProtocol)}
+              onChange={(event) => handleProtocolChange(event.target.value as LLMProtocol)}
               className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
             >
               <option value="openai">OpenAI（Chat Completions）</option>
               <option value="anthropic">Anthropic（Messages）</option>
               <option value="local">本地模型（Ollama / llama.cpp）</option>
             </select>
-          </div>
+          </label>
 
-          {/* Base URL */}
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-neutral-600">
-              Endpoint URL
-            </label>
-            <input
-              type="text"
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="https://api.openai.com/v1"
-              className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-            />
-          </div>
-
-          {/* API Keys */}
+          <ProviderTextInput label="Endpoint URL" value={baseUrl} onChange={setBaseUrl} placeholder="https://api.openai.com/v1" />
           {protocol !== "local" && (
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-xs font-medium text-neutral-600">
-                  API Keys <span className="text-red-400">*</span>
-                </label>
-                <button
-                  type="button"
-                  onClick={handleAddApiKey}
-                  className="flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-medium text-[#1A6BD8] hover:bg-blue-50 transition-colors"
-                >
-                  <Plus className="h-3 w-3" />
-                  添加 Key
-                </button>
-              </div>
-              <div className="space-y-2">
-                {apiKeys.map((key) => (
-                  <div key={key.id} className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={key.name}
-                      onChange={(e) => handleUpdateApiKey(key.id, { name: e.target.value })}
-                      placeholder="名称"
-                      className="w-24 rounded-lg border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
-                    />
-                    <div className="relative flex-1">
-                      <input
-                        type={showApiKey ? "text" : "password"}
-                        value={key.key}
-                        onChange={(e) => handleUpdateApiKey(key.id, { key: e.target.value })}
-                        placeholder="sk-..."
-                        className="w-full rounded-lg border border-neutral-200 px-2 py-1.5 pr-8 text-xs outline-none focus:border-[#1A6BD8]"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowApiKey((v) => !v)}
-                        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
-                        tabIndex={-1}
-                      >
-                        {showApiKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-                      </button>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleSetDefaultApiKey(key.id)}
-                      className={`rounded p-1 transition-colors ${
-                        key.is_default
-                          ? "text-amber-500"
-                          : "text-neutral-300 hover:text-amber-500"
-                      }`}
-                      title="设为默认"
-                    >
-                      <Star className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveApiKey(key.id)}
-                      className="rounded p-1 text-neutral-300 hover:text-red-500 transition-colors"
-                      title="删除"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
+            <ProviderTextInput
+              label={provider ? "API Key（留空则保持原值）" : "API Key"}
+              value={apiKey}
+              onChange={setApiKey}
+              type="password"
+              placeholder={provider ? "已配置，留空不修改" : "sk-..."}
+            />
+          )}
+
+          <label className="block">
+            <span className="mb-1.5 block text-xs font-medium text-neutral-600">模型列表（每行一个，第一行为默认模型）</span>
+            <textarea
+              value={modelsText}
+              onChange={(event) => setModelsText(event.target.value)}
+              rows={5}
+              className="w-full rounded-lg border border-neutral-200 px-3 py-2 font-mono text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+            />
+          </label>
+
+          {provider && modelRows.length > 0 && (
+            <div className="rounded-lg border border-neutral-100 bg-neutral-50 p-3">
+              <div className="mb-2 text-xs font-semibold text-neutral-600">多模态检测</div>
+              <div className="flex flex-wrap gap-2">
+                {modelRows.map((model) => (
+                  <button
+                    key={model.id}
+                    type="button"
+                    onClick={() => handleProbeModel(model.id)}
+                    className="flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-2.5 py-1.5 text-xs text-neutral-600 transition-colors hover:bg-neutral-100"
+                  >
+                    <Scan className="h-3.5 w-3.5" />
+                    {model.name}
+                    {model.is_multimodal === true && <span className="rounded bg-green-100 px-1 py-0.5 text-[9px] text-green-700">多模态</span>}
+                    {model.is_multimodal === false && <span className="rounded bg-red-100 px-1 py-0.5 text-[9px] text-red-600">纯文本</span>}
+                  </button>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Models */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-medium text-neutral-600">
-                模型列表 <span className="text-red-400">*</span>
-              </label>
-              <button
-                type="button"
-                onClick={handleAddModel}
-                className="flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-medium text-[#1A6BD8] hover:bg-blue-50 transition-colors"
-              >
-                <Plus className="h-3 w-3" />
-                添加模型
-              </button>
-            </div>
-            <div className="space-y-2">
-              {models.map((model) => (
-                <div key={model.id} className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={model.name}
-                    onChange={(e) => handleUpdateModel(model.id, { name: e.target.value })}
-                    placeholder={PROVIDER_DEFAULTS[protocol]?.model || "模型名称"}
-                    className="flex-1 rounded-lg border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
-                  />
-                  {model.is_multimodal !== null && (
-                    <span
-                      className={`rounded px-1.5 py-0.5 text-[9px] font-medium ${
-                        model.is_multimodal
-                          ? "bg-green-50 text-green-700"
-                          : "bg-red-50 text-red-600"
-                      }`}
-                    >
-                      {model.is_multimodal ? "多模态" : "纯文本"}
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => handleSetDefaultModel(model.id)}
-                    className={`rounded p-1 transition-colors ${
-                      model.is_default
-                        ? "text-amber-500"
-                        : "text-neutral-300 hover:text-amber-500"
-                    }`}
-                    title="设为默认"
-                  >
-                    <Star className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveModel(model.id)}
-                    className="rounded p-1 text-neutral-300 hover:text-red-500 transition-colors"
-                    title="删除"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))}
-            </div>
-            {models.length === 0 && (
-              <p className="mt-1 text-[10px] text-red-500">至少添加一个模型</p>
-            )}
-          </div>
+          {message && <div className="rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700">{message}</div>}
 
-          {/* Actions */}
-          <div className="flex items-center justify-end gap-3 pt-2 border-t border-neutral-100">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-lg border border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-50 transition-colors"
-            >
+          <div className="flex items-center justify-end gap-3 border-t border-neutral-100 pt-2">
+            <button type="button" onClick={onClose} className="rounded-lg border border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-600 transition-colors hover:bg-neutral-50">
               取消
             </button>
-            <button
-              type="submit"
-              disabled={saving || !name.trim() || !hasValidModels || !hasValidKeys}
-              className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
-            >
+            <button type="submit" disabled={saving} className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#1558B0] disabled:opacity-50">
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
               {provider ? "保存修改" : "添加"}
             </button>
@@ -2040,9 +1693,6 @@ function ProviderFormDialog({
     </div>
   );
 }
-
-// ── OCR Config Card ─────────────────────────────────────────────────────
-
 function OcrConfigCard() {
   const [ocrConfig, setOcrConfig] = useState<OcrProviderConfig | null>(null);
   const [loading, setLoading] = useState(true);
@@ -2078,8 +1728,8 @@ function OcrConfigCard() {
         id: ocrConfig?.id ?? crypto.randomUUID(),
         name: name.trim() || `${provider === "baidu" ? "百度" : "腾讯"} OCR`,
         provider,
-        api_key: apiKey,
-        secret_key: secretKey || undefined,
+        apiKey,
+        secretKey: secretKey || undefined,
       });
       const updated = await getOcrConfig();
       setOcrConfig(updated);

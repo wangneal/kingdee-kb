@@ -58,7 +58,7 @@ export async function matchSkill(input: string): Promise<Skill | null> {
 
 /** 导入新技能：选择 SKILL.md 文件，复制到 skills/ 目录 */
 export async function importSkill(filePath: string): Promise<string> {
-  return invoke("import_skill", { file_path: filePath });
+  return invoke("import_skill", { filePath });
 }
 
 /** 获取技能完整信息（含支撑文件和共享资源） */
@@ -76,7 +76,7 @@ export async function readSkillFile(
   skillName: string,
   relativePath: string
 ): Promise<string> {
-  return invoke("read_skill_file", { skill_name: skillName, relative_path: relativePath });
+  return invoke("read_skill_file", { skillName, relativePath });
 }
 
 /** 获取技能支撑文件列表 */
@@ -118,8 +118,8 @@ export async function executeSkillScript(
   arguments_: string[]
 ): Promise<ExecutionResult> {
   return invoke("execute_skill_script", {
-    skill_id: skillId,
-    script_path: scriptPath,
+    skillId,
+    scriptPath,
     arguments: arguments_,
   });
 }
@@ -148,9 +148,9 @@ export async function probeLlmMultimodal(): Promise<boolean> {
 
 /** 保存图像处理 API 配置 */
 export async function saveImageConfig(config: {
-  ocr_provider?: string;
-  ocr_api_key?: string;
-  ocr_secret_key?: string;
+  ocrProvider?: string;
+  ocrApiKey?: string;
+  ocrSecretKey?: string;
 }): Promise<void> {
   return invoke("save_image_config", config);
 }
@@ -268,8 +268,8 @@ export async function saveOcrConfig(config: {
   id: string;
   name: string;
   provider: string;
-  api_key: string;
-  secret_key?: string;
+  apiKey: string;
+  secretKey?: string;
 }): Promise<void> {
   return invoke("save_ocr_config", config);
 }
@@ -281,7 +281,7 @@ export async function clearOcrConfig(): Promise<void> {
 
 /** 自动路由：根据输入内容选择最佳模型 */
 export async function autoRouteModel(hasImages: boolean): Promise<AutoRouteResult | null> {
-  return invoke("auto_route_model", { has_images: hasImages });
+  return invoke("auto_route_model", { hasImages });
 }
 
 /** 获取所有可用模型列表 */
@@ -291,5 +291,5 @@ export async function listAvailableModels(): Promise<AvailableModel[]> {
 
 /** 获取下一个可用的 API Key（故障切换） */
 export async function getNextApiKey(providerId: string, failedKeyId: string): Promise<NextApiKeyResult | null> {
-  return invoke("get_next_api_key", { provider_id: providerId, failed_key_id: failedKeyId });
+  return invoke("get_next_api_key", { providerId, failedKeyId });
 }
