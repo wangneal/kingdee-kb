@@ -340,6 +340,10 @@ impl ImageProcessor {
         local_path: Option<&str>,
         prompt: &str,
     ) -> Result<String, ImageError> {
+        // 未探测过则自动探测
+        if !self.probed.load(Ordering::Relaxed) {
+            self.probe_multimodal().await;
+        }
         if !self.is_llm_multimodal() {
             return Err(ImageError::LlmNotMultimodal);
         }
