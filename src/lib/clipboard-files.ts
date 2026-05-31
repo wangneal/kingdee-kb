@@ -53,11 +53,14 @@ async function writeTempFile(file: File): Promise<PastedFile> {
   const buffer = await file.arrayBuffer();
   await writeFile(filePath, new Uint8Array(buffer));
 
-  // Build data URL for preview so frontend avoids asset protocol 403
+  // Build data URL for preview — use FileReader to avoid btoa stack overflow on large images
   let previewUrl: string | undefined;
   if (file.type.startsWith('image/')) {
-    const base64 = btoa(String.fromCodePoint(...new Uint8Array(buffer)));
-    previewUrl = `data:${file.type};base64,${base64}`;
+    previewUrl = await new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.readAsDataURL(file);
+    });
   }
 
   return {

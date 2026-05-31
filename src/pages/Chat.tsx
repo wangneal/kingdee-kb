@@ -582,7 +582,7 @@ export default function Chat() {
                  </button>
 
                  {/* Auto-routing indicator */}
-                 {attachments.some(a => a.kind === "image") && selectedProvider && !selectedProvider.is_multimodal && (
+                 {attachments.some(a => a.kind === "image") && selectedProvider && selectedProvider.is_multimodal !== true && (
                    <div className="mt-1 flex items-center gap-1 text-[10px] text-amber-600">
                      <Zap className="h-3 w-3" />
                      <span>图片附件将自动使用多模态模型</span>

@@ -402,34 +402,36 @@ pub async fn process_image(
     image_path: String,
 ) -> Result<ImageProcessResult, String> {
     // 提取配置，避免在 await 时持有 MutexGuard
-    let (llm_api_key, llm_base_url, llm_model, ocr_config, can_process, llm_multimodal) = {
+    let (llm_api_key, llm_base_url, llm_model, ocr_config) = {
         let processor = state.image_processor.lock().map_err(|e| e.to_string())?;
         (
             processor.get_llm_api_key().to_string(),
             processor.get_llm_base_url().to_string(),
             processor.get_llm_model().to_string(),
             processor.get_ocr_config_cloned(),
-            processor.can_process_images(),
-            processor.is_llm_multimodal(),
         )
     };
 
-    if !can_process {
-        return Err("请先配置 OCR 或确保 LLM 支持多模态".to_string());
-    }
-
     // 创建使用相同配置的新处理器实例
+    // 不复制 llm_multimodal/probed 状态，让 vision() 内部自动探测
     let mut processor =
         crate::services::image_processor::ImageProcessor::new(llm_api_key, llm_base_url, llm_model);
     if let Some(ocr) = ocr_config {
         processor.set_ocr_config(ocr);
     }
-    processor.set_llm_multimodal(llm_multimodal);
 
     let result = processor
         .process_image(&image_path)
         .await
         .map_err(|e| e.to_string())?;
+
+    // 同步探测结果回全局实例
+    {
+        let mut global = state.image_processor.lock().map_err(|e| e.to_string())?;
+        if !global.is_llm_multimodal() && processor.is_llm_multimodal() {
+            global.set_llm_multimodal(true);
+        }
+    }
 
     Ok(ImageProcessResult {
         image_type: match result.image_type {
