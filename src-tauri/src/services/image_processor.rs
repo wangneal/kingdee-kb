@@ -70,6 +70,15 @@ impl ImageProcessor {
         self.ocr_config = Some(config);
     }
 
+    pub fn is_llm_multimodal(&self) -> bool {
+        self.llm_multimodal.load(Ordering::Relaxed)
+    }
+
+    pub fn set_llm_multimodal(&mut self, value: bool) {
+        self.llm_multimodal.store(value, Ordering::Relaxed);
+        self.probed.store(true, Ordering::Relaxed);
+    }
+
     /// 获取 LLM API Key
     pub fn get_llm_api_key(&self) -> &str {
         &self.llm_api_key
@@ -133,10 +142,6 @@ impl ImageProcessor {
         self.llm_multimodal.store(is_multimodal, Ordering::Relaxed);
         self.probed.store(true, Ordering::Relaxed);
         is_multimodal
-    }
-
-    pub fn is_llm_multimodal(&self) -> bool {
-        self.llm_multimodal.load(Ordering::Relaxed)
     }
 
     pub fn has_ocr(&self) -> bool {

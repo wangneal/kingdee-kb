@@ -402,7 +402,7 @@ pub async fn process_image(
     image_path: String,
 ) -> Result<ImageProcessResult, String> {
     // 提取配置，避免在 await 时持有 MutexGuard
-    let (llm_api_key, llm_base_url, llm_model, ocr_config, can_process) = {
+    let (llm_api_key, llm_base_url, llm_model, ocr_config, can_process, llm_multimodal) = {
         let processor = state.image_processor.lock().map_err(|e| e.to_string())?;
         (
             processor.get_llm_api_key().to_string(),
@@ -410,6 +410,7 @@ pub async fn process_image(
             processor.get_llm_model().to_string(),
             processor.get_ocr_config_cloned(),
             processor.can_process_images(),
+            processor.is_llm_multimodal(),
         )
     };
 
@@ -423,6 +424,7 @@ pub async fn process_image(
     if let Some(ocr) = ocr_config {
         processor.set_ocr_config(ocr);
     }
+    processor.set_llm_multimodal(llm_multimodal);
 
     let result = processor
         .process_image(&image_path)
