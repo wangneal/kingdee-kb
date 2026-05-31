@@ -4,6 +4,7 @@ pub mod bm25_service;
 pub mod chinese_postprocess;
 pub mod chunker;
 pub mod context_budget;
+pub mod context_compressor;
 pub mod cost_tracker;
 pub mod deliverable_recipes;
 pub mod desensitize;
