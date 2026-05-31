@@ -157,7 +157,7 @@ export async function saveImageConfig(config: {
 
 /** 处理单张图片 */
 export async function processImage(imagePath: string): Promise<ImageProcessResult> {
-  return invoke("process_image", { image_path: imagePath });
+  return invoke("process_image", { imagePath });
 }
 
 // ─── LLM 供应商管理命令 ──────────────────────────────────
