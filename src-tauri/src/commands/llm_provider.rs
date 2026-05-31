@@ -229,6 +229,9 @@ pub async fn add_model(
         is_default: false,
         is_multimodal: None,
         last_probe_at: None,
+        context_window: None,
+        max_output_tokens: None,
+        supports_thinking: None,
     };
 
     let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
@@ -260,6 +263,9 @@ pub async fn update_model(
         is_default,
         is_multimodal,
         last_probe_at,
+        context_window: None,
+        max_output_tokens: None,
+        supports_thinking: None,
     };
 
     let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;

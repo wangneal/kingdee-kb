@@ -56,7 +56,7 @@ pub struct ApiKeyConfig {
 }
 
 /// 模型配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelConfig {
     /// 唯一标识
     pub id: String,
@@ -72,6 +72,13 @@ pub struct ModelConfig {
     /// 最后探测时间
     #[serde(default)]
     pub last_probe_at: Option<String>,
+    // ─── P0-b 新增字段 ───
+    #[serde(default)]
+    pub context_window: Option<u32>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub supports_thinking: Option<bool>,
 }
 
 /// LLM 供应商配置
@@ -195,6 +202,7 @@ impl LLMProviderConfig {
                 is_default: true,
                 is_multimodal,
                 last_probe_at,
+                ..Default::default()
             }];
             self.model.clear();
             self.is_multimodal = None;
@@ -1032,6 +1040,32 @@ impl LLMProviderManager {
         None
     }
 
+    /// 获取所有多模态候选模型（按优先级排序，用于自动回退）
+    /// 返回 (api_key, base_url, model_name, provider_id, model_id)
+    pub fn get_vision_candidates(&self) -> Vec<(String, String, String, String, String)> {
+        let mut candidates = Vec::new();
+        for provider in &self.providers {
+            for model in &provider.models {
+                if model.is_multimodal == Some(true) {
+                    let api_key = provider.get_default_key_value();
+                    candidates.push((api_key, provider.base_url.clone(), model.name.clone(), provider.id.clone(), model.id.clone()));
+                }
+            }
+        }
+        // 如果没有确认的多模态模型，返回候选列表（包含未探测的）
+        if candidates.is_empty() {
+            for provider in &self.providers {
+                for model in &provider.models {
+                    if model.is_multimodal != Some(false) {
+                        let api_key = provider.get_default_key_value();
+                        candidates.push((api_key, provider.base_url.clone(), model.name.clone(), provider.id.clone(), model.id.clone()));
+                    }
+                }
+            }
+        }
+        candidates
+    }
+
     /// 获取供应商的 API 配置（用于 LLM 调用）
     /// 返回 (api_key, base_url, model_name)
     pub fn get_provider_config(&self, id: Option<&str>) -> Option<(String, String, String)> {
@@ -1337,6 +1371,7 @@ mod tests {
                     is_default: true,
                     is_multimodal: Some(true),
                     last_probe_at: None,
+                    ..Default::default()
                 }],
             })
             .unwrap();

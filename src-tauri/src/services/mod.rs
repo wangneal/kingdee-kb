@@ -20,6 +20,7 @@ pub mod llm_service;
 pub mod memory;
 pub mod metadata;
 pub mod model_downloader;
+pub mod model_metadata;
 pub mod product_store;
 pub mod prompt_assembler;
 pub mod prompts;
