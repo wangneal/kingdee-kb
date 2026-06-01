@@ -14,6 +14,7 @@ pub mod docx_filler;
 pub mod edition_config;
 pub mod embedding;
 pub mod file_extractor;
+pub mod harness;
 pub mod hybrid_search;
 pub mod image_processor;
 pub mod ingestion;
