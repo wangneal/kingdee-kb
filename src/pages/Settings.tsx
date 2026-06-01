@@ -102,6 +102,24 @@ const DEFAULT_EMBEDDING_PROVIDER_CONFIG: EmbeddingProviderConfig = {
 
 const EMBEDDING_PROVIDER_STORAGE_KEY = 'kingdeekb_embedding_provider_config';
 
+const MODEL_SPECS = [
+  { id: "gpt-4o", context_window: 128000, max_output: 16384, thinking: false },
+  { id: "gpt-4o-mini", context_window: 128000, max_output: 16384, thinking: false },
+  { id: "gpt-4.1", context_window: 1047576, max_output: 32768, thinking: false },
+  { id: "gpt-4.1-mini", context_window: 1047576, max_output: 32768, thinking: false },
+  { id: "gpt-4.1-nano", context_window: 1047576, max_output: 32768, thinking: false },
+  { id: "o3", context_window: 200000, max_output: 100000, thinking: true },
+  { id: "o3-mini", context_window: 200000, max_output: 100000, thinking: true },
+  { id: "o4-mini", context_window: 200000, max_output: 100000, thinking: true },
+  { id: "claude-sonnet-4-20250514", context_window: 200000, max_output: 64000, thinking: true },
+  { id: "claude-3.5-sonnet", context_window: 200000, max_output: 8192, thinking: false },
+  { id: "deepseek-r1", context_window: 128000, max_output: 8192, thinking: true },
+  { id: "deepseek-v3", context_window: 128000, max_output: 8192, thinking: false },
+  { id: "qwen-max", context_window: 32768, max_output: 8192, thinking: false },
+  { id: "qwen-plus", context_window: 131072, max_output: 8192, thinking: false },
+  { id: "glm-4-plus", context_window: 128000, max_output: 4096, thinking: false },
+];
+
 export default function Settings() {
   const [stats, setStats] = useState<KnowledgeStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -141,6 +159,12 @@ export default function Settings() {
   const [kdclubSaving, setKdclubSaving] = useState(false);
   const [kdclubSaveMsg, setKdclubSaveMsg] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"ai" | "integrations" | "data">("ai");
+
+  // Context Engineering override state
+  const [overrideModelId, setOverrideModelId] = useState("");
+  const [overrideContextWindow, setOverrideContextWindow] = useState("");
+  const [overrideMaxOutput, setOverrideMaxOutput] = useState("");
+  const [overrideSaveMsg, setOverrideSaveMsg] = useState<string | null>(null);
 
   // Load config, stats; poll model status (auto-load may still be async in progress)
   useEffect(() => {
@@ -329,6 +353,22 @@ export default function Settings() {
       setEmbeddingProviderSaving(false);
     }
   }, [embeddingProviderConfig]);
+
+  const handleSaveOverride = useCallback(() => {
+    if (!overrideModelId.trim()) return;
+    try {
+      const overrides = JSON.parse(localStorage.getItem("model_spec_overrides") || "{}");
+      overrides[overrideModelId.trim()] = {
+        context_window: Number(overrideContextWindow) || 128000,
+        max_output: Number(overrideMaxOutput) || 8192,
+      };
+      localStorage.setItem("model_spec_overrides", JSON.stringify(overrides));
+      setOverrideSaveMsg("已保存");
+      setTimeout(() => setOverrideSaveMsg(null), 3000);
+    } catch {
+      setOverrideSaveMsg("保存失败");
+    }
+  }, [overrideModelId, overrideContextWindow, overrideMaxOutput]);
 
   if (loading) {
     return (
@@ -670,6 +710,89 @@ export default function Settings() {
 
         {/* Image Processing Card */}
         <ImageProcessingCard />
+
+        {/* Context Engineering Section */}
+        <section className="rounded-xl border border-neutral-200 bg-white">
+          <div className="border-b border-neutral-100 px-5 py-3">
+            <div className="flex items-center gap-2">
+              <Cpu className="h-4 w-4 text-[#1A6BD8]" />
+              <div>
+                <h2 className="text-sm font-semibold text-neutral-700">
+                  上下文工程
+                </h2>
+                <p className="mt-0.5 text-xs text-neutral-400">
+                  模型上下文窗口规格与预算配置
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="p-5">
+            {/* Model specs table */}
+            <div className="mb-4 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-neutral-100 text-left text-xs text-neutral-500">
+                    <th className="pb-2 pr-3 font-medium">模型</th>
+                    <th className="pb-2 pr-3 font-medium">上下文窗口</th>
+                    <th className="pb-2 pr-3 font-medium">最大输出</th>
+                    <th className="pb-2 font-medium">思维链</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {MODEL_SPECS.map((spec) => (
+                    <tr key={spec.id} className="border-b border-neutral-50">
+                      <td className="py-1.5 pr-3 font-mono text-xs">{spec.id}</td>
+                      <td className="py-1.5 pr-3 text-xs">{(spec.context_window / 1000).toFixed(0)}K</td>
+                      <td className="py-1.5 pr-3 text-xs">{(spec.max_output / 1000).toFixed(0)}K</td>
+                      <td className="py-1.5 text-xs">{spec.thinking ? "✓" : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Manual Override Form */}
+            <div className="rounded-lg border border-neutral-100 bg-neutral-50 p-3">
+              <h3 className="mb-2 text-xs font-semibold text-neutral-600">手动覆盖</h3>
+              <p className="mb-2 text-[10px] text-neutral-400">
+                为未收录的模型指定上下文窗口参数。保存后覆盖内置规格。
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                <input
+                  type="text"
+                  placeholder="模型 ID"
+                  value={overrideModelId}
+                  onChange={(e) => setOverrideModelId(e.target.value)}
+                  className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+                />
+                <input
+                  type="number"
+                  placeholder="上下文窗口"
+                  value={overrideContextWindow}
+                  onChange={(e) => setOverrideContextWindow(e.target.value)}
+                  className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+                />
+                <input
+                  type="number"
+                  placeholder="最大输出"
+                  value={overrideMaxOutput}
+                  onChange={(e) => setOverrideMaxOutput(e.target.value)}
+                  className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+                />
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleSaveOverride}
+                  className="rounded bg-[#1A6BD8] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#1558B0]"
+                >
+                  保存覆盖
+                </button>
+                {overrideSaveMsg && <span className="text-xs text-neutral-500">{overrideSaveMsg}</span>}
+              </div>
+            </div>
+          </div>
+        </section>
       </div>
       )}
 
