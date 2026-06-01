@@ -347,7 +347,7 @@ pub async fn check_image_deps(state: State<'_, AppState>) -> Result<ImageDepsSta
 #[tauri::command]
 pub async fn probe_llm_multimodal(state: State<'_, AppState>) -> Result<bool, String> {
     // 从 LLMProviderManager 获取默认供应商配置
-    let (llm_api_key, llm_base_url, llm_model) = {
+    let (llm_api_key, llm_base_url, llm_model, protocol) = {
         let mgr = state.llm_providers.lock().map_err(|e| e.to_string())?;
         mgr.get_default_provider()
             .map(|p| {
@@ -355,14 +355,18 @@ pub async fn probe_llm_multimodal(state: State<'_, AppState>) -> Result<bool, St
                     p.get_default_key_value(),
                     p.base_url.clone(),
                     p.get_default_model_name(),
+                    Some(p.protocol.clone()),
                 )
             })
             .unwrap_or_default()
     };
 
     // 创建临时处理器进行探测
-    let processor =
+    let mut processor =
         crate::services::image_processor::ImageProcessor::new(llm_api_key, llm_base_url, llm_model);
+    if let Some(proto) = protocol {
+        processor.set_protocol(proto);
+    }
     Ok(processor.probe_multimodal().await)
 }
 

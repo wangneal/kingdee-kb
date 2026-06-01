@@ -129,9 +129,8 @@ impl ImageProcessor {
         // 用 1x1 透明图片测试
         let test_img = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
-        let result = self.client
+        let mut req = self.client
             .post(format!("{}/chat/completions", self.llm_base_url))
-            .header("Authorization", format!("Bearer {}", self.llm_api_key))
             .json(&serde_json::json!({
                 "model": self.llm_model,
                 "messages": [{"role": "user", "content": [
@@ -139,9 +138,11 @@ impl ImageProcessor {
                     {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{}", test_img)}}
                 ]}],
                 "max_tokens": 1
-            }))
-            .send()
-            .await;
+            }));
+        if !self.llm_api_key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", self.llm_api_key));
+        }
+        let result = req.send().await;
 
         let is_multimodal = match result {
             Ok(resp) => {
