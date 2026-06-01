@@ -9,6 +9,9 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+use crate::services::token;
+// Re-export for backward compatibility with external callers
+pub use crate::services::token::truncate_to_tokens;
 use crate::services::agent_timeout::{
     LLM_CALL_TIMEOUT_SECS, LLM_STREAM_FIRST_CHUNK_TIMEOUT_SECS, MAX_RETRIES, RETRY_BASE_DELAY_MS,
 };
@@ -28,37 +31,10 @@ use rig_core::streaming::{StreamedAssistantContent, StreamingChat};
 // 常量
 
 /// 系统提示词 - ERP 顾问知识助手，带有反幻觉防护。
-const SYSTEM_PROMPT: &str = "\
-你是一个金蝶ERP实施顾问知识助手。你的核心职责是提供严谨、可落地的实施建议。
-
-【反二开蔓延规则 - 严格遵守】
-1. 你的角色是严谨的质量审计员，不是销售。
-2. 当用户提出需求时，默认立场是拒绝不合理的二次开发。
-3. 在推荐任何二开方案前，必须先检查标准功能或最佳实践是否有替代方案。
-4. 如果标准功能确实无法满足，明确标记为 [Gap]，并说明是配置差异还是需要评估范围变更。
-5. 禁止编造不存在的系统功能、API、配置路径或单据类型。
-
-【回答质量要求】
-1. 基于知识库中的本地文档回答，并标注具体来源。
-2. 当知识库中无相关信息时，明确说明「知识库中暂无相关内容」。
-3. 回答结构：先说结论，再给依据，最后给操作建议。
-4. 涉及配置时，尽量写全路径。
-5. 禁止使用无具体操作的空话。
-
-【来源标注格式】
-回答末尾标注：来源：[文档名称].md";
+static SYSTEM_PROMPT: &str = include_str!("../../resources/prompts/system_prompt.md");
 
 /// 文档生成的系统提示词 - 反模糊结构约束。
-const DOC_GEN_SYSTEM_PROMPT: &str = "\
-你是一个金蝶ERP实施文档撰写助手。
-
-所有生成内容必须严格按以下四段结构输出：
-1.【现有线下流程 As-Is】描述客户当前的业务操作模式。
-2.【系统标准流程 To-Be】描述金蝶系统中的标准解决方案。
-3.【差异配置点】按「配置路径 + 配置值」格式列出具体系统配置项。
-4.【对应系统单据类型】列出涉及的单据名称及单据编号规则。
-
-禁止使用没有具体操作步骤的套话。每段必须尽量提供系统操作路径、配置参数或单据示例。如果是 Gap，必须说明是标准不支持还是需要额外配置。";
+static DOC_GEN_SYSTEM_PROMPT: &str = include_str!("../../resources/prompts/doc_gen_system_prompt.md");
 
 /// 默认上下文窗口大小（token 数）
 const DEFAULT_MAX_CONTEXT_TOKENS: u32 = 4096;
@@ -466,43 +442,6 @@ fn parse_age_days(iso: &str, now_secs: f64) -> Option<f64> {
     let age = now_days - date_days;
     Some(age.max(0.0))
 }
-///
-/// 如果 tiktoken 失败，回退到粗略的字符估算。
-pub fn count_tokens(text: &str) -> u32 {
-    match tiktoken_rs::cl100k_base() {
-        Ok(bpe) => bpe.encode_with_special_tokens(text).len() as u32,
-        Err(_) => {
-            // 粗略回退：混合 CJK/英文每 token 约 2.5 个字符。
-            (text.chars().count() as f32 / 2.5).ceil() as u32
-        }
-    }
-}
-
-/// 鎴柇鏂囨湰浠ラ€傚簲 token 棰勭畻銆?///
-/// 通过在有效字符边界截断来保留 UTF-8 字符边界。
-pub fn truncate_to_tokens(text: &str, max_tokens: u32) -> String {
-    let total = count_tokens(text);
-    if total <= max_tokens {
-        return text.to_string();
-    }
-
-    // 二分查找合适的字符数。
-    let chars: Vec<char> = text.chars().collect();
-    let mut lo = 0usize;
-    let mut hi = chars.len();
-
-    while lo < hi {
-        let mid = (lo + hi + 1) / 2;
-        let candidate: String = chars[..mid].iter().collect();
-        if count_tokens(&candidate) <= max_tokens {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-
-    chars[..lo].iter().collect()
-}
 
 // 上下文组装
 
@@ -521,7 +460,7 @@ pub fn assemble_context(results: &[HybridSearchResult], max_tokens: u32) -> Stri
     }
 
     // Truncate if exceeds budget
-    truncate_to_tokens(&context, max_tokens)
+    token::truncate_to_tokens(&context, max_tokens)
 }
 
 /// Build the user prompt with context and query.
@@ -565,7 +504,7 @@ fn scrub_response(text: &str) -> String {
 fn estimate_tokens(messages: &[ChatMessage]) -> u32 {
     messages
         .iter()
-        .map(|m| count_tokens(&m.content) + count_tokens(&m.role))
+        .map(|m| token::count_tokens_with_fallback(&m.content) + token::count_tokens_with_fallback(&m.role))
         .sum()
 }
 
@@ -1257,7 +1196,7 @@ impl LLMService {
         };
 
         // Step 5: Assemble context
-        let system_tokens = count_tokens(SYSTEM_PROMPT);
+        let system_tokens = token::count_tokens_with_fallback(SYSTEM_PROMPT);
         let budget = config
             .max_tokens
             .saturating_sub(system_tokens + RESPONSE_TOKENS + 200);
@@ -1353,7 +1292,7 @@ impl LLMService {
                 .map(|r| RAGSource {
                     title: r.title.clone(),
                     section_path: r.section_path.clone(),
-                    content_snippet: truncate_to_tokens(&r.content, 100),
+                    content_snippet: token::truncate_to_tokens(&r.content, 100),
                     score: r.score,
                 })
                 .collect();
@@ -1388,7 +1327,7 @@ impl LLMService {
             .map(|r| RAGSource {
                 title: r.title.clone(),
                 section_path: r.section_path.clone(),
-                content_snippet: truncate_to_tokens(&r.content, 100),
+                content_snippet: token::truncate_to_tokens(&r.content, 100),
                 score: r.score,
             })
             .collect();
@@ -1698,7 +1637,7 @@ impl LLMService {
         };
 
         // Step 4: Assemble context
-        let system_tokens = count_tokens(SYSTEM_PROMPT);
+        let system_tokens = token::count_tokens_with_fallback(SYSTEM_PROMPT);
         let budget = config
             .max_tokens
             .saturating_sub(system_tokens + RESPONSE_TOKENS + 200);
@@ -1966,7 +1905,7 @@ impl LLMService {
                 r.title,
                 r.title,
                 section,
-                truncate_to_tokens(&r.content, 200)
+                token::truncate_to_tokens(&r.content, 200)
             ));
         }
         output

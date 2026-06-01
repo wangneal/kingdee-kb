@@ -26,7 +26,8 @@ pub struct ContextBudget {
 
 impl ContextBudget {
     pub fn calculate(metadata: &ModelMetadata, mode: AgentMode) -> Self {
-        let total = metadata.context_window;
+        // U2 安全阀：硬上限 500K tokens，防止超大上下文窗口导致 OOM
+        let total = metadata.context_window.min(500_000);
         let reserved_output = metadata.max_output_tokens;
         let claims = Self::build_claims(total, reserved_output, mode);
 

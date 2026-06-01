@@ -111,5 +111,5 @@ pub async fn save_chat_memory(
 /// 统计文本中的 token 数量
 #[tauri::command]
 pub async fn count_tokens(text: String) -> Result<u32, String> {
-    Ok(crate::services::llm_service::count_tokens(&text))
+    Ok(crate::services::token::count_tokens_with_fallback(&text))
 }
