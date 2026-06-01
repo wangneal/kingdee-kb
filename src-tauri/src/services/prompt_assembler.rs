@@ -6,6 +6,7 @@
 //!   - 支持压缩模式
 
 use crate::services::skill_types::{extract_triggers_from_body, Skill};
+use crate::services::token;
 
 /// 系统提示组装器
 pub struct PromptAssembler {
@@ -62,16 +63,16 @@ impl PromptAssembler {
             if cat != current_category {
                 prompt.push_str(&format!("## {}\n\n", Self::category_title(&cat)));
                 current_category = cat;
-                used_tokens += Self::estimate_tokens(&format!("## {}\n\n", current_category));
+                used_tokens += token::count_tokens_with_fallback(&format!("## {}\n\n", current_category)) as usize;
             }
 
             let skill_text = self.format_skill_entry(skill);
-            let tokens = Self::estimate_tokens(&skill_text);
+            let tokens = token::count_tokens_with_fallback(&skill_text) as usize;
 
             if used_tokens + tokens > self.token_budget {
                 // 尝试压缩
                 let compressed = self.format_skill_entry_compressed(skill);
-                let compressed_tokens = Self::estimate_tokens(&compressed);
+                let compressed_tokens = token::count_tokens_with_fallback(&compressed) as usize;
 
                 if used_tokens + compressed_tokens > self.token_budget {
                     break; // 超出预算，跳过
@@ -157,13 +158,6 @@ impl PromptAssembler {
         }
     }
 
-    /// 粗略估算 token 数量
-    fn estimate_tokens(text: &str) -> usize {
-        // 中文约 1.5 字符/token，英文约 4 字符/token
-        let chinese_chars = text.chars().filter(|c| !c.is_ascii()).count();
-        let ascii_chars = text.len() - chinese_chars;
-        (chinese_chars as f64 / 1.5 + ascii_chars as f64 / 4.0) as usize
-    }
 }
 
 #[cfg(test)]
