@@ -138,7 +138,7 @@ mod vision_pipeline {
         );
     }
 
-    // ─── Test 3: get_vision_candidates — excludes non-vision ────────────────
+    // ─── Test 3: get_vision_candidates — merged list with ordering ───────────
 
     #[test]
     fn test_vision_candidates_excludes_non_vision() {
@@ -146,18 +146,25 @@ mod vision_pipeline {
         let candidates = mgr.get_vision_candidates();
 
         // deepseek-v4-pro has is_multimodal = None AND builtin supports_vision = false.
-        // Since tier 1 found gpt-4o, tier 2/3 don't run — deepseek must be absent.
+        // Tier 1 and tier 2 skip it, but tier 3 includes it (is_multimodal != Some(false)).
+        // It appears as a low-priority unknown candidate.
         assert!(
-            !candidates.iter().any(|c| c.2 == "deepseek-v4-pro"),
-            "deepseek-v4-pro should NOT appear as a vision candidate"
+            candidates.iter().any(|c| c.2 == "deepseek-v4-pro"),
+            "deepseek-v4-pro should appear in tier 3 as unknown fallback"
         );
+
+        // But it should be AFTER tier 1 and tier 2 candidates
+        let gpt4o_pos = candidates.iter().position(|c| c.2 == "gpt-4o").unwrap();
+        let ds_pos = candidates.iter().position(|c| c.2 == "deepseek-v4-pro").unwrap();
+        assert!(gpt4o_pos < ds_pos, "tier 1 candidates should appear before tier 3");
     }
 
     // ─── Test 4: get_vision_candidates — tier 2 (builtin DB fallback) ───────
 
     #[test]
     fn test_vision_candidates_tier2_builtin_db() {
-        // Build a manager with NO probed models so tier 1 is empty → tier 2 fires.
+        // Build a manager with NO probed models so tier 1 is empty.
+        // Now all tiers run and are merged, so tier 3 models also appear.
         let tmp = tempfile::tempdir().unwrap();
         let mut mgr = LLMProviderManager::new(&tmp.into_path().into());
 
@@ -171,7 +178,7 @@ mod vision_pipeline {
         ))
         .unwrap();
 
-        // deepseek-v4-pro: is_multimodal=None, builtin supports_vision=false → excluded
+        // deepseek-v4-pro: is_multimodal=None, builtin supports_vision=false → tier 3
         mgr.add_provider(make_provider(
             "deepseek",
             "DeepSeek",
@@ -187,9 +194,13 @@ mod vision_pipeline {
             candidates.iter().any(|c| c.2 == "claude-sonnet-4-5"),
             "Tier 2: claude-sonnet-4-5 should be picked up via builtin DB"
         );
+
+        // claude-sonnet-4-5 (tier 2) should appear BEFORE deepseek-v4-pro (tier 3)
+        let claude_pos = candidates.iter().position(|c| c.2 == "claude-sonnet-4-5").unwrap();
+        let ds_pos = candidates.iter().position(|c| c.2 == "deepseek-v4-pro").unwrap();
         assert!(
-            !candidates.iter().any(|c| c.2 == "deepseek-v4-pro"),
-            "Tier 2: deepseek-v4-pro should be excluded (builtin vision=false)"
+            claude_pos < ds_pos,
+            "tier 2 candidates should appear before tier 3"
         );
     }
 
@@ -359,19 +370,19 @@ mod vision_pipeline {
 
     #[test]
     fn test_vision_candidates_tier1_takes_precedence() {
-        // When tier 1 finds candidates, tier 2 models should NOT appear
+        // All tiers are merged. Tier 1 models appear first, then tier 2, then tier 3.
         let mgr = make_full_manager();
         let candidates = mgr.get_vision_candidates();
 
-        // Tier 1 found gpt-4o. claude-sonnet-4-5 (tier 2) should NOT be included
-        // because tier 2 only fires when tier 1 is empty.
+        // gpt-4o (tier 1) should appear BEFORE claude-sonnet-4-5 (tier 2)
+        let gpt4o_pos = candidates.iter().position(|c| c.2 == "gpt-4o").unwrap();
+        let claude_pos = candidates.iter().position(|c| c.2 == "claude-sonnet-4-5").unwrap();
         assert!(
-            !candidates.iter().any(|c| c.2 == "claude-sonnet-4-5"),
-            "When tier 1 has results, tier 2 models should not appear"
+            gpt4o_pos < claude_pos,
+            "tier 1 candidates should appear before tier 2"
         );
 
-        // Only the tier 1 model should be present
-        assert_eq!(candidates.len(), 1, "Only one tier-1 candidate expected");
-        assert_eq!(candidates[0].2, "gpt-4o");
+        // Both should be present
+        assert!(candidates.len() >= 2, "Should have at least 2 candidates (tier 1 + tier 2)");
     }
 }

@@ -1042,62 +1042,76 @@ impl LLMProviderManager {
 
     /// 获取所有多模态候选模型（按优先级排序，用于自动回退）
     /// 返回 (api_key, base_url, model_name, provider_id, model_id, protocol)
+    ///
+    /// 合并有序列表：tier1（已探测）+ tier2（builtin DB）+ tier3（未知），去重
     pub fn get_vision_candidates(&self) -> Vec<(String, String, String, String, String, LLMProtocol)> {
-        // 第一轮：is_multimodal == Some(true) 的已确认模型
+        let mut seen = std::collections::HashSet::new();
         let mut candidates = Vec::new();
+
+        // 辅助闭包：添加候选并去重
+        let add_candidate = |api_key: String, base_url: String, model_name: String, provider_id: String, model_id: String, protocol: LLMProtocol, seen: &mut std::collections::HashSet<(String, String)>, candidates: &mut Vec<(String, String, String, String, String, LLMProtocol)>| {
+            let key = (provider_id.clone(), model_name.clone());
+            if seen.insert(key) {
+                candidates.push((api_key, base_url, model_name, provider_id, model_id, protocol));
+            }
+        };
+
+        // Tier 1: is_multimodal == Some(true) 的已确认模型
         for provider in &self.providers {
             for model in &provider.models {
                 if model.is_multimodal == Some(true) {
-                    let api_key = provider.get_default_key_value();
-                    candidates.push((
-                        api_key,
+                    add_candidate(
+                        provider.get_default_key_value(),
                         provider.base_url.clone(),
                         model.name.clone(),
                         provider.id.clone(),
                         model.id.clone(),
                         provider.protocol.clone(),
-                    ));
+                        &mut seen,
+                        &mut candidates,
+                    );
                 }
             }
         }
-        // 第二轮：is_multimodal != Some(false) 且内置 DB 标记 supports_vision=true
-        if candidates.is_empty() {
-            for provider in &self.providers {
-                for model in &provider.models {
-                    if model.is_multimodal != Some(false) {
-                        if let Some(true) = super::model_metadata::builtin_supports_vision(&model.name) {
-                            let api_key = provider.get_default_key_value();
-                            candidates.push((
-                                api_key,
-                                provider.base_url.clone(),
-                                model.name.clone(),
-                                provider.id.clone(),
-                                model.id.clone(),
-                                provider.protocol.clone(),
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-        // 第三轮：仍未命中，返回所有 is_multimodal != Some(false) 的模型作为未知候选
-        if candidates.is_empty() {
-            for provider in &self.providers {
-                for model in &provider.models {
-                    if model.is_multimodal != Some(false) {
-                        let api_key = provider.get_default_key_value();
-                        candidates.push((
-                            api_key,
+
+        // Tier 2: is_multimodal != Some(false) 且内置 DB 标记 supports_vision=true
+        for provider in &self.providers {
+            for model in &provider.models {
+                if model.is_multimodal != Some(false) {
+                    if let Some(true) = super::model_metadata::builtin_supports_vision(&model.name) {
+                        add_candidate(
+                            provider.get_default_key_value(),
                             provider.base_url.clone(),
                             model.name.clone(),
                             provider.id.clone(),
                             model.id.clone(),
                             provider.protocol.clone(),
-                        ));
+                            &mut seen,
+                            &mut candidates,
+                        );
                     }
                 }
             }
         }
+
+        // Tier 3: is_multimodal != Some(false) 的所有未确认模型
+        for provider in &self.providers {
+            for model in &provider.models {
+                if model.is_multimodal != Some(false) {
+                    add_candidate(
+                        provider.get_default_key_value(),
+                        provider.base_url.clone(),
+                        model.name.clone(),
+                        provider.id.clone(),
+                        model.id.clone(),
+                        provider.protocol.clone(),
+                        &mut seen,
+                        &mut candidates,
+                    );
+                }
+            }
+        }
+
         candidates
     }
 
