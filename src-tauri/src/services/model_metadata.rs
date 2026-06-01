@@ -1,10 +1,10 @@
 //! 模型元数据分层获取
 //! 
 //! 获取策略（按优先级）：
-//!   1. 用户手动覆盖（ModelConfig.context_window/max_output_tokens）
-//!   2. 提供商原生 API（Anthropic / Google Gemini / Ollama）
-//!   3. 内置模型数据库（model_specs.json）
-//!   4. 保守默认值（context_window=4096, max_output_tokens=4096）
+//!   1. 提供商原生 API（Anthropic / Google Gemini / Ollama）
+//!   2. 内置模型数据库（model_specs.json）
+//!   3. 保守默认值（context_window=4096, max_output_tokens=4096）
+//!   4. 用户手动覆盖逐字段叠加（最高优先级，但不覆盖未设置的字段）
 
 use serde::{Deserialize, Serialize};
 use super::llm_providers::{LLMProtocol, LLMProviderConfig};
@@ -31,33 +31,38 @@ impl Default for ModelMetadata {
 }
 
 /// 分层获取模型元数据（异步，支持 API 探测）
+///
+/// 获取策略（按优先级）：
+///   1. 提供商原生 API（Anthropic / Google Gemini / Ollama）
+///   2. 内置模型数据库（model_specs.json）
+///   3. 保守默认值
+///   4. 用户手动覆盖逐字段叠加（最高优先级，但不覆盖未设置的字段）
 pub async fn resolve_metadata(provider: &LLMProviderConfig, model_name: &str) -> ModelMetadata {
-    // 优先级 1: 用户手动覆盖
+    // 先从分层获取基础元数据（provider API → builtin DB → defaults）
+    let mut meta = from_provider_api(provider, model_name)
+        .await
+        .or_else(|| from_builtin_db(model_name))
+        .unwrap_or_default();
+
+    // 用户覆盖：逐字段叠加（最高优先级）
     if let Some(model) = provider.models.iter().find(|m| m.name == model_name || m.id == model_name) {
-        if model.context_window.is_some() || model.max_output_tokens.is_some() {
-            return ModelMetadata {
-                context_window: model.context_window.unwrap_or(4096),
-                max_output_tokens: model.max_output_tokens.unwrap_or(4096),
-                supports_thinking: model.supports_thinking.unwrap_or(false),
-                supports_vision: model.is_multimodal.unwrap_or(false),
-                supports_tools: true,
-            };
+        if let Some(cw) = model.context_window {
+            meta.context_window = cw;
+        }
+        if let Some(mo) = model.max_output_tokens {
+            meta.max_output_tokens = mo;
+        }
+        if let Some(th) = model.supports_thinking {
+            meta.supports_thinking = th;
+        }
+        // supports_vision: 仅在用户显式设置 is_multimodal 时覆盖
+        // 否则保留从 provider API / builtin DB 获取的值
+        if let Some(mm) = model.is_multimodal {
+            meta.supports_vision = mm;
         }
     }
 
-    // 优先级 2: 提供商原生 API
-    if let Some(meta) = from_provider_api(provider, model_name).await {
-        return meta;
-    }
-
-    // 优先级 3: 内置模型数据库
-    if let Some(meta) = from_builtin_db(model_name) {
-        return meta;
-    }
-
-    // 优先级 4: 保守默认值
-    tracing::warn!("Model '{}' not found in builtin DB, using conservative defaults", model_name);
-    ModelMetadata::default()
+    meta
 }
 
 fn from_builtin_db(model_name: &str) -> Option<ModelMetadata> {
