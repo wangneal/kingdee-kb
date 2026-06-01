@@ -6,6 +6,7 @@ import {
   answerQuestion,
   type ClarificationPayload,
   type ChatMessage,
+  type PlanStep,
 } from "../lib/tauri-commands";
 
 // ── Exported Types ──────────────────────────────────────────────────────────
@@ -32,6 +33,12 @@ export interface AgentMessage {
 export interface ReActTrace {
   thinking: string;
   toolCalls: { name: string; args: string; result: string }[];
+  plan: PlanStep[] | null;
+  currentStepIndex: number | null;
+  totalSteps: number;
+  stepResults: Record<number, { result: string; success: boolean }>;
+  replanReason: string | null;
+  plannerTimeoutMessage: string | null;
 }
 
 export interface AgentSlot {
@@ -45,7 +52,7 @@ export function createDefaultSlot(): AgentSlot {
   return {
     messages: [],
     loading: false,
-    currentTrace: { thinking: "", toolCalls: [] },
+    currentTrace: { thinking: "", toolCalls: [], plan: null, currentStepIndex: null, totalSteps: 0, stepResults: {}, replanReason: null, plannerTimeoutMessage: null },
     sessionId: null,
   };
 }
@@ -265,11 +272,62 @@ export function AgentProvider({ children }: { children: ReactNode }) {
               m.streaming ? { ...m, streaming: false } : m,
             );
             slot.loading = false;
-            slot.currentTrace = { thinking: "", toolCalls: [] };
+            slot.currentTrace = { thinking: "", toolCalls: [], plan: null, currentStepIndex: null, totalSteps: 0, stepResults: {}, replanReason: null, plannerTimeoutMessage: null };
+            break;
+          }
+
+          case "error": {
+            slot.messages = slot.messages.map((m) =>
+              m.streaming
+                ? { ...m, content: m.content || "请求失败：" + event.message, streaming: false, error: true }
+                : m,
+            );
+            slot.loading = false;
+            slot.currentTrace = { thinking: "", toolCalls: [], plan: null, currentStepIndex: null, totalSteps: 0, stepResults: {}, replanReason: null, plannerTimeoutMessage: null };
             sessionToSlot.current.delete(eventSessionId);
             slot.sessionId = null;
             break;
           }
+
+          case "plan_generated":
+            slot.currentTrace = {
+              ...slot.currentTrace,
+              plan: event.steps,
+              totalSteps: event.steps.length,
+              currentStepIndex: 0,
+            };
+            break;
+
+          case "step_start":
+            slot.currentTrace = {
+              ...slot.currentTrace,
+              currentStepIndex: event.step_index,
+            };
+            break;
+
+          case "step_result":
+            slot.currentTrace = {
+              ...slot.currentTrace,
+              stepResults: {
+                ...slot.currentTrace.stepResults,
+                [event.step_index]: { result: event.result, success: event.success },
+              },
+            };
+            break;
+
+          case "replan":
+            slot.currentTrace = {
+              ...slot.currentTrace,
+              replanReason: event.reason,
+            };
+            break;
+
+          case "planner_timeout":
+            slot.currentTrace = {
+              ...slot.currentTrace,
+              plannerTimeoutMessage: event.message,
+            };
+            break;
 
           case "clarification": {
             const payload = event.payload;
@@ -286,20 +344,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
               slot.messages = [...slot.messages, clarMsg];
             }
             slot.loading = false;
-            slot.currentTrace = { thinking: "", toolCalls: [] };
-            break;
-          }
-
-          case "error": {
-            slot.messages = slot.messages.map((m) =>
-              m.streaming
-                ? { ...m, content: m.content || "请求失败：" + event.message, streaming: false, error: true }
-                : m,
-            );
-            slot.loading = false;
-            slot.currentTrace = { thinking: "", toolCalls: [] };
-            sessionToSlot.current.delete(eventSessionId);
-            slot.sessionId = null;
+            slot.currentTrace = { thinking: "", toolCalls: [], plan: null, currentStepIndex: null, totalSteps: 0, stepResults: {}, replanReason: null, plannerTimeoutMessage: null };
             break;
           }
         }
@@ -338,7 +383,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           slot: {
             messages: [...internal.slot.messages, userMsg, assistantMsg],
             loading: true,
-            currentTrace: { thinking: "", toolCalls: [] },
+            currentTrace: { thinking: "", toolCalls: [], plan: null, currentStepIndex: null, totalSteps: 0, stepResults: {}, replanReason: null, plannerTimeoutMessage: null },
             sessionId: sid,
           },
           latestToolName: "",
@@ -395,7 +440,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
             ...internal.slot,
             messages: [...internal.slot.messages, answerMsg, assistantMsg],
             loading: true,
-            currentTrace: { thinking: "", toolCalls: [] },
+            currentTrace: { thinking: "", toolCalls: [], plan: null, currentStepIndex: null, totalSteps: 0, stepResults: {}, replanReason: null, plannerTimeoutMessage: null },
           },
         });
         return next;

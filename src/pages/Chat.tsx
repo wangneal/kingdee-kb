@@ -28,6 +28,7 @@ import {
   buildAgentHistory,
   type AgentMessage,
   type RAGSource,
+  type ReActTrace,
 } from "../contexts/AgentContext";
 import {
   isLLMConfigured,
@@ -119,6 +120,63 @@ function summarizeToolArgs(args: string): string {
   } catch {
     return args.length > 240 ? `参数 ${args.length} 字符` : args;
   }
+}
+
+function PlanTimeline({ trace }: { trace: ReActTrace }) {
+  if (!trace.plan || trace.plan.length === 0) return null;
+
+  return (
+    <div className="plan-timeline space-y-1 text-sm text-gray-600 mb-2">
+      <div className="font-medium text-gray-700 mb-1 flex items-center gap-1">
+        📋 执行计划 ({trace.currentStepIndex !== null ? Math.min(trace.currentStepIndex + 1, trace.plan.length) : 0}/{trace.plan.length})
+      </div>
+      {trace.plan.map((step, i) => {
+        const result = trace.stepResults[i];
+        const isCurrent = trace.currentStepIndex === i;
+        const isDone = result !== undefined;
+        const isFailed = result && !result.success;
+
+        return (
+          <div
+            key={step.id}
+            className={`flex items-start gap-2 py-1 px-2 rounded ${
+              isCurrent ? "bg-blue-50 border-l-2 border-blue-400" :
+              isFailed ? "bg-red-50 border-l-2 border-red-300" :
+              isDone ? "bg-green-50 border-l-2 border-green-300" :
+              "bg-gray-50"
+            }`}
+          >
+            <span className="flex-shrink-0 mt-0.5">
+              {isFailed ? "❌" : isDone ? "✅" : isCurrent ? "🔄" : "⬜"}
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className={`truncate ${isCurrent ? "font-medium text-blue-700" : ""}`}>
+                {step.id}. {step.description}
+              </div>
+              {isCurrent && step.tool && (
+                <div className="text-xs text-gray-400">工具: {step.tool}</div>
+              )}
+              {result && (
+                <div className={`text-xs mt-1 ${result.success ? "text-green-600" : "text-red-500"}`}>
+                  {result.success ? "完成" : result.result.slice(0, 100)}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      {trace.plannerTimeoutMessage && (
+        <div className="text-xs text-amber-600 mt-2 p-2 bg-amber-50 rounded">
+          ⚠️ {trace.plannerTimeoutMessage}
+        </div>
+      )}
+      {trace.replanReason && (
+        <div className="text-xs text-blue-600 mt-1 p-2 bg-blue-50 rounded">
+          🔄 {trace.replanReason}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function Chat() {
@@ -474,8 +532,9 @@ export default function Chat() {
           )}
 
           {/* ReAct Trace (while loading) */}
-          {loading && (currentTrace.thinking || currentTrace.toolCalls.length > 0) && (
+          {loading && (currentTrace.thinking || currentTrace.toolCalls.length > 0 || currentTrace.plan) && (
             <div className="space-y-2 border-l-2 border-amber-200 pl-4">
+              <PlanTimeline trace={currentTrace} />
               {currentTrace.thinking && (
                 <div className="text-xs text-amber-700 italic leading-relaxed">
                   🤔 {currentTrace.thinking}

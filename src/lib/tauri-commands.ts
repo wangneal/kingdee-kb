@@ -690,6 +690,14 @@ export interface ClarificationPayload {
   options: string[];
 }
 
+export interface PlanStep {
+  id: number;
+  description: string;
+  tool: string | null;
+  expected_output: string;
+  depends_on: number[];
+}
+
 export type ReActEvent =
   | { type: "thinking"; session_id: string; sessionId?: string; content: string }
   | { type: "tool_call"; session_id: string; sessionId?: string; name: string; args: string }
@@ -697,6 +705,11 @@ export type ReActEvent =
   | { type: "text_delta"; session_id: string; sessionId?: string; content: string }
   | { type: "error"; session_id: string; sessionId?: string; message: string }
   | { type: "done"; session_id: string; sessionId?: string }
+  | { type: "plan_generated"; session_id: string; sessionId?: string; steps: PlanStep[] }
+  | { type: "step_start"; session_id: string; sessionId?: string; step_index: number; total_steps: number; description: string }
+  | { type: "step_result"; session_id: string; sessionId?: string; step_index: number; result: string; success: boolean }
+  | { type: "replan"; session_id: string; sessionId?: string; reason: string }
+  | { type: "planner_timeout"; session_id: string; sessionId?: string; message: string }
   | { type: "clarification"; session_id: string; sessionId?: string; payload: ClarificationPayload };
 
 function nextSessionId(): string {
