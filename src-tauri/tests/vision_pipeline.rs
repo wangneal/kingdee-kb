@@ -489,29 +489,89 @@ mod vision_pipeline {
         );
     }
 
-    // ─── Test 13: ImageProcessor vision() allows Local with empty key ─────────
+    // ─── Test 13: requires_api_key 守卫逻辑 ─────────────────────────────────
 
     #[test]
-    fn test_image_processor_vision_allows_local_empty_key() {
+    fn test_requires_api_key_local_empty() {
         use kingdee_kb_lib::services::image_processor::ImageProcessor;
 
-        // Create processor with empty key
-        let mut processor = ImageProcessor::new(
-            String::new(),                                  // empty API key
+        // Local 协议空 key → 不需要 key
+        let mut p = ImageProcessor::new(
+            String::new(),
             "http://localhost:11434/v1".into(),
             "llava:latest".into(),
         );
-        processor.set_protocol(LLMProtocol::Local);
-
-        // vision() should NOT early-return with LlmNotMultimodal for Local protocol.
-        // We can't actually call it (needs async HTTP), but we can verify probe_multimodal
-        // doesn't get blocked by the empty-key guard.
-        // The probe_multimodal check: if key.is_empty() && protocol != Some(Local) → skip
-        // With Local protocol, it should pass through.
-        // We test the guard logic directly by checking the processor state.
+        p.set_protocol(LLMProtocol::Local);
         assert!(
-            processor.get_llm_api_key().is_empty(),
-            "Processor should have empty key"
+            !p.requires_api_key(),
+            "Local 协议空 key 不应要求 API 密钥"
+        );
+    }
+
+    #[test]
+    fn test_requires_api_key_remote_empty() {
+        use kingdee_kb_lib::services::image_processor::ImageProcessor;
+
+        // OpenAI 协议空 key → 需要 key（守卫应拦截）
+        let mut p = ImageProcessor::new(
+            String::new(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o".into(),
+        );
+        p.set_protocol(LLMProtocol::OpenAI);
+        assert!(
+            p.requires_api_key(),
+            "OpenAI 协议空 key 应要求 API 密钥"
+        );
+    }
+
+    #[test]
+    fn test_requires_api_key_remote_has_key() {
+        use kingdee_kb_lib::services::image_processor::ImageProcessor;
+
+        // OpenAI 协议有 key → 不需要（已提供）
+        let mut p = ImageProcessor::new(
+            "sk-test".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o".into(),
+        );
+        p.set_protocol(LLMProtocol::OpenAI);
+        assert!(
+            !p.requires_api_key(),
+            "有 API 密钥时不应要求额外密钥"
+        );
+    }
+
+    #[test]
+    fn test_requires_api_key_anthropic_empty() {
+        use kingdee_kb_lib::services::image_processor::ImageProcessor;
+
+        // Anthropic 协议空 key → 需要 key
+        let mut p = ImageProcessor::new(
+            String::new(),
+            "https://api.anthropic.com".into(),
+            "claude-sonnet-4-5".into(),
+        );
+        p.set_protocol(LLMProtocol::Anthropic);
+        assert!(
+            p.requires_api_key(),
+            "Anthropic 协议空 key 应要求 API 密钥"
+        );
+    }
+
+    #[test]
+    fn test_requires_api_key_no_protocol() {
+        use kingdee_kb_lib::services::image_processor::ImageProcessor;
+
+        // 未设置协议空 key → 需要 key（保守策略）
+        let p = ImageProcessor::new(
+            String::new(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o".into(),
+        );
+        assert!(
+            p.requires_api_key(),
+            "未设置协议时空 key 应要求 API 密钥"
         );
     }
 }

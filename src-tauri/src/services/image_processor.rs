@@ -76,6 +76,13 @@ impl ImageProcessor {
         self.protocol = Some(protocol);
     }
 
+    /// 当前配置是否需要 API 密钥才能调用 vision/probe
+    /// Local 协议（如 Ollama）不需要密钥
+    pub fn requires_api_key(&self) -> bool {
+        self.protocol != Some(crate::services::llm_providers::LLMProtocol::Local)
+            && self.llm_api_key.is_empty()
+    }
+
     pub fn is_llm_multimodal(&self) -> bool {
         self.llm_multimodal.load(Ordering::Relaxed)
     }
@@ -111,38 +118,56 @@ impl ImageProcessor {
             return self.llm_multimodal.load(Ordering::Relaxed);
         }
 
-        if self.llm_api_key.is_empty() && self.protocol != Some(crate::services::llm_providers::LLMProtocol::Local) {
+        if self.requires_api_key() {
             self.probed.store(true, Ordering::Relaxed);
             return false;
-        }
-
-        // 非 OpenAI 协议不在此探测（由多模型回退机制在实际 vision 调用中处理）
-        if let Some(ref proto) = self.protocol {
-            if *proto != crate::services::llm_providers::LLMProtocol::OpenAI
-                && *proto != crate::services::llm_providers::LLMProtocol::Local
-            {
-                self.probed.store(true, Ordering::Relaxed);
-                return false;
-            }
         }
 
         // 用 1x1 透明图片测试
         let test_img = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
-        let mut req = self.client
-            .post(format!("{}/chat/completions", self.llm_base_url))
-            .json(&serde_json::json!({
-                "model": self.llm_model,
-                "messages": [{"role": "user", "content": [
-                    {"type": "text", "text": "test"},
-                    {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{}", test_img)}}
-                ]}],
-                "max_tokens": 1
-            }));
-        if !self.llm_api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", self.llm_api_key));
-        }
-        let result = req.send().await;
+        let protocol = self.protocol.as_ref()
+            .unwrap_or(&crate::services::llm_providers::LLMProtocol::OpenAI);
+
+        let result = match protocol {
+            // Anthropic Messages API 探测
+            crate::services::llm_providers::LLMProtocol::Anthropic => {
+                let url = format!("{}/v1/messages", self.llm_base_url.trim_end_matches('/'));
+                let mut req = self.client
+                    .post(&url)
+                    .header("anthropic-version", "2023-06-01")
+                    .header("content-type", "application/json")
+                    .json(&serde_json::json!({
+                        "model": self.llm_model,
+                        "max_tokens": 1,
+                        "messages": [{"role": "user", "content": [
+                            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": test_img}},
+                            {"type": "text", "text": "test"}
+                        ]}]
+                    }));
+                if !self.llm_api_key.is_empty() {
+                    req = req.header("x-api-key", &self.llm_api_key);
+                }
+                req.send().await
+            }
+            // OpenAI / Local 协议探测
+            _ => {
+                let mut req = self.client
+                    .post(format!("{}/chat/completions", self.llm_base_url))
+                    .json(&serde_json::json!({
+                        "model": self.llm_model,
+                        "messages": [{"role": "user", "content": [
+                            {"type": "text", "text": "test"},
+                            {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{}", test_img)}}
+                        ]}],
+                        "max_tokens": 1
+                    }));
+                if !self.llm_api_key.is_empty() {
+                    req = req.header("Authorization", format!("Bearer {}", self.llm_api_key));
+                }
+                req.send().await
+            }
+        };
 
         let is_multimodal = match result {
             Ok(resp) => {
@@ -150,7 +175,7 @@ impl ImageProcessor {
                 if !status.is_success() {
                     // 非 2xx 状态码 → 不支持多模态
                     tracing::info!(
-                        "Multimodal probe failed with status {} for model {}",
+                        "多模态探测失败, HTTP {}, 模型 {}",
                         status, self.llm_model
                     );
                     false
@@ -158,21 +183,23 @@ impl ImageProcessor {
                     // 2xx 状态码还需检查响应体：某些 API 代理/网关会返回 200 但 body 含错误
                     match resp.text().await {
                         Ok(body) => {
-                            // 尝试解析为 JSON，检查是否有 choices（正常响应）
+                            // 尝试解析为 JSON，检查是否有有效响应
                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-                                if json["choices"].is_array() {
+                                // OpenAI 格式: choices 数组
+                                // Anthropic 格式: content 数组
+                                if json["choices"].is_array() || json["content"].is_array() {
                                     true
                                 } else if json["error"].is_object() {
-                                    // OpenAI 兼容 API 在 body 中返回错误
+                                    // API 在 body 中返回错误
                                     tracing::info!(
-                                        "Multimodal probe got 200 but error in body for model {}: {:?}",
+                                        "多模态探测收到 200 但 body 含错误, 模型 {}: {:?}",
                                         self.llm_model, json["error"]
                                     );
                                     false
                                 } else {
                                     // 有响应但格式不标准，保守认为支持
                                     tracing::info!(
-                                        "Multimodal probe got unexpected response format for model {}, assuming multimodal",
+                                        "多模态探测收到非标准响应格式, 模型 {}, 假定支持多模态",
                                         self.llm_model
                                     );
                                     true
@@ -180,7 +207,7 @@ impl ImageProcessor {
                             } else {
                                 // 非 JSON 响应，保守认为支持（某些本地模型返回非标准格式）
                                 tracing::info!(
-                                    "Multimodal probe got non-JSON response for model {}, assuming multimodal",
+                                    "多模态探测收到非 JSON 响应, 模型 {}, 假定支持多模态",
                                     self.llm_model
                                 );
                                 true
@@ -188,7 +215,7 @@ impl ImageProcessor {
                         }
                         Err(e) => {
                             tracing::warn!(
-                                "Multimodal probe failed to read response body for model {}: {:?}",
+                                "多模态探测读取响应体失败, 模型 {}: {:?}",
                                 self.llm_model, e
                             );
                             false
@@ -198,7 +225,7 @@ impl ImageProcessor {
             }
             Err(e) => {
                 tracing::warn!(
-                    "Multimodal probe HTTP error for model {}: {:?}",
+                    "多模态探测 HTTP 请求失败, 模型 {}: {:?}",
                     self.llm_model, e
                 );
                 false
@@ -441,7 +468,7 @@ impl ImageProcessor {
         local_path: Option<&str>,
         prompt: &str,
     ) -> Result<String, ImageError> {
-        if self.llm_api_key.is_empty() && self.protocol != Some(crate::services::llm_providers::LLMProtocol::Local) {
+        if self.requires_api_key() {
             return Err(ImageError::LlmNotMultimodal);
         }
 
