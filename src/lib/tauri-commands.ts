@@ -2,6 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 
 // ── Types matching Rust structs ──────────────────────────────────────────────
 
+export interface AttachmentInfo {
+  name: string;
+  path: string;
+  kind: string; // "image" | "document"
+}
+
 export interface HybridSearchResult {
   chunk_id: number;
   title: string;
@@ -616,8 +622,8 @@ export async function startWhisperRecording(): Promise<void> {
   return invoke("start_whisper_recording");
 }
 
-export async function stopWhisperRecording(): Promise<TranscriptionResult> {
-  return invoke("stop_whisper_recording");
+export async function stopWhisperRecording(provider?: string): Promise<TranscriptionResult> {
+  return invoke("stop_whisper_recording", { provider: provider ?? null });
 }
 
 // ── P1: 双轨风险把控舱 ──────────────────────────────────────────────────
@@ -737,6 +743,7 @@ export async function agentChat(
   riskProjectId?: number | null,
   history?: ChatMessage[],
   providerId?: string,
+  attachments?: AttachmentInfo[],
 ): Promise<string> {
   const sid = sessionId || nextSessionId();
 
@@ -750,6 +757,7 @@ export async function agentChat(
         riskProjectId: riskProjectId ?? null,
         history: history ?? [],
         providerId: providerId ?? null,
+        attachments: attachments ?? [],
       });
 
       const timeoutPromise = new Promise<never>((_, reject) =>
@@ -1062,45 +1070,18 @@ export interface AsrProviderInfo {
   supports_file: boolean;
 }
 
-export interface AsrResult {
-  text: string;
-  is_final: boolean;
-  confidence: number;
-  processing_time_ms: number;
-  segments: Array<{ start_ms: number; end_ms: number; text: string }> | null;
-}
-
-export interface AsrConfigStatus {
-  tencent_configured: boolean;
-  xfyun_configured: boolean;
-}
-
-/** 获取所有可用的 ASR Provider 列表 */
 export async function listAsrProviders(): Promise<AsrProviderInfo[]> {
   return invoke("list_asr_providers");
 }
 
-/** 使用指定 Provider 识别音频文件（PCM f32 格式） */
-export async function recognizeAudioWithProvider(
-  providerType: string,
-  audioData: number[],
-  language?: string
-): Promise<AsrResult> {
-  return invoke("recognize_audio_with_provider", {
-    providerType,
-    audioData,
-    language: language ?? null,
-  });
+export interface AsrConfigStatus {
+  tencent_configured: boolean;
 }
 
-/** 保存在线 ASR 配置（腾讯/讯飞） */
+/** 保存在线 ASR 配置（腾讯云） */
 export async function saveAsrConfig(config: {
   tencent_secret_id?: string;
   tencent_secret_key?: string;
-  tencent_app_id?: number;
-  xfyun_app_id?: string;
-  xfyun_api_key?: string;
-  xfyun_api_secret?: string;
 }): Promise<void> {
   return invoke("save_asr_config", config);
 }

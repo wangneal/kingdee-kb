@@ -8,29 +8,25 @@ use base64::Engine;
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use reqwest::Client;
-use sha1::Sha1;
 use sha2::Sha256;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::asr_provider::*;
 
-type HmacSha1 = Hmac<Sha1>;
 type HmacSha256 = Hmac<Sha256>;
 
 /// 腾讯一句话识别 Provider（REST API）
 pub struct TencentOneShotProvider {
     secret_id: String,
     secret_key: String,
-    app_id: u64,
     client: Client,
 }
 
 impl TencentOneShotProvider {
-    pub fn new(secret_id: String, secret_key: String, app_id: u64) -> Self {
+    pub fn new(secret_id: String, secret_key: String) -> Self {
         Self {
             secret_id,
             secret_key,
-            app_id,
             client: Client::new(),
         }
     }
@@ -55,7 +51,10 @@ impl TencentOneShotProvider {
         );
 
         // Step 3: 计算签名
-        let secret_date = hmac_sha256(format!("TC3{}", self.secret_key).as_bytes(), date.as_bytes());
+        let secret_date = hmac_sha256(
+            format!("TC3{}", self.secret_key).as_bytes(),
+            date.as_bytes(),
+        );
         let secret_service = hmac_sha256(&secret_date, b"asr");
         let secret_signing = hmac_sha256(&secret_service, b"tc3_request");
         let signature = hex::encode(hmac_sha256(&secret_signing, string_to_sign.as_bytes()));
@@ -77,7 +76,11 @@ impl TencentOneShotProvider {
 
 #[async_trait]
 impl FileAsr for TencentOneShotProvider {
-    async fn recognize_file(&self, audio_data: &[f32], config: &AsrConfig) -> Result<AsrResult, AsrError> {
+    async fn recognize_file(
+        &self,
+        audio_data: &[f32],
+        config: &AsrConfig,
+    ) -> Result<AsrResult, AsrError> {
         // 将 f32 转换为 PCM 16bit
         let pcm16: Vec<u8> = audio_data
             .iter()
@@ -91,7 +94,11 @@ impl FileAsr for TencentOneShotProvider {
         self.recognize_pcm16(&pcm16, config).await
     }
 
-    async fn recognize_pcm16(&self, audio_data: &[u8], config: &AsrConfig) -> Result<AsrResult, AsrError> {
+    async fn recognize_pcm16(
+        &self,
+        audio_data: &[u8],
+        config: &AsrConfig,
+    ) -> Result<AsrResult, AsrError> {
         let start = std::time::Instant::now();
 
         let timestamp = SystemTime::now()
@@ -116,7 +123,8 @@ impl FileAsr for TencentOneShotProvider {
         let payload_str = payload.to_string();
         let authorization = self.authorization(&payload_str, timestamp)?;
 
-        let response = self.client
+        let response = self
+            .client
             .post("https://asr.tencentcloudapi.com")
             .header("Content-Type", "application/json; charset=utf-8")
             .header("Host", "asr.tencentcloudapi.com")
@@ -130,7 +138,10 @@ impl FileAsr for TencentOneShotProvider {
             .map_err(|e| AsrError::NetworkError(e.to_string()))?;
 
         let status = response.status();
-        let body = response.text().await.map_err(|e| AsrError::NetworkError(e.to_string()))?;
+        let body = response
+            .text()
+            .await
+            .map_err(|e| AsrError::NetworkError(e.to_string()))?;
 
         if !status.is_success() {
             return Err(AsrError::ServerError {
@@ -144,11 +155,18 @@ impl FileAsr for TencentOneShotProvider {
 
         if let Some(error) = resp.get("Response").and_then(|r| r.get("Error")) {
             let code = error.get("Code").and_then(|c| c.as_i64()).unwrap_or(-1) as i32;
-            let message = error.get("Message").and_then(|m| m.as_str()).unwrap_or("未知错误").to_string();
+            let message = error
+                .get("Message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("未知错误")
+                .to_string();
             return Err(AsrError::ServerError { code, message });
         }
 
-        let text = resp["Response"]["Result"].as_str().unwrap_or("").to_string();
+        let text = resp["Response"]["Result"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         let processing_time_ms = start.elapsed().as_millis() as u64;
 
         Ok(AsrResult {
@@ -169,7 +187,7 @@ impl FileAsr for TencentOneShotProvider {
 impl StreamingAsr for TencentOneShotProvider {
     async fn start_session(&mut self, _config: &AsrConfig) -> Result<(), AsrError> {
         Err(AsrError::UnsupportedOperation(
-            "腾讯一句话识别不支持流式识别，请使用腾讯实时语音识别".to_string()
+            "腾讯一句话识别不支持流式识别，请使用腾讯实时语音识别".to_string(),
         ))
     }
 

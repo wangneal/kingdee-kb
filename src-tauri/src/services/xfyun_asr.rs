@@ -38,8 +38,7 @@ impl XfyunIatProvider {
 
     /// 生成 HMAC-SHA256 签名
     fn hmac_sha256_base64(&self, data: &str, key: &str) -> String {
-        let mut mac = HmacSha256::new_from_slice(key.as_bytes())
-            .expect("HMAC key error");
+        let mut mac = HmacSha256::new_from_slice(key.as_bytes()).expect("HMAC key error");
         mac.update(data.as_bytes());
         let result = mac.finalize().into_bytes();
         base64::engine::general_purpose::STANDARD.encode(result)
@@ -62,7 +61,8 @@ impl XfyunIatProvider {
             r#"api_key="{}", algorithm="hmac-sha256", headers="host date request-line", signature="{}""#,
             self.api_key, signature
         );
-        let authorization = base64::engine::general_purpose::STANDARD.encode(auth_origin.as_bytes());
+        let authorization =
+            base64::engine::general_purpose::STANDARD.encode(auth_origin.as_bytes());
 
         format!(
             "wss://{}{}?authorization={}&date={}&host={}",
@@ -229,15 +229,23 @@ impl StreamingAsr for XfyunIatProvider {
 
 #[async_trait]
 impl FileAsr for XfyunIatProvider {
-    async fn recognize_file(&self, _audio_data: &[f32], _config: &AsrConfig) -> Result<AsrResult, AsrError> {
+    async fn recognize_file(
+        &self,
+        _audio_data: &[f32],
+        _config: &AsrConfig,
+    ) -> Result<AsrResult, AsrError> {
         Err(AsrError::UnsupportedOperation(
-            "讯飞语音听写不支持文件识别，请使用腾讯一句话识别".to_string()
+            "讯飞语音听写不支持文件识别，请使用腾讯一句话识别".to_string(),
         ))
     }
 
-    async fn recognize_pcm16(&self, _audio_data: &[u8], _config: &AsrConfig) -> Result<AsrResult, AsrError> {
+    async fn recognize_pcm16(
+        &self,
+        _audio_data: &[u8],
+        _config: &AsrConfig,
+    ) -> Result<AsrResult, AsrError> {
         Err(AsrError::UnsupportedOperation(
-            "讯飞语音听写不支持文件识别，请使用腾讯一句话识别".to_string()
+            "讯飞语音听写不支持文件识别，请使用腾讯一句话识别".to_string(),
         ))
     }
 

@@ -1,4 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import {
   Upload,
   FileText,
@@ -371,19 +373,16 @@ export default function Import() {
 
   // Export text to file
   const exportToFile = useCallback(async (text: string, filename: string) => {
-    const savePath = await open({
-      multiple: false,
-      directory: true,
+    const dest = await save({
+      defaultPath: filename,
+      filters: [{ name: "Markdown", extensions: ["md", "txt"] }],
     });
-    if (!savePath) return;
-    // Use Tauri file write via a simple approach — create a blob and download
-    const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+    if (!dest) return;
+    try {
+      await invoke("export_report", { content: text, filePath: dest });
+    } catch (err) {
+      console.error("导出失败:", err);
+    }
   }, []);
 
   return (

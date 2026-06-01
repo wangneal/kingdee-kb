@@ -11,51 +11,59 @@ pub use services::template_docx;
 pub use services::template_schema;
 pub use services::template_xlsx;
 
-/// 在线 ASR 配置存储（腾讯/讯飞）
+/// 在线 ASR 配置存储（腾讯云）- JSON 文件持久化
 pub struct AsrConfigStore {
+    config_path: std::path::PathBuf,
     pub tencent_secret_id: Option<String>,
     pub tencent_secret_key: Option<String>,
-    pub tencent_app_id: Option<i64>,
-    pub xfyun_app_id: Option<String>,
-    pub xfyun_api_key: Option<String>,
-    pub xfyun_api_secret: Option<String>,
 }
 
 impl AsrConfigStore {
-    pub fn new(_db_path: &std::path::Path) -> Self {
-        Self {
+    pub fn new(db_path: &std::path::Path) -> Self {
+        let config_path = db_path.with_file_name("asr_config.json");
+        let mut store = Self {
+            config_path,
             tencent_secret_id: None,
             tencent_secret_key: None,
-            tencent_app_id: None,
-            xfyun_app_id: None,
-            xfyun_api_key: None,
-            xfyun_api_secret: None,
+        };
+        store.load();
+        store
+    }
+
+    fn load(&mut self) {
+        let content = match std::fs::read_to_string(&self.config_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&content) {
+            self.tencent_secret_id = cfg.get("tencent_secret_id").and_then(|v| v.as_str().map(String::from));
+            self.tencent_secret_key = cfg.get("tencent_secret_key").and_then(|v| v.as_str().map(String::from));
         }
     }
+
+    fn save_to_file(&self) -> Result<(), String> {
+        let map = serde_json::json!({
+            "tencent_secret_id": self.tencent_secret_id,
+            "tencent_secret_key": self.tencent_secret_key,
+        });
+        let content = serde_json::to_string_pretty(&map).map_err(|e| format!("序列化 ASR 配置失败: {}", e))?;
+        std::fs::write(&self.config_path, content).map_err(|e| format!("写入 ASR 配置失败: {}", e))?;
+        Ok(())
+    }
+
     pub fn save_tencent(
         &mut self,
         secret_id: Option<String>,
         secret_key: Option<String>,
-        app_id: Option<i64>,
-    ) {
+    ) -> Result<(), String> {
         self.tencent_secret_id = secret_id;
         self.tencent_secret_key = secret_key;
-        self.tencent_app_id = app_id;
+        self.save_to_file()
     }
-    pub fn save_xfyun(
-        &mut self,
-        app_id: Option<String>,
-        api_key: Option<String>,
-        api_secret: Option<String>,
-    ) {
-        self.xfyun_app_id = app_id;
-        self.xfyun_api_key = api_key;
-        self.xfyun_api_secret = api_secret;
-    }
+
     pub fn get_status(&self) -> serde_json::Value {
         serde_json::json!({
             "tencent_configured": self.tencent_secret_id.is_some(),
-            "xfyun_configured": self.xfyun_app_id.is_some()
         })
     }
 }
@@ -183,6 +191,10 @@ pub fn run() {
             commands::media::get_whisper_status,
             commands::media::start_whisper_recording,
             commands::media::stop_whisper_recording,
+            // ASR Provider management
+            commands::media::list_asr_providers,
+            commands::media::save_asr_config,
+            commands::media::get_asr_config_status,
             // Phase 14: Video Transcription
             commands::media::transcribe_video_file,
             commands::media::transcribe_and_ingest_video,
@@ -288,6 +300,8 @@ pub fn run() {
             commands::llm_provider::list_available_models,
             commands::llm_provider::get_next_api_key,
             commands::llm_provider::is_llm_configured,
+            // File operations
+            commands::core::save_attachment_as,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

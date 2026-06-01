@@ -128,6 +128,7 @@ pub struct SearchKnowledgeTool {
     pub bm25: Arc<Mutex<BM25Service>>,
     pub metadata: Arc<Mutex<MetadataStore>>,
     pub project_id: Option<String>,
+    pub extra_project_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -138,6 +139,7 @@ pub struct SearchKnowledgeToolArgs {
 impl SearchKnowledgeTool {
     pub fn new(
         project_id: Option<String>,
+        extra_project_ids: Vec<String>,
         embedding: Arc<Mutex<EmbeddingService>>,
         vector_index: Arc<Mutex<VectorIndex>>,
         bm25: Arc<Mutex<BM25Service>>,
@@ -145,6 +147,7 @@ impl SearchKnowledgeTool {
     ) -> Self {
         Self {
             project_id,
+            extra_project_ids,
             embedding,
             vector_index,
             bm25,
@@ -177,6 +180,7 @@ impl Tool for SearchKnowledgeTool {
         let results = hybrid_search::hybrid_search(
             &args.query,
             self.project_id.as_deref(),
+            &self.extra_project_ids,
             5,
             &self.embedding,
             &self.vector_index,
@@ -2474,6 +2478,7 @@ pub fn all_rig_tools(
     risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
     skill_manager: Arc<Mutex<crate::services::skill_manager::SkillManager>>,
     risk_project_id: Option<i64>,
+    extra_search_project_ids: Vec<String>,
 ) -> Vec<Box<dyn rig_core::tool::ToolDyn>> {
     // Risk tools use numeric risk project ids. Non-numeric KB project names stay on the global scope.
     let risk_project_id = risk_project_id
@@ -2484,6 +2489,7 @@ pub fn all_rig_tools(
         // Safe tools — wrapped with retry (exponential backoff)
         Box::new(RetryToolWrapper::new(SearchKnowledgeTool::new(
             project_id.map(|s| s.to_string()),
+            extra_search_project_ids,
             embedding.clone(),
             vector_index.clone(),
             bm25.clone(),

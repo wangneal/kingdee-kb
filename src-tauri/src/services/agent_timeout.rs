@@ -19,6 +19,9 @@ pub const TOOL_EXECUTION_TIMEOUT_SECS: u64 = 120;
 /// Agent 总会话超时（秒）— 从用户发消息到 agent 完成
 pub const AGENT_SESSION_TIMEOUT_SECS: u64 = 600; // 10 分钟
 
+/// Planner 规划超时（秒）— 12s，快速降级到 ReAct 避免用户等待
+pub const PLANNER_TIMEOUT_SECS: u64 = 12;
+
 /// 用户回答澄清问题的超时（秒）— 与 rig_tool.rs 中的常量保持一致
 pub const QUESTION_TIMEOUT_SECS: u64 = 300; // 5 分钟
 
@@ -54,6 +57,7 @@ mod tests {
         assert!(LLM_STREAM_FIRST_CHUNK_TIMEOUT_SECS > 0);
         assert!(AGENT_SESSION_TIMEOUT_SECS > LLM_CALL_TIMEOUT_SECS);
         assert!(QUESTION_TIMEOUT_SECS > 0);
+        assert!(PLANNER_TIMEOUT_SECS >= 30);
         assert!(MAX_RETRIES > 0);
     }
 }

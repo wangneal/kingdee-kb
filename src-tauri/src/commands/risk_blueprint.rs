@@ -316,6 +316,7 @@ pub async fn agent_chat(
     risk_project_id: Option<i64>,
     history: Option<Vec<crate::services::llm_service::ChatMessage>>,
     provider_id: Option<String>,
+    attachments: Option<Vec<crate::services::types::AttachmentInfo>>,
 ) -> Result<(), String> {
     use tauri::Manager;
     use tokio::sync::mpsc;
@@ -341,6 +342,8 @@ pub async fn agent_chat(
     let products = state.products.clone();
     let risk_store = state.risk_control_store.clone();
     let skill_manager = state.skill_manager.clone();
+    let image_processor = state.image_processor.clone();
+    let llm_providers = state.llm_providers.clone();
 
     // 注册取消标志
     let cancel_flag = state.register_cancel_flag(&sid);
@@ -395,23 +398,30 @@ pub async fn agent_chat(
             skill_manager,
             Some(cancel_flag),
             provider_id.as_deref(),
+            attachments,
+            image_processor,
+            llm_providers,
         )
         .await;
     });
 
-    while let Some(event) = rx.recv().await {
-        let payload = serde_json::to_value(&event).unwrap_or_default();
-        if app_handle.emit("react-event", payload).is_err() {
-            break;
+    let event_app = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            let payload = serde_json::to_value(&event).unwrap_or_default();
+            if event_app.emit("react-event", payload).is_err() {
+                break;
+            }
+            match &event {
+                ReActEvent::Done { .. } | ReActEvent::Error { .. } => break,
+                _ => {}
+            }
         }
-        match &event {
-            ReActEvent::Done { .. } | ReActEvent::Error { .. } => break,
-            _ => {}
-        }
-    }
 
-    // 清理取消标志
-    state.remove_cancel_flag(&cleanup_sid);
+        if let Some(state) = event_app.try_state::<AppState>() {
+            state.remove_cancel_flag(&cleanup_sid);
+        }
+    });
 
     Ok(())
 }

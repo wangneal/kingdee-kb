@@ -72,10 +72,9 @@ pub async fn match_skill(
     Ok(manager.match_best(&input))
 }
 
-/// 从一个 SKILL.md 文件导入新技能，复制到 skills/ 目录
+/// 从一个 ZIP 技能包导入新技能，解压到 skills/<skill-name>/ 目录
 #[tauri::command]
 pub async fn import_skill(state: State<'_, AppState>, file_path: String) -> Result<String, String> {
-    let mut manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
     let src = PathBuf::from(&file_path);
 
     if !src.exists() {
@@ -85,14 +84,113 @@ pub async fn import_skill(state: State<'_, AppState>, file_path: String) -> Resu
         return Err("路径不是文件".to_string());
     }
 
-    let content = std::fs::read_to_string(&src).map_err(|e| format!("读取文件失败: {}", e))?;
+    let file = std::fs::File::open(&src).map_err(|e| format!("打开 ZIP 文件失败: {}", e))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("解析 ZIP 压缩包失败: {}", e))?;
 
-    // 解析技能名
-    let (meta, _) = crate::services::skill_manager::SkillManager::parse_skill_md_public(&content);
-    let name = import_skill_name(&src, meta.name.as_deref());
+    // 寻找 SKILL.md 的路径并确定技能名
+    let mut skill_md_entry_path = None;
+    for i in 0..archive.len() {
+        if let Ok(file) = archive.by_index(i) {
+            let name = file.name();
+            if name == "SKILL.md" || name.ends_with("/SKILL.md") || name.ends_with("\\SKILL.md") {
+                skill_md_entry_path = Some(name.to_string());
+                break;
+            }
+        }
+    }
 
-    // 复制到 skills/<name>/SKILL.md
-    manager.import_skill(&name, &content)
+    let skill_md_path =
+        skill_md_entry_path.ok_or_else(|| "ZIP 压缩包中未包含 SKILL.md 说明文件".to_string())?;
+
+    // 确定前缀和技能名
+    let prefix = if skill_md_path == "SKILL.md" {
+        ""
+    } else {
+        let idx = skill_md_path.len() - "SKILL.md".len();
+        &skill_md_path[..idx]
+    };
+
+    let skill_name = if prefix.is_empty() {
+        src.file_stem()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| "无法从 ZIP 文件名解析技能名称".to_string())?
+            .to_string()
+    } else {
+        prefix
+            .trim_end_matches('/')
+            .trim_end_matches('\\')
+            .to_string()
+    };
+
+    // 校验技能名合法性（仅限小写字母、数字和中划线）
+    let is_valid_name = !skill_name.is_empty()
+        && skill_name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !is_valid_name {
+        return Err(format!(
+            "从压缩包解析到的技能名 [{}] 不合法，技能文件夹名只能包含小写英文字母、数字和中划线",
+            skill_name
+        ));
+    }
+
+    let mut manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
+    let dest_dir = manager.get_skills_dir().join(&skill_name);
+    std::fs::create_dir_all(&dest_dir).map_err(|e| format!("创建技能目录失败: {}", e))?;
+
+    // 遍历 ZIP 包文件，进行解压与拷贝
+    for i in 0..archive.len() {
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| format!("读取 ZIP 内部文件项失败: {}", e))?;
+        let file_name = file.name().to_string();
+
+        if !file_name.starts_with(prefix) {
+            continue;
+        }
+
+        let relative_path = &file_name[prefix.len()..];
+        if relative_path.is_empty() {
+            continue;
+        }
+
+        // zip-slip 防护：拒绝路径中包含 ..、绝对路径或 UNC 路径
+        for component in std::path::Path::new(relative_path).components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    return Err(format!("拒绝解压路径逃逸 (ParentDir): {}", file_name));
+                }
+                std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                    return Err(format!("拒绝解压路径逃逸 (绝对路径): {}", file_name));
+                }
+                _ => {}
+            }
+        }
+
+        let outpath = dest_dir.join(relative_path);
+        if !outpath.starts_with(&dest_dir) {
+            return Err(format!("拒绝解压路径逃逸: {}", file_name));
+        }
+
+        if file.name().ends_with('/') || file.name().ends_with('\\') {
+            std::fs::create_dir_all(&outpath).map_err(|e| format!("创建子目录失败: {}", e))?;
+        } else {
+            if let Some(p) = outpath.parent() {
+                if !p.exists() {
+                    std::fs::create_dir_all(p).map_err(|e| format!("创建子目录失败: {}", e))?;
+                }
+            }
+            let mut outfile =
+                std::fs::File::create(&outpath).map_err(|e| format!("创建解压文件失败: {}", e))?;
+            std::io::copy(&mut file, &mut outfile).map_err(|e| format!("解压拷贝失败: {}", e))?;
+        }
+    }
+
+    // 重新扫描技能目录
+    manager.scan();
+
+    Ok(skill_name)
 }
 
 /// 获取技能完整信息（含支撑文件和共享资源）
@@ -133,33 +231,6 @@ pub async fn list_skill_files(
 ) -> Result<Vec<SkillFile>, String> {
     let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
     Ok(manager.get_skill_files(&name))
-}
-
-fn import_skill_name(src: &std::path::Path, metadata_name: Option<&str>) -> String {
-    let metadata_name = metadata_name.unwrap_or("").trim();
-    if is_safe_import_name(metadata_name) && metadata_name != "kingdee-implementation-suite" {
-        return metadata_name.to_string();
-    }
-
-    src.parent()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .filter(|name| is_safe_import_name(name))
-        .or_else(|| {
-            src.file_stem()
-                .and_then(|n| n.to_str())
-                .filter(|name| is_safe_import_name(name))
-        })
-        .unwrap_or("unknown")
-        .to_string()
-}
-
-fn is_safe_import_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 80
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 // ─── Phase 2: 触发匹配命令 ──────────────────────────────────

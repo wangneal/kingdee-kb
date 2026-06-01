@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Search, Loader2, Send, X } from "lucide-react";
 import { agentChat, listenReActEvents } from "../lib/tauri-commands";
+import { useProject } from "../contexts/ProjectContext";
 
 export default function Spotlight() {
+  const { projectId } = useProject();
   const [visible, setVisible] = useState(false);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -78,7 +80,7 @@ export default function Spotlight() {
       // Generate session ID first before calling agentChat
       const sid = `spot_${Date.now()}`;
       spotSessionRef.current = sid;
-      await agentChat(text, sid);
+      await agentChat(text, sid, projectId);
     }
     catch { setLoading(false); }
   }, [input, loading]);

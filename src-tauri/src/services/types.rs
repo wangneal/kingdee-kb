@@ -25,3 +25,11 @@ pub enum BudgetPriority {
     RetrievedCtx = 6,
     Buffer = 7,
 }
+
+/// 聊天附件元数据
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AttachmentInfo {
+    pub name: String,
+    pub path: String,
+    pub kind: String, // "image" | "document"
+}

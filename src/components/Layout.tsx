@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { BookOpen, Search, Upload, Settings, LayoutDashboard, MessageSquare, FileEdit, Package, ClipboardList, ShieldAlert, Zap } from "lucide-react";
 import Spotlight from "./Spotlight";
 import { agentChat, listenReActEvents, isLLMConfigured, getModelStatus, getStats } from "../lib/tauri-commands";
+import { useProject } from "../contexts/ProjectContext";
 
 const LS_KEY_QUESTION = "kb_sidebar_question";
 const LS_KEY_ANSWER = "kb_sidebar_answer";
@@ -31,6 +32,7 @@ interface StatusItem {
 }
 
 function StatusBar({ onNavigate }: { onNavigate: (path: string) => void }) {
+  const { projectId } = useProject();
   const [items, setItems] = useState<StatusItem[]>([
     { label: "LLM", level: "loading", section: "llm" },
     { label: "Embedding", level: "loading", section: "embedding" },
@@ -71,7 +73,7 @@ function StatusBar({ onNavigate }: { onNavigate: (path: string) => void }) {
 
       // KB status
       try {
-        const stats = await getStats();
+        const stats = await getStats(projectId);
         results.push({
           label: "知识库",
           level: stats.document_count > 0 ? "ok" : "warn",
@@ -88,7 +90,7 @@ function StatusBar({ onNavigate }: { onNavigate: (path: string) => void }) {
     check();
     const interval = setInterval(check, 30_000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, []);
+  }, [projectId]);
 
   const dotColor: Record<StatusLevel, string> = {
     ok: "bg-green-500",
@@ -119,6 +121,7 @@ function StatusBar({ onNavigate }: { onNavigate: (path: string) => void }) {
 }
 
 export default function Layout() {
+  const { projectId } = useProject();
   const sideAnswerRef = useRef("");
   const sideSessionRef = useRef<string | null>(null);
   const navigate = useNavigate();
@@ -163,7 +166,7 @@ export default function Layout() {
         // Generate session ID first before calling agentChat
         const sid = `layout_${Date.now()}`;
         sideSessionRef.current = sid;
-        agentChat(q.text, sid);
+        agentChat(q.text, sid, projectId);
       } catch(e) { /* poll error */ }
     }, 2000);
 
@@ -172,7 +175,7 @@ export default function Layout() {
       unsub?.();
       clearInterval(interval);
     };
-  }, []);
+  }, [projectId]);
 
   return (
     <div className="flex h-screen bg-neutral-50">

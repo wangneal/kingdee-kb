@@ -22,6 +22,7 @@ import {
   type SmartFillResult,
   type GeneratedDoc,
 } from "../lib/tauri-commands";
+import { useProject } from "../contexts/ProjectContext";
 
 type Step = "info" | "fill" | "generate";
 
@@ -32,6 +33,7 @@ const STEPS: { key: Step; label: string }[] = [
 ];
 
 export default function Wizard() {
+  const { projectId } = useProject();
   const { templateId } = useParams<{ templateId: string }>();
   const navigate = useNavigate();
 
@@ -112,6 +114,7 @@ export default function Wizard() {
         user_input: userInput,
         manual_fields: fieldValues,
         schema_fields: schema.fields,
+        project_name: projectId,
       });
       setFillResult(result);
       // Merge AI-filled values
@@ -138,6 +141,7 @@ export default function Wizard() {
         output_path: outputPath,
         fields: fieldValues,
         schema_fields: schema.fields,
+        project_name: projectId,
       });
       setGeneratedDoc(result);
     } catch (e) {

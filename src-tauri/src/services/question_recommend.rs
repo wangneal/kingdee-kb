@@ -117,6 +117,7 @@ pub fn recommend_questions(
     let search_results = hybrid_search::hybrid_search(
         &enhanced_query,
         request.project_name.as_deref(),
+        &[],
         top_k * 3, // over-fetch for better coverage
         embedding,
         vector_index,
@@ -531,6 +532,7 @@ fn search_kb_for_followup(
     let search_results = hybrid_search::hybrid_search(
         query,
         project_name,
+        &[],
         top_k,
         embedding,
         vector_index,
@@ -681,6 +683,7 @@ fn assemble_kb_context_for_fill(
     let search_results = hybrid_search::hybrid_search(
         question_text,
         project_name,
+        &[],
         top_k,
         embedding,
         vector_index,

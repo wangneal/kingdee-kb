@@ -399,6 +399,7 @@ mod tests {
                     risk_store,
                     skill_manager,
                     None,
+                    Vec::new(),
                 ))
                 .max_tokens(32)
                 .temperature(0.0)

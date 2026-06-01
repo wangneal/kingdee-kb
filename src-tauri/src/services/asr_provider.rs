@@ -145,10 +145,18 @@ pub trait StreamingAsr: Send + Sync {
 #[async_trait]
 pub trait FileAsr: Send + Sync {
     /// 识别音频文件（PCM 16kHz mono f32）
-    async fn recognize_file(&self, audio_data: &[f32], config: &AsrConfig) -> Result<AsrResult, AsrError>;
+    async fn recognize_file(
+        &self,
+        audio_data: &[f32],
+        config: &AsrConfig,
+    ) -> Result<AsrResult, AsrError>;
 
     /// 识别音频文件（原始 PCM 16bit）
-    async fn recognize_pcm16(&self, audio_data: &[u8], config: &AsrConfig) -> Result<AsrResult, AsrError>;
+    async fn recognize_pcm16(
+        &self,
+        audio_data: &[u8],
+        config: &AsrConfig,
+    ) -> Result<AsrResult, AsrError>;
 
     /// 获取 provider 名称
     fn provider_name(&self) -> &str;

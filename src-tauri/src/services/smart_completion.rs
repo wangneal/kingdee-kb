@@ -113,6 +113,7 @@ pub async fn smart_fill(
     let search_results = hybrid_search::hybrid_search(
         &search_query,
         request.project_name.as_deref(),
+        &[],
         KB_TOP_K,
         embedding,
         vector_index,

@@ -196,7 +196,7 @@ impl LLMProviderConfig {
         if !self.api_key.is_empty() {
             self.api_keys = vec![ApiKeyConfig {
                 id: uuid_simple(),
-                name: "默认 Key".to_string(),
+                name: "\u{9ED8}\u{8BA4} Key".to_string(),
                 key: self.api_key.clone(),
                 is_default: true,
             }];
@@ -1326,7 +1326,7 @@ mod tests {
             temperature: 0.3,
             api_keys: vec![ApiKeyConfig {
                 id: "key1".to_string(),
-                name: "默认 Key".to_string(),
+                name: "\u{9ED8}\u{8BA4} Key".to_string(),
                 key: "sk-test".to_string(),
                 is_default: true,
             }],

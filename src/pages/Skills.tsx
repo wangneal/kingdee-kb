@@ -87,7 +87,7 @@ export default function Skills() {
   const handleImport = useCallback(async () => {
     const selected = await open({
       multiple: false,
-      filters: [{ name: "SKILL.md", extensions: ["md"] }],
+      filters: [{ name: "技能包 ZIP", extensions: ["zip"] }],
     });
     if (!selected) return;
     try {
@@ -523,7 +523,7 @@ export default function Skills() {
           <div className="flex flex-col items-center justify-center py-20 text-neutral-400">
             <Zap className="h-12 w-12 text-neutral-200" />
             <p className="mt-3 text-sm">没有找到技能</p>
-            <p className="mt-1 text-xs">点击「导入」添加 SKILL.md 文件</p>
+            <p className="mt-1 text-xs">点击「导入」添加技能 ZIP 包</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">

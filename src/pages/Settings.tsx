@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Settings as SettingsIcon,
   Key,
@@ -146,10 +147,6 @@ export default function Settings() {
   const [asrConfigStatus, setAsrConfigStatus] = useState<AsrConfigStatus | null>(null);
   const [tencentSecretId, setTencentSecretId] = useState("");
   const [tencentSecretKey, setTencentSecretKey] = useState("");
-  const [tencentAppId, setTencentAppId] = useState("");
-  const [xfyunAppId, setXfyunAppId] = useState("");
-  const [xfyunApiKey, setXfyunApiKey] = useState("");
-  const [xfyunApiSecret, setXfyunApiSecret] = useState("");
   const [asrSaving, setAsrSaving] = useState(false);
   const [asrSaveMsg, setAsrSaveMsg] = useState<string | null>(null);
 
@@ -160,11 +157,37 @@ export default function Settings() {
   const [kdclubSaveMsg, setKdclubSaveMsg] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"ai" | "integrations" | "data">("ai");
 
+  // 从 URL 参数读取 section，支持状态栏 deep link
+  const [searchParams] = useSearchParams();
+  useEffect(() => {
+    const section = searchParams.get("section");
+    if (section === "llm" || section === "embedding") setActiveTab("ai");
+    else if (section === "integrations") setActiveTab("integrations");
+    else if (section === "data" || section === "kb") setActiveTab("data");
+  }, [searchParams]);
+
   // Context Engineering override state
   const [overrideModelId, setOverrideModelId] = useState("");
   const [overrideContextWindow, setOverrideContextWindow] = useState("");
   const [overrideMaxOutput, setOverrideMaxOutput] = useState("");
   const [overrideSaveMsg, setOverrideSaveMsg] = useState<string | null>(null);
+  const [overrideKey, setOverrideKey] = useState(0);
+
+  // 合并内置规格和 localStorage 覆盖
+  const mergedModelSpecs = useMemo(() => {
+    const overrides: Record<string, { context_window?: number; max_output?: number }> =
+      JSON.parse(localStorage.getItem("model_spec_overrides") || "{}");
+    const specs = [...MODEL_SPECS];
+    for (const [id, val] of Object.entries(overrides)) {
+      const existing = specs.findIndex((s) => s.id === id);
+      if (existing >= 0) {
+        specs[existing] = { ...specs[existing], ...val };
+      } else {
+        specs.push({ id, context_window: val.context_window ?? 128000, max_output: val.max_output ?? 8192, thinking: false });
+      }
+    }
+    return specs;
+  }, [overrideKey]);
 
   // Load config, stats; poll model status (auto-load may still be async in progress)
   useEffect(() => {
@@ -363,6 +386,7 @@ export default function Settings() {
         max_output: Number(overrideMaxOutput) || 8192,
       };
       localStorage.setItem("model_spec_overrides", JSON.stringify(overrides));
+      setOverrideKey((k) => k + 1);
       setOverrideSaveMsg("已保存");
       setTimeout(() => setOverrideSaveMsg(null), 3000);
     } catch {
@@ -708,9 +732,6 @@ export default function Settings() {
         </div>
         </section>
 
-        {/* Image Processing Card */}
-        <ImageProcessingCard />
-
         {/* Context Engineering Section */}
         <section className="rounded-xl border border-neutral-200 bg-white">
           <div className="border-b border-neutral-100 px-5 py-3">
@@ -739,7 +760,7 @@ export default function Settings() {
                   </tr>
                 </thead>
                 <tbody>
-                  {MODEL_SPECS.map((spec) => (
+                  {mergedModelSpecs.map((spec) => (
                     <tr key={spec.id} className="border-b border-neutral-50">
                       <td className="py-1.5 pr-3 font-mono text-xs">{spec.id}</td>
                       <td className="py-1.5 pr-3 text-xs">{(spec.context_window / 1000).toFixed(0)}K</td>
@@ -914,52 +935,9 @@ export default function Settings() {
                     onChange={(e) => setTencentSecretKey(e.target.value)}
                     className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
                   />
-                  <input
-                    type="text"
-                    placeholder="AppId"
-                    value={tencentAppId}
-                    onChange={(e) => setTencentAppId(e.target.value)}
-                    className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
-                  />
                 </div>
                 <p className="text-[10px] text-neutral-400 mt-1">
-                  在腾讯云控制台 → API密钥管理 获取
-                </p>
-              </div>
-
-              {/* Xfyun ASR */}
-              <div className="rounded-lg border border-neutral-200 p-4">
-                <h3 className="text-xs font-semibold text-neutral-700 mb-2">
-                  讯飞语音听写
-                  {asrConfigStatus?.xfyun_configured && (
-                    <span className="ml-2 text-green-600">✓ 已配置</span>
-                  )}
-                </h3>
-                <div className="grid grid-cols-3 gap-2">
-                  <input
-                    type="text"
-                    placeholder="AppID"
-                    value={xfyunAppId}
-                    onChange={(e) => setXfyunAppId(e.target.value)}
-                    className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
-                  />
-                  <input
-                    type="text"
-                    placeholder="APIKey"
-                    value={xfyunApiKey}
-                    onChange={(e) => setXfyunApiKey(e.target.value)}
-                    className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
-                  />
-                  <input
-                    type="password"
-                    placeholder="APISecret"
-                    value={xfyunApiSecret}
-                    onChange={(e) => setXfyunApiSecret(e.target.value)}
-                    className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
-                  />
-                </div>
-                <p className="text-[10px] text-neutral-400 mt-1">
-                  在讯飞开放平台 → 我的应用 → 语音听写（流式版） 获取
+                  在腾讯云控制台 → API密钥管理 获取 SecretId/SecretKey（AppId 无需填写）
                 </p>
               </div>
 
@@ -973,10 +951,6 @@ export default function Settings() {
                       await saveAsrConfig({
                         tencent_secret_id: tencentSecretId || undefined,
                         tencent_secret_key: tencentSecretKey || undefined,
-                        tencent_app_id: tencentAppId ? Number(tencentAppId) : undefined,
-                        xfyun_app_id: xfyunAppId || undefined,
-                        xfyun_api_key: xfyunApiKey || undefined,
-                        xfyun_api_secret: xfyunApiSecret || undefined,
                       });
                       const status = await getAsrConfigStatus();
                       setAsrConfigStatus(status);
@@ -1119,134 +1093,6 @@ export default function Settings() {
         </div>
       )}
     </div>
-  );
-}
-
-// ── Image Processing Card ──────────────────────────────────────────────
-
-function ImageProcessingCard() {
-  const [visionProvider, setVisionProvider] = useState<string>("gpt4v");
-  const [visionApiKey, setVisionApiKey] = useState("");
-  const [visionBaseUrl, setVisionBaseUrl] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [saveMsg, setSaveMsg] = useState<string | null>(null);
-  const [showVisionKey, setShowVisionKey] = useState(false);
-
-  // Load config from localStorage
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem("image_processing_config");
-      if (stored) {
-        const config = JSON.parse(stored);
-        setVisionProvider(config.vision_provider || "gpt4v");
-        setVisionApiKey(config.vision_api_key || "");
-        setVisionBaseUrl(config.vision_base_url || "");
-      }
-    } catch { /* ignore */ }
-  }, []);
-
-  const handleSave = useCallback(async () => {
-    setSaving(true);
-    setSaveMsg(null);
-    try {
-      const config = {
-        vision_provider: visionProvider,
-        vision_api_key: visionApiKey,
-        vision_base_url: visionBaseUrl,
-      };
-      localStorage.setItem("image_processing_config", JSON.stringify(config));
-      setSaveMsg("配置已保存");
-      setTimeout(() => setSaveMsg(null), 3000);
-    } catch (err) {
-      setSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`);
-    }
-    setSaving(false);
-  }, [visionProvider, visionApiKey, visionBaseUrl]);
-
-  return (
-    <section className="mb-6 rounded-xl border border-neutral-200 bg-white">
-      <div className="border-b border-neutral-100 px-5 py-3">
-        <h2 className="text-sm font-semibold text-neutral-700">多模态 LLM 备用配置</h2>
-        <p className="mt-0.5 text-xs text-neutral-400">
-          配置多模态 LLM API，用于理解蓝图、操作手册中的图片（OCR 文字识别请在上方「OCR 文字识别」卡片中配置）
-        </p>
-      </div>
-
-      <div className="space-y-6 p-5">
-        {/* 多模态 LLM 配置 */}
-        <div>
-          <h3 className="mb-3 text-sm font-medium text-neutral-700">多模态 LLM（图表理解）</h3>
-          
-          <div className="space-y-3">
-            <div>
-              <label className="mb-1.5 block text-xs text-neutral-500">LLM 服务商</label>
-              <select
-                value={visionProvider}
-                onChange={(e) => setVisionProvider(e.target.value)}
-                className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm"
-              >
-                <option value="gpt4v">OpenAI GPT-4V（推荐，图表理解最强）</option>
-                <option value="qwen_vl">通义千问 VL（中文优秀）</option>
-                <option value="glm4v">智谱 GLM-4V</option>
-                <option value="claude">Claude Vision</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-xs text-neutral-500">API Key</label>
-              <div className="relative">
-                <input
-                  type={showVisionKey ? "text" : "password"}
-                  value={visionApiKey}
-                  onChange={(e) => setVisionApiKey(e.target.value)}
-                  placeholder="输入 API Key"
-                  className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 pr-10 text-sm"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowVisionKey((v) => !v)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
-                >
-                  {showVisionKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-xs text-neutral-500">
-                自定义 Base URL（可选）
-              </label>
-              <input
-                type="text"
-                value={visionBaseUrl}
-                onChange={(e) => setVisionBaseUrl(e.target.value)}
-                placeholder="https://api.openai.com/v1"
-                className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm"
-              />
-              <p className="mt-1 text-[10px] text-neutral-400">
-                留空使用默认地址。使用代理或自部署服务时可自定义。
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* 保存按钮 */}
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={saving}
-            className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
-          >
-            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            保存配置
-          </button>
-          {saveMsg && (
-            <span className="text-xs text-neutral-500">{saveMsg}</span>
-          )}
-        </div>
-      </div>
-    </section>
   );
 }
 

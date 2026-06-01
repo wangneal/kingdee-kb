@@ -8,3 +8,7 @@
 - ❌ 错误：`.opencode/skills/<skill-name>/SKILL.md`
 
 `.opencode/skills/` 仅用于 superpowers 等框架级技能，用户安装的业务技能一律放到项目的 `skills/` 目录。
+
+## 代码注释规范
+
+所有注释必须使用中文。禁止在代码中使用英文注释。

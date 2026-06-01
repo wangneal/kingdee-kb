@@ -9,11 +9,27 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tantivy::collector::TopDocs;
-use tantivy::query::QueryParser;
+use tantivy::query::{BooleanQuery, Occur, QueryParser, TermQuery};
 use tantivy::schema::*;
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument};
 
 use jieba_rs::Jieba;
+
+const CHAT_ATTACHMENT_PROJECT_PREFIX: &str = "chat-attachments:";
+
+fn is_chat_attachment_project(project: &str) -> bool {
+    project.starts_with(CHAT_ATTACHMENT_PROJECT_PREFIX)
+}
+
+fn project_allowed(project: &str, project_id: Option<&str>, extra_project_ids: &[String]) -> bool {
+    if extra_project_ids.iter().any(|p| p == project) {
+        return true;
+    }
+    if is_chat_attachment_project(project) {
+        return false;
+    }
+    project_id.map_or(true, |pid| project == pid)
+}
 
 // ─── Jieba Tokenizer for tantivy ───
 
@@ -389,32 +405,58 @@ impl BM25Service {
         Ok(())
     }
 
-    /// Search for chunks matching the query, optionally filtered by project
+    /// Search for chunks matching the query, optionally filtered by project.
+    /// Supports pre-filtering exclusion of chunk IDs at the tantivy query level
+    /// (fixes "search hijacking" by chat-attachments projects).
     pub fn search(
         &self,
         query: &str,
         project_id: Option<&str>,
+        extra_project_ids: &[String],
         top_k: u32,
+        exclude_chunk_ids: &[i64],
     ) -> Result<Vec<BM25SearchResult>, String> {
         let searcher = self.reader.searcher();
 
         let query_parser =
             QueryParser::for_index(&self.index, vec![self.field_content, self.field_title]);
 
-        // Add project filter if provided
-        let full_query = if let Some(proj) = project_id {
-            format!("{} AND project:\"{}\"", query, proj)
+        // 构建用户查询
+        let user_query_str = if let Some(proj) = project_id {
+            let mut project_terms = vec![format!("project:\"{}\"", proj)];
+            project_terms.extend(
+                extra_project_ids
+                    .iter()
+                    .map(|project| format!("project:\"{}\"", project)),
+            );
+            format!("{} AND ({})", query, project_terms.join(" OR "))
         } else {
             query.to_string()
         };
 
-        let parsed_query = query_parser
-            .parse_query(&full_query)
-            .map_err(|e| format!("Failed to parse query '{}': {}", query, e))?;
+        let parsed_user_query = query_parser
+            .parse_query(&user_query_str)
+            .map_err(|e| format!("无法解析查询 '{}': {}", query, e))?;
+
+        // 前置过滤：将排除的 chunk_id 作为 MustNot 子句加入 BooleanQuery
+        let final_query: Box<dyn tantivy::query::Query> = if exclude_chunk_ids.is_empty() {
+            parsed_user_query
+        } else {
+            let mut subqueries: Vec<(Occur, Box<dyn tantivy::query::Query>)> = Vec::new();
+            subqueries.push((Occur::Must, parsed_user_query));
+            for cid in exclude_chunk_ids {
+                let term = tantivy::Term::from_field_i64(self.field_chunk_id, *cid);
+                subqueries.push((
+                    Occur::MustNot,
+                    Box::new(TermQuery::new(term, IndexRecordOption::Basic)),
+                ));
+            }
+            Box::new(BooleanQuery::new(subqueries))
+        };
 
         let top_docs = searcher
-            .search(&parsed_query, &TopDocs::with_limit(top_k as usize))
-            .map_err(|e| format!("Search failed: {}", e))?;
+            .search(&final_query, &TopDocs::with_limit(top_k as usize))
+            .map_err(|e| format!("搜索失败: {}", e))?;
 
         let mut results = Vec::new();
 
@@ -450,6 +492,10 @@ impl BM25Service {
                 .and_then(|v| v.as_str())
                 .unwrap_or("default")
                 .to_string();
+
+            if !project_allowed(&project, project_id, extra_project_ids) {
+                continue;
+            }
 
             results.push(BM25SearchResult {
                 chunk_id,
@@ -558,17 +604,21 @@ mod tests {
         service.commit().unwrap();
 
         // Search for Chinese content
-        let results = service.search("表单插件", None, 10).unwrap();
+        let results = service.search("表单插件", None, &[], 10, &[]).unwrap();
         assert!(!results.is_empty(), "Should find results for '表单插件'");
         assert_eq!(results[0].chunk_id, 2, "Chunk 2 should be top result");
 
         // Search with project filter
-        let results_a = service.search("工作流", Some("project_a"), 10).unwrap();
+        let results_a = service
+            .search("工作流", Some("project_a"), &[], 10, &[])
+            .unwrap();
         assert!(!results_a.is_empty(), "Should find '工作流' in project_a");
         assert_eq!(results_a[0].chunk_id, 3);
 
         // Search in wrong project
-        let results_b = service.search("工作流", Some("project_b"), 10).unwrap();
+        let results_b = service
+            .search("工作流", Some("project_b"), &[], 10, &[])
+            .unwrap();
         assert!(
             results_b.is_empty(),
             "Should not find '工作流' in project_b"
@@ -592,11 +642,53 @@ mod tests {
         service.remove_chunk(1).unwrap();
         service.commit().unwrap();
 
-        let results = service.search("测试内容", None, 10).unwrap();
+        let results = service.search("测试内容", None, &[], 10, &[]).unwrap();
         assert!(
             results.is_empty(),
             "Deleted chunk should not appear in search"
         );
+    }
+
+    #[test]
+    fn test_chat_attachment_projects_are_session_scoped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let index_dir = tmp.path().join("bm25");
+        let service = BM25Service::new(index_dir).unwrap();
+
+        service
+            .add_chunk(
+                1,
+                "当前会话附件",
+                "临时附件关键词",
+                None,
+                "chat-attachments:session-a",
+            )
+            .unwrap();
+        service
+            .add_chunk(
+                2,
+                "其他会话附件",
+                "临时附件关键词",
+                None,
+                "chat-attachments:session-b",
+            )
+            .unwrap();
+        service.commit().unwrap();
+
+        let unrestricted = service
+            .search("临时附件关键词", None, &[], 10, &[])
+            .unwrap();
+        assert!(
+            unrestricted.is_empty(),
+            "chat attachments should not leak into global searches"
+        );
+
+        let scoped_project = "chat-attachments:session-a".to_string();
+        let scoped = service
+            .search("临时附件关键词", None, &[scoped_project], 10, &[])
+            .unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].project, "chat-attachments:session-a");
     }
 
     #[test]
@@ -643,13 +735,13 @@ mod tests {
         service.rebuild(&chunks).unwrap();
 
         // Old content gone, new content present
-        let results = service.search("内容A", None, 10).unwrap();
+        let results = service.search("内容A", None, &[], 10, &[]).unwrap();
         assert!(
             results.is_empty(),
             "Old content should be gone after rebuild"
         );
 
-        let results = service.search("新内容", None, 10).unwrap();
+        let results = service.search("新内容", None, &[], 10, &[]).unwrap();
         assert!(
             !results.is_empty(),
             "New content should be searchable after rebuild"

@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import {
   ClipboardList,
   Plus,
@@ -39,10 +41,12 @@ import {
   getAsrConfigStatus,
   type AsrConfigStatus,
 } from "../lib/tauri-commands";
-import { useAgent, DEFAULT_SLOT } from "../contexts/AgentContext";
+import { useAgent, DEFAULT_SLOT } from "../contexts/AgentContext"
+import { useProject } from "../contexts/ProjectContext";
 import { useToast } from "../components/Toast";
 
 export default function ResearchAssistant() {
+  const { projectId } = useProject();
   const [mode, setMode] = useState<"list" | "detail" | "new">("list");
   const [sessions, setSessions] = useState<ResearchSession[]>([]);
   const [detail, setDetail] = useState<SessionDetail | null>(null);
@@ -53,17 +57,15 @@ export default function ResearchAssistant() {
   const refreshList = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await listResearchSessions();
+      const list = await listResearchSessions(projectId);
       setSessions(list);
     } catch (err) {
       setError(String(err));
     }
     setLoading(false);
-  }, []);
+  }, [projectId]);
 
-  useEffect(() => {
-    refreshList();
-  }, [refreshList]);
+  useEffect(() => { refreshList(); }, [refreshList]);
 
   const openSession = useCallback(async (id: number) => {
     setLoading(true);
@@ -197,12 +199,13 @@ function NewSessionForm({ onCreated, onCancel }: { onCreated: (id: number) => vo
   const [sessionDate, setSessionDate] = useState(new Date().toISOString().slice(0, 10));
   const [saving, setSaving] = useState(false);
   const toast = useToast();
+  const { projectId } = useProject();
 
   const handleSubmit = async () => {
     if (!title.trim()) return;
     setSaving(true);
     try {
-      const id = await createResearchSession(title.trim(), edition, moduleCode.trim(), interviewee.trim(), sessionDate);
+      const id = await createResearchSession(title.trim(), edition, moduleCode.trim(), interviewee.trim(), sessionDate, projectId);
       onCreated(id);
     } catch (err) {
       toast.error(String(err));
@@ -274,6 +277,7 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
   const agent = useAgent();
   const slot = agent.slots.get("research") ?? DEFAULT_SLOT;
   const aiLoading = slot.loading;
+  const { projectId } = useProject();
   const [recording, setRecording] = useState(false);
   const [whisperStatus, setWhisperStatus] = useState<WhisperStatus | null>(null);
   const [loadingWhisper, setLoadingWhisper] = useState(false);
@@ -290,7 +294,11 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
     getWhisperStatus().then(setWhisperStatus).catch((err) => {
       console.error("获取 Whisper 状态失败:", err);
     });
-    listAsrProviders().then(setAsrProviders).catch(console.error);
+    listAsrProviders().then((providers) => {
+      // 过滤掉不支持文件识别的 provider（如讯飞 WebSocket 模式）
+      const available = (providers || []).filter(p => p.type !== "xfyun");
+      setAsrProviders(available);
+    }).catch(console.error);
     getAsrConfigStatus().then(setAsrConfigStatus).catch(console.error);
   }, []);
 
@@ -310,10 +318,21 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
     setNewAnswer("");
     const context = `当前调研：${session.title}（${session.edition}/${session.module_code}）\n已有记录：${records.map((r) => `Q: ${r.question_text}`).join("\n")}`;
     const prompt = `请回答以下调研问题，基于知识库中的金蝶ERP实施经验。回答要具体、可操作，包含系统配置路径或单据类型；不确定的写[待确认]。\n\n问题：${newQuestion}\n\n背景：${context}`;
-    await agent.sendMessage("research", prompt);
+    await agent.sendMessage("research", prompt, { projectId: projectId });
   };
 
   const handleStartRecording = async () => {
+    // 非 Whisper 模式（如腾讯 ASR）不需要加载本地模型
+    if (selectedAsrProvider !== "whisper") {
+      try {
+        await startWhisperRecording();
+        setRecording(true);
+      } catch (err) {
+        toast.error("启动录音失败: " + String(err));
+      }
+      return;
+    }
+
     if (!whisperStatus?.model_loaded) {
       setLoadingWhisper(true);
       try {
@@ -337,11 +356,15 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
 
   const handleStopRecording = async () => {
     try {
-      const result = await stopWhisperRecording();
+      const result = selectedAsrProvider && selectedAsrProvider !== "whisper"
+        ? await stopWhisperRecording(selectedAsrProvider)
+        : await stopWhisperRecording();
       setRecording(false);
-      if (result.text.trim()) {
-        setNewQuestion(result.text.trim());
+      if (!result.text || !result.text.trim()) {
+        toast.warning("未检测到音频，请检查麦克风权限或输入设备");
+        return;
       }
+      setNewQuestion(result.text.trim());
     } catch (err) {
       setRecording(false);
       toast.error("停止录音失败: " + String(err));
@@ -383,13 +406,8 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
   const handleExportCsv = async () => {
     try {
       const csv = await exportSessionCsv(session.id);
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `调研记录_${session.title}_${session.session_date}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
+      const dest = await save({ defaultPath: `调研记录_${session.title}_${session.session_date}.csv`, filters: [{ name: "CSV", extensions: ["csv"] }] });
+      if (dest) await invoke("export_report", { content: csv, filePath: dest });
     } catch (err) {
       toast.error(String(err));
     }
@@ -398,13 +416,8 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
   const handleExportMd = async () => {
     try {
       const md = await exportSessionMarkdown(session.id);
-      const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `调研记录_${session.title}_${session.session_date}.md`;
-      a.click();
-      URL.revokeObjectURL(url);
+      const dest = await save({ defaultPath: `调研记录_${session.title}_${session.session_date}.md`, filters: [{ name: "Markdown", extensions: ["md"] }] });
+      if (dest) await invoke("export_report", { content: md, filePath: dest });
     } catch (err) {
       toast.error(String(err));
     }
@@ -415,13 +428,8 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
     if (!qaText.trim()) { toast.warning("暂无记录，无法提炼蓝图"); return; }
     try {
       const blueprint = await extractBlueprint(qaText);
-      const blob = new Blob([blueprint], { type: "text/markdown;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `蓝图_${session.title}.md`;
-      a.click();
-      URL.revokeObjectURL(url);
+      const dest = await save({ defaultPath: `蓝图_${session.title}.md`, filters: [{ name: "Markdown", extensions: ["md"] }] });
+      if (dest) await invoke("export_report", { content: blueprint, filePath: dest });
     } catch (err) {
       toast.error("蓝图提炼失败: " + String(err));
     }

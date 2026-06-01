@@ -500,6 +500,7 @@ pub async fn generate_recipe_doc(
                 .project_id
                 .as_deref()
                 .or(request.project_name.as_deref()),
+            &[],
             RECIPE_KB_TOP_K,
             embedding,
             vector_index,

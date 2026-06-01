@@ -1,6 +1,8 @@
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::app_state::AppState;
+use crate::services::asr_provider::FileAsr;
 use crate::services::model_downloader;
 use crate::services::video_transcriber::{
     MeetingMinutesResult, VideoPipelineResult, VideoTranscriptionResult,
@@ -37,19 +39,77 @@ pub fn start_whisper_recording(state: State<'_, AppState>) -> Result<(), String>
 }
 
 /// 停止录音并转录音频。
+/// provider: 可选 ASR 服务商（tencent），为空则使用本地 Whisper
 #[tauri::command]
 pub async fn stop_whisper_recording(
     state: State<'_, AppState>,
+    provider: Option<String>,
 ) -> Result<TranscriptionResult, String> {
+    // 使用在线 ASR（腾讯云）
+    if let Some(ref asr_provider) = provider {
+        let asr_provider = asr_provider.as_str();
+
+        // 1. 停止录音获取 PCM 数据
+        let pcm_data = {
+            let capture = state.audio_capture.lock().map_err(|e| e.to_string())?;
+            capture.stop_recording()?
+        };
+        if pcm_data.is_empty() {
+            return Ok(TranscriptionResult {
+                text: String::new(),
+                segments: Vec::new(),
+                confidence: 0.0,
+                processing_time_ms: 0,
+            });
+        }
+
+        let config = crate::services::asr_provider::AsrConfig::default();
+        let start = std::time::Instant::now();
+
+        let result = match asr_provider {
+            "tencent" => {
+                let (secret_id, secret_key) = {
+                    let cfg = state.asr_config.lock().map_err(|e| e.to_string())?;
+                    let sid = cfg.tencent_secret_id.clone()
+                        .ok_or_else(|| "请先在设置中配置腾讯云 SecretId".to_string())?;
+                    let sk = cfg.tencent_secret_key.clone()
+                        .ok_or_else(|| "请先在设置中配置腾讯云 SecretKey".to_string())?;
+                    (sid, sk)
+                };
+                let provider = crate::services::tencent_asr::TencentOneShotProvider::new(
+                    secret_id, secret_key,
+                );
+                provider.recognize_file(&pcm_data, &config).await
+                    .map_err(|e| format!("腾讯 ASR 识别失败: {:?}", e))?
+            }
+            _ => return Err(format!("不支持的 ASR 服务商: {}", asr_provider)),
+        };
+
+        let processing_time_ms = start.elapsed().as_millis() as u64;
+        return Ok(TranscriptionResult {
+            text: result.text,
+            segments: Vec::new(),
+            confidence: result.confidence,
+            processing_time_ms,
+        });
+    }
+
+    // 无 provider → 使用本地 Whisper
     let pcm_data = {
         let capture = state.audio_capture.lock().map_err(|e| e.to_string())?;
         capture.stop_recording()?
     };
 
     if pcm_data.is_empty() {
-        return Err("No audio data captured. Microphone may not be working.".to_string());
+        return Ok(TranscriptionResult {
+            text: String::new(),
+            segments: Vec::new(),
+            confidence: 0.0,
+            processing_time_ms: 0,
+        });
     }
 
+    // 语音活动检测：提取有效语音片段
     let speech_segments = crate::services::audio_capture::AudioCapture::detect_speech_segments(
         &pcm_data, 16000, 500, 0.01,
     );
@@ -57,7 +117,7 @@ pub async fn stop_whisper_recording(
     if speech_segments.is_empty() {
         return Ok(TranscriptionResult {
             text: String::new(),
-            segments: vec![],
+            segments: Vec::new(),
             confidence: 0.0,
             processing_time_ms: 0,
         });
@@ -252,4 +312,54 @@ pub async fn generate_meeting_minutes_from_transcript(
         return Err("转写文本为空".to_string());
     }
     crate::services::video_transcriber::generate_meeting_minutes(&transcript, &state.llm)
+}
+
+// ─── ASR Provider 管理命令 ────────────────────────────────
+
+#[derive(Serialize)]
+pub struct AsrProviderInfo {
+    r#type: String,
+    name: String,
+    description: String,
+    supports_streaming: bool,
+    supports_file: bool,
+}
+
+/// 列出所有可用的 ASR Provider
+#[tauri::command]
+pub fn list_asr_providers() -> Result<Vec<AsrProviderInfo>, String> {
+    Ok(vec![
+        AsrProviderInfo {
+            r#type: "whisper".to_string(),
+            name: "本地 Whisper".to_string(),
+            description: "本地离线语音识别，无需网络，支持中文/英文。需要先下载模型（约 80MB）。首次使用时自动下载。".to_string(),
+            supports_streaming: false,
+            supports_file: true,
+        },
+        AsrProviderInfo {
+            r#type: "tencent".to_string(),
+            name: "腾讯云语音识别".to_string(),
+            description: "腾讯云在线语音识别（一句话识别），识别精度高，需配置 SecretId/SecretKey。".to_string(),
+            supports_streaming: false,
+            supports_file: true,
+        },
+    ])
+}
+
+/// 保存 ASR 配置（腾讯云）
+#[tauri::command]
+pub fn save_asr_config(
+    state: State<'_, AppState>,
+    tencent_secret_id: Option<String>,
+    tencent_secret_key: Option<String>,
+) -> Result<(), String> {
+    let mut config = state.asr_config.lock().map_err(|e| e.to_string())?;
+    config.save_tencent(tencent_secret_id, tencent_secret_key)
+}
+
+/// 获取 ASR 配置状态
+#[tauri::command]
+pub fn get_asr_config_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let config = state.asr_config.lock().map_err(|e| e.to_string())?;
+    Ok(config.get_status())
 }

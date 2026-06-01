@@ -3,6 +3,7 @@ import Layout from "./components/Layout";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ToastProvider } from "./components/Toast";
 import { AgentProvider } from "./contexts/AgentContext";
+import { ProjectProvider } from "./contexts/ProjectContext";
 import Home from "./pages/Home";
 import Settings from "./pages/Settings";
 import Browse from "./pages/Browse";
@@ -20,6 +21,7 @@ function App() {
   return (
     <ErrorBoundary>
       <ToastProvider>
+      <ProjectProvider>
       <AgentProvider>
       <Routes>
       <Route path="/" element={<Layout />}>
@@ -38,6 +40,7 @@ function App() {
       </Route>
     </Routes>
       </AgentProvider>
+      </ProjectProvider>
       </ToastProvider>
     </ErrorBoundary>
   );

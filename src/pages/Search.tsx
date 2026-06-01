@@ -4,6 +4,7 @@ import {
   hybridSearch,
   type HybridSearchResult,
 } from "../lib/tauri-commands";
+import { useProject } from "../contexts/ProjectContext";
 
 function highlightText(text: string, query: string): React.ReactNode {
   if (!query.trim()) return text;
@@ -26,6 +27,7 @@ function highlightText(text: string, query: string): React.ReactNode {
 }
 
 export default function Search() {
+  const { projectId } = useProject();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<HybridSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -41,7 +43,7 @@ export default function Search() {
       setSearched(true);
       setSearchError(null);
       try {
-        const res = await hybridSearch(query.trim(), undefined, 30);
+        const res = await hybridSearch(query.trim(), projectId, 30);
         setResults(res);
         setSearchError(null);
       } catch (err) {

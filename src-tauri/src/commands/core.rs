@@ -345,3 +345,20 @@ pub async fn scan_index_drift(state: State<'_, AppState>) -> Result<Vec<IndexDri
         })
         .collect())
 }
+
+/// 另存文件附件（Rust 层流式拷贝，零前端内存占用）
+#[tauri::command]
+pub async fn save_attachment_as(source: String, dest: String) -> Result<String, String> {
+    let src_path = PathBuf::from(&source);
+    let dst_path = PathBuf::from(&dest);
+
+    // 确保目标目录存在
+    if let Some(parent) = dst_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("无法创建目标目录: {}", e))?;
+    }
+
+    // 流式拷贝
+    fs::copy(&src_path, &dst_path).map_err(|e| format!("文件拷贝失败: {}", e))?;
+
+    Ok(dest)
+}

@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom"
+import { useProject } from "../contexts/ProjectContext";
 import {
   BookOpen,
   Search,
@@ -24,6 +25,7 @@ import {
 } from "../lib/tauri-commands";
 
 export default function Home() {
+  const { projectId } = useProject();
   const navigate = useNavigate();
   const [stats, setStats] = useState<KnowledgeStats | null>(null);
   const [products, setProducts] = useState<ProductMeta[]>([]);
@@ -34,8 +36,8 @@ export default function Home() {
     (async () => {
       try {
         const [statsData, productsData, templatesData] = await Promise.all([
-          getStats().catch(() => null),
-          listProducts().catch(() => []),
+          getStats(projectId).catch(() => null),
+          listProducts(projectId).catch(() => []),
           scanTemplates().catch(() => []),
         ]);
         setStats(statsData);
@@ -47,7 +49,7 @@ export default function Home() {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [projectId]);
 
   const recentProducts = products
     .sort(

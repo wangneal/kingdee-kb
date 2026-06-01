@@ -466,6 +466,24 @@ impl MetadataStore {
         Ok(())
     }
 
+    /// 获取所有 chat-attachments 项目的 chunk_id 列表，用于检索前置过滤
+    pub fn get_chat_attachment_chunk_ids(&self) -> Result<Vec<i64>, String> {
+        let mut stmt = self
+            .db
+            .prepare(
+                "SELECT c.id FROM chunks c
+                 JOIN documents d ON c.document_id = d.id
+                 WHERE d.project LIKE 'chat-attachments:%'",
+            )
+            .map_err(|e| format!("Failed to prepare query: {}", e))?;
+        let ids: Vec<i64> = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|e| format!("Failed to query: {}", e))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(ids)
+    }
+
     // ─── Stats ───
 
     /// Get knowledge base statistics, optionally filtered by project

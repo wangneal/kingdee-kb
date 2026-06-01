@@ -1,8 +1,9 @@
-import { useState, useCallback, useRef, useEffect, type Dispatch, type SetStateAction } from "react";
+import { useState, useCallback, useRef, useEffect, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { convertFileSrc } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { useNavigate } from "react-router-dom";
 import {
   Send,
@@ -21,6 +22,13 @@ import {
   ChevronUp,
   BookOpen,
   Zap,
+  Download,
+  Copy,
+  ExternalLink,
+  File,
+  FileSpreadsheet,
+  FileCode,
+  FileArchive,
 } from "lucide-react";
 import {
   useAgent,
@@ -28,16 +36,16 @@ import {
   buildAgentHistory,
   type AgentMessage,
   type RAGSource,
+  type FileAttachment,
   type ReActTrace,
-} from "../contexts/AgentContext";
+} from "../contexts/AgentContext"
+import { useProject } from "../contexts/ProjectContext";
 import {
   isLLMConfigured,
-  extractFileText,
-  ingestFile,
   saveChatMemory,
   countTokens,
 } from "../lib/tauri-commands";
-import { listLLMProviders, processImage } from "../lib/skill-commands";
+import { listLLMProviders } from "../lib/skill-commands";
 import type { LLMProviderConfig } from "../lib/skill-types";
 import {
   extractFilesFromPasteEvent,
@@ -64,9 +72,7 @@ function nextId(): string {
 
 const CHAT_STORAGE_KEY = "kingdee_kb_chat_history";
 const MAX_STORED_MESSAGES = 500;
-const CHAT_ATTACHMENT_PROJECT = "chat-attachments";
-const ACTIVE_PROJECT_KEY = "kingdee_kb_active_project";
-const MAX_ATTACHMENT_PROMPT_CHARS = 12000;
+
 const DOCUMENT_EXTENSIONS = new Set([
   "md",
   "txt",
@@ -102,7 +108,7 @@ function saveChatHistory(messages: AgentMessage[]) {
       : clean;
     localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(trimmed));
   } catch {
-    // ignore
+    // 忽略
   }
 }
 
@@ -181,6 +187,7 @@ function PlanTimeline({ trace }: { trace: ReActTrace }) {
 }
 
 export default function Chat() {
+  const { projectId } = useProject();
   const agent = useAgent();
   const navigate = useNavigate();
   const slot = agent.slots.get("chat") ?? DEFAULT_SLOT;
@@ -188,7 +195,7 @@ export default function Chat() {
 
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
-  const [attaching, setAttaching] = useState(false);
+  const attaching = false;
   const [llmReady, setLlmReady] = useState<boolean | null>(null);
   const [providers, setProviders] = useState<LLMProviderConfig[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<string>("");
@@ -201,7 +208,7 @@ export default function Chat() {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const lastInputRef = useRef<{ text: string; attachments: ChatAttachment[] } | null>(null);
 
-  // Load chat history from localStorage into slot on mount
+  // 从 localStorage 加载聊天历史到 slot
   const didLoadRef = useRef(false);
   useEffect(() => {
     if (didLoadRef.current) return;
@@ -214,19 +221,19 @@ export default function Chat() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Check LLM on mount
+  // 挂载时检查 LLM 配置
   useEffect(() => {
     isLLMConfigured()
       .then(setLlmReady)
       .catch(() => setLlmReady(false));
   }, []);
 
-  // Load LLM providers on mount
+  // 挂载时加载 LLM 供应商
   useEffect(() => {
     listLLMProviders()
       .then((fetchedProviders) => {
         setProviders(fetchedProviders);
-        // Pre-select default provider and model
+        // 预选默认供应商和模型
         const defaultProvider = fetchedProviders.find((p) => p.is_default) || fetchedProviders[0];
         if (defaultProvider) {
           setSelectedProviderId(defaultProvider.id);
@@ -241,85 +248,115 @@ export default function Chat() {
       });
   }, []);
 
-  // Auto-scroll
+  // Auto-scroll（rAF 节流 + 仅接近底部时跟随）
+  const scrollRafRef = useRef<number | null>(null);
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages, currentTrace]);
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setDropdownOpen(false);
+    const el = scrollRef.current;
+    if (!el) return;
+    // 距离底部 < 100px 才自动跟随
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    if (!isNearBottom) return;
+    if (scrollRafRef.current) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      if (scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    });
+    return () => {
+      if (scrollRafRef.current) {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
       }
     };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+  }, [messages, currentTrace]);
 
-  // Update token count when messages change
+  // Update token count（禁止在 streaming 中运行，2 秒节流）
+  const countTokensRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (messages.length === 0) {
-      setTokenUsage(null);
+    if (loading || messages.length === 0) {
+      if (messages.length === 0) setTokenUsage(null);
+      if (countTokensRef.current) {
+        clearTimeout(countTokensRef.current);
+        countTokensRef.current = null;
+      }
       return;
     }
-    const allText = messages.map(m => m.content || "").join("\n");
-    countTokens(allText).then(count => {
-      setTokenUsage({ used: count, total: 128000 }); // default 128K, will be refined later
-    }).catch(() => {});
-  }, [messages]);
+    if (countTokensRef.current) return; // 已有挂起的节流
+    countTokensRef.current = setTimeout(() => {
+      countTokensRef.current = null;
+      const allText = messages.map(m => m.content || "").join("\n");
+      countTokens(allText).then(count => {
+        setTokenUsage({ used: count, total: 128000 });
+      }).catch(() => {});
+    }, 2000);
+    return () => {
+      if (countTokensRef.current) {
+        clearTimeout(countTokensRef.current);
+        countTokensRef.current = null;
+      }
+    };
+  }, [messages, loading]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if ((!text && attachments.length === 0) || loading || attaching) return;
 
-    // Check if LLM is configured before sending
+    // 发送前检查 LLM 是否已配置
     if (llmReady === false) {
       alert("尚未配置 AI 模型，请前往【设置 → AI 模型】添加 LLM 供应商");
       return;
     }
 
-    // Preserve input for retry before clearing
+    // 保留输入以便重试时恢复
     lastInputRef.current = { text: input, attachments: [...attachments] };
 
-    setAttaching(true);
-    const preparedAttachments = await prepareAttachmentsForSend(attachments, setAttachments);
-    setAttaching(false);
-
-    const attachmentPrompt = buildAttachmentPrompt(preparedAttachments);
-    const outboundText = [text, attachmentPrompt].filter(Boolean).join("\n\n");
-    const visibleText = [text || "请分析附件", buildAttachmentDisplay(preparedAttachments)]
+    const outboundText = text || "请分析附件";
+    const visibleText = [text || "请分析附件", buildAttachmentDisplay(attachments)]
       .filter(Boolean)
       .join("\n\n");
+
+    const attachmentInfos = attachments.map((a) => ({
+      name: a.name,
+      path: a.path,
+      kind: a.kind,
+    }));
+
+    // 转为 FileAttachment 在消息气泡中显示
+    const fileAttachments: FileAttachment[] = attachments.map((a) => ({
+      id: a.id,
+      path: a.path,
+      name: a.name,
+      kind: a.kind === "unsupported" ? "document" : a.kind,
+    }));
 
     setInput("");
     setAttachments([]);
 
-    const projectId = localStorage.getItem(ACTIVE_PROJECT_KEY) || undefined;
     const history = buildAgentHistory(messages);
     await agent.sendMessage("chat", outboundText, {
       displayText: visibleText,
       history,
       projectId,
       providerId: selectedProviderId || undefined,
+      attachments: attachmentInfos,
+      fileAttachments,
     });
   }, [input, attachments, loading, attaching, messages, agent, selectedProviderId, llmReady]);
 
-  // Retry last failed message
+  // 重试最后失败的消息
   const handleRetry = useCallback(async () => {
     if (loading || !lastInputRef.current) return;
     const { text, attachments: prevAttachments } = lastInputRef.current;
     setInput(text);
     setAttachments(prevAttachments);
-    // Use a short delay to allow state to update, then trigger send
+    // 短延迟等待状态更新，再触发发送
     setTimeout(() => {
       inputRef.current?.focus();
     }, 50);
   }, [loading]);
 
-  // Navigate to settings section
+  // 导航到设置页面
   const handleNavigateSettings = useCallback((section?: string) => {
     navigate(section ? `/settings?section=${section}` : "/settings");
   }, [navigate]);
@@ -432,39 +469,48 @@ export default function Chat() {
     [addFilesAsAttachments],
   );
 
-  // Cancel running agent stream
+  // 取消正在运行的代理流
   const handleCancel = useCallback(async () => {
     await agent.cancelSession("chat");
   }, [agent]);
 
-  // Answer a pending clarification question
+  // 回答待处理的澄清问题
   const handleClarify = useCallback(async (questionId: string, answer: string) => {
     await agent.answerClarification("chat", questionId, answer);
   }, [agent]);
 
-  // Save to localStorage debounced
+  // 仅在流完成后保存到本地存储
+  const prevLoadingRef = useRef(loading);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-    saveTimeoutRef.current = setTimeout(() => saveChatHistory(messages), 500);
+    if (!prevLoadingRef.current && loading) {
+      // 流开始 → 清除待处理的保存
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    }
+    if (prevLoadingRef.current && !loading) {
+      // 流完成 → 延迟 500ms 落盘，避免频繁写入本地存储
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => saveChatHistory(messages), 500);
+    }
+    prevLoadingRef.current = loading;
     return () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current); };
-  }, [messages]);
+  }, [loading]);
 
-  // Save chat memory when session completes (loading transitions true → false)
-  const prevLoadingRef = useRef(loading);
+  // 会话完成后保存聊天记忆 (loading transitions true → false)
+  const prevLoadingRef2 = useRef(loading);
   useEffect(() => {
-    if (prevLoadingRef.current && !loading && messages.length > 0) {
+    if (prevLoadingRef2.current && !loading && messages.length > 0) {
       const lastMsg = messages[messages.length - 1];
       if (lastMsg.role === "assistant" && !lastMsg.error) {
         const conversation = messages
           .filter((m) => !m.error)
           .map((m) => ({ role: m.role, content: m.content }));
-        saveChatMemory(conversation).catch((e) =>
+        saveChatMemory(conversation, projectId).catch((e) =>
           console.warn("[Chat] Failed to save chat memory:", e)
         );
       }
     }
-    prevLoadingRef.current = loading;
+    prevLoadingRef2.current = loading;
   }, [loading, messages]);
 
   const handleClear = useCallback(() => {
@@ -485,7 +531,7 @@ export default function Chat() {
   const selectedProvider = providers.find((p) => p.id === selectedProviderId);
   const selectedModel = selectedProvider?.models.find((m) => m.id === selectedModelId);
 
-  // Build flat list of all provider+model combinations for the dropdown
+  // 构建所有供应商+模型组合的平面列表供下拉选择
   const modelOptions = providers.flatMap((p) =>
     p.models.map((m) => ({
       providerId: p.id,
@@ -555,9 +601,12 @@ export default function Chat() {
             <div className="space-y-2 border-l-2 border-amber-200 pl-4">
               <PlanTimeline trace={currentTrace} />
               {currentTrace.thinking && (
-                <div className="text-xs text-amber-700 italic leading-relaxed">
-                  🤔 {currentTrace.thinking}
-                </div>
+                <details className="text-xs text-amber-700 italic leading-relaxed" open>
+                  <summary className="cursor-pointer text-amber-500 not-italic font-medium">?? 推理过程</summary>
+                  {currentTrace.thinking.length > 2000
+                    ? "..." + currentTrace.thinking.slice(-2000)
+                    : currentTrace.thinking}
+                </details>
               )}
               {currentTrace.toolCalls.map((tc, i) => (
                 <div key={i}>
@@ -776,123 +825,6 @@ function createAttachment(path: string): ChatAttachment {
   };
 }
 
-async function prepareAttachmentsForSend(
-  attachments: ChatAttachment[],
-  setAttachments: Dispatch<SetStateAction<ChatAttachment[]>>
-): Promise<ChatAttachment[]> {
-  const prepared = [...attachments];
-
-  for (let i = 0; i < prepared.length; i++) {
-    const attachment = prepared[i];
-
-    // Process images via OCR/vision
-    if (attachment.kind === "image" && !attachment.extractedText && attachment.status !== "error") {
-      setAttachments((prev) =>
-        prev.map((a) =>
-          a.id === attachment.id ? { ...a, status: "ingesting", error: undefined } : a
-        )
-      );
-
-      try {
-        const result = await processImage(attachment.path);
-        const text = result.ocr_text || result.description || "";
-        prepared[i] = {
-          ...attachment,
-          status: "parsed",
-          extractedText: text,
-          charCount: text.length,
-          error: undefined,
-        };
-        setAttachments((prev) =>
-          prev.map((a) => (a.id === attachment.id ? prepared[i] : a))
-        );
-      } catch (err) {
-        prepared[i] = {
-          ...attachment,
-          status: "error",
-          error: `图片处理失败：${String(err)}`,
-        };
-        setAttachments((prev) =>
-          prev.map((a) => (a.id === attachment.id ? prepared[i] : a))
-        );
-      }
-      continue;
-    }
-
-    // Skip non-documents or already processed
-    if (
-      attachment.kind !== "document" ||
-      attachment.extractedText ||
-      attachment.status === "error"
-    ) {
-      continue;
-    }
-
-    setAttachments((prev) =>
-      prev.map((a) =>
-        a.id === attachment.id ? { ...a, status: "ingesting", error: undefined } : a
-      )
-    );
-
-    try {
-      const extracted = await extractFileText(attachment.path);
-      prepared[i] = {
-        ...attachment,
-        status: "parsed",
-        extractedText: extracted.text,
-        charCount: extracted.char_count,
-      };
-      setAttachments((prev) =>
-        prev.map((a) => (a.id === attachment.id ? prepared[i] : a))
-      );
-
-      try {
-        const result = await ingestFile(attachment.path, CHAT_ATTACHMENT_PROJECT);
-        prepared[i] = {
-          ...prepared[i],
-          status: "ingested",
-          documentId: result.document_id,
-          error: undefined,
-        };
-        setAttachments((prev) =>
-          prev.map((a) => (a.id === attachment.id ? prepared[i] : a))
-        );
-      } catch (ingestErr) {
-        prepared[i] = {
-          ...prepared[i],
-          status: "parsed",
-          error: `已解析，入库失败：${String(ingestErr)}`,
-        };
-        setAttachments((prev) =>
-          prev.map((a) => (a.id === attachment.id ? prepared[i] : a))
-        );
-      }
-    } catch (err) {
-      prepared[i] = {
-        ...attachment,
-        status: "error",
-        error: normalizeAttachmentError(String(err), attachment.name),
-      };
-      setAttachments((prev) =>
-        prev.map((a) => (a.id === attachment.id ? prepared[i] : a))
-      );
-    }
-  }
-
-  return prepared;
-}
-
-function normalizeAttachmentError(error: string, filename: string): string {
-  const ext = filename.split(".").pop()?.toLowerCase();
-  if (ext === "pdf") {
-    return `PDF 文本解析失败：${error}。如果这是扫描件或图片型 PDF，需要 OCR/多模态模型；如果是加密 PDF，请先另存为可复制文本的 PDF。`;
-  }
-  if (ext === "doc") {
-    return `DOC 文本解析失败：${error}。.doc 需要本机安装 Microsoft Word 才能解析。`;
-  }
-  return error;
-}
-
 function buildAttachmentDisplay(attachments: ChatAttachment[]): string {
   if (attachments.length === 0) return "";
   return [
@@ -910,69 +842,6 @@ function buildAttachmentDisplay(attachments: ChatAttachment[]): string {
       return `- ${a.name}（${status}）`;
     }),
   ].join("\n");
-}
-
-function buildAttachmentPrompt(attachments: ChatAttachment[]): string {
-  if (attachments.length === 0) return "";
-  const documents = attachments.filter((a) =>
-    a.kind === "document" &&
-    (a.status === "parsed" || a.status === "ingested") &&
-    Boolean(a.extractedText)
-  );
-  const processedImages = attachments.filter((a) =>
-    a.kind === "image" &&
-    (a.status === "parsed") &&
-    Boolean(a.extractedText)
-  );
-  const unprocessedImages = attachments.filter((a) =>
-    a.kind === "image" && !a.extractedText
-  );
-  const failed = attachments.filter((a) => a.status === "error" || a.kind === "unsupported");
-  const lines = ["【本轮附件】"];
-
-  if (documents.length > 0) {
-    lines.push("以下文档已解析。优先基于摘录回答；如果摘录不足，再调用 search-knowledge 检索这些附件内容：");
-    for (const doc of documents) {
-      const fullText = doc.extractedText ?? "";
-      const excerpt = truncateForPrompt(fullText, MAX_ATTACHMENT_PROMPT_CHARS);
-      const omitted = Math.max(0, (doc.charCount ?? fullText.length) - excerpt.length);
-      lines.push(`\n--- 附件：${doc.name} ---`);
-      lines.push(`document_id=${doc.documentId ?? "unknown"}，project=${CHAT_ATTACHMENT_PROJECT}，字符数=${doc.charCount ?? fullText.length}`);
-      lines.push(excerpt || "（未提取到文本）");
-      if (omitted > 0) {
-        lines.push(`（后续还有约 ${omitted} 字未直接放入上下文，可用 search-knowledge 继续检索）`);
-      }
-    }
-  }
-  if (processedImages.length > 0) {
-    lines.push("以下图片已通过 OCR/视觉模型解析，优先基于解析内容回答：");
-    for (const image of processedImages) {
-      const fullText = image.extractedText ?? "";
-      const excerpt = truncateForPrompt(fullText, MAX_ATTACHMENT_PROMPT_CHARS);
-      lines.push(`\n--- 图片：${image.name} ---`);
-      lines.push(`字符数=${image.charCount ?? fullText.length}`);
-      lines.push(excerpt || "（未提取到文本）");
-    }
-  }
-  if (unprocessedImages.length > 0) {
-    lines.push("以下图片未能解析内容，回答时不要声称已读取其内容：");
-    for (const image of unprocessedImages) {
-      lines.push(`- ${image.name}，path=${image.path}`);
-    }
-  }
-  if (failed.length > 0) {
-    lines.push("以下附件未成功解析，回答时不要声称已读取其内容：");
-    for (const item of failed) {
-      lines.push(`- ${item.name}，原因：${item.error ?? "不支持"}`);
-    }
-  }
-
-  return lines.join("\n");
-}
-
-function truncateForPrompt(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  return `${text.slice(0, maxChars)}\n\n[附件内容过长，已截断]`;
 }
 
 function AttachmentChip({
@@ -1032,9 +901,221 @@ function AttachmentChip({
   );
 }
 
-// ── Message Bubble Component ──────────────────────────────────────────────
+// ── 文件气泡组件 ──────────────────────────────────────────────
 
-function MessageBubble({
+/** 根据文件扩展名获取图标 */
+function getFileIcon(name: string) {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  if (["xlsx", "xls", "csv"].includes(ext)) return FileSpreadsheet;
+  if (["js", "ts", "py", "java", "rs", "go", "html", "css", "json", "xml", "yaml", "yml"].includes(ext)) return FileCode;
+  if (["zip", "rar", "7z", "tar", "gz"].includes(ext)) return FileArchive;
+  if (["pdf"].includes(ext)) return FileText;
+  if (["doc", "docx", "md", "txt"].includes(ext)) return FileText;
+  return File;
+}
+
+/** 格式化文件大小 */
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** 判断是否为图片文件 */
+function isImageFile(name: string): boolean {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  return ["png", "jpg", "jpeg", "webp", "bmp", "gif", "svg"].includes(ext);
+}
+
+function FileBubble({ attachment }: { attachment: FileAttachment }) {
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const isImage = isImageFile(attachment.name);
+  const Icon = isImage ? ImageIcon : getFileIcon(attachment.name);
+  const src = isImage && attachment.path ? convertFileSrc(attachment.path) : undefined;
+
+  useEffect(() => {
+    if (!previewOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") setPreviewOpen(false); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [previewOpen]);
+
+  const handleClick = useCallback(() => {
+    if (isImage) {
+      setPreviewOpen(true);
+    } else {
+      openPath(attachment.path).catch((err) => console.error("Failed to open file:", err));
+    }
+  }, [isImage, attachment.path]);
+
+  const handleCopyPath = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(attachment.path);
+    } catch (err) {
+      console.error("Failed to copy path:", err);
+    }
+  }, [attachment.path]);
+
+  const handleSaveAs = useCallback(async () => {
+    try {
+      const dest = await save({
+        defaultPath: attachment.name,
+        filters: [{ name: "All Files", extensions: ["*"] }],
+      });
+      if (dest) {
+        await invoke("save_attachment_as", { source: attachment.path, dest });
+      }
+    } catch (err) {
+      console.error("Failed to save file:", err);
+    }
+  }, [attachment.path, attachment.name]);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  }, []);
+
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  return (
+    <div className="relative">
+      <div
+        onClick={handleClick}
+        onContextMenu={handleContextMenu}
+        className="flex items-center gap-3 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2.5 cursor-pointer hover:bg-neutral-100 transition-colors max-w-[280px]"
+      >
+        {src ? (
+          <img
+            src={src}
+            alt=""
+            className="h-12 w-12 rounded object-cover shrink-0"
+          />
+        ) : (
+          <div className="flex h-12 w-12 items-center justify-center rounded bg-amber-50 shrink-0">
+            <Icon className="h-5 w-5 text-amber-600" />
+          </div>
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium text-neutral-800">{attachment.name}</div>
+          {attachment.size != null && (
+            <div className="text-xs text-neutral-400">{formatFileSize(attachment.size)}</div>
+          )}
+        </div>
+        {isImage ? (
+          <span className="text-[10px] text-amber-600 shrink-0">预览</span>
+        ) : (
+          <ExternalLink className="h-4 w-4 shrink-0 text-neutral-400" />
+        )}
+      </div>
+
+      {/* Image Lightbox */}
+      {previewOpen && src && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+          onClick={() => setPreviewOpen(false)}
+        >
+          <button
+            type="button"
+            onClick={() => setPreviewOpen(false)}
+            className="absolute right-4 top-4 z-10 rounded-full bg-black/50 p-2 text-white hover:bg-black/70"
+          >
+            <X className="h-5 w-5" />
+          </button>
+          <img
+            src={src}
+            alt={attachment.name}
+            className="max-h-[90vh] max-w-[90vw] rounded object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+
+      {/* Context Menu */}
+      {contextMenu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={closeContextMenu} />
+          <div
+            className="fixed z-50 min-w-[140px] rounded-lg border border-neutral-200 bg-white py-1 shadow-lg"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+          >
+            <button
+              type="button"
+              onClick={() => { handleClick(); closeContextMenu(); }}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-neutral-700 hover:bg-neutral-50"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              {isImage ? "预览" : "打开文件"}
+            </button>
+            <button
+              type="button"
+              onClick={() => { handleCopyPath(); closeContextMenu(); }}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-neutral-700 hover:bg-neutral-50"
+            >
+              <Copy className="h-3.5 w-3.5" />
+              复制路径
+            </button>
+            <button
+              type="button"
+              onClick={() => { handleSaveAs(); closeContextMenu(); }}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-neutral-700 hover:bg-neutral-50"
+            >
+              <Download className="h-3.5 w-3.5" />
+              另存为
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** 内联图片预览（支持点击放大） */
+function ImagePreview({ src, alt }: { src: string; alt: string }) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open]);
+
+  return (
+    <>
+      <img
+        src={src}
+        alt={alt}
+        onClick={() => setOpen(true)}
+        className="cursor-pointer rounded border border-neutral-200 hover:opacity-90 transition-opacity"
+      />
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+          onClick={() => setOpen(false)}
+        >
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="absolute right-4 top-4 z-10 rounded-full bg-black/50 p-2 text-white hover:bg-black/70"
+          >
+            <X className="h-5 w-5" />
+          </button>
+          <img
+            src={src}
+            alt={alt}
+            className="max-h-[90vh] max-w-[90vw] rounded object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
+// ── 消息气泡组件 ──────────────────────────────────────────────
+
+const MessageBubble = memo(function MessageBubble({
   message,
   onClarify,
   onRetry,
@@ -1074,14 +1155,37 @@ function MessageBubble({
         }`}>
           {isUser ? (
             <div className="whitespace-pre-wrap">{message.content}</div>
+          ) : message.streaming ? (
+            /* 流式阶段：纯文本渲染，避免 ReactMarkdown 重复解析的性能开销 */
+            <div className="text-sm leading-relaxed whitespace-pre-wrap">
+              {message.content.replace(/^\n+/, "")}
+              <span className="ml-1 inline-block h-3.5 w-1.5 animate-pulse bg-amber-500 rounded-sm align-middle" />
+            </div>
           ) : (
+            /* 完成后：Markdown 渲染（含本地图片自动转 Tauri URL） */
             <div className="prose prose-sm max-w-none prose-headings:text-neutral-800 prose-a:text-amber-600 prose-code:bg-neutral-100 prose-code:px-1 prose-code:rounded prose-pre:bg-neutral-900 prose-pre:text-neutral-100">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  img: ({ src, alt }) => {
+                    if (!src) return null;
+                    // 本地文件路径 → Tauri asset URL
+                    const imgSrc = src.startsWith("http") ? src : convertFileSrc(src);
+                    return <ImagePreview src={imgSrc} alt={alt || ""} />;
+                  },
+                }}
+              >
                 {message.content.replace(/^\n+/, "")}
               </ReactMarkdown>
-              {message.streaming && (
-                <span className="ml-1 inline-block h-3.5 w-1.5 animate-pulse bg-amber-500 rounded-sm align-middle" />
-              )}
+            </div>
+          )}
+
+          {/* File Attachments */}
+          {message.attachments && message.attachments.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {message.attachments.map((att) => (
+                <FileBubble key={att.id} attachment={att} />
+              ))}
             </div>
           )}
 
@@ -1166,7 +1270,7 @@ function MessageBubble({
                         setFreeInput("");
                       }
                     }}
-                    disabled={!freeInput.trim()}
+                     disabled={!freeInput.trim()}
                     className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors"
                   >
                     发送
@@ -1179,7 +1283,7 @@ function MessageBubble({
       </div>
     </div>
   );
-}
+});
 
 /** Collapsible RAG sources display */
 function SourcesDisplay({ sources }: { sources: RAGSource[] }) {

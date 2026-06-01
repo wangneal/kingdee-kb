@@ -17,7 +17,7 @@ use crate::services::harness::constraints::ToolConstraintChecker;
 use crate::services::harness::verifier::{ResultVerifier, VerificationStatus};
 
 use crate::services::agent_router;
-use crate::services::agent_timeout::AGENT_SESSION_TIMEOUT_SECS;
+use crate::services::agent_timeout::{AGENT_SESSION_TIMEOUT_SECS, PLANNER_TIMEOUT_SECS};
 use crate::services::bm25_service::BM25Service;
 use crate::services::embedding::EmbeddingService;
 use crate::services::llm_providers::LLMProtocol;
@@ -30,10 +30,12 @@ use crate::services::react_agent::ReActEvent;
 use crate::services::rig_provider::{build_anthropic_client, build_openai_client};
 use crate::services::rig_tool::{all_rig_tools, runtime_rig_tools};
 use crate::services::risk_control::RiskControlStore;
-use crate::services::types::AgentMode;
+use crate::services::types::{AgentMode, AttachmentInfo};
 use crate::services::vector_index::VectorIndex;
 use rig_core::client::CompletionClient;
 use rig_core::streaming::StreamingPrompt;
+
+const CHAT_ATTACHMENT_PROJECT_PREFIX: &str = "chat-attachments:";
 
 /// Agent 会话取消标志
 ///
@@ -143,12 +145,184 @@ impl RigAgent {
         skill_manager: Arc<Mutex<crate::services::skill_manager::SkillManager>>,
         cancel_flag: Option<Arc<AtomicBool>>,
         provider_id: Option<&str>,
+        attachments: Option<Vec<AttachmentInfo>>,
+        image_processor: Arc<Mutex<crate::services::image_processor::ImageProcessor>>,
+        llm_providers: Arc<Mutex<crate::services::llm_providers::LLMProviderManager>>,
     ) {
         let sid = session_id.to_string();
         let started_at = Instant::now();
+        let attachment_project_id = format!("{}{}", CHAT_ATTACHMENT_PROJECT_PREFIX, session_id);
+        let attachment_search_projects = attachments
+            .as_ref()
+            .filter(|list| !list.is_empty())
+            .map(|_| vec![attachment_project_id.clone()])
+            .unwrap_or_default();
+
+        // ── 后端静默附件解析/入库处理 ──
+        let mut attachment_prompts = Vec::new();
+
+        if let Some(ref list) = attachments {
+            // 前置处理：获取 OCR 和多模态模型候选
+            let ocr_config = {
+                if let Ok(proc) = image_processor.lock() {
+                    proc.get_ocr_config_cloned()
+                } else {
+                    None
+                }
+            };
+            let candidates = {
+                if let Ok(mgr) = llm_providers.lock() {
+                    mgr.get_vision_candidates()
+                } else {
+                    Vec::new()
+                }
+            };
+
+            for attachment in list {
+                match attachment.kind.as_str() {
+                    "image" => {
+                        let mut success_text = None;
+                        let mut last_err = String::new();
+
+                        // 逐个尝试候选模型
+                        for (api_key, base_url, model_name, provider_id, _, protocol) in &candidates
+                        {
+                            if api_key.is_empty() && protocol != &LLMProtocol::Local {
+                                continue;
+                            }
+
+                            let mut processor =
+                                crate::services::image_processor::ImageProcessor::new(
+                                    api_key.clone(),
+                                    base_url.clone(),
+                                    model_name.clone(),
+                                );
+                            processor.set_protocol(protocol.clone());
+                            if let Some(ref ocr) = ocr_config {
+                                processor.set_ocr_config(ocr.clone());
+                            }
+
+                            match tokio::time::timeout(
+                                Duration::from_secs(8),
+                                processor.process_image(&attachment.path),
+                            )
+                            .await
+                            {
+                                Ok(Ok(res)) => {
+                                    if processor.is_llm_multimodal() {
+                                        if let Ok(mut global) = image_processor.lock() {
+                                            global.set_llm_multimodal(true);
+                                        }
+                                    }
+                                    success_text = Some(res.text);
+                                    break;
+                                }
+                                Ok(Err(e)) => {
+                                    last_err = format!("{} ({} > {})", e, provider_id, model_name);
+                                }
+                                Err(_) => {
+                                    last_err = format!("超时 ({} > {})", provider_id, model_name);
+                                }
+                            }
+                        }
+
+                        // LLM 失败则 OCR 回退
+                        if success_text.is_none() {
+                            if let Some(ref ocr) = ocr_config {
+                                let (api_key, base_url, model_name, protocol) =
+                                    if let Some((k, u, m, _, _, p)) = candidates.first() {
+                                        (k.clone(), u.clone(), m.clone(), p.clone())
+                                    } else {
+                                        (
+                                            String::new(),
+                                            String::new(),
+                                            String::new(),
+                                            LLMProtocol::OpenAI,
+                                        )
+                                    };
+
+                                let mut processor =
+                                    crate::services::image_processor::ImageProcessor::new(
+                                        api_key, base_url, model_name,
+                                    );
+                                processor.set_protocol(protocol);
+                                processor.set_ocr_config(ocr.clone());
+
+                                match processor.ocr_only(&attachment.path).await {
+                                    Ok(res) => {
+                                        success_text = Some(res.text);
+                                    }
+                                    Err(e) => {
+                                        last_err = format!("OCR 回退也失败: {}", e);
+                                    }
+                                }
+                            }
+                        }
+
+                        match success_text {
+                            Some(text) => {
+                                attachment_prompts.push(format!(
+                                    "--- 图片：{} ---\n内容/OCR提取：\n{}",
+                                    attachment.name, text
+                                ));
+                            }
+                            None => {
+                                attachment_prompts.push(format!(
+                                    "--- 图片：{} ---\n[图片解析失败，原因为：{}]",
+                                    attachment.name, last_err
+                                ));
+                            }
+                        }
+                    }
+                    "document" => {
+                        // 文档入库后台化，不阻塞首 token
+                        let ingest_path = std::path::PathBuf::from(&attachment.path);
+                        let ingest_project = attachment_project_id.clone();
+                        let doc_name = attachment.name.clone();
+                        let emb = embedding.clone();
+                        let vidx = vector_index.clone();
+                        let meta = metadata.clone();
+                        let bm = bm25.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let res = crate::services::ingestion::ingest_file(
+                                &ingest_path,
+                                &ingest_project,
+                                &emb,
+                                &vidx,
+                                &meta,
+                                &bm,
+                                None,
+                            );
+                            if let Err(e) = res {
+                                tracing::warn!("后台文档入库失败 {}: {}", doc_name, e);
+                            }
+                        });
+                        attachment_prompts.push(format!(
+                            "--- 文档：{} ---\n[文档正在后台入库，稍后可通过 search-knowledge 工具检索]",
+                            attachment.name
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let effective_user_message = if !attachment_prompts.is_empty() {
+            format!(
+                "{}\n\n【本轮附件】\n{}",
+                user_message,
+                attachment_prompts.join("\n\n")
+            )
+        } else {
+            user_message.to_string()
+        };
+        let user_message = &effective_user_message;
 
         // 1. 自动路由：检测是否需要多模态模型
-        let has_images = detect_images_in_message(user_message);
+        let has_images = attachments
+            .as_ref()
+            .map(|list| list.iter().any(|a| a.kind == "image"))
+            .unwrap_or(false);
         let effective_provider_id = if has_images && provider_id.is_none() {
             // 有图片且未指定供应商 → 尝试自动切换到多模态模型
             tracing::info!("检测到图片附件，尝试自动切换到多模态模型");
@@ -299,7 +473,15 @@ impl RigAgent {
 - 一次只调用一个工具
 - 观察工具结果后再决定下一步
 - 如果仍缺少必要信息，可以继续逐项调用 question 工具提问；不要因为流程较长而跳过必要问题
-- 如果你已经有足够信息，直接回答，不要额外调用工具",
+- 如果你已经有足够信息，直接回答，不要额外调用工具
+
+【输出格式规则 — 必须遵守】
+- 回答必须使用 Markdown 格式，禁止使用 HTML 标签
+- 换行使用空行分隔段落，禁止使用 <br> 标签
+- 列表使用 Markdown 的 - 或 1. 格式，禁止使用 <ul>/<li> 等 HTML 标签
+- 强调使用 **粗体** 或 *斜体*，禁止使用 <b>/<i>/<strong>/<em> 标签
+- 代码使用反引号 `code` 或 ```codeblock```，禁止使用 <code>/<pre> 标签
+- 表格使用 Markdown 表格语法，禁止使用 <table>/<tr>/<td> 标签",
             extra = system_extra,
             project_section = project_section,
         );
@@ -360,6 +542,7 @@ impl RigAgent {
                         risk_store.clone(),
                         skill_manager.clone(),
                         risk_project_id,
+                        attachment_search_projects.clone(),
                     );
                     tools.extend(runtime_rig_tools(
                         pending.clone(),
@@ -414,6 +597,7 @@ impl RigAgent {
                         risk_store.clone(),
                         skill_manager.clone(),
                         risk_project_id,
+                        attachment_search_projects.clone(),
                     );
                     tools.extend(runtime_rig_tools(
                         pending.clone(),
@@ -714,7 +898,7 @@ impl RigAgent {
 
         let plan_budget = config.max_tokens / 4; // Plan gets 25% of context budget
         let plan = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(PLANNER_TIMEOUT_SECS),
             planner::Planner::plan(
                 user_message,
                 system_extra,
@@ -724,7 +908,7 @@ impl RigAgent {
             ),
         )
         .await
-        .map_err(|_| "Planner 超时 (10s)".to_string())?
+        .map_err(|_| format!("Planner 超时 ({}s)", PLANNER_TIMEOUT_SECS))?
         .map_err(|e| format!("Planner 失败: {}", e))?;
 
         // Step 2: Emit plan event
@@ -830,34 +1014,6 @@ fn looks_like_output_limit_error(raw: &str) -> bool {
         || lower.contains("finish_reason")
         || lower.contains("length")
         || lower.contains("truncated")
-}
-
-/// 检测用户消息中是否包含图片引用
-fn detect_images_in_message(message: &str) -> bool {
-    let lower = message.to_lowercase();
-
-    // 检测图片文件路径
-    let image_extensions = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"];
-    for ext in &image_extensions {
-        if lower.contains(ext) {
-            return true;
-        }
-    }
-
-    // 检测 base64 图片数据
-    if lower.contains("data:image/") || lower.contains("base64,") {
-        return true;
-    }
-
-    // 检测图片相关关键词
-    let image_keywords = ["图片", "图像", "截图", "附件", "上传", "图片附件"];
-    for keyword in &image_keywords {
-        if message.contains(keyword) {
-            return true;
-        }
-    }
-
-    false
 }
 
 fn build_prompt_with_history(history: &[ChatMessage], user_message: &str) -> String {

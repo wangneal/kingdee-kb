@@ -6,7 +6,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use crate::services::bm25_service::BM25Service;
 use crate::services::embedding::EmbeddingService;
@@ -23,8 +22,24 @@ const RRF_K: f32 = 60.0;
 const VECTOR_WEIGHT: f32 = 2.0;
 const BM25_WEIGHT: f32 = 1.0;
 
-/// Number of candidates to fetch from each retriever before fusion
-const TOP_N: usize = 30;
+/// Number of candidates to fetch from each retriever before fusion.
+/// Increased from 30 to absorb `chat-attachments:` exclusion headroom.
+const TOP_N: usize = 200;
+const CHAT_ATTACHMENT_PROJECT_PREFIX: &str = "chat-attachments:";
+
+fn is_chat_attachment_project(project: &str) -> bool {
+    project.starts_with(CHAT_ATTACHMENT_PROJECT_PREFIX)
+}
+
+fn project_allowed(project: &str, project_id: Option<&str>, extra_project_ids: &[String]) -> bool {
+    if extra_project_ids.iter().any(|p| p == project) {
+        return true;
+    }
+    if is_chat_attachment_project(project) {
+        return false;
+    }
+    project_id.map_or(true, |pid| project == pid)
+}
 
 /// A single fused result returned to the frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,12 +117,19 @@ fn rrf_fuse(vector_results: &[ResolvedChunk], bm25_results: &[ResolvedChunk]) ->
 pub fn hybrid_search(
     query: &str,
     project_id: Option<&str>,
+    extra_project_ids: &[String],
     top_k: usize,
     embedding: &std::sync::Mutex<EmbeddingService>,
     vector_index: &std::sync::Mutex<VectorIndex>,
     bm25: &std::sync::Mutex<BM25Service>,
     metadata: &std::sync::Mutex<MetadataStore>,
 ) -> Result<Vec<HybridSearchResult>, String> {
+    // ── Step 0: 前置过滤——收集 chat-attachments 的 chunk_id 供排除 ──
+    let exclude_chunk_ids: Vec<i64> = {
+        let meta = metadata.lock().map_err(|e| e.to_string())?;
+        meta.get_chat_attachment_chunk_ids()?
+    };
+
     // ── Step 1: Embed query (graceful degradation if model not initialized) ──
     let vector_resolved: Vec<ResolvedChunk> = {
         let emb = embedding.lock().map_err(|e| e.to_string())?;
@@ -137,15 +159,17 @@ pub fn hybrid_search(
             chunks
                 .into_iter()
                 .filter_map(|c| {
+                    // 前置过滤：排除 chat-attachments 的 chunk
+                    if exclude_chunk_ids.contains(&c.id) {
+                        return None;
+                    }
                     let (title, project) = doc_map
                         .get(&c.document_id)
                         .map(|d| (d.title.clone(), d.project.clone()))
                         .unwrap_or_else(|| (String::new(), "default".to_string()));
 
-                    if let Some(pid) = project_id {
-                        if project != pid {
-                            return None;
-                        }
+                    if !project_allowed(&project, project_id, extra_project_ids) {
+                        return None;
                     }
 
                     Some(ResolvedChunk {
@@ -164,21 +188,27 @@ pub fn hybrid_search(
         }
     }; // drop all locks
 
-    // ── Step 4: BM25 search ──
-    // BM25SearchResult already contains title, content, section_path, project
+    // ── Step 4: BM25 search（前置过滤已排除 chat-attachments chunk）──
     let bm25_raw = {
         let service = bm25.lock().map_err(|e| e.to_string())?;
-        service.search(query, project_id, TOP_N as u32)?
-    }; // drop bm25 lock
+        service.search(
+            query,
+            project_id,
+            extra_project_ids,
+            TOP_N as u32,
+            &exclude_chunk_ids,
+        )?
+    };
 
-    // Convert BM25SearchResult → ResolvedChunk (metadata already embedded in BM25 results)
+    // 将 BM25 结果转为 ResolvedChunk
     let bm25_resolved: Vec<ResolvedChunk> = bm25_raw
         .into_iter()
+        .filter(|r| project_allowed(&r.project, project_id, extra_project_ids))
         .map(|r| ResolvedChunk {
             chunk_id: r.chunk_id,
             title: r.title,
             content: r.content,
-            document_id: 0, // BM25 doesn't return document_id; will resolve if needed
+            document_id: 0,
             section_path: r.section_path,
             project: r.project,
         })
@@ -193,11 +223,10 @@ pub fn hybrid_search(
     let bm25_map: HashMap<i64, &ResolvedChunk> =
         bm25_resolved.iter().map(|r| (r.chunk_id, r)).collect();
 
-    // ── Step 6: Build initial results (up to top_k × 2 for MMR headroom) ──
+    // ── Step 6: Build initial results ──
     let mut results = build_results(&fused, &vector_map, &bm25_map, &metadata, top_k * 2);
 
-    // ── Step 7: MMR diversity re-ranking (inspired by OpenClaw) ──
-    // Ensure diversity by limiting same-title entries (same document → excess removed)
+    // ── Step 7: MMR diversity re-ranking ──
     results = diversify_by_title(results, top_k);
 
     Ok(results)
@@ -208,7 +237,7 @@ fn build_results(
     fused: &[(i64, f32)],
     vector_map: &HashMap<i64, &ResolvedChunk>,
     bm25_map: &HashMap<i64, &ResolvedChunk>,
-    metadata: &Mutex<MetadataStore>,
+    metadata: &std::sync::Mutex<MetadataStore>,
     max_count: usize,
 ) -> Vec<HybridSearchResult> {
     // For BM25-only results missing document_id, resolve via metadata

@@ -22,12 +22,15 @@ import {
   type ProductMeta,
 } from "../lib/tauri-commands";
 
+import { useProject } from "../contexts/ProjectContext";
+
 interface ProjectGroup {
   project: string;
   products: ProductMeta[];
 }
 
 export default function Products() {
+  const { projectId } = useProject();
   const [products, setProducts] = useState<ProductMeta[]>([]);
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [expandedProduct, setExpandedProduct] = useState<number | null>(null);
@@ -61,7 +64,7 @@ export default function Products() {
   useEffect(() => {
     (async () => {
       try {
-        const prods = await listProducts();
+        const prods = await listProducts(projectId);
         setProducts(prods);
         // Auto-expand first project
         if (prods.length > 0) {
@@ -73,7 +76,7 @@ export default function Products() {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [projectId]);
 
   const toggleProject = (project: string) => {
     setExpandedProjects((prev) => {

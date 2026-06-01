@@ -20,6 +20,7 @@ import {
   type ChunkMeta,
 } from "../lib/tauri-commands";
 import { useToast } from "../components/Toast";
+import { useProject } from "../contexts/ProjectContext";
 
 interface ProjectGroup {
   project: string;
@@ -41,6 +42,7 @@ function parseTags(tags: string): string[] {
 }
 
 export default function Browse() {
+  const { projectId } = useProject();
   const [documents, setDocuments] = useState<DocumentMeta[]>([]);
   const [selectedDoc, setSelectedDoc] = useState<DocumentMeta | null>(null);
   const [selectedDocs, setSelectedDocs] = useState<Set<number>>(new Set());
@@ -68,7 +70,7 @@ export default function Browse() {
   useEffect(() => {
     (async () => {
       try {
-        const docs = await listDocuments();
+        const docs = await listDocuments(projectId);
         setDocuments(docs);
         // Auto-expand first project
         if (docs.length > 0) {
@@ -80,7 +82,7 @@ export default function Browse() {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [projectId]);
 
   // Load chunks when document is selected
   useEffect(() => {
@@ -172,7 +174,7 @@ export default function Browse() {
         setChunks([]);
       }
       // Reload document list
-      const docs = await listDocuments();
+      const docs = await listDocuments(projectId);
       setDocuments(docs);
     } catch (err) {
       console.error("Batch delete failed:", err);

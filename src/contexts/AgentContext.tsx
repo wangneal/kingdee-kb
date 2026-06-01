@@ -7,9 +7,10 @@ import {
   type ClarificationPayload,
   type ChatMessage,
   type PlanStep,
+  type AttachmentInfo,
 } from "../lib/tauri-commands";
 
-// ── Exported Types ──────────────────────────────────────────────────────────
+// ── 导出类型 ──────────────────────────────────────────────────────────
 
 export interface RAGSource {
   title: string;
@@ -28,6 +29,18 @@ export interface AgentMessage {
   clarification?: ClarificationPayload;
   clarificationAnswered?: boolean;
   sources?: RAGSource[];
+  /** 文件附件（用户发送的文件、Agent 生成的文件） */
+  attachments?: FileAttachment[];
+}
+
+/** 文件附件类型 */
+export interface FileAttachment {
+  id: string;
+  path: string;
+  name: string;
+  kind: "document" | "image" | "generated";
+  size?: number;
+  mimeType?: string;
 }
 
 export interface ReActTrace {
@@ -67,6 +80,9 @@ export interface SendMessageOptions {
   history?: ChatMessage[];
   /** Override the text shown as user message (defaults to outbound text) */
   displayText?: string;
+  attachments?: AttachmentInfo[];
+  /** 文件附件（用于在消息中显示） */
+  fileAttachments?: FileAttachment[];
 }
 
 export interface AgentContextValue {
@@ -89,7 +105,7 @@ export interface AgentContextValue {
   updateMessages: (slotId: string, updater: (prev: AgentMessage[]) => AgentMessage[]) => void;
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── 辅助函数 ─────────────────────────────────────────────────────────────────
 
 function nextId(): string {
   return crypto.randomUUID();
@@ -115,13 +131,13 @@ function extractSourcesFromToolResult(toolName: string, result: string): RAGSour
   if (!name.includes("searchknowledge") && !name.includes("hybridsearch") && !name.includes("knowledge")) {
     return undefined;
   }
-  
+
   const sources: RAGSource[] = [];
-  
+
   // 解析格式: 【1】title (相关度: 0.xxx, 来源: xxx)\ncontent
   const regex = /【\d+】(.+?)\s*\(相关度:\s*([\d.]+),\s*来源:\s*(.+?)\)\n([\s\S]*?)(?=【\d+】|$)/g;
   let match;
-  
+
   while ((match = regex.exec(result)) !== null) {
     sources.push({
       title: match[1].trim(),
@@ -130,7 +146,7 @@ function extractSourcesFromToolResult(toolName: string, result: string): RAGSour
       score: parseFloat(match[2]) || 0,
     });
   }
-  
+
   // 如果上面的格式没匹配，尝试简单的格式
   if (sources.length === 0) {
     const simpleRegex = /【\d+】(.+?)\s*\(相关度:\s*([\d.]+)\)/g;
@@ -141,8 +157,51 @@ function extractSourcesFromToolResult(toolName: string, result: string): RAGSour
       });
     }
   }
-  
+
   return sources.length > 0 ? sources.slice(0, 8) : undefined;
+}
+
+/** 从工具结果中提取生成的文件路径 */
+function extractFilesFromToolResult(_toolName: string, result: string): FileAttachment[] {
+  const files: FileAttachment[] = [];
+  const extPattern = /\.(pptx?|docx?|xlsx?|pdf|html?|md|txt|csv|png|jpg|jpeg|gif|svg|json|xml|yaml|zip|mp4|webm)\b/i;
+
+  // 匹配"输出/生成/文件: /path/to/file.ext" 模式
+  const pathRegex = /(?:输出目录[:：\s]*|生成[:：\s]*|文件[:：\s]*|output[:：\s]*|sandbox[:：\s]*)(.+?\.\w+)/gi;
+  let match;
+  while ((match = pathRegex.exec(result)) !== null) {
+    const path = match[1].trim();
+    if (extPattern.test(path)) {
+      const name = path.split(/[\\/]/).pop() || path;
+      const isImage = /\.(png|jpg|jpeg|gif|svg|webp|bmp)$/i.test(path);
+      files.push({
+        id: crypto.randomUUID(),
+        path,
+        name,
+        kind: isImage ? "image" : "generated",
+      });
+    }
+  }
+
+  // 匹配 file:///path 或 /absolute/path 模式
+  if (files.length === 0) {
+    const absPathRegex = /(?:file:\/\/\/|output\s*(?:dir|directory)?[\s:]*)(\/[^\s,;]+\.\w+)/gi;
+    while ((match = absPathRegex.exec(result)) !== null) {
+      const path = match[1];
+      const name = path.split(/[\\/]/).pop() || path;
+      const isImage = /\.(png|jpg|jpeg|gif|svg|webp|bmp)$/i.test(path);
+      if (!files.some((f) => f.path === path)) {
+        files.push({
+          id: crypto.randomUUID(),
+          path,
+          name,
+          kind: isImage ? "image" : "generated",
+        });
+      }
+    }
+  }
+
+  return files.slice(0, 5);
 }
 
 /** Build conversation history for multi-turn agent context. */
@@ -157,7 +216,7 @@ export function buildAgentHistory(messages: AgentMessage[]): ChatMessage[] {
     .slice(-12);
 }
 
-// ── Context ─────────────────────────────────────────────────────────────────
+// ── 上下文 ─────────────────────────────────────────────────────────────────
 
 const AgentContext = createContext<AgentContextValue | null>(null);
 
@@ -167,14 +226,14 @@ export function useAgent(): AgentContextValue {
   return ctx;
 }
 
-// ── Internal Types ──────────────────────────────────────────────────────────
+// ── 内部类型 ──────────────────────────────────────────────────────────
 
 interface SlotInternal {
   slot: AgentSlot;
   latestToolName: string;
 }
 
-// ── Provider ────────────────────────────────────────────────────────────────
+// ── 提供者 ────────────────────────────────────────────────────────────────
 
 export function AgentProvider({ children }: { children: ReactNode }) {
   const [slots, setSlots] = useState<Map<string, SlotInternal>>(new Map());
@@ -182,7 +241,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   const latestSlots = useRef(slots);
   latestSlots.current = slots;
 
-  // Update slots helper (also keeps ref in sync)
+  // 更新 slots 辅助函数（同步保持 ref）
   const updateSlots = useCallback(
     (updater: (prev: Map<string, SlotInternal>) => Map<string, SlotInternal>) => {
       setSlots((prev) => {
@@ -194,15 +253,87 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  // ── Global ReAct event listener ─────────────────────────────────────────
+  // ── 全局 ReAct 事件监听 ─────────────────────────────────────────
   useEffect(() => {
     let unsub: (() => void) | null = null;
     let cancelled = false;
+
+    // 流式事件缓冲：text_delta/thinking 积累后 rAF 批量刷新，避免逐 token 触发 React 重渲染
+    const eventBuffer = new Map<string, { text: string; thinking: string }>();
+    let rafScheduled = false;
+
+    const flushBuffer = () => {
+      rafScheduled = false;
+      if (eventBuffer.size === 0) return;
+      const snapshot = new Map(eventBuffer);
+      eventBuffer.clear();
+
+      updateSlots((prev) => {
+        const next = new Map(prev);
+        for (const [sid, buf] of snapshot) {
+          const internal = next.get(sid);
+          if (!internal) continue;
+          const slot: AgentSlot = {
+            ...internal.slot,
+            currentTrace: { ...internal.slot.currentTrace },
+            messages: [...internal.slot.messages],
+          };
+          if (buf.text) {
+            const last = slot.messages[slot.messages.length - 1];
+            if (last && last.role === "assistant" && last.streaming) {
+              slot.messages[slot.messages.length - 1] = { ...last, content: last.content + buf.text };
+            } else {
+              slot.messages = [...slot.messages, { id: nextId(), role: "assistant", content: buf.text, streaming: true }];
+            }
+          }
+          if (buf.thinking) {
+            slot.currentTrace = {
+              ...slot.currentTrace,
+              thinking: slot.currentTrace.thinking + buf.thinking,
+            };
+          }
+          next.set(sid, { slot, latestToolName: internal.latestToolName });
+        }
+        return next;
+      });
+    };
+
+    let rafId: number | null = null;
+    const scheduleFlush = () => {
+      if (!rafScheduled) {
+        rafScheduled = true;
+        rafId = requestAnimationFrame(() => flushBuffer());
+      }
+    };
+
     listenReActEvents((event) => {
       const eventSessionId = event.session_id || event.sessionId;
       if (!eventSessionId) return;
       const slotId = sessionToSlot.current.get(eventSessionId);
       if (!slotId) return;
+
+      // text_delta / thinking → 入缓冲，rAF 批量 flush
+      if (event.type === "text_delta") {
+        const buf = eventBuffer.get(slotId) ?? { text: "", thinking: "" };
+        buf.text += event.content;
+        eventBuffer.set(slotId, buf);
+        scheduleFlush();
+        return;
+      }
+
+      if (event.type === "thinking") {
+        const buf = eventBuffer.get(slotId) ?? { text: "", thinking: "" };
+        buf.thinking += event.content;
+        eventBuffer.set(slotId, buf);
+        scheduleFlush();
+        return;
+      }
+
+      // 非流式事件 → 先 flush 缓冲，再立即处理
+      if (rafScheduled) {
+        rafScheduled = false;
+        flushBuffer();
+      }
 
       updateSlots((prev) => {
         const next = new Map(prev);
@@ -213,13 +344,6 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         let toolName = internal.latestToolName;
 
         switch (event.type) {
-          case "thinking":
-            slot.currentTrace = {
-              ...slot.currentTrace,
-              thinking: slot.currentTrace.thinking + event.content,
-            };
-            break;
-
           case "tool_call":
             toolName = event.name;
             slot.currentTrace = {
@@ -232,7 +356,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
             break;
 
           case "tool_result": {
-            // Update trace
+            // 更新轨迹
             const calls = [...slot.currentTrace.toolCalls];
             const last = calls[calls.length - 1];
             if (last && !last.result) {
@@ -240,29 +364,23 @@ export function AgentProvider({ children }: { children: ReactNode }) {
             }
             slot.currentTrace = { ...slot.currentTrace, toolCalls: calls };
 
-            // Try to extract RAG sources from search tool results
+            // 从搜索工具结果中提取 RAG 来源
             const newSources = extractSourcesFromToolResult(event.name || toolName || "tool", event.result);
 
-            // Build hidden context for the last streaming assistant message
+            // 为最后一条流式助理消息构建隐藏上下文
             const lastMsg = slot.messages[slot.messages.length - 1];
             if (lastMsg && lastMsg.role === "assistant" && lastMsg.streaming) {
               const summary = summarizeToolResult(event.name || toolName || "tool", event.result);
               const existingSources = lastMsg.sources ?? [];
+              // 从工具结果中提取生成的文件
+              const newFiles = extractFilesFromToolResult(event.name || toolName || "tool", event.result);
+              const existingFiles = lastMsg.attachments ?? [];
               slot.messages[slot.messages.length - 1] = {
                 ...lastMsg,
                 hiddenContext: [lastMsg.hiddenContext, summary].filter(Boolean).join("\n\n"),
                 sources: newSources ? [...existingSources, ...newSources] : existingSources.length > 0 ? existingSources : undefined,
+                attachments: [...existingFiles, ...newFiles],
               };
-            }
-            break;
-          }
-
-          case "text_delta": {
-            const last = slot.messages[slot.messages.length - 1];
-            if (last && last.role === "assistant" && last.streaming) {
-              slot.messages[slot.messages.length - 1] = { ...last, content: last.content + event.content };
-            } else {
-              slot.messages = [...slot.messages, { id: nextId(), role: "assistant", content: event.content, streaming: true }];
             }
             break;
           }
@@ -361,17 +479,23 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     });
     return () => {
       cancelled = true;
+      if (rafId != null) cancelAnimationFrame(rafId);
       unsub?.();
     };
   }, [updateSlots]);
 
-  // ── Actions ────────────────────────────────────────────────────────────
+  // ── 操作 ────────────────────────────────────────────────────────────
 
   const sendMessage = useCallback(
     async (slotId: string, text: string, options?: SendMessageOptions) => {
       const sid = nextId();
       const displayText = options?.displayText ?? text;
-      const userMsg: AgentMessage = { id: nextId(), role: "user", content: displayText };
+      const userMsg: AgentMessage = {
+        id: nextId(),
+        role: "user",
+        content: displayText,
+        attachments: options?.fileAttachments,
+      };
       const assistantMsg: AgentMessage = { id: nextId(), role: "assistant", content: "", streaming: true };
 
       sessionToSlot.current.set(sid, slotId);
@@ -392,7 +516,15 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       });
 
       try {
-        await agentChat(text, sid, options?.projectId, options?.riskProjectId, options?.history, options?.providerId);
+        await agentChat(
+          text,
+          sid,
+          options?.projectId,
+          options?.riskProjectId,
+          options?.history,
+          options?.providerId,
+          options?.attachments,
+        );
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         updateSlots((prev) => {
@@ -414,7 +546,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 
   const answerClarification = useCallback(
     async (slotId: string, questionId: string, answer: string) => {
-      // 1. Mark as answered
+      // 1. 标记为已回答
       updateSlots((prev) => {
         const next = new Map(prev);
         const internal = next.get(slotId);
@@ -426,7 +558,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         return next;
       });
 
-      // 2. Add answer + placeholder
+      // 2. 添加答案 + 占位消息
       const answerMsg: AgentMessage = { id: nextId(), role: "user", content: answer };
       const assistantMsg: AgentMessage = { id: nextId(), role: "assistant", content: "", streaming: true };
 
@@ -446,7 +578,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         return next;
       });
 
-      // 3. Send to backend
+      // 3. 发送到后端
       try {
         await answerQuestion(questionId, answer);
       } catch (err) {
@@ -503,9 +635,9 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     [updateSlots],
   );
 
-  // ── Context value ──────────────────────────────────────────────────────
+  // ── 上下文值 ──────────────────────────────────────────────────────
 
-  // Derive a reactive ReadonlyMap of AgentSlot from internal Map
+  // 从内部状态派生出响应式的 AgentSlot 只读映射 Map
   const reactiveSlots: ReadonlyMap<string, AgentSlot> = new Map(
     Array.from(slots.entries()).map(([k, v]) => [k, v.slot]),
   );

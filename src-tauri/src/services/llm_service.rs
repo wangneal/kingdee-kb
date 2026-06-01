@@ -1169,6 +1169,7 @@ impl LLMService {
         let mut search_results = hybrid_search::hybrid_search(
             query,
             project_id,
+            &[],
             5, // top_k per SPEC.md
             embedding,
             vector_index,
@@ -1180,6 +1181,7 @@ impl LLMService {
         if let Ok(mut memories) = hybrid_search::hybrid_search(
             query,
             Some("记忆库"),
+            &[],
             5, // fetch 5, apply temporal decay, then keep top 3
             embedding,
             vector_index,
@@ -1295,6 +1297,7 @@ impl LLMService {
         let search_results = hybrid_search::hybrid_search(
             query,
             project_id,
+            &[],
             5,
             embedding,
             vector_index,
@@ -1605,6 +1608,7 @@ impl LLMService {
             None => hybrid_search::hybrid_search(
                 query,
                 project_id,
+                &[],
                 5,
                 embedding,
                 vector_index,
@@ -1617,6 +1621,7 @@ impl LLMService {
         if let Ok(mut memories) = hybrid_search::hybrid_search(
             query,
             Some("记忆库"),
+            &[],
             5, // fetch 5, apply temporal decay, then keep top 3
             embedding,
             vector_index,

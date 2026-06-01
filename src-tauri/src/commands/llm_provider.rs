@@ -322,9 +322,24 @@ pub async fn probe_model_multimodal(
 
     // 创建临时管理器进行探测
     let temp_manager = crate::services::llm_providers::LLMProviderManager::new(&state.data_dir);
-    Ok(temp_manager
+    let is_multimodal = temp_manager
         .probe_model_multimodal(&provider, &model_name, &api_key)
-        .await)
+        .await;
+
+    // 持久化探测结果（成功或失败都写回，避免重复探测）
+    {
+        let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+        if let Some(provider) = manager.get_provider(&provider_id).cloned() {
+            let mut updated = provider;
+            if let Some(model) = updated.models.iter_mut().find(|m| m.id == model_id) {
+                model.is_multimodal = Some(is_multimodal);
+                model.last_probe_at = Some(chrono::Utc::now().to_rfc3339());
+            }
+            let _ = manager.update_provider(&provider_id, updated);
+        }
+    }
+
+    Ok(is_multimodal)
 }
 
 /// 探测单个供应商的多模态能力（使用默认模型，旧版兼容）
