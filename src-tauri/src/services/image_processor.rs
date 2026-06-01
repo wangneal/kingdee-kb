@@ -537,6 +537,7 @@ impl ImageProcessor {
     }
 
     /// OpenAI 兼容格式的视觉调用（原有实现）
+    #[allow(unused_assignments)]
     async fn vision_openai_compatible(
         &self,
         img_base64: &str,
@@ -548,7 +549,7 @@ impl ImageProcessor {
         let model = &self.llm_model;
 
         let url = format!("{}/chat/completions", base_url);
-        let mut last_api_error: Option<String> = None;
+        let mut last_api_error: Option<String>;
 
         // ─── 1. 尝试 Base64 ───
         let resp = self.client

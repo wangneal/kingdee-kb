@@ -684,7 +684,7 @@ impl RigAgent {
         llm: &LLMService,
         user_message: &str,
         system_extra: &str,
-        history: &[ChatMessage],
+        _history: &[ChatMessage],
         sender: &mpsc::UnboundedSender<ReActEvent>,
         session_id: &str,
         _pending: PendingQuestions,
