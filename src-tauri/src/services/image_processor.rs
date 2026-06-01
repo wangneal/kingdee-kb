@@ -275,8 +275,12 @@ impl ImageProcessor {
         })
     }
 
-    /// 纯 OCR 处理（不经过类型分类，直接调 OCR）
-    /// 用于所有 vision 模型失败后的最终回退，确保走 OCR 而非再次尝试 vision
+    /// OCR 专用处理（绕过类型分类的 vision 路由，直接走 OCR）
+    ///
+    /// 用于所有 vision 候选模型失败后的最终回退。
+    /// - Baidu/Tencent OCR provider: 纯 OCR，不涉及 LLM
+    /// - LLM OCR provider (OcrProvider::Llm): 仍会调用 vision_ocr()，即最后一次 LLM 尝试
+    /// - 无 OCR 配置: fallback 到 vision_ocr() 作为最后手段
     pub async fn ocr_only(&self, path: &str) -> Result<ImageContent, ImageError> {
         let start = std::time::Instant::now();
         let img_bytes = std::fs::read(path).map_err(|e| ImageError::IoError(e.to_string()))?;
@@ -284,10 +288,18 @@ impl ImageProcessor {
         let img_type = self.classify_image(&img_bytes)?;
 
         let text = if let Some(ref config) = self.ocr_config {
-            // 有专用 OCR 配置 → 直接 OCR
-            self.ocr(&img_base64, Some(path), config).await?
+            match config.provider {
+                OcrProvider::Baidu | OcrProvider::Tencent => {
+                    // 专用 OCR 服务（百度/腾讯），纯 OCR 不涉及 LLM
+                    self.ocr(&img_base64, Some(path), config).await?
+                }
+                OcrProvider::Llm => {
+                    // LLM OCR: 最后一次 LLM 尝试（用 OCR 提示词调用 vision）
+                    self.vision_ocr(&img_base64, Some(path)).await?
+                }
+            }
         } else {
-            // 无 OCR 配置 → 用 LLM 做 OCR（vision_ocr 会调 vision，但这是最后手段）
+            // 无 OCR 配置 → 用 LLM vision 做 OCR（最后手段，可能仍失败）
             self.vision_ocr(&img_base64, Some(path)).await?
         };
 

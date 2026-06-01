@@ -1094,10 +1094,15 @@ impl LLMProviderManager {
             }
         }
 
-        // Tier 3: is_multimodal != Some(false) 的所有未确认模型
+        // Tier 3: is_multimodal != Some(false) 且内置 DB 未明确标记 supports_vision=false 的未知模型
         for provider in &self.providers {
             for model in &provider.models {
                 if model.is_multimodal != Some(false) {
+                    // 排除内置 DB 明确标记为不支持视觉的模型
+                    match super::model_metadata::builtin_supports_vision(&model.name) {
+                        Some(false) => continue, // 已知不支持视觉 → 跳过
+                        _ => {} // Some(true) 已在 tier 2 处理并去重，None（未知）继续
+                    }
                     add_candidate(
                         provider.get_default_key_value(),
                         provider.base_url.clone(),

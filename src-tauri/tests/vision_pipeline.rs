@@ -146,17 +146,15 @@ mod vision_pipeline {
         let candidates = mgr.get_vision_candidates();
 
         // deepseek-v4-pro has is_multimodal = None AND builtin supports_vision = false.
-        // Tier 1 and tier 2 skip it, but tier 3 includes it (is_multimodal != Some(false)).
-        // It appears as a low-priority unknown candidate.
+        // Tier 3 now excludes models where builtin DB explicitly says supports_vision=false.
         assert!(
-            candidates.iter().any(|c| c.2 == "deepseek-v4-pro"),
-            "deepseek-v4-pro should appear in tier 3 as unknown fallback"
+            !candidates.iter().any(|c| c.2 == "deepseek-v4-pro"),
+            "deepseek-v4-pro should NOT appear — builtin DB explicitly marks it as non-vision"
         );
 
-        // But it should be AFTER tier 1 and tier 2 candidates
-        let gpt4o_pos = candidates.iter().position(|c| c.2 == "gpt-4o").unwrap();
-        let ds_pos = candidates.iter().position(|c| c.2 == "deepseek-v4-pro").unwrap();
-        assert!(gpt4o_pos < ds_pos, "tier 1 candidates should appear before tier 3");
+        // Only vision-capable candidates should remain: gpt-4o (tier 1), claude-sonnet-4-5 (tier 2)
+        assert!(candidates.iter().any(|c| c.2 == "gpt-4o"), "gpt-4o should be present");
+        assert!(candidates.iter().any(|c| c.2 == "claude-sonnet-4-5"), "claude-sonnet-4-5 should be present");
     }
 
     // ─── Test 4: get_vision_candidates — tier 2 (builtin DB fallback) ───────
@@ -178,7 +176,7 @@ mod vision_pipeline {
         ))
         .unwrap();
 
-        // deepseek-v4-pro: is_multimodal=None, builtin supports_vision=false → tier 3
+        // deepseek-v4-pro: is_multimodal=None, builtin supports_vision=false → excluded from all tiers
         mgr.add_provider(make_provider(
             "deepseek",
             "DeepSeek",
@@ -195,12 +193,10 @@ mod vision_pipeline {
             "Tier 2: claude-sonnet-4-5 should be picked up via builtin DB"
         );
 
-        // claude-sonnet-4-5 (tier 2) should appear BEFORE deepseek-v4-pro (tier 3)
-        let claude_pos = candidates.iter().position(|c| c.2 == "claude-sonnet-4-5").unwrap();
-        let ds_pos = candidates.iter().position(|c| c.2 == "deepseek-v4-pro").unwrap();
+        // deepseek-v4-pro is excluded: builtin DB says supports_vision=false
         assert!(
-            claude_pos < ds_pos,
-            "tier 2 candidates should appear before tier 3"
+            !candidates.iter().any(|c| c.2 == "deepseek-v4-pro"),
+            "deepseek-v4-pro should NOT appear — builtin DB marks it as non-vision"
         );
     }
 
