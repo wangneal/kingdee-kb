@@ -352,6 +352,10 @@ impl PlanStateMachine {
         self.plan.steps.get(self.current_index)
     }
 
+    pub fn current_step_index(&self) -> usize {
+        self.current_index
+    }
+
     pub fn plan(&self) -> &ExecutionPlan {
         &self.plan
     }

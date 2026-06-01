@@ -20,12 +20,14 @@ use crate::services::embedding::EmbeddingService;
 use crate::services::llm_providers::LLMProtocol;
 use crate::services::llm_service::{ChatMessage, LLMService};
 use crate::services::metadata::MetadataStore;
+use crate::services::planner::{self, PlanState, PlanStateMachine};
 use crate::services::product_store::ProductStore;
 use crate::services::question_tool::PendingQuestions;
 use crate::services::react_agent::ReActEvent;
 use crate::services::rig_provider::{build_anthropic_client, build_openai_client};
 use crate::services::rig_tool::{all_rig_tools, runtime_rig_tools};
 use crate::services::risk_control::RiskControlStore;
+use crate::services::types::AgentMode;
 use crate::services::vector_index::VectorIndex;
 use rig_core::client::CompletionClient;
 use rig_core::streaming::StreamingPrompt;
@@ -154,7 +156,41 @@ impl RigAgent {
 
         // 1.5 Agent 模式路由：根据复杂度选择 ReAct 或 Plan-Execute
         let agent_mode = agent_router::route_mode(user_message, history);
-        let _ = agent_mode; // TODO: P1-c Plan-Execute 执行循环实现后启用模式分支
+
+        // 如果路由到 Plan-Execute 模式，尝试规划，超时则降级为 ReAct
+        if agent_mode.contains(AgentMode::PlanExecute) {
+            match Self::try_plan_execute(
+                llm,
+                user_message,
+                system_extra,
+                history,
+                &sender,
+                session_id,
+                pending.clone(),
+                project_id,
+                risk_project_id,
+                embedding.clone(),
+                vector_index.clone(),
+                bm25.clone(),
+                metadata.clone(),
+                data_dir.clone(),
+                products.clone(),
+                risk_store.clone(),
+                skill_manager.clone(),
+                cancel_flag.clone(),
+                effective_provider_id,
+            ).await {
+                Ok(()) => return, // Plan-Execute completed
+                Err(e) => {
+                    tracing::warn!("Plan-Execute 失败，降级到 ReAct: {}", e);
+                    let _ = sender.send(ReActEvent::PlannerTimeout {
+                        session_id: session_id.to_string(),
+                        message: format!("规划失败，已降级到快速模式: {}", e),
+                    });
+                    // Fall through to ReAct below
+                }
+            }
+        }
 
         // 2. 获取 LLM 配置（支持指定供应商或自动路由）
         let config = match llm.get_config_for_provider(effective_provider_id) {
@@ -599,6 +635,144 @@ impl RigAgent {
                 }
             }
         }
+    }
+
+    /// 尝试 Plan-Execute 模式执行
+    /// 10 秒规划超时 → 自动降级到 ReAct
+    async fn try_plan_execute(
+        llm: &LLMService,
+        user_message: &str,
+        system_extra: &str,
+        history: &[ChatMessage],
+        sender: &mpsc::UnboundedSender<ReActEvent>,
+        session_id: &str,
+        _pending: PendingQuestions,
+        project_id: Option<&str>,
+        _risk_project_id: Option<i64>,
+        _embedding: Arc<Mutex<EmbeddingService>>,
+        _vector_index: Arc<Mutex<VectorIndex>>,
+        _bm25: Arc<Mutex<BM25Service>>,
+        _metadata: Arc<Mutex<MetadataStore>>,
+        _data_dir: std::path::PathBuf,
+        _products: Arc<Mutex<ProductStore>>,
+        _risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
+        _skill_manager: Arc<Mutex<crate::services::skill_manager::SkillManager>>,
+        _cancel_flag: Option<Arc<AtomicBool>>,
+        provider_id: Option<&str>,
+    ) -> Result<(), String> {
+        let sid = session_id.to_string();
+
+        // Step 1: Generate execution plan with 10s timeout
+        let config = llm
+            .get_config_for_provider(provider_id)
+            .map_err(|e| format!("获取配置失败: {}", e))?;
+
+        let plan_budget = config.max_tokens / 4; // Plan gets 25% of context budget
+        let plan = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            planner::Planner::plan(
+                user_message,
+                system_extra,
+                project_id.unwrap_or(""),
+                llm,
+                plan_budget,
+            ),
+        )
+        .await
+        .map_err(|_| "Planner 超时 (10s)".to_string())?
+        .map_err(|e| format!("Planner 失败: {}", e))?;
+
+        // Step 2: Emit plan event
+        let total_steps = plan.steps.len();
+        let _ = sender.send(ReActEvent::PlanGenerated {
+            session_id: sid.clone(),
+            steps: plan.steps.clone(),
+        });
+
+        // Step 3: Initialize state machine and execute steps
+        let mut state_machine = PlanStateMachine::new(plan);
+
+        while *state_machine.state() != PlanState::Completed {
+            match state_machine.state().clone() {
+                PlanState::Ready => {
+                    if let Some(step) = state_machine.current_step() {
+                        let idx = state_machine.current_step_index();
+                        let _ = sender.send(ReActEvent::StepStart {
+                            session_id: sid.clone(),
+                            step_index: idx,
+                            total_steps,
+                            description: step.description.clone(),
+                        });
+                        state_machine.begin_step();
+
+                        // Build step context for the LLM
+                        let step_ctx = state_machine.build_step_context(user_message);
+
+                        // Execute this step using the LLM
+                        let step_messages = vec![ChatMessage {
+                            role: "user".to_string(),
+                            content: step_ctx.to_prompt(),
+                        }];
+                        let result = llm
+                            .chat_completion(&step_messages, &config)
+                            .await
+                            .unwrap_or_else(|e| format!("步骤执行失败: {}", e));
+
+                        let success = !planner::Planner::should_replan(
+                            state_machine.plan(),
+                            idx,
+                            &result,
+                            "",
+                            None,
+                        );
+
+                        let _ = sender.send(ReActEvent::StepResult {
+                            session_id: sid.clone(),
+                            step_index: idx,
+                            result: result.clone(),
+                            success,
+                        });
+
+                        if success {
+                            state_machine.record_result(result);
+                            state_machine.advance();
+                        } else {
+                            // Check if we should replan
+                            let remaining = state_machine.remaining_steps().to_vec();
+                            let executed = state_machine.executed().to_vec();
+
+                            match planner::Planner::replan(
+                                user_message,
+                                &executed,
+                                &remaining,
+                                llm,
+                            )
+                            .await
+                            {
+                                Ok(new_steps) => {
+                                    let _ = sender.send(ReActEvent::Replan {
+                                        session_id: sid.clone(),
+                                        reason: "步骤失败，触发重新规划".into(),
+                                    });
+                                    state_machine.request_replan(new_steps);
+                                }
+                                Err(e) => {
+                                    return Err(format!("重新规划失败: {}", e));
+                                }
+                            }
+                        }
+                    }
+                }
+                PlanState::Failed(msg) => {
+                    return Err(msg);
+                }
+                PlanState::Completed => break,
+                _ => {}
+            }
+        }
+
+        let _ = sender.send(ReActEvent::Done { session_id: sid });
+        Ok(())
     }
 }
 

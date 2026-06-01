@@ -38,4 +38,33 @@ pub enum ReActEvent {
         session_id: String,
         payload: ClarificationPayload,
     },
+    #[serde(rename = "plan_generated")]
+    PlanGenerated {
+        session_id: String,
+        steps: Vec<crate::services::planner::PlanStep>,
+    },
+    #[serde(rename = "step_start")]
+    StepStart {
+        session_id: String,
+        step_index: usize,
+        total_steps: usize,
+        description: String,
+    },
+    #[serde(rename = "step_result")]
+    StepResult {
+        session_id: String,
+        step_index: usize,
+        result: String,
+        success: bool,
+    },
+    #[serde(rename = "replan")]
+    Replan {
+        session_id: String,
+        reason: String,
+    },
+    #[serde(rename = "planner_timeout")]
+    PlannerTimeout {
+        session_id: String,
+        message: String,
+    },
 }
