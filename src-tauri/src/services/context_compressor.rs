@@ -1,3 +1,5 @@
+// 迁移期间压缩辅助函数暂未使用
+#![allow(dead_code)]
 //! 分层摘要压缩 + 磁滞回线防震荡 + 增量摘要
 
 use super::llm_service::ChatMessage;

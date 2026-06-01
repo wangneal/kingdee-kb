@@ -288,18 +288,22 @@ pub fn parse_outline_text(
     }
 }
 
+/// 大纲解析辅助函数（迁移期间预留）
+#[allow(dead_code)]
 fn try_parse_section_header(line: &str) -> Option<String> {
     let re = Regex::new(r"^\d+\s+(.+)").ok()?;
     let caps = re.captures(line)?;
     Some(caps.get(1)?.as_str().trim().to_string())
 }
 
+#[allow(dead_code)]
 fn try_parse_category_header(line: &str) -> Option<String> {
     let re = Regex::new(r"^\d+\.\d+\s+(.+)").ok()?;
     let caps = re.captures(line)?;
     Some(caps.get(1)?.as_str().trim().to_string())
 }
 
+#[allow(dead_code)]
 fn try_parse_question(line: &str) -> Option<String> {
     let re = Regex::new(r"^\d+\.\d+\.\d+\s+(.+)").ok()?;
     let caps = re.captures(line)?;

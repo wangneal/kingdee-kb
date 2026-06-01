@@ -824,6 +824,8 @@ async fn generate_llm_fields_with_recipe(
 /// This is used for templates like investigation_report that are fixed-format
 /// documents without placeholders. The LLM generates the entire document content
 /// based on the recipe's system_prompt and any available context.
+/// 迁移期间预留的完整文档生成函数
+#[allow(dead_code)]
 async fn generate_full_document_content(
     llm: &LLMService,
     system_prompt: &str,

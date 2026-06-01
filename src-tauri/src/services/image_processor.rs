@@ -111,7 +111,7 @@ impl ImageProcessor {
             return self.llm_multimodal.load(Ordering::Relaxed);
         }
 
-        if self.llm_api_key.is_empty() {
+        if self.llm_api_key.is_empty() && self.protocol != Some(crate::services::llm_providers::LLMProtocol::Local) {
             self.probed.store(true, Ordering::Relaxed);
             return false;
         }
@@ -440,7 +440,7 @@ impl ImageProcessor {
         local_path: Option<&str>,
         prompt: &str,
     ) -> Result<String, ImageError> {
-        if self.llm_api_key.is_empty() {
+        if self.llm_api_key.is_empty() && self.protocol != Some(crate::services::llm_providers::LLMProtocol::Local) {
             return Err(ImageError::LlmNotMultimodal);
         }
 
@@ -537,7 +537,6 @@ impl ImageProcessor {
     }
 
     /// OpenAI 兼容格式的视觉调用（原有实现）
-    #[allow(unused_assignments)]
     async fn vision_openai_compatible(
         &self,
         img_base64: &str,
@@ -552,9 +551,8 @@ impl ImageProcessor {
         let mut last_api_error: Option<String>;
 
         // ─── 1. 尝试 Base64 ───
-        let resp = self.client
+        let mut req = self.client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", api_key))
             .json(&serde_json::json!({
                 "model": model,
                 "messages": [{"role": "user", "content": [
@@ -562,9 +560,11 @@ impl ImageProcessor {
                     {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{}", img_base64)}}
                 ]}],
                 "max_tokens": 2048
-            }))
-            .send()
-            .await;
+            }));
+        if !api_key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", api_key));
+        }
+        let resp = req.send().await;
 
         match resp {
             Ok(r) => {
@@ -590,10 +590,14 @@ impl ImageProcessor {
                                 return Err(ImageError::LlmNotMultimodal);
                             }
                             last_api_error = Some(err_msg);
+                        } else {
+                            last_api_error = Some(format!("响应格式异常 (HTTP 200), body 前200字: {}",
+                                &body.chars().take(200).collect::<String>()));
                         }
+                    } else {
+                        last_api_error = Some(format!("响应格式异常 (HTTP 200), body 前200字: {}",
+                            &body.chars().take(200).collect::<String>()));
                     }
-                    last_api_error = Some(format!("响应格式异常 (HTTP 200), body 前200字: {}",
-                        &body.chars().take(200).collect::<String>()));
                 } else {
                     let err_text = r.text().await.unwrap_or_default();
                     let err_lower = err_text.to_lowercase();
@@ -623,9 +627,8 @@ impl ImageProcessor {
                 .unwrap_or_else(|_| std::path::PathBuf::from(path));
             let file_url = format!("file:///{}", absolute_path.to_string_lossy().replace('\\', "/"));
 
-            let resp_local = self.client
+            let mut req_local = self.client
                 .post(&url)
-                .header("Authorization", format!("Bearer {}", api_key))
                 .json(&serde_json::json!({
                     "model": model,
                     "messages": [{"role": "user", "content": [
@@ -633,9 +636,11 @@ impl ImageProcessor {
                         {"type": "image_url", "image_url": {"url": file_url}}
                     ]}],
                     "max_tokens": 2048
-                }))
-                .send()
-                .await;
+                }));
+            if !api_key.is_empty() {
+                req_local = req_local.header("Authorization", format!("Bearer {}", api_key));
+            }
+            let resp_local = req_local.send().await;
 
             match resp_local {
                 Ok(r) => {
@@ -660,10 +665,14 @@ impl ImageProcessor {
                                     return Err(ImageError::LlmNotMultimodal);
                                 }
                                 last_api_error = Some(err_msg);
+                            } else {
+                                last_api_error = Some(format!("file:// 回退响应格式异常, body 前200字: {}",
+                                    &body.chars().take(200).collect::<String>()));
                             }
+                        } else {
+                            last_api_error = Some(format!("file:// 回退响应格式异常, body 前200字: {}",
+                                &body.chars().take(200).collect::<String>()));
                         }
-                        last_api_error = Some(format!("file:// 回退响应格式异常, body 前200字: {}",
-                            &body.chars().take(200).collect::<String>()));
                     } else {
                         let err_text = r.text().await.unwrap_or_default();
                         let err_lower = err_text.to_lowercase();

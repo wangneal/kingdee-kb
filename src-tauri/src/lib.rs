@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod app_state;
 mod commands;
 pub mod services;

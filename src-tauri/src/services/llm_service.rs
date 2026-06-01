@@ -33,10 +33,12 @@ use rig_core::streaming::{StreamedAssistantContent, StreamingChat};
 /// 系统提示词 - ERP 顾问知识助手，带有反幻觉防护。
 static SYSTEM_PROMPT: &str = include_str!("../../resources/prompts/system_prompt.md");
 
-/// 文档生成的系统提示词 - 反模糊结构约束。
+/// 文档生成的系统提示词（迁移期间预留）
+#[allow(dead_code)]
 static DOC_GEN_SYSTEM_PROMPT: &str = include_str!("../../resources/prompts/doc_gen_system_prompt.md");
 
-/// 默认上下文窗口大小（token 数）
+/// 默认上下文窗口大小（迁移期间预留）
+#[allow(dead_code)]
 const DEFAULT_MAX_CONTEXT_TOKENS: u32 = 4096;
 
 /// 为助手响应保留的 token 数
@@ -51,16 +53,20 @@ const KEEP_LAST_PAIRS: usize = 2;
 /// 记忆分数时间衰减的半衰期（天）
 const MEMORY_HALF_LIFE_DAYS: f64 = 30.0;
 
-/// 默认 OpenAI 基础 URL
+/// 默认 OpenAI 基础 URL（迁移期间预留）
+#[allow(dead_code)]
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
-/// 默认 OpenAI 模型
+/// 默认 OpenAI 模型（迁移期间预留）
+#[allow(dead_code)]
 const DEFAULT_OPENAI_MODEL: &str = "gpt-4o";
 
-/// 默认 Anthropic 基础 URL
+/// 默认 Anthropic 基础 URL（迁移期间预留）
+#[allow(dead_code)]
 const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 
-/// 默认 Anthropic 模型
+/// 默认 Anthropic 模型（迁移期间预留）
+#[allow(dead_code)]
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-3-5-sonnet-20241022";
 
 /// Anthropic API 版本头
@@ -180,7 +186,8 @@ impl StreamingRestorer {
 
 // 鈹€鈹€鈹€ 閲嶈瘯宸ュ叿鍑芥暟 鈹€鈹€鈹€
 
-/// 带指数退避的异步重试包装器。
+/// 带指数退避的异步重试包装器（迁移期间预留）。
+#[allow(dead_code)]
 async fn with_retry<F, Fut, T, E>(operation_name: &str, mut f: F) -> Result<T, E>
 where
     F: FnMut() -> Fut,
@@ -1398,9 +1405,10 @@ impl LLMService {
         }
     }
 
-    /// Chat completion with OpenAI-style function calling support.
+    /// Chat completion with OpenAI-style function calling support (迁移期间预留).
     /// Returns the raw content string (strips tool_calls).
     /// If `tools` is non-empty, sends with `tool_choice: "auto"`.
+    #[allow(dead_code)]
     async fn chat_completion_openai_with_tools(
         &self,
         messages: &[ChatMessage],
@@ -1476,10 +1484,11 @@ impl LLMService {
             .map_err(|_| "LLM 调用超时，请检查网络连接或稍后重试".to_string())?
     }
 
-    /// Anthropic non-streaming chat completion 鈥?POST /messages
+    /// Anthropic non-streaming chat completion — POST /messages（迁移期间预留）
     ///
     /// Anthropic requires `system` as a top-level field, not in messages.
     /// Response format: `{"content":[{"type":"text","text":"..."}]}`
+    #[allow(dead_code)]
     async fn chat_completion_anthropic(
         &self,
         messages: &[ChatMessage],

@@ -138,6 +138,8 @@ const HF_MIRRORS: &[Option<&str>] = &[
 const EXPECTED_MODEL_BYTES: u64 = 95_000_000;
 
 const DEFAULT_BGE_DIMENSION: usize = 512;
+/// 预留 MiniLM 维度常量（迁移期间未使用）
+#[allow(dead_code)]
 const DEFAULT_MINILM_DIMENSION: usize = 384;
 const DEFAULT_REMOTE_DIMENSION: usize = 1024;
 

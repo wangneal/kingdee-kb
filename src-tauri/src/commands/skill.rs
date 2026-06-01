@@ -13,6 +13,7 @@ use crate::services::signal_writer::SignalEvent;
 use crate::services::skill_executor::{ExecutionResult, SubstitutionContext};
 use crate::services::skill_trigger::{SkillMatch, TriggerContext};
 use crate::services::skill_types::{SharedResource, Skill, SkillFile, SkillFull};
+use crate::services::llm_providers::LLMProtocol;
 use crate::services::template_manager::TemplateManifest;
 
 /// 列出所有技能
@@ -423,7 +424,8 @@ pub async fn process_image(
     let mut last_error: Option<String> = None;
 
     for (api_key, base_url, model_name, provider_id, _model_id, protocol) in &candidates {
-        if api_key.is_empty() {
+        // Local protocol (e.g. Ollama) doesn't need an API key — skip only remote models with empty keys
+        if api_key.is_empty() && *protocol != LLMProtocol::Local {
             continue;
         }
 

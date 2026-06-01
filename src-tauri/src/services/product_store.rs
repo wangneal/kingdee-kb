@@ -35,6 +35,8 @@ pub struct ProductVersion {
 /// SQLite-based product store
 pub struct ProductStore {
     db: Connection,
+    /// 迁移期间预留
+    #[allow(dead_code)]
     db_path: PathBuf,
 }
 

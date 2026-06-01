@@ -702,7 +702,8 @@ fn assemble_kb_context_for_fill(
     (search_results, kb_sources)
 }
 
-/// Truncate a snippet to a maximum character length.
+/// Truncate a snippet to a maximum character length（迁移期间预留）.
+#[allow(dead_code)]
 fn truncate_snippet(text: &str, max_chars: usize) -> String {
     truncate_str(text, max_chars)
 }
