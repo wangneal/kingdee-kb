@@ -70,13 +70,19 @@ mod tests {
     #[test]
     fn test_count_tokens_chinese() {
         let result = count_tokens_with_fallback("你好世界");
-        assert!(result > 0, "Chinese text should return positive token count");
+        assert!(
+            result > 0,
+            "Chinese text should return positive token count"
+        );
     }
 
     #[test]
     fn test_count_tokens_english() {
         let result = count_tokens_with_fallback("hello world");
-        assert!(result > 0, "English text should return positive token count");
+        assert!(
+            result > 0,
+            "English text should return positive token count"
+        );
     }
 
     #[test]

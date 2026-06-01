@@ -8,7 +8,8 @@
 //   - Local protocol (Ollama) empty API key handling
 
 use kingdee_kb_lib::services::llm_providers::{
-    anthropic_messages_url, ApiKeyConfig, LLMProtocol, LLMProviderConfig, LLMProviderManager, ModelConfig,
+    anthropic_messages_url, ApiKeyConfig, LLMProtocol, LLMProviderConfig, LLMProviderManager,
+    ModelConfig,
 };
 use kingdee_kb_lib::services::model_metadata::{builtin_supports_vision, resolve_metadata};
 
@@ -154,8 +155,14 @@ mod vision_pipeline {
         );
 
         // Only vision-capable candidates should remain: gpt-4o (tier 1), claude-sonnet-4-5 (tier 2)
-        assert!(candidates.iter().any(|c| c.2 == "gpt-4o"), "gpt-4o should be present");
-        assert!(candidates.iter().any(|c| c.2 == "claude-sonnet-4-5"), "claude-sonnet-4-5 should be present");
+        assert!(
+            candidates.iter().any(|c| c.2 == "gpt-4o"),
+            "gpt-4o should be present"
+        );
+        assert!(
+            candidates.iter().any(|c| c.2 == "claude-sonnet-4-5"),
+            "claude-sonnet-4-5 should be present"
+        );
     }
 
     // ─── Test 4: get_vision_candidates — tier 2 (builtin DB fallback) ───────
@@ -327,7 +334,10 @@ mod vision_pipeline {
         );
 
         // Other builtin values should be preserved
-        assert_eq!(meta.max_output_tokens, 64_000, "max_output_tokens from builtin DB");
+        assert_eq!(
+            meta.max_output_tokens, 64_000,
+            "max_output_tokens from builtin DB"
+        );
         assert!(meta.supports_thinking, "supports_thinking from builtin DB");
         assert!(meta.supports_tools, "supports_tools from builtin DB");
     }
@@ -373,14 +383,20 @@ mod vision_pipeline {
 
         // gpt-4o (tier 1) should appear BEFORE claude-sonnet-4-5 (tier 2)
         let gpt4o_pos = candidates.iter().position(|c| c.2 == "gpt-4o").unwrap();
-        let claude_pos = candidates.iter().position(|c| c.2 == "claude-sonnet-4-5").unwrap();
+        let claude_pos = candidates
+            .iter()
+            .position(|c| c.2 == "claude-sonnet-4-5")
+            .unwrap();
         assert!(
             gpt4o_pos < claude_pos,
             "tier 1 candidates should appear before tier 2"
         );
 
         // Both should be present
-        assert!(candidates.len() >= 2, "Should have at least 2 candidates (tier 1 + tier 2)");
+        assert!(
+            candidates.len() >= 2,
+            "Should have at least 2 candidates (tier 1 + tier 2)"
+        );
     }
 
     // ─── Test 11: Local (Ollama) with empty API key appears in candidates ────
@@ -502,10 +518,7 @@ mod vision_pipeline {
             "llava:latest".into(),
         );
         p.set_protocol(LLMProtocol::Local);
-        assert!(
-            !p.requires_api_key(),
-            "Local 协议空 key 不应要求 API 密钥"
-        );
+        assert!(!p.requires_api_key(), "Local 协议空 key 不应要求 API 密钥");
     }
 
     #[test]
@@ -519,10 +532,7 @@ mod vision_pipeline {
             "gpt-4o".into(),
         );
         p.set_protocol(LLMProtocol::OpenAI);
-        assert!(
-            p.requires_api_key(),
-            "OpenAI 协议空 key 应要求 API 密钥"
-        );
+        assert!(p.requires_api_key(), "OpenAI 协议空 key 应要求 API 密钥");
     }
 
     #[test]
@@ -536,10 +546,7 @@ mod vision_pipeline {
             "gpt-4o".into(),
         );
         p.set_protocol(LLMProtocol::OpenAI);
-        assert!(
-            !p.requires_api_key(),
-            "有 API 密钥时不应要求额外密钥"
-        );
+        assert!(!p.requires_api_key(), "有 API 密钥时不应要求额外密钥");
     }
 
     #[test]
@@ -553,10 +560,7 @@ mod vision_pipeline {
             "claude-sonnet-4-5".into(),
         );
         p.set_protocol(LLMProtocol::Anthropic);
-        assert!(
-            p.requires_api_key(),
-            "Anthropic 协议空 key 应要求 API 密钥"
-        );
+        assert!(p.requires_api_key(), "Anthropic 协议空 key 应要求 API 密钥");
     }
 
     #[test]
@@ -569,10 +573,7 @@ mod vision_pipeline {
             "https://api.openai.com/v1".into(),
             "gpt-4o".into(),
         );
-        assert!(
-            p.requires_api_key(),
-            "未设置协议时空 key 应要求 API 密钥"
-        );
+        assert!(p.requires_api_key(), "未设置协议时空 key 应要求 API 密钥");
     }
 
     // ─── Test: Anthropic URL 归一化 ───────────────────────────────────────────
@@ -582,8 +583,7 @@ mod vision_pipeline {
         // base_url 已含 /v1 → 应去掉后重新拼接
         let url = anthropic_messages_url("https://api.anthropic.com/v1");
         assert_eq!(
-            url,
-            "https://api.anthropic.com/v1/messages",
+            url, "https://api.anthropic.com/v1/messages",
             "base_url 含 /v1 时不应产生 /v1/v1/messages"
         );
     }
@@ -593,8 +593,7 @@ mod vision_pipeline {
         // base_url 不含 /v1 → 直接拼接
         let url = anthropic_messages_url("https://api.anthropic.com");
         assert_eq!(
-            url,
-            "https://api.anthropic.com/v1/messages",
+            url, "https://api.anthropic.com/v1/messages",
             "base_url 不含 /v1 时应正常拼接"
         );
     }
@@ -604,8 +603,7 @@ mod vision_pipeline {
         // 尾部斜杠 + /v1
         let url = anthropic_messages_url("https://api.anthropic.com/v1/");
         assert_eq!(
-            url,
-            "https://api.anthropic.com/v1/messages",
+            url, "https://api.anthropic.com/v1/messages",
             "尾部斜杠 + /v1 应正确归一化"
         );
     }

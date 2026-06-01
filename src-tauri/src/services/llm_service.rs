@@ -11,15 +11,17 @@ use tracing::{info, warn};
 
 use crate::services::token;
 // Re-export for backward compatibility with external callers
-pub use crate::services::token::truncate_to_tokens;
 use crate::services::agent_timeout::{
     LLM_CALL_TIMEOUT_SECS, LLM_STREAM_FIRST_CHUNK_TIMEOUT_SECS, MAX_RETRIES, RETRY_BASE_DELAY_MS,
 };
+pub use crate::services::token::truncate_to_tokens;
 
 use crate::services::bm25_service::BM25Service;
 use crate::services::embedding::EmbeddingService;
 use crate::services::hybrid_search::{self, HybridSearchResult};
-use crate::services::llm_providers::{anthropic_messages_url, LLMProtocol, LLMProviderConfig, LLMProviderManager};
+use crate::services::llm_providers::{
+    anthropic_messages_url, LLMProtocol, LLMProviderConfig, LLMProviderManager,
+};
 use crate::services::metadata::MetadataStore;
 use crate::services::rig_provider::{build_anthropic_client, build_openai_client};
 use crate::services::vector_index::VectorIndex;
@@ -35,7 +37,8 @@ static SYSTEM_PROMPT: &str = include_str!("../../resources/prompts/system_prompt
 
 /// 文档生成的系统提示词（迁移期间预留）
 #[allow(dead_code)]
-static DOC_GEN_SYSTEM_PROMPT: &str = include_str!("../../resources/prompts/doc_gen_system_prompt.md");
+static DOC_GEN_SYSTEM_PROMPT: &str =
+    include_str!("../../resources/prompts/doc_gen_system_prompt.md");
 
 /// 默认上下文窗口大小（迁移期间预留）
 #[allow(dead_code)]
@@ -341,7 +344,10 @@ pub struct MessageContext {
 
 impl MessageContext {
     pub fn new_with_id() -> Self {
-        Self { id: Some(uuid::Uuid::new_v4().to_string()), token_count: None }
+        Self {
+            id: Some(uuid::Uuid::new_v4().to_string()),
+            token_count: None,
+        }
     }
     pub fn compute_token_count(&mut self, content: &str) {
         if self.token_count.is_none() {
@@ -511,7 +517,10 @@ fn scrub_response(text: &str) -> String {
 fn estimate_tokens(messages: &[ChatMessage]) -> u32 {
     messages
         .iter()
-        .map(|m| token::count_tokens_with_fallback(&m.content) + token::count_tokens_with_fallback(&m.role))
+        .map(|m| {
+            token::count_tokens_with_fallback(&m.content)
+                + token::count_tokens_with_fallback(&m.role)
+        })
         .sum()
 }
 

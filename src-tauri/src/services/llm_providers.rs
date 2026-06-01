@@ -1051,15 +1051,38 @@ impl LLMProviderManager {
     /// 返回 (api_key, base_url, model_name, provider_id, model_id, protocol)
     ///
     /// 合并有序列表：tier1（已探测）+ tier2（builtin DB）+ tier3（未知），去重
-    pub fn get_vision_candidates(&self) -> Vec<(String, String, String, String, String, LLMProtocol)> {
+    pub fn get_vision_candidates(
+        &self,
+    ) -> Vec<(String, String, String, String, String, LLMProtocol)> {
         let mut seen = std::collections::HashSet::new();
         let mut candidates = Vec::new();
 
         // 辅助闭包：添加候选并去重
-        let add_candidate = |api_key: String, base_url: String, model_name: String, provider_id: String, model_id: String, protocol: LLMProtocol, seen: &mut std::collections::HashSet<(String, String)>, candidates: &mut Vec<(String, String, String, String, String, LLMProtocol)>| {
+        let add_candidate = |api_key: String,
+                             base_url: String,
+                             model_name: String,
+                             provider_id: String,
+                             model_id: String,
+                             protocol: LLMProtocol,
+                             seen: &mut std::collections::HashSet<(String, String)>,
+                             candidates: &mut Vec<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            LLMProtocol,
+        )>| {
             let key = (provider_id.clone(), model_name.clone());
             if seen.insert(key) {
-                candidates.push((api_key, base_url, model_name, provider_id, model_id, protocol));
+                candidates.push((
+                    api_key,
+                    base_url,
+                    model_name,
+                    provider_id,
+                    model_id,
+                    protocol,
+                ));
             }
         };
 
@@ -1085,7 +1108,8 @@ impl LLMProviderManager {
         for provider in &self.providers {
             for model in &provider.models {
                 if model.is_multimodal != Some(false) {
-                    if let Some(true) = super::model_metadata::builtin_supports_vision(&model.name) {
+                    if let Some(true) = super::model_metadata::builtin_supports_vision(&model.name)
+                    {
                         add_candidate(
                             provider.get_default_key_value(),
                             provider.base_url.clone(),

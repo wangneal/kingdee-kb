@@ -94,11 +94,26 @@ pub enum ConstraintViolation {
 impl std::fmt::Display for ConstraintViolation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::PingPongDetected { tool, call_count, max_allowed } => {
-                write!(f, "工具 '{}' 被连续调用 {} 次，超过上限 {}（Ping-Pong 检测）", tool, call_count, max_allowed)
+            Self::PingPongDetected {
+                tool,
+                call_count,
+                max_allowed,
+            } => {
+                write!(
+                    f,
+                    "工具 '{}' 被连续调用 {} 次，超过上限 {}（Ping-Pong 检测）",
+                    tool, call_count, max_allowed
+                )
             }
-            Self::ToolNotInWhitelist { tool, allowed_tools } => {
-                write!(f, "工具 '{}' 不在允许列表中。允许的工具: {:?}", tool, allowed_tools)
+            Self::ToolNotInWhitelist {
+                tool,
+                allowed_tools,
+            } => {
+                write!(
+                    f,
+                    "工具 '{}' 不在允许列表中。允许的工具: {:?}",
+                    tool, allowed_tools
+                )
             }
         }
     }
@@ -140,20 +155,33 @@ mod tests {
         let args = r#"{"query": "金蝶"}"#;
 
         // 前 3 次允许
-        assert!(checker.check_call("step1", "search-knowledge", args).is_none());
-        assert!(checker.check_call("step1", "search-knowledge", args).is_none());
-        assert!(checker.check_call("step1", "search-knowledge", args).is_none());
+        assert!(checker
+            .check_call("step1", "search-knowledge", args)
+            .is_none());
+        assert!(checker
+            .check_call("step1", "search-knowledge", args)
+            .is_none());
+        assert!(checker
+            .check_call("step1", "search-knowledge", args)
+            .is_none());
 
         // 第 4 次触发 Ping-Pong
         let violation = checker.check_call("step1", "search-knowledge", args);
-        assert!(matches!(violation, Some(ConstraintViolation::PingPongDetected { .. })));
+        assert!(matches!(
+            violation,
+            Some(ConstraintViolation::PingPongDetected { .. })
+        ));
     }
 
     #[test]
     fn test_different_args_allowed() {
         let mut checker = ToolConstraintChecker::new();
-        assert!(checker.check_call("step1", "search-knowledge", r#"{"query": "A"}"#).is_none());
-        assert!(checker.check_call("step1", "search-knowledge", r#"{"query": "B"}"#).is_none());
+        assert!(checker
+            .check_call("step1", "search-knowledge", r#"{"query": "A"}"#)
+            .is_none());
+        assert!(checker
+            .check_call("step1", "search-knowledge", r#"{"query": "B"}"#)
+            .is_none());
     }
 
     #[test]
@@ -161,10 +189,22 @@ mod tests {
         let mut checker = ToolConstraintChecker::new();
         let whitelist = vec!["search-knowledge".to_string(), "generate-doc".to_string()];
 
-        let result = enforce_tool_constraint(&mut checker, "step1", "search-knowledge", "{}", Some(&whitelist));
+        let result = enforce_tool_constraint(
+            &mut checker,
+            "step1",
+            "search-knowledge",
+            "{}",
+            Some(&whitelist),
+        );
         assert!(result.is_ok());
 
-        let result = enforce_tool_constraint(&mut checker, "step1", "unknown-tool", "{}", Some(&whitelist));
+        let result = enforce_tool_constraint(
+            &mut checker,
+            "step1",
+            "unknown-tool",
+            "{}",
+            Some(&whitelist),
+        );
         assert!(result.is_err());
     }
 

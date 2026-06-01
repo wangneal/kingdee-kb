@@ -17,11 +17,11 @@ bitflags! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BudgetPriority {
     SystemPrompt = 0,
-    UserInput    = 1,
+    UserInput = 1,
     ReservedOutput = 2,
-    ToolDefs     = 3,
-    Plan         = 4,  // 优先级高于 History，不可摘要压缩
-    History      = 5,
+    ToolDefs = 3,
+    Plan = 4, // 优先级高于 History，不可摘要压缩
+    History = 5,
     RetrievedCtx = 6,
-    Buffer       = 7,
+    Buffer = 7,
 }

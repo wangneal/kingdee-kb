@@ -1,13 +1,13 @@
 //! 模型元数据分层获取
-//! 
+//!
 //! 获取策略（按优先级）：
 //!   1. 提供商原生 API（Anthropic / Google Gemini / Ollama）
 //!   2. 内置模型数据库（model_specs.json）
 //!   3. 保守默认值（context_window=4096, max_output_tokens=4096）
 //!   4. 用户手动覆盖逐字段叠加（最高优先级，但不覆盖未设置的字段）
 
-use serde::{Deserialize, Serialize};
 use super::llm_providers::{LLMProtocol, LLMProviderConfig};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMetadata {
@@ -45,7 +45,11 @@ pub async fn resolve_metadata(provider: &LLMProviderConfig, model_name: &str) ->
         .unwrap_or_default();
 
     // 用户覆盖：逐字段叠加（最高优先级）
-    if let Some(model) = provider.models.iter().find(|m| m.name == model_name || m.id == model_name) {
+    if let Some(model) = provider
+        .models
+        .iter()
+        .find(|m| m.name == model_name || m.id == model_name)
+    {
         if let Some(cw) = model.context_window {
             meta.context_window = cw;
         }
@@ -88,21 +92,37 @@ pub(crate) fn from_builtin_db(model_name: &str) -> Option<ModelMetadata> {
     None
 }
 
-async fn from_provider_api(provider: &LLMProviderConfig, model_name: &str) -> Option<ModelMetadata> {
+async fn from_provider_api(
+    provider: &LLMProviderConfig,
+    model_name: &str,
+) -> Option<ModelMetadata> {
     let client = reqwest::Client::new();
 
     // Anthropic
     if provider.base_url.contains("anthropic.com") {
         let api_key = provider.api_keys.first()?.key.clone();
-        let url = format!("{}/v1/models/{}", provider.base_url.trim_end_matches('/'), model_name);
-        let resp = client.get(&url).header("x-api-key", &api_key).send().await.ok()?;
+        let url = format!(
+            "{}/v1/models/{}",
+            provider.base_url.trim_end_matches('/'),
+            model_name
+        );
+        let resp = client
+            .get(&url)
+            .header("x-api-key", &api_key)
+            .send()
+            .await
+            .ok()?;
         if resp.status().is_success() {
             let json: serde_json::Value = resp.json().await.ok()?;
             return Some(ModelMetadata {
                 context_window: json["max_input_tokens"].as_u64()? as u32,
                 max_output_tokens: json["max_tokens"].as_u64()? as u32,
-                supports_thinking: json["capabilities"]["thinking"]["supported"].as_bool().unwrap_or(false),
-                supports_vision: json["capabilities"]["image_input"]["supported"].as_bool().unwrap_or(false),
+                supports_thinking: json["capabilities"]["thinking"]["supported"]
+                    .as_bool()
+                    .unwrap_or(false),
+                supports_vision: json["capabilities"]["image_input"]["supported"]
+                    .as_bool()
+                    .unwrap_or(false),
                 supports_tools: true,
             });
         }
@@ -111,7 +131,12 @@ async fn from_provider_api(provider: &LLMProviderConfig, model_name: &str) -> Op
     // Google Gemini
     if provider.base_url.contains("googleapis.com") {
         let api_key = provider.api_keys.first()?.key.clone();
-        let url = format!("{}/v1beta/models/{}?key={}", provider.base_url.trim_end_matches('/'), model_name, api_key);
+        let url = format!(
+            "{}/v1beta/models/{}?key={}",
+            provider.base_url.trim_end_matches('/'),
+            model_name,
+            api_key
+        );
         let resp = client.get(&url).send().await.ok()?;
         if resp.status().is_success() {
             let json: serde_json::Value = resp.json().await.ok()?;
@@ -128,7 +153,12 @@ async fn from_provider_api(provider: &LLMProviderConfig, model_name: &str) -> Op
     // Ollama (Local)
     if provider.protocol == LLMProtocol::Local {
         let url = format!("{}/api/show", provider.base_url.trim_end_matches('/'));
-        let resp = client.post(&url).json(&serde_json::json!({"name": model_name})).send().await.ok()?;
+        let resp = client
+            .post(&url)
+            .json(&serde_json::json!({"name": model_name}))
+            .send()
+            .await
+            .ok()?;
         if resp.status().is_success() {
             let json: serde_json::Value = resp.json().await.ok()?;
             for (key, value) in json["model_info"].as_object()? {
@@ -137,8 +167,9 @@ async fn from_provider_api(provider: &LLMProviderConfig, model_name: &str) -> Op
                         context_window: value.as_u64()? as u32,
                         max_output_tokens: 8192,
                         supports_thinking: false,
-                        supports_vision: json["capabilities"].as_array()
-                            .map_or(false, |caps| caps.iter().any(|c| c.as_str() == Some("vision"))),
+                        supports_vision: json["capabilities"].as_array().map_or(false, |caps| {
+                            caps.iter().any(|c| c.as_str() == Some("vision"))
+                        }),
                         supports_tools: true,
                     });
                 }

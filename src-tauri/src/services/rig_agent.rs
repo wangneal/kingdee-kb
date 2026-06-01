@@ -182,7 +182,9 @@ impl RigAgent {
                 skill_manager.clone(),
                 cancel_flag.clone(),
                 effective_provider_id,
-            ).await {
+            )
+            .await
+            {
                 Ok(()) => return, // Plan-Execute completed
                 Err(e) => {
                     tracing::warn!("Plan-Execute 失败，降级到 ReAct: {}", e);
@@ -551,7 +553,9 @@ impl RigAgent {
                             }
 
                             // Harness constraint check
-                            if let Some(violation) = constraint_checker.check_call(&current_step_id, &name, &args) {
+                            if let Some(violation) =
+                                constraint_checker.check_call(&current_step_id, &name, &args)
+                            {
                                 let _ = sender.send(ReActEvent::Error {
                                     session_id: sid.to_string(),
                                     message: format!("工具约束违规: {}", violation),
@@ -620,7 +624,7 @@ impl RigAgent {
                         let verify_status = result_verifier.verify(
                             &step_label,
                             &result_text_for_verify,
-                            "",  // no expected output in ReAct mode
+                            "", // no expected output in ReAct mode
                         );
                         match verify_status {
                             VerificationStatus::NeedsReplan(reason) => {
@@ -782,13 +786,8 @@ impl RigAgent {
                             let remaining = state_machine.remaining_steps().to_vec();
                             let executed = state_machine.executed().to_vec();
 
-                            match planner::Planner::replan(
-                                user_message,
-                                &executed,
-                                &remaining,
-                                llm,
-                            )
-                            .await
+                            match planner::Planner::replan(user_message, &executed, &remaining, llm)
+                                .await
                             {
                                 Ok(new_steps) => {
                                     let _ = sender.send(ReActEvent::Replan {

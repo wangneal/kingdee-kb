@@ -49,8 +49,15 @@ impl ResultVerifier {
 
         // 检查是否包含失败关键词
         let failure_keywords = [
-            "失败", "错误", "error", "failed", "exception",
-            "超时", "timeout", "不支持", "not supported",
+            "失败",
+            "错误",
+            "error",
+            "failed",
+            "exception",
+            "超时",
+            "timeout",
+            "不支持",
+            "not supported",
         ];
         let result_lower = result.to_lowercase();
         for keyword in &failure_keywords {
@@ -81,7 +88,8 @@ impl ResultVerifier {
                 "连续失败次数达到上限"
             );
             return VerificationStatus::NeedsReplan(format!(
-                "连续失败 {} 次: {}", self.consecutive_failures, reason
+                "连续失败 {} 次: {}",
+                self.consecutive_failures, reason
             ));
         }
 

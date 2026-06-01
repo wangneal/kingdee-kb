@@ -8,12 +8,12 @@ use std::path::PathBuf;
 use tauri::State;
 
 use crate::app_state::AppState;
+use crate::services::llm_providers::LLMProtocol;
 use crate::services::prompt_assembler::SkillPromptEntry;
 use crate::services::signal_writer::SignalEvent;
 use crate::services::skill_executor::{ExecutionResult, SubstitutionContext};
 use crate::services::skill_trigger::{SkillMatch, TriggerContext};
 use crate::services::skill_types::{SharedResource, Skill, SkillFile, SkillFull};
-use crate::services::llm_providers::LLMProtocol;
 use crate::services::template_manager::TemplateManifest;
 
 /// 列出所有技能
@@ -435,7 +435,9 @@ pub async fn process_image(
 
         tracing::info!(
             "Trying vision model: provider={}, model={} for image: {}",
-            provider_id, model_name, image_path
+            provider_id,
+            model_name,
+            image_path
         );
 
         let mut processor = crate::services::image_processor::ImageProcessor::new(
@@ -458,7 +460,8 @@ pub async fn process_image(
 
                 tracing::info!(
                     "Image processed successfully with model: provider={}, model={}",
-                    provider_id, model_name
+                    provider_id,
+                    model_name
                 );
 
                 return Ok(ImageProcessResult {
@@ -466,8 +469,12 @@ pub async fn process_image(
                         crate::services::image_processor::ImageType::TextScreenshot => {
                             "text_screenshot".to_string()
                         }
-                        crate::services::image_processor::ImageType::Flowchart => "flowchart".to_string(),
-                        crate::services::image_processor::ImageType::Architecture => "architecture".to_string(),
+                        crate::services::image_processor::ImageType::Flowchart => {
+                            "flowchart".to_string()
+                        }
+                        crate::services::image_processor::ImageType::Architecture => {
+                            "architecture".to_string()
+                        }
                         crate::services::image_processor::ImageType::Table => "table".to_string(),
                         crate::services::image_processor::ImageType::Mixed => "mixed".to_string(),
                     },
@@ -480,7 +487,9 @@ pub async fn process_image(
                 let err_str = e.to_string();
                 tracing::warn!(
                     "Vision model provider={}, model={} failed: {}",
-                    provider_id, model_name, err_str
+                    provider_id,
+                    model_name,
+                    err_str
                 );
                 last_error = Some(format!("{} ({} > {})", err_str, provider_id, model_name));
                 // 继续尝试下一个模型
@@ -490,7 +499,10 @@ pub async fn process_image(
 
     // 所有 LLM 模型都失败了，尝试纯 OCR（如果配置了）
     if let Some(ref ocr) = ocr_config {
-        tracing::info!("All vision models failed, trying pure OCR fallback for image: {}", image_path);
+        tracing::info!(
+            "All vision models failed, trying pure OCR fallback for image: {}",
+            image_path
+        );
 
         // OCR fallback: 创建处理器用于纯 OCR，不再走 vision 路径
         let (api_key, base_url, model_name) = candidates
@@ -498,9 +510,8 @@ pub async fn process_image(
             .map(|(k, u, m, _, _, _)| (k.clone(), u.clone(), m.clone()))
             .unwrap_or_default();
 
-        let mut processor = crate::services::image_processor::ImageProcessor::new(
-            api_key, base_url, model_name,
-        );
+        let mut processor =
+            crate::services::image_processor::ImageProcessor::new(api_key, base_url, model_name);
         processor.set_ocr_config(ocr.clone());
 
         match processor.ocr_only(&image_path).await {
@@ -510,8 +521,12 @@ pub async fn process_image(
                         crate::services::image_processor::ImageType::TextScreenshot => {
                             "text_screenshot".to_string()
                         }
-                        crate::services::image_processor::ImageType::Flowchart => "flowchart".to_string(),
-                        crate::services::image_processor::ImageType::Architecture => "architecture".to_string(),
+                        crate::services::image_processor::ImageType::Flowchart => {
+                            "flowchart".to_string()
+                        }
+                        crate::services::image_processor::ImageType::Architecture => {
+                            "architecture".to_string()
+                        }
                         crate::services::image_processor::ImageType::Table => "table".to_string(),
                         crate::services::image_processor::ImageType::Mixed => "mixed".to_string(),
                     },

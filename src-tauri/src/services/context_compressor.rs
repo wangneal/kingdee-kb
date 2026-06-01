@@ -7,15 +7,20 @@ use super::token;
 
 /// 磁滞回线参数
 pub struct CompressionHysteresis {
-    pub trigger_threshold_pct: u32,   // 80%
-    pub release_target_pct: u32,       // 50%
-    pub reset_threshold_pct: u32,      // 30%
+    pub trigger_threshold_pct: u32, // 80%
+    pub release_target_pct: u32,    // 50%
+    pub reset_threshold_pct: u32,   // 30%
     pub is_compressed: bool,
 }
 
 impl CompressionHysteresis {
     pub fn new(trigger_pct: u32, release_pct: u32, reset_pct: u32) -> Self {
-        Self { trigger_threshold_pct: trigger_pct, release_target_pct: release_pct, reset_threshold_pct: reset_pct, is_compressed: false }
+        Self {
+            trigger_threshold_pct: trigger_pct,
+            release_target_pct: release_pct,
+            reset_threshold_pct: reset_pct,
+            is_compressed: false,
+        }
     }
 
     pub fn should_compress(&mut self, usage_pct: u32) -> bool {
@@ -53,9 +58,17 @@ pub struct CompressedHistory {
 
 /// 标记关键轮次
 fn mark_critical_indices(messages: &[ChatMessage]) -> Vec<usize> {
-    messages.iter().enumerate()
-        .filter(|(_, m)| m.role == "system" || m.content.contains("【上一轮工具上下文】") || m.content.contains("错误") || m.content.contains("失败"))
-        .map(|(i, _)| i).collect()
+    messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| {
+            m.role == "system"
+                || m.content.contains("【上一轮工具上下文】")
+                || m.content.contains("错误")
+                || m.content.contains("失败")
+        })
+        .map(|(i, _)| i)
+        .collect()
 }
 
 /// 从尾部保留最近消息，直到 token 预算用完
@@ -63,8 +76,12 @@ fn retain_recent(messages: &[ChatMessage], budget: u32) -> Vec<ChatMessage> {
     let mut result = Vec::new();
     let mut tokens = 0u32;
     for msg in messages.iter().rev() {
-        let msg_tokens = token::count_tokens_with_fallback(&msg.content) + token::count_tokens_with_fallback(&msg.role) + 4;
-        if tokens + msg_tokens > budget && !result.is_empty() { break; }
+        let msg_tokens = token::count_tokens_with_fallback(&msg.content)
+            + token::count_tokens_with_fallback(&msg.role)
+            + 4;
+        if tokens + msg_tokens > budget && !result.is_empty() {
+            break;
+        }
         tokens += msg_tokens;
         result.push(msg.clone());
     }
@@ -74,7 +91,11 @@ fn retain_recent(messages: &[ChatMessage], budget: u32) -> Vec<ChatMessage> {
 
 /// 格式化消息列表为文本（用于摘要 prompt）
 fn format_messages(messages: &[ChatMessage]) -> String {
-    messages.iter().map(|m| format!("{}: {}", m.role, m.content)).collect::<Vec<_>>().join("\n")
+    messages
+        .iter()
+        .map(|m| format!("{}: {}", m.role, m.content))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -99,9 +120,10 @@ mod tests {
 
     #[test]
     fn test_retain_recent_truncates() {
-        let msgs = vec![
-            ChatMessage { role: "user".into(), content: "hello".repeat(1000) },
-        ];
+        let msgs = vec![ChatMessage {
+            role: "user".into(),
+            content: "hello".repeat(1000),
+        }];
         let result = retain_recent(&msgs, 10);
         assert!(result.len() <= 1);
     }

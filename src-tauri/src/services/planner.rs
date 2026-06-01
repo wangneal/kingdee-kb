@@ -105,12 +105,10 @@ impl Planner {
              5. 每行格式：{{\"id\":N,\"description\":\"...\",\"tool\":\"...\",\"expected_output\":\"...\",\"depends_on\":[]}}"
         );
 
-        let messages = vec![
-            crate::services::llm_service::ChatMessage {
-                role: "user".to_string(),
-                content: prompt,
-            },
-        ];
+        let messages = vec![crate::services::llm_service::ChatMessage {
+            role: "user".to_string(),
+            content: prompt,
+        }];
         let config = llm
             .get_active_config()
             .map_err(|e| format!("Planner config error: {}", e))?;
@@ -130,7 +128,10 @@ impl Planner {
         if let Ok(steps) = serde_json::from_str::<Vec<PlanStep>>(trimmed) {
             if !steps.is_empty() {
                 let estimated_tokens = crate::services::token::count_tokens_with_fallback(trimmed);
-                return Ok(ExecutionPlan { steps, estimated_tokens });
+                return Ok(ExecutionPlan {
+                    steps,
+                    estimated_tokens,
+                });
             }
         }
 
@@ -148,7 +149,10 @@ impl Planner {
 
         if !steps.is_empty() {
             let estimated_tokens = crate::services::token::count_tokens_with_fallback(trimmed);
-            Ok(ExecutionPlan { steps, estimated_tokens })
+            Ok(ExecutionPlan {
+                steps,
+                estimated_tokens,
+            })
         } else {
             // 回退：启发式单步计划
             tracing::warn!("Planner 无法解析 LLM 输出，回退到启发式计划");
@@ -180,8 +184,19 @@ impl Planner {
 
         // 中英文关键词检测
         let failure_signals = [
-            "失败", "错误", "不支持", "无法", "遇到问题", "未能完成",
-            "failed", "error", "not supported", "unable", "cannot", "blocked", "exception",
+            "失败",
+            "错误",
+            "不支持",
+            "无法",
+            "遇到问题",
+            "未能完成",
+            "failed",
+            "error",
+            "not supported",
+            "unable",
+            "cannot",
+            "blocked",
+            "exception",
         ];
         let result_lower = step_result.to_lowercase();
         for signal in &failure_signals {
@@ -218,18 +233,16 @@ impl Planner {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let replan_messages = vec![
-            crate::services::llm_service::ChatMessage {
-                role: "user".to_string(),
-                content: format!(
-                    "基于执行偏差，重新规划剩余任务。\n\n\
+        let replan_messages = vec![crate::services::llm_service::ChatMessage {
+            role: "user".to_string(),
+            content: format!(
+                "基于执行偏差，重新规划剩余任务。\n\n\
                      原始任务：{original_task}\n\n\
                      已执行步骤：\n{history}\n\n\
                      原计划的剩余步骤（可能已不适用）：\n{remaining}\n\n\
                      请以 NDJSON 格式生成新的剩余步骤。"
-                ),
-            },
-        ];
+            ),
+        }];
         let replan_config = llm
             .get_active_config()
             .map_err(|e| format!("Replanner config error: {}", e))?;
@@ -438,11 +451,7 @@ impl PlanStateMachine {
             original_task: original_task.to_string(),
             current_step: self.current_step().cloned(),
             executed_summary: Self::summarize_executed(&self.executed),
-            progress: format!(
-                "{}/{}",
-                self.current_index,
-                self.plan.steps.len()
-            ),
+            progress: format!("{}/{}", self.current_index, self.plan.steps.len()),
             remaining_count: self.plan.steps.len() - self.current_index - 1,
         }
     }
@@ -539,8 +548,20 @@ mod tests {
     fn test_state_machine_advance() {
         let plan = ExecutionPlan {
             steps: vec![
-                PlanStep { id: 1, description: "Step 1".into(), tool: None, expected_output: "ok".into(), depends_on: vec![] },
-                PlanStep { id: 2, description: "Step 2".into(), tool: None, expected_output: "ok".into(), depends_on: vec![1] },
+                PlanStep {
+                    id: 1,
+                    description: "Step 1".into(),
+                    tool: None,
+                    expected_output: "ok".into(),
+                    depends_on: vec![],
+                },
+                PlanStep {
+                    id: 2,
+                    description: "Step 2".into(),
+                    tool: None,
+                    expected_output: "ok".into(),
+                    depends_on: vec![1],
+                },
             ],
             estimated_tokens: 100,
         };
@@ -568,8 +589,20 @@ mod tests {
     fn test_state_machine_replan() {
         let plan = ExecutionPlan {
             steps: vec![
-                PlanStep { id: 1, description: "Step 1".into(), tool: None, expected_output: "ok".into(), depends_on: vec![] },
-                PlanStep { id: 2, description: "Step 2".into(), tool: None, expected_output: "ok".into(), depends_on: vec![1] },
+                PlanStep {
+                    id: 1,
+                    description: "Step 1".into(),
+                    tool: None,
+                    expected_output: "ok".into(),
+                    depends_on: vec![],
+                },
+                PlanStep {
+                    id: 2,
+                    description: "Step 2".into(),
+                    tool: None,
+                    expected_output: "ok".into(),
+                    depends_on: vec![1],
+                },
             ],
             estimated_tokens: 100,
         };
@@ -577,9 +610,13 @@ mod tests {
         sm.record_result("done".into());
         sm.advance();
 
-        let new_steps = vec![
-            PlanStep { id: 3, description: "New step".into(), tool: None, expected_output: "ok".into(), depends_on: vec![1] },
-        ];
+        let new_steps = vec![PlanStep {
+            id: 3,
+            description: "New step".into(),
+            tool: None,
+            expected_output: "ok".into(),
+            depends_on: vec![1],
+        }];
         let state = sm.request_replan(new_steps);
         assert_eq!(state, PlanState::Ready);
         assert_eq!(sm.replan_count(), 1);
@@ -589,7 +626,10 @@ mod tests {
     #[test]
     fn test_should_replan_on_failure() {
         assert!(Planner::should_replan(
-            &ExecutionPlan { steps: vec![], estimated_tokens: 0 },
+            &ExecutionPlan {
+                steps: vec![],
+                estimated_tokens: 0
+            },
             0,
             "执行失败：连接超时",
             "成功",
@@ -600,7 +640,10 @@ mod tests {
     #[test]
     fn test_should_not_replan_on_success() {
         assert!(!Planner::should_replan(
-            &ExecutionPlan { steps: vec![], estimated_tokens: 0 },
+            &ExecutionPlan {
+                steps: vec![],
+                estimated_tokens: 0
+            },
             0,
             "查询成功，返回 5 条结果",
             "返回结果列表",
@@ -633,12 +676,8 @@ mod tests {
 
     #[test]
     fn test_no_drift() {
-        let warning = Planner::detect_step_drift(
-            "分析结果",
-            None,
-            "基于搜索结果，分析如下...",
-            &[],
-        );
+        let warning =
+            Planner::detect_step_drift("分析结果", None, "基于搜索结果，分析如下...", &[]);
         assert!(warning.is_none());
     }
 
@@ -646,7 +685,13 @@ mod tests {
     fn test_step_context_to_prompt() {
         let ctx = StepContext {
             original_task: "测试任务".into(),
-            current_step: Some(PlanStep { id: 1, description: "Step 1".into(), tool: None, expected_output: "ok".into(), depends_on: vec![] }),
+            current_step: Some(PlanStep {
+                id: 1,
+                description: "Step 1".into(),
+                tool: None,
+                expected_output: "ok".into(),
+                depends_on: vec![],
+            }),
             executed_summary: "（无已执行步骤）".into(),
             progress: "0/3".into(),
             remaining_count: 2,
@@ -659,17 +704,30 @@ mod tests {
 
     #[test]
     fn test_validate_dependencies_cleans_invalid() {
-        let existing = vec![PlanStep { id: 1, description: "A".into(), tool: None, expected_output: "ok".into(), depends_on: vec![] }];
-        let mut new_steps = vec![
-            PlanStep { id: 2, description: "B".into(), tool: None, expected_output: "ok".into(), depends_on: vec![1, 99] },
-        ];
+        let existing = vec![PlanStep {
+            id: 1,
+            description: "A".into(),
+            tool: None,
+            expected_output: "ok".into(),
+            depends_on: vec![],
+        }];
+        let mut new_steps = vec![PlanStep {
+            id: 2,
+            description: "B".into(),
+            tool: None,
+            expected_output: "ok".into(),
+            depends_on: vec![1, 99],
+        }];
         PlanStateMachine::validate_dependencies(&existing, &mut new_steps);
         assert_eq!(new_steps[0].depends_on, vec![1]); // 99 被清理
     }
 
     #[test]
     fn test_empty_plan_fails() {
-        let plan = ExecutionPlan { steps: vec![], estimated_tokens: 0 };
+        let plan = ExecutionPlan {
+            steps: vec![],
+            estimated_tokens: 0,
+        };
         let sm = PlanStateMachine::new(plan);
         assert!(matches!(sm.state(), PlanState::Failed(_)));
     }

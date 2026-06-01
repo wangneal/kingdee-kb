@@ -58,13 +58,7 @@ pub enum ReActEvent {
         success: bool,
     },
     #[serde(rename = "replan")]
-    Replan {
-        session_id: String,
-        reason: String,
-    },
+    Replan { session_id: String, reason: String },
     #[serde(rename = "planner_timeout")]
-    PlannerTimeout {
-        session_id: String,
-        message: String,
-    },
+    PlannerTimeout { session_id: String, message: String },
 }

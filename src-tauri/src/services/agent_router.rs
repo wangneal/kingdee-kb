@@ -3,8 +3,8 @@
 //! 复杂度评分基于中英文关键词匹配 + 消息长度 + 历史轮次深度。
 //! 当复杂度超过阈值时，路由到 Plan-Execute 模式（多步骤规划执行）。
 
-use crate::services::types::AgentMode;
 use crate::services::llm_service::ChatMessage;
+use crate::services::types::AgentMode;
 
 /// 复杂度阈值：超过此分数触发 Plan-Execute 模式
 pub const COMPLEXITY_THRESHOLD: u32 = 20;
@@ -20,10 +20,33 @@ pub fn score_complexity(user_message: &str, history: &[ChatMessage]) -> u32 {
 
     // 1. 中文多步骤关键词
     let cn_patterns = [
-        "分步骤", "第一步", "第二步", "第三步", "先", "然后", "接着", "最后",
-        "流程", "方案", "架构", "设计", "重构", "迁移", "集成", "部署",
-        "批量", "多个", "全部", "所有", "整体", "系统",
-        "规划", "计划", "任务", "阶段", "里程碑",
+        "分步骤",
+        "第一步",
+        "第二步",
+        "第三步",
+        "先",
+        "然后",
+        "接着",
+        "最后",
+        "流程",
+        "方案",
+        "架构",
+        "设计",
+        "重构",
+        "迁移",
+        "集成",
+        "部署",
+        "批量",
+        "多个",
+        "全部",
+        "所有",
+        "整体",
+        "系统",
+        "规划",
+        "计划",
+        "任务",
+        "阶段",
+        "里程碑",
     ];
     for pattern in &cn_patterns {
         if user_message.contains(pattern) {
@@ -33,10 +56,25 @@ pub fn score_complexity(user_message: &str, history: &[ChatMessage]) -> u32 {
 
     // 2. 英文多步骤关键词
     let en_patterns = [
-        "step by step", "first", "then", "finally", "next",
-        "plan", "architect", "design", "refactor", "migrate",
-        "batch", "multiple", "all", "entire", "system",
-        "workflow", "pipeline", "milestone", "phase",
+        "step by step",
+        "first",
+        "then",
+        "finally",
+        "next",
+        "plan",
+        "architect",
+        "design",
+        "refactor",
+        "migrate",
+        "batch",
+        "multiple",
+        "all",
+        "entire",
+        "system",
+        "workflow",
+        "pipeline",
+        "milestone",
+        "phase",
     ];
     let msg_lower = user_message.to_lowercase();
     for pattern in &en_patterns {
@@ -55,7 +93,9 @@ pub fn score_complexity(user_message: &str, history: &[ChatMessage]) -> u32 {
     score += depth_score;
 
     // 5. 明确请求简单操作 → 降分
-    let simple_patterns = ["查询", "搜索", "查找", "什么", "多少", "是否", "search", "find", "what", "how many"];
+    let simple_patterns = [
+        "查询", "搜索", "查找", "什么", "多少", "是否", "search", "find", "what", "how many",
+    ];
     for pattern in &simple_patterns {
         if msg_lower.contains(pattern) {
             score = score.saturating_sub(5);
@@ -69,7 +109,11 @@ pub fn score_complexity(user_message: &str, history: &[ChatMessage]) -> u32 {
 pub fn route_mode(user_message: &str, history: &[ChatMessage]) -> AgentMode {
     let score = score_complexity(user_message, history);
     if score >= COMPLEXITY_THRESHOLD {
-        tracing::info!(score, threshold = COMPLEXITY_THRESHOLD, "路由到 Plan-Execute 模式");
+        tracing::info!(
+            score,
+            threshold = COMPLEXITY_THRESHOLD,
+            "路由到 Plan-Execute 模式"
+        );
         AgentMode::PlanExecute
     } else {
         tracing::debug!(score, threshold = COMPLEXITY_THRESHOLD, "路由到 ReAct 模式");
@@ -90,7 +134,10 @@ mod tests {
 
     #[test]
     fn test_complex_plan_high_score() {
-        let score = score_complexity("请帮我分步骤设计一个完整的采购到付款流程迁移方案，包括架构设计和部署计划", &[]);
+        let score = score_complexity(
+            "请帮我分步骤设计一个完整的采购到付款流程迁移方案，包括架构设计和部署计划",
+            &[],
+        );
         assert!(score >= COMPLEXITY_THRESHOLD, "复杂规划应该高分: {}", score);
     }
 
@@ -102,7 +149,10 @@ mod tests {
 
     #[test]
     fn test_route_mode_complex() {
-        let mode = route_mode("请先分析现有系统架构，然后制定迁移方案，最后设计部署流程", &[]);
+        let mode = route_mode(
+            "请先分析现有系统架构，然后制定迁移方案，最后设计部署流程",
+            &[],
+        );
         assert_eq!(mode, AgentMode::PlanExecute);
     }
 }

@@ -168,11 +168,7 @@ impl EntropyManager {
     /// 扫描索引漂移
     ///
     /// 对比源文件目录与索引目录中文件的哈希差异。
-    pub fn scan_index_drift(
-        &self,
-        source_dir: &str,
-        index_dir: &str,
-    ) -> Vec<IndexDrift> {
+    pub fn scan_index_drift(&self, source_dir: &str, index_dir: &str) -> Vec<IndexDrift> {
         let source_path = self.data_dir.join(source_dir);
         let index_path = self.data_dir.join(index_dir);
 
@@ -212,10 +208,7 @@ impl EntropyManager {
             }
         }
 
-        tracing::info!(
-            drifts = drifts.len(),
-            "索引漂移扫描完成"
-        );
+        tracing::info!(drifts = drifts.len(), "索引漂移扫描完成");
 
         drifts
     }

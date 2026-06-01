@@ -63,7 +63,9 @@ impl PromptAssembler {
             if cat != current_category {
                 prompt.push_str(&format!("## {}\n\n", Self::category_title(&cat)));
                 current_category = cat;
-                used_tokens += token::count_tokens_with_fallback(&format!("## {}\n\n", current_category)) as usize;
+                used_tokens +=
+                    token::count_tokens_with_fallback(&format!("## {}\n\n", current_category))
+                        as usize;
             }
 
             let skill_text = self.format_skill_entry(skill);
@@ -157,7 +159,6 @@ impl PromptAssembler {
             format!("{}...", &text[..end])
         }
     }
-
 }
 
 #[cfg(test)]

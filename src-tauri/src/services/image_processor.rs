@@ -126,13 +126,16 @@ impl ImageProcessor {
         // 用 1x1 透明图片测试
         let test_img = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
-        let protocol = self.protocol.as_ref()
+        let protocol = self
+            .protocol
+            .as_ref()
             .unwrap_or(&crate::services::llm_providers::LLMProtocol::OpenAI);
 
         let result = match protocol {
             // Anthropic Messages API 探测
             crate::services::llm_providers::LLMProtocol::Anthropic => {
-                let url = crate::services::llm_providers::anthropic_messages_url(&self.llm_base_url);
+                let url =
+                    crate::services::llm_providers::anthropic_messages_url(&self.llm_base_url);
                 let mut req = self.client
                     .post(&url)
                     .header("anthropic-version", "2023-06-01")
@@ -174,10 +177,7 @@ impl ImageProcessor {
                 let status = resp.status();
                 if !status.is_success() {
                     // 非 2xx 状态码 → 不支持多模态
-                    tracing::info!(
-                        "多模态探测失败, HTTP {}, 模型 {}",
-                        status, self.llm_model
-                    );
+                    tracing::info!("多模态探测失败, HTTP {}, 模型 {}", status, self.llm_model);
                     false
                 } else {
                     // 2xx 状态码还需检查响应体：某些 API 代理/网关会返回 200 但 body 含错误
@@ -193,7 +193,8 @@ impl ImageProcessor {
                                     // API 在 body 中返回错误
                                     tracing::info!(
                                         "多模态探测收到 200 但 body 含错误, 模型 {}: {:?}",
-                                        self.llm_model, json["error"]
+                                        self.llm_model,
+                                        json["error"]
                                     );
                                     false
                                 } else {
@@ -216,7 +217,8 @@ impl ImageProcessor {
                         Err(e) => {
                             tracing::warn!(
                                 "多模态探测读取响应体失败, 模型 {}: {:?}",
-                                self.llm_model, e
+                                self.llm_model,
+                                e
                             );
                             false
                         }
@@ -224,10 +226,7 @@ impl ImageProcessor {
                 }
             }
             Err(e) => {
-                tracing::warn!(
-                    "多模态探测 HTTP 请求失败, 模型 {}: {:?}",
-                    self.llm_model, e
-                );
+                tracing::warn!("多模态探测 HTTP 请求失败, 模型 {}: {:?}", self.llm_model, e);
                 false
             }
         };
@@ -461,7 +460,7 @@ impl ImageProcessor {
         Ok(words.join("\n"))
     }
 
-/// LLM 图像理解（直接尝试调用，不预先探测）
+    /// LLM 图像理解（直接尝试调用，不预先探测）
     async fn vision(
         &self,
         img_base64: &str,
@@ -477,7 +476,10 @@ impl ImageProcessor {
             return Err(ImageError::LlmNotMultimodal);
         }
 
-        let protocol = self.protocol.as_ref().unwrap_or(&crate::services::llm_providers::LLMProtocol::OpenAI);
+        let protocol = self
+            .protocol
+            .as_ref()
+            .unwrap_or(&crate::services::llm_providers::LLMProtocol::OpenAI);
 
         match protocol {
             crate::services::llm_providers::LLMProtocol::Anthropic => {
@@ -485,7 +487,8 @@ impl ImageProcessor {
             }
             crate::services::llm_providers::LLMProtocol::OpenAI
             | crate::services::llm_providers::LLMProtocol::Local => {
-                self.vision_openai_compatible(img_base64, local_path, prompt).await
+                self.vision_openai_compatible(img_base64, local_path, prompt)
+                    .await
             }
         }
     }
@@ -531,10 +534,12 @@ impl ImageProcessor {
             Ok(r) => {
                 let status = r.status();
                 if status.is_success() {
-                    let json: serde_json::Value = r.json().await
-                        .map_err(|e| ImageError::ApiError(format!("Anthropic 响应解析失败: {}", e)))?;
-                    let text = json["content"][0]["text"].as_str()
-                        .ok_or_else(|| ImageError::ApiError("Anthropic API: 响应中无文本内容".to_string()))?;
+                    let json: serde_json::Value = r.json().await.map_err(|e| {
+                        ImageError::ApiError(format!("Anthropic 响应解析失败: {}", e))
+                    })?;
+                    let text = json["content"][0]["text"].as_str().ok_or_else(|| {
+                        ImageError::ApiError("Anthropic API: 响应中无文本内容".to_string())
+                    })?;
                     if text.is_empty() {
                         return Err(ImageError::ApiError("LLM 返回内容为空".to_string()));
                     }
@@ -544,8 +549,10 @@ impl ImageProcessor {
                 } else {
                     let err_text = r.text().await.unwrap_or_default();
                     let err_lower = err_text.to_lowercase();
-                    if err_lower.contains("image") || err_lower.contains("vision")
-                        || err_lower.contains("multimodal") || err_lower.contains("not supported")
+                    if err_lower.contains("image")
+                        || err_lower.contains("vision")
+                        || err_lower.contains("multimodal")
+                        || err_lower.contains("not supported")
                     {
                         self.llm_multimodal.store(false, Ordering::Relaxed);
                         self.probed.store(true, Ordering::Relaxed);
@@ -553,13 +560,16 @@ impl ImageProcessor {
                     }
                     Err(ImageError::ApiError(format!(
                         "Anthropic API HTTP {} ({} > {}): {}",
-                        status, self.llm_base_url, self.llm_model,
+                        status,
+                        self.llm_base_url,
+                        self.llm_model,
                         &err_text.chars().take(300).collect::<String>()
                     )))
                 }
             }
             Err(e) => Err(ImageError::ApiError(format!(
-                "Anthropic 请求失败 ({} > {}): {:?}", self.llm_base_url, self.llm_model, e
+                "Anthropic 请求失败 ({} > {}): {:?}",
+                self.llm_base_url, self.llm_model, e
             ))),
         }
     }
@@ -604,43 +614,63 @@ impl ImageProcessor {
                             self.llm_multimodal.store(true, Ordering::Relaxed);
                             self.probed.store(true, Ordering::Relaxed);
                             let content = json["choices"][0]["message"]["content"]
-                                .as_str().unwrap_or("").to_string();
+                                .as_str()
+                                .unwrap_or("")
+                                .to_string();
                             if content.is_empty() {
                                 return Err(ImageError::ApiError("LLM 返回内容为空".to_string()));
                             }
                             return Ok(content);
                         } else if json["error"].is_object() {
                             let err_msg = format!("API 返回错误: {}", json["error"]);
-                            tracing::warn!("Vision got 200 but error in body for model {}: {}", model, err_msg);
-                            if err_msg.contains("image") || err_msg.contains("vision") || err_msg.contains("multimodal") {
+                            tracing::warn!(
+                                "Vision got 200 but error in body for model {}: {}",
+                                model,
+                                err_msg
+                            );
+                            if err_msg.contains("image")
+                                || err_msg.contains("vision")
+                                || err_msg.contains("multimodal")
+                            {
                                 self.llm_multimodal.store(false, Ordering::Relaxed);
                                 self.probed.store(true, Ordering::Relaxed);
                                 return Err(ImageError::LlmNotMultimodal);
                             }
                             last_api_error = Some(err_msg);
                         } else {
-                            last_api_error = Some(format!("响应格式异常 (HTTP 200), body 前200字: {}",
-                                &body.chars().take(200).collect::<String>()));
+                            last_api_error = Some(format!(
+                                "响应格式异常 (HTTP 200), body 前200字: {}",
+                                &body.chars().take(200).collect::<String>()
+                            ));
                         }
                     } else {
-                        last_api_error = Some(format!("响应格式异常 (HTTP 200), body 前200字: {}",
-                            &body.chars().take(200).collect::<String>()));
+                        last_api_error = Some(format!(
+                            "响应格式异常 (HTTP 200), body 前200字: {}",
+                            &body.chars().take(200).collect::<String>()
+                        ));
                     }
                 } else {
                     let err_text = r.text().await.unwrap_or_default();
                     let err_lower = err_text.to_lowercase();
-                    if err_lower.contains("image") || err_lower.contains("vision")
-                        || err_lower.contains("multimodal") || err_lower.contains("does not support")
+                    if err_lower.contains("image")
+                        || err_lower.contains("vision")
+                        || err_lower.contains("multimodal")
+                        || err_lower.contains("does not support")
                         || err_lower.contains("not supported")
-                        || status.as_u16() == 400 || status.as_u16() == 422
+                        || status.as_u16() == 400
+                        || status.as_u16() == 422
                     {
                         self.llm_multimodal.store(false, Ordering::Relaxed);
                         self.probed.store(true, Ordering::Relaxed);
                         return Err(ImageError::LlmNotMultimodal);
                     }
-                    last_api_error = Some(format!("HTTP {} ({} > {}): {}",
-                        status, base_url, model,
-                        &err_text.chars().take(300).collect::<String>()));
+                    last_api_error = Some(format!(
+                        "HTTP {} ({} > {}): {}",
+                        status,
+                        base_url,
+                        model,
+                        &err_text.chars().take(300).collect::<String>()
+                    ));
                 }
             }
             Err(e) => {
@@ -653,18 +683,19 @@ impl ImageProcessor {
             let absolute_path = std::path::Path::new(path)
                 .canonicalize()
                 .unwrap_or_else(|_| std::path::PathBuf::from(path));
-            let file_url = format!("file:///{}", absolute_path.to_string_lossy().replace('\\', "/"));
+            let file_url = format!(
+                "file:///{}",
+                absolute_path.to_string_lossy().replace('\\', "/")
+            );
 
-            let mut req_local = self.client
-                .post(&url)
-                .json(&serde_json::json!({
-                    "model": model,
-                    "messages": [{"role": "user", "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": file_url}}
-                    ]}],
-                    "max_tokens": 2048
-                }));
+            let mut req_local = self.client.post(&url).json(&serde_json::json!({
+                "model": model,
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": file_url}}
+                ]}],
+                "max_tokens": 2048
+            }));
             if !api_key.is_empty() {
                 req_local = req_local.header("Authorization", format!("Bearer {}", api_key));
             }
@@ -680,32 +711,45 @@ impl ImageProcessor {
                                 self.llm_multimodal.store(true, Ordering::Relaxed);
                                 self.probed.store(true, Ordering::Relaxed);
                                 let content = json["choices"][0]["message"]["content"]
-                                    .as_str().unwrap_or("").to_string();
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .to_string();
                                 if content.is_empty() {
-                                    return Err(ImageError::ApiError("LLM 返回内容为空".to_string()));
+                                    return Err(ImageError::ApiError(
+                                        "LLM 返回内容为空".to_string(),
+                                    ));
                                 }
                                 return Ok(content);
                             } else if json["error"].is_object() {
                                 let err_msg = format!("API 返回错误: {}", json["error"]);
-                                if err_msg.contains("image") || err_msg.contains("vision") || err_msg.contains("multimodal") {
+                                if err_msg.contains("image")
+                                    || err_msg.contains("vision")
+                                    || err_msg.contains("multimodal")
+                                {
                                     self.llm_multimodal.store(false, Ordering::Relaxed);
                                     self.probed.store(true, Ordering::Relaxed);
                                     return Err(ImageError::LlmNotMultimodal);
                                 }
                                 last_api_error = Some(err_msg);
                             } else {
-                                last_api_error = Some(format!("file:// 回退响应格式异常, body 前200字: {}",
-                                    &body.chars().take(200).collect::<String>()));
+                                last_api_error = Some(format!(
+                                    "file:// 回退响应格式异常, body 前200字: {}",
+                                    &body.chars().take(200).collect::<String>()
+                                ));
                             }
                         } else {
-                            last_api_error = Some(format!("file:// 回退响应格式异常, body 前200字: {}",
-                                &body.chars().take(200).collect::<String>()));
+                            last_api_error = Some(format!(
+                                "file:// 回退响应格式异常, body 前200字: {}",
+                                &body.chars().take(200).collect::<String>()
+                            ));
                         }
                     } else {
                         let err_text = r.text().await.unwrap_or_default();
                         let err_lower = err_text.to_lowercase();
-                        if err_lower.contains("image") || err_lower.contains("vision")
-                            || err_lower.contains("multimodal") || err_lower.contains("does not support")
+                        if err_lower.contains("image")
+                            || err_lower.contains("vision")
+                            || err_lower.contains("multimodal")
+                            || err_lower.contains("does not support")
                             || err_lower.contains("not supported")
                         {
                             self.llm_multimodal.store(false, Ordering::Relaxed);
@@ -713,13 +757,20 @@ impl ImageProcessor {
                             return Err(ImageError::LlmNotMultimodal);
                         }
                         // 非 200 但非多模态不支持 → 保留错误信息，不再降级
-                        last_api_error = Some(format!("file:// 回退 HTTP {} ({} > {}): {}",
-                            status, base_url, model,
-                            &err_text.chars().take(300).collect::<String>()));
+                        last_api_error = Some(format!(
+                            "file:// 回退 HTTP {} ({} > {}): {}",
+                            status,
+                            base_url,
+                            model,
+                            &err_text.chars().take(300).collect::<String>()
+                        ));
                     }
                 }
                 Err(e) => {
-                    last_api_error = Some(format!("file:// 回退请求失败 ({} > {}): {:?}", base_url, model, e));
+                    last_api_error = Some(format!(
+                        "file:// 回退请求失败 ({} > {}): {:?}",
+                        base_url, model, e
+                    ));
                 }
             }
         }
@@ -727,7 +778,8 @@ impl ImageProcessor {
         // 返回实际 API 错误，而非笼统信息
         let detail = last_api_error.unwrap_or_else(|| "未知错误".to_string());
         Err(ImageError::ApiError(format!(
-            "多模态图像识别失败 ({} > {}): {}", base_url, model, detail
+            "多模态图像识别失败 ({} > {}): {}",
+            base_url, model, detail
         )))
     }
 
