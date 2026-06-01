@@ -20,6 +20,17 @@ fn is_official_anthropic_url(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// 构造 Anthropic Messages API 的完整 URL
+///
+/// base_url 可能是 `https://api.anthropic.com/v1` 或 `https://api.anthropic.com`，
+/// 需要归一化避免拼接出 `/v1/v1/messages`。
+/// 此函数去除尾部的 `/v1` 后重新拼接，保证结果一致。
+pub fn anthropic_messages_url(base_url: &str) -> String {
+    let normalized = base_url.trim_end_matches('/');
+    let normalized = normalized.trim_end_matches("/v1");
+    format!("{}/v1/messages", normalized)
+}
+
 fn with_anthropic_headers(
     request: reqwest::RequestBuilder,
     url: &str,
@@ -751,11 +762,7 @@ impl LLMProviderManager {
                 is_success
             }
             LLMProtocol::Anthropic => {
-                let url = if provider.base_url.contains("/v1") {
-                    format!("{}/messages", provider.base_url.trim_end_matches('/'))
-                } else {
-                    format!("{}/v1/messages", provider.base_url.trim_end_matches('/'))
-                };
+                let url = anthropic_messages_url(&provider.base_url);
                 let result = with_anthropic_headers(self.client.post(&url), &url, api_key)
                     .json(&serde_json::json!({
                         "model": model_name,

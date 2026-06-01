@@ -8,7 +8,7 @@
 //   - Local protocol (Ollama) empty API key handling
 
 use kingdee_kb_lib::services::llm_providers::{
-    ApiKeyConfig, LLMProtocol, LLMProviderConfig, LLMProviderManager, ModelConfig,
+    anthropic_messages_url, ApiKeyConfig, LLMProtocol, LLMProviderConfig, LLMProviderManager, ModelConfig,
 };
 use kingdee_kb_lib::services::model_metadata::{builtin_supports_vision, resolve_metadata};
 
@@ -579,10 +579,8 @@ mod vision_pipeline {
 
     #[test]
     fn test_anthropic_url_with_trailing_v1() {
-        use kingdee_kb_lib::services::image_processor::ImageProcessor;
-
         // base_url 已含 /v1 → 应去掉后重新拼接
-        let url = ImageProcessor::anthropic_messages_url("https://api.anthropic.com/v1");
+        let url = anthropic_messages_url("https://api.anthropic.com/v1");
         assert_eq!(
             url,
             "https://api.anthropic.com/v1/messages",
@@ -592,10 +590,8 @@ mod vision_pipeline {
 
     #[test]
     fn test_anthropic_url_without_v1() {
-        use kingdee_kb_lib::services::image_processor::ImageProcessor;
-
         // base_url 不含 /v1 → 直接拼接
-        let url = ImageProcessor::anthropic_messages_url("https://api.anthropic.com");
+        let url = anthropic_messages_url("https://api.anthropic.com");
         assert_eq!(
             url,
             "https://api.anthropic.com/v1/messages",
@@ -605,10 +601,8 @@ mod vision_pipeline {
 
     #[test]
     fn test_anthropic_url_trailing_slash() {
-        use kingdee_kb_lib::services::image_processor::ImageProcessor;
-
         // 尾部斜杠 + /v1
-        let url = ImageProcessor::anthropic_messages_url("https://api.anthropic.com/v1/");
+        let url = anthropic_messages_url("https://api.anthropic.com/v1/");
         assert_eq!(
             url,
             "https://api.anthropic.com/v1/messages",

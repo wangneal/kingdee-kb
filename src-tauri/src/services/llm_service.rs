@@ -19,7 +19,7 @@ use crate::services::agent_timeout::{
 use crate::services::bm25_service::BM25Service;
 use crate::services::embedding::EmbeddingService;
 use crate::services::hybrid_search::{self, HybridSearchResult};
-use crate::services::llm_providers::{LLMProtocol, LLMProviderConfig, LLMProviderManager};
+use crate::services::llm_providers::{anthropic_messages_url, LLMProtocol, LLMProviderConfig, LLMProviderManager};
 use crate::services::metadata::MetadataStore;
 use crate::services::rig_provider::{build_anthropic_client, build_openai_client};
 use crate::services::vector_index::VectorIndex;
@@ -1494,11 +1494,7 @@ impl LLMService {
         messages: &[ChatMessage],
         config: &LLMProviderConfig,
     ) -> Result<String, String> {
-        let url = if config.base_url.contains("/v1") {
-            format!("{}/messages", config.base_url.trim_end_matches('/'))
-        } else {
-            format!("{}/v1/messages", config.base_url.trim_end_matches('/'))
-        };
+        let url = anthropic_messages_url(&config.base_url);
 
         // Extract system prompt from messages (if any) and filter it out
         let system_prompt: String = messages
@@ -1842,11 +1838,7 @@ impl LLMService {
                 ))
             }
             LLMProtocol::Anthropic => {
-                let url = if config.base_url.contains("/v1") {
-                    format!("{}/messages", config.base_url.trim_end_matches('/'))
-                } else {
-                    format!("{}/v1/messages", config.base_url.trim_end_matches('/'))
-                };
+                let url = anthropic_messages_url(&config.base_url);
                 let body = serde_json::json!({
                     "model": config.get_default_model_name(),
                     "max_tokens": 5,
