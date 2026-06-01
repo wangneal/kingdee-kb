@@ -206,17 +206,8 @@ pub fn ingest_text(
                 .map_err(|e| format!("Lock error: {}", e))?;
             let meta = metadata.lock().map_err(|e| format!("Lock error: {}", e))?;
 
-            // Get starting vector_key from metadata
-            let sqlite_next_key = meta.next_vector_key().unwrap_or(0);
-            // Also account for vectors that exist in usearch but not in SQLite
-            // (orphaned from a previous delete that only cleaned SQLite rows).
-            // This prevents "Duplicate keys not allowed" when usearch still holds
-            // keys that SQLite no longer tracks.
-            let usearch_size = idx.len() as i64;
-            let start_key = sqlite_next_key.max(usearch_size);
-
             for (i, (chunk, embedding)) in chunk_batch.iter().zip(embeddings.iter()).enumerate() {
-                let vector_key = start_key + i as i64;
+                let vector_key = meta.next_vector_key()?;
 
                 // Defensive: remove any orphaned vector at this key before adding.
                 // With multi:false, usearch rejects duplicate keys. If a previous

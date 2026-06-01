@@ -99,10 +99,39 @@ impl MetadataStore {
             CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
             CREATE INDEX IF NOT EXISTS idx_documents_sha256 ON documents(sha256);
             CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project);
+
+            CREATE TABLE IF NOT EXISTS vector_key_seq (
+                id INTEGER PRIMARY KEY AUTOINCREMENT
+            );
             ",
             )
-            .map_err(|e| format!("Failed to initialize schema: {}", e))
-    }
+            .map_err(|e| format!("Failed to initialize schema: {}", e))?;
+
+        // Seed vector_key_seq with current max + 1 if empty
+        let count: i64 = self
+            .db
+            .query_row("SELECT COUNT(*) FROM vector_key_seq", [], |row| row.get(0))
+            .unwrap_or(0);
+        if count == 0 {
+            let max_key: i64 = self
+                .db
+                .query_row(
+                    "SELECT COALESCE(MAX(vector_key), 0) FROM chunks",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            if max_key > 0 {
+                // 初始化序列表为下一个可用值
+                for _ in 0..max_key {
+                    self.db
+                        .execute("INSERT INTO vector_key_seq DEFAULT VALUES", [])
+                        .map_err(|e| format!("初始化向量序列失败: {}", e))?;
+                }
+            }
+        }
+
+        Ok(())
 
     // ─── Document operations ───
 
@@ -357,17 +386,23 @@ impl MetadataStore {
     // ─── Chunk operations ───
 
     /// Get the next globally-unique vector key.
-    /// Uses MAX(vector_key) + 1 so keys never collide across ingestions.
+    /// Uses INSERT autoincrement to guarantee uniqueness (fixes MAX+1 concurrency issue).
     pub fn next_vector_key(&self) -> Result<i64, String> {
-        let max_key: i64 = self
-            .db
-            .query_row(
-                "SELECT COALESCE(MAX(vector_key), 0) FROM chunks",
+        self.db
+            .execute("INSERT INTO vector_key_seq DEFAULT VALUES", [])
+            .map_err(|e| format!("分配向量 key 失败: {}", e))?;
+        Ok(self.db.last_insert_rowid())
+    }
+
+    /// Ensure the vector_key_seq table exists (called once during app init).
+    pub fn ensure_vector_key_seq(&self) -> Result<(), String> {
+        self.db
+            .execute(
+                "CREATE TABLE IF NOT EXISTS vector_key_seq (id INTEGER PRIMARY KEY AUTOINCREMENT)",
                 [],
-                |row| row.get(0),
             )
-            .map_err(|e| format!("Failed to query max vector_key: {}", e))?;
-        Ok(max_key + 1)
+            .map_err(|e| format!("创建向量序列表失败: {}", e))?;
+        Ok(())
     }
 
     /// Insert a chunk linked to a document and vector key
