@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
+use serde::Serialize;
+
 use crate::app_state::AppState;
+use crate::services::harness::entropy::{EntropyManager, StaleType};
 use crate::services::skill_manager::SkillManager;
 
 const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
@@ -293,4 +296,52 @@ pub async fn setup_backend(app: AppHandle) -> Result<(), String> {
     .await;
 
     Ok(())
+}
+
+// ── Entropy Management Commands ──────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct StaleItemInfo {
+    pub path: String,
+    pub last_accessed_days: u64,
+    pub item_type: String,
+}
+
+#[tauri::command]
+pub async fn scan_stale_skills(state: State<'_, AppState>) -> Result<Vec<StaleItemInfo>, String> {
+    let mgr = EntropyManager::new(state.data_dir.clone());
+    let items = mgr.scan_stale_files("skills");
+    Ok(items
+        .into_iter()
+        .map(|item| StaleItemInfo {
+            path: item.path.to_string_lossy().to_string(),
+            last_accessed_days: item.last_accessed_days,
+            item_type: match item.item_type {
+                StaleType::Skill => "skill".to_string(),
+                StaleType::DocMismatch => "doc_mismatch".to_string(),
+                StaleType::IndexDrift => "index_drift".to_string(),
+            },
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
+pub struct IndexDriftInfo {
+    pub source_path: String,
+    pub stored_hash: String,
+    pub current_hash: String,
+}
+
+#[tauri::command]
+pub async fn scan_index_drift(state: State<'_, AppState>) -> Result<Vec<IndexDriftInfo>, String> {
+    let mgr = EntropyManager::new(state.data_dir.clone());
+    let drifts = mgr.scan_index_drift("knowledge", "index");
+    Ok(drifts
+        .into_iter()
+        .map(|d| IndexDriftInfo {
+            source_path: d.source_path.to_string_lossy().to_string(),
+            stored_hash: d.stored_hash,
+            current_hash: d.current_hash,
+        })
+        .collect())
 }

@@ -127,6 +127,8 @@ pub fn run() {
             commands::core::delete_api_key,
             commands::core::set_complete,
             commands::core::export_report,
+            commands::core::scan_stale_skills,
+            commands::core::scan_index_drift,
             // Phase 2: Embedding & Vector Store
             commands::embedding::get_model_status,
             commands::embedding::init_model,
