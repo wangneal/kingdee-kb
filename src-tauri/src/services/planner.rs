@@ -545,23 +545,23 @@ mod tests {
             estimated_tokens: 100,
         };
         let mut sm = PlanStateMachine::new(plan);
-        assert_eq!(*sm.state(), &PlanState::Ready);
+        assert_eq!(*sm.state(), PlanState::Ready);
         assert_eq!(sm.current_step().unwrap().id, 1);
 
         sm.begin_step();
-        assert_eq!(*sm.state(), &PlanState::Executing);
+        assert_eq!(*sm.state(), PlanState::Executing);
 
         sm.record_result("done".into());
-        assert_eq!(*sm.state(), &PlanState::StepDone);
+        assert_eq!(*sm.state(), PlanState::StepDone);
 
         sm.advance();
-        assert_eq!(*sm.state(), &PlanState::Ready);
+        assert_eq!(*sm.state(), PlanState::Ready);
         assert_eq!(sm.current_step().unwrap().id, 2);
 
         sm.begin_step();
         sm.record_result("done 2".into());
         sm.advance();
-        assert_eq!(*sm.state(), &PlanState::Completed);
+        assert_eq!(*sm.state(), PlanState::Completed);
     }
 
     #[test]

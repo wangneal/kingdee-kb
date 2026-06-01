@@ -2,7 +2,7 @@
 
 mod app_state;
 mod commands;
-mod services;
+pub mod services;
 
 use std::sync::Mutex;
 use tauri::Manager;
