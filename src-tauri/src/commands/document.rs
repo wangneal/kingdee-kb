@@ -23,7 +23,7 @@ pub async fn get_document_chunks(
     meta.get_chunks_by_document(document_id)
 }
 
-/// 删除文档及其所有关联分块（同时从向量索引中移除向量）
+/// 删除文档及其所有关联分块（同时从向量索引和 BM25 中移除）
 #[tauri::command]
 pub async fn delete_document(
     state: State<'_, AppState>,
@@ -46,22 +46,38 @@ pub async fn delete_document(
         meta.get_vector_keys_by_document_ids(&[document_id])?
     };
 
-    {
-        let meta = state.metadata.lock().map_err(|e| e.to_string())?;
-        meta.delete_document(document_id, project.as_deref())?
+    // 1. 从 BM25 删除（带 commit）
+    if let Ok(bm25) = state.bm25.lock() {
+        let _ = bm25.remove_chunks(&vector_keys);
     }
 
+    // 2. 从 usearch 删除
+    if let Ok(idx) = state.vector_index.lock() {
+        let _ = idx.remove_keys(&vector_keys);
+    }
+
+    // 3. 从 SQLite 删除（事务性，崩溃后可补偿）
     {
-        let idx = state.vector_index.lock().map_err(|e| e.to_string())?;
-        for key in &vector_keys {
-            let _ = idx.remove(*key as u64);
+        let meta = state.metadata.lock().map_err(|e| e.to_string())?;
+        meta.delete_document(document_id, project.as_deref())?;
+    }
+
+    // 4. 触发碎片整理检查（异步）
+    if let Ok(idx) = state.vector_index.lock() {
+        if idx.check_compact() {
+            let idx_ref = state.vector_index.clone();
+            std::thread::spawn(move || {
+                if let Ok(idxx) = idx_ref.lock() {
+                    let _ = idxx.compact();
+                }
+            });
         }
     }
 
     Ok(())
 }
 
-/// 批量删除多个文档（及其所有关联分块和向量），在单个事务中执行
+/// 批量删除多个文档（及其所有关联分块、向量和 BM25 索引）
 #[tauri::command]
 pub async fn delete_documents_batch(
     state: State<'_, AppState>,
@@ -90,15 +106,31 @@ pub async fn delete_documents_batch(
         meta.get_vector_keys_by_document_ids(&document_ids)?
     };
 
+    // 1. BM25 批量删除
+    if let Ok(bm25) = state.bm25.lock() {
+        let _ = bm25.remove_chunks(&vector_keys);
+    }
+
+    // 2. usearch 批量删除
+    if let Ok(idx) = state.vector_index.lock() {
+        let _ = idx.remove_keys(&vector_keys);
+    }
+
+    // 3. SQLite 删除
     let count: u64 = {
         let meta = state.metadata.lock().map_err(|e| e.to_string())?;
         meta.delete_documents_batch(document_ids, project.as_deref())?
     };
 
-    {
-        let idx = state.vector_index.lock().map_err(|e| e.to_string())?;
-        for key in &vector_keys {
-            let _ = idx.remove(*key as u64);
+    // 4. 触发碎片整理检查
+    if let Ok(idx) = state.vector_index.lock() {
+        if idx.check_compact() {
+            let idx_ref = state.vector_index.clone();
+            std::thread::spawn(move || {
+                if let Ok(idxx) = idx_ref.lock() {
+                    let _ = idxx.compact();
+                }
+            });
         }
     }
 

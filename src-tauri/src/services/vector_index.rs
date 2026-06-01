@@ -54,9 +54,16 @@ pub struct VectorIndex {
     /// Track whether contexts_ has been allocated (reserve called or index loaded with data).
     /// Prevents redundant reserve calls and the Access Violation crash.
     reserved: bool,
+    /// 逻辑删除计数，用于触发后台碎片整理
+    deleted_count: std::sync::atomic::AtomicUsize,
+    /// 上次重建时间，用于冷却期判断
+    last_compact: std::sync::Mutex<std::time::Instant>,
 }
 
 impl VectorIndex {
+    const COMPACT_THRESHOLD: f64 = 0.2; // 20%
+    const COMPACT_COOLDOWN_SECS: u64 = 300; // 5 分钟
+
     /// Create a new empty index, persisting to the given directory
     /// `dimensions` should match the embedding model output (512 for BGE, 384 for MiniLM).
     pub fn new(index_dir: PathBuf) -> Result<Self, String> {
@@ -87,6 +94,28 @@ impl VectorIndex {
             index_path,
             dimensions,
             reserved: false,
+            deleted_count: std::sync::atomic::AtomicUsize::new(0),
+            last_compact: std::sync::Mutex::new(std::time::Instant::now()),
+        })
+
+    /// Load an existing index from disk (auto-detect dimensions from file)
+    pub fn load(index_path: PathBuf) -> Result<Self, String> {
+        Self::load_with_dimensions(index_path, 512)
+    }
+
+    /// Load an existing index with explicit dimensions
+    pub fn load_with_dimensions(index_path: PathBuf, dimensions: usize) -> Result<Self, String> {
+        let options = IndexOptions {
+
+        ...
+
+        Ok(Self {
+            index,
+            index_path,
+            dimensions,
+            reserved: true,
+            deleted_count: std::sync::atomic::AtomicUsize::new(0),
+            last_compact: std::sync::Mutex::new(std::time::Instant::now()),
         })
     }
 
@@ -242,9 +271,80 @@ impl VectorIndex {
     ///
     /// Returns the number of vectors removed (0 if key not found, 1 if found).
     pub fn remove(&self, key: u64) -> Result<usize, String> {
-        self.index
+        let result = self
+            .index
             .remove(key)
-            .map_err(|e| format!("Failed to remove key {}: {}", key, e))
+            .map_err(|e| format!("Failed to remove key {}: {}", key, e));
+        if result.is_ok() {
+            self.deleted_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        result
+    }
+
+    /// Remove multiple vectors by keys (batch delete).
+    pub fn remove_keys(&self, keys: &[i64]) -> Result<usize, String> {
+        let mut count = 0;
+        for key in keys {
+            if self.index.remove(*key as u64).is_ok() {
+                count += 1;
+            }
+        }
+        self.deleted_count.fetch_add(count, std::sync::atomic::Ordering::SeqCst);
+        Ok(count)
+    }
+
+    /// 检查是否超过碎片整理阈值（20% 逻辑删除 + 5 分钟冷却）
+    pub fn check_compact(&self) -> bool {
+        let total = self.index.len() as f64;
+        if total <= 0.0 { return false; }
+        if let Ok(last) = self.last_compact.lock() {
+            if last.elapsed() < std::time::Duration::from_secs(Self::COMPACT_COOLDOWN_SECS) {
+                return false;
+            }
+        }
+        let ratio = self.deleted_count.load(std::sync::atomic::Ordering::Relaxed) as f64 / total;
+        ratio >= Self::COMPACT_THRESHOLD
+    }
+
+    /// 后台碎片整理：重建 HNSW 图，剔除已删除节点
+    /// 在 tokio::task::spawn_blocking 中执行，不阻塞主线程
+    pub fn compact(&self) -> Result<(), String> {
+        let surviving: Vec<(u64, Vec<f32>)> = {
+            let n = self.index.len() as u64;
+            let mut survivors = Vec::with_capacity(n as usize);
+            for key in 1..=n {
+                if let Ok(vec) = self.index.get(key) {
+                    survivors.push((key, vec.to_vec()));
+                }
+            }
+            survivors
+        };
+        // 使用兼容的默认选项重建
+        let options = IndexOptions {
+            dimensions: self.dimensions,
+            metric: MetricKind::Cos,
+            quantization: ScalarKind::BF16,
+            connectivity: DEFAULT_CONNECTIVITY,
+            expansion_add: DEFAULT_EXPANSION_ADD,
+            expansion_search: DEFAULT_EXPANSION_SEARCH,
+            multi: true,
+        };
+        let mut new_index = Index::new(options)
+            .map_err(|e| format!("创建新索引失败: {}", e))?;
+        new_index.reserve(surviving.len())
+            .map_err(|e| format!("预留容量失败: {}", e))?;
+        for (key, vec) in &surviving {
+            new_index.add(*key, vec)
+                .map_err(|e| format!("添加向量失败: {}", e))?;
+        }
+        // 原子替换
+        let old = std::mem::replace(&mut self.index, new_index);
+        drop(old); // 释放旧索引
+        self.deleted_count.store(0, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(mut last) = self.last_compact.lock() {
+            *last = std::time::Instant::now();
+        }
+        Ok(())
     }
 
     /// Save the index to disk

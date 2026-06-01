@@ -15,35 +15,6 @@ pub struct ExtractedFileText {
     pub char_count: usize,
 }
 
-/// 确保 embedding 模型已加载（懒加载）。
-/// 复用 search_llm 中的逻辑。
-fn ensure_embedding_ready(
-    embedding: &std::sync::Mutex<crate::services::embedding::EmbeddingService>,
-    model_manager: &std::sync::Mutex<crate::services::embedding::ModelManager>,
-) {
-    let emb = embedding.lock().unwrap();
-    if emb.is_ready() {
-        return;
-    }
-    drop(emb);
-
-    let mut mm = match model_manager.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    if !mm.is_ready() {
-        if let Err(e) = mm.init() {
-            eprintln!("[LazyLoad] Model init failed: {}", e);
-            return;
-        }
-    }
-    if let Some(model) = mm.take_model() {
-        let mut emb = embedding.lock().unwrap();
-        emb.set_model(model);
-        println!("[LazyLoad] Embedding model loaded on first use!");
-    }
-}
-
 /// 摄入纯文本（来自粘贴或文本框）
 ///
 /// 首次调用时会自动加载 embedding 模型（懒加载）。
@@ -55,7 +26,7 @@ pub async fn ingest_text(
     title: String,
     project: String,
 ) -> Result<IngestionResult, String> {
-    ensure_embedding_ready(&state.embedding, &state.model_manager);
+    state.ensure_embedding_ready();
 
     ingest_text_fn(
         &text,
@@ -79,7 +50,7 @@ pub async fn ingest_file(
     file_path: String,
     project: String,
 ) -> Result<IngestionResult, String> {
-    ensure_embedding_ready(&state.embedding, &state.model_manager);
+    state.ensure_embedding_ready();
 
     ingest_file_fn(
         PathBuf::from(&file_path).as_path(),
@@ -121,7 +92,7 @@ pub async fn ingest_directory(
     dir_path: String,
     project: String,
 ) -> Result<DirectoryIngestionResult, String> {
-    ensure_embedding_ready(&state.embedding, &state.model_manager);
+    state.ensure_embedding_ready();
 
     ingest_directory_fn(
         PathBuf::from(&dir_path).as_path(),

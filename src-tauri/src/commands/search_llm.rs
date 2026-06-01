@@ -7,35 +7,7 @@ use crate::services::hybrid_search::HybridSearchResult;
 use crate::services::llm_service::ChatMessage;
 use crate::services::memory;
 
-/// 确保 embedding 模型已加载（懒加载）。
-/// 如果模型未加载，尝试从 ModelManager 初始化。
-fn ensure_embedding_ready(
-    embedding: &std::sync::Mutex<EmbeddingService>,
-    model_manager: &std::sync::Mutex<crate::services::embedding::ModelManager>,
-) {
-    let emb = embedding.lock().unwrap();
-    if emb.is_ready() {
-        return; // 已加载
-    }
-    drop(emb);
-
-    // 尝试从 ModelManager 获取模型
-    let mut mm = match model_manager.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    if !mm.is_ready() {
-        if let Err(e) = mm.init() {
-            eprintln!("[LazyLoad] Model init failed: {}", e);
-            return;
-        }
-    }
-    if let Some(model) = mm.take_model() {
-        let mut emb = embedding.lock().unwrap();
-        emb.set_model(model);
-        println!("[LazyLoad] Embedding model loaded on first use!");
-    }
-}
+/// 确保 embedding 模型已加载（懒加载，已迁移到 AppState）。
 
 /// 使用 BM25 按关键词搜索分块（jieba 分词 + tantivy 评分）
 #[tauri::command]
@@ -59,8 +31,7 @@ pub async fn hybrid_search(
     project_id: Option<String>,
     top_k: Option<usize>,
 ) -> Result<Vec<HybridSearchResult>, String> {
-    // 懒加载 embedding 模型
-    ensure_embedding_ready(&state.embedding, &state.model_manager);
+    state.ensure_embedding_ready();
 
     crate::services::hybrid_search::hybrid_search(
         &query,

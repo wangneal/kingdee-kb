@@ -352,4 +352,29 @@ impl AppState {
             flags.remove(session_id);
         }
     }
+
+    /// 确保 embedding 模型已加载（懒加载）。
+    /// 合并自 ingestion.rs 和 search_llm.rs 的重复实现。
+    pub fn ensure_embedding_ready(&self) {
+        let emb = self.embedding.lock().unwrap();
+        if emb.is_ready() {
+            return;
+        }
+        drop(emb);
+
+        let mut mm = match self.model_manager.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if !mm.is_ready() {
+            if let Err(e) = mm.init() {
+                eprintln!("[LazyLoad] Model init failed: {}", e);
+                return;
+            }
+        }
+        if let Some(model) = mm.take_model() {
+            let mut emb = self.embedding.lock().unwrap();
+            emb.set_model(model);
+        }
+    }
 }

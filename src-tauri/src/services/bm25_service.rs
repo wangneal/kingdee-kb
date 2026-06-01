@@ -382,6 +382,21 @@ impl BM25Service {
         Ok(())
     }
 
+    /// Remove multiple chunks and commit (batch delete with physical persistence)
+    pub fn remove_chunks(&self, chunk_ids: &[i64]) -> Result<(), String> {
+        let writer = self.writer.lock().map_err(|e| e.to_string())?;
+        for cid in chunk_ids {
+            let term = tantivy::Term::from_field_i64(self.field_chunk_id, *cid);
+            writer.delete_term(term);
+        }
+        writer.commit().map_err(|e| format!("BM25 批量删除提交失败: {}", e))?;
+        drop(writer);
+        self.reader
+            .reload()
+            .map_err(|e| format!("BM25 重载失败: {}", e))?;
+        Ok(())
+    }
+
     /// Remove all chunks for a project
     pub fn remove_project(&self, project: &str) -> Result<(), String> {
         let writer = self.writer.lock().map_err(|e| e.to_string())?;
