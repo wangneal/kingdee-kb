@@ -1,3 +1,4 @@
+pub mod agent_router;
 pub mod agent_timeout;
 pub mod audio_capture;
 pub mod bm25_service;

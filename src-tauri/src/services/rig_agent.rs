@@ -13,6 +13,7 @@ use futures::StreamExt;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
+use crate::services::agent_router;
 use crate::services::agent_timeout::AGENT_SESSION_TIMEOUT_SECS;
 use crate::services::bm25_service::BM25Service;
 use crate::services::embedding::EmbeddingService;
@@ -150,6 +151,10 @@ impl RigAgent {
         } else {
             provider_id
         };
+
+        // 1.5 Agent 模式路由：根据复杂度选择 ReAct 或 Plan-Execute
+        let agent_mode = agent_router::route_mode(user_message, history);
+        let _ = agent_mode; // TODO: P1-c Plan-Execute 执行循环实现后启用模式分支
 
         // 2. 获取 LLM 配置（支持指定供应商或自动路由）
         let config = match llm.get_config_for_provider(effective_provider_id) {
