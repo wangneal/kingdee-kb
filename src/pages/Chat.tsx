@@ -35,6 +35,7 @@ import {
   extractFileText,
   ingestFile,
   saveChatMemory,
+  countTokens,
 } from "../lib/tauri-commands";
 import { listLLMProviders, processImage } from "../lib/skill-commands";
 import type { LLMProviderConfig } from "../lib/skill-types";
@@ -194,6 +195,7 @@ export default function Chat() {
   const [selectedModelId, setSelectedModelId] = useState<string>("");
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [tokenUsage, setTokenUsage] = useState<{ used: number; total: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -256,6 +258,18 @@ export default function Chat() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  // Update token count when messages change
+  useEffect(() => {
+    if (messages.length === 0) {
+      setTokenUsage(null);
+      return;
+    }
+    const allText = messages.map(m => m.content || "").join("\n");
+    countTokens(allText).then(count => {
+      setTokenUsage({ used: count, total: 128000 }); // default 128K, will be refined later
+    }).catch(() => {});
+  }, [messages]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
@@ -494,6 +508,11 @@ export default function Chat() {
           <span className="text-xs text-neutral-400">
             {messages.filter((m) => m.role === "user").length} 轮对话
           </span>
+          {tokenUsage && (
+            <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] text-neutral-500">
+              {(tokenUsage.used / 1000).toFixed(1)}K / {(tokenUsage.total / 1000).toFixed(0)}K tokens
+            </span>
+          )}
         </div>
         <button type="button" onClick={handleClear}
           className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-100 transition-colors">
