@@ -11,7 +11,10 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
+
+use crate::services::harness::constraints::ToolConstraintChecker;
+use crate::services::harness::verifier::{ResultVerifier, VerificationStatus};
 
 use crate::services::agent_router;
 use crate::services::agent_timeout::AGENT_SESSION_TIMEOUT_SECS;
@@ -471,6 +474,9 @@ impl RigAgent {
         let mut recent_calls: VecDeque<(String, String)> =
             VecDeque::with_capacity(DOOM_LOOP_THRESHOLD);
         let mut announced_tool_args_generation = false;
+        let mut constraint_checker = ToolConstraintChecker::new();
+        let mut result_verifier = ResultVerifier::new(3); // max 3 consecutive failures
+        let current_step_id = String::from("react");
 
         while let Some(item) = stream.next().await {
             // 检查取消标志
@@ -525,7 +531,7 @@ impl RigAgent {
                             });
 
                             // 死循环检测
-                            recent_calls.push_back((name, args));
+                            recent_calls.push_back((name.clone(), args.clone()));
                             if recent_calls.len() > DOOM_LOOP_THRESHOLD {
                                 recent_calls.pop_front();
                             }
@@ -540,6 +546,15 @@ impl RigAgent {
                                         "检测到死循环：连续 {} 次相同的工具调用，已中断。",
                                         DOOM_LOOP_THRESHOLD
                                     ),
+                                });
+                                return;
+                            }
+
+                            // Harness constraint check
+                            if let Some(violation) = constraint_checker.check_call(&current_step_id, &name, &args) {
+                                let _ = sender.send(ReActEvent::Error {
+                                    session_id: sid.to_string(),
+                                    message: format!("工具约束违规: {}", violation),
                                 });
                                 return;
                             }
@@ -593,11 +608,37 @@ impl RigAgent {
                             "tool result"
                         );
 
+                        let result_text_for_verify = result_text.clone();
                         let _ = sender.send(ReActEvent::ToolResult {
                             session_id: sid.to_string(),
                             name: String::new(),
                             result: result_text,
                         });
+
+                        // Verify tool result
+                        let step_label = format!("react-turn-{}", started_at.elapsed().as_millis());
+                        let verify_status = result_verifier.verify(
+                            &step_label,
+                            &result_text_for_verify,
+                            "",  // no expected output in ReAct mode
+                        );
+                        match verify_status {
+                            VerificationStatus::NeedsReplan(reason) => {
+                                warn!(session = %sid, reason = %reason, "result verifier triggered replan");
+                            }
+                            VerificationStatus::Fail(reason) => {
+                                debug!(session = %sid, reason = %reason, "tool result verification failed");
+                            }
+                            VerificationStatus::Exhausted(reason) => {
+                                warn!(session = %sid, reason = %reason, "result verifier exhausted");
+                                let _ = sender.send(ReActEvent::Error {
+                                    session_id: sid.to_string(),
+                                    message: format!("连续验证失败: {}", reason),
+                                });
+                                return;
+                            }
+                            VerificationStatus::Pass => {}
+                        }
                     }
                 },
                 Ok(MultiTurnStreamItem::FinalResponse(_)) => {
