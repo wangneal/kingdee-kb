@@ -67,7 +67,7 @@ mod vision_pipeline {
     ///   - deepseek/deepseek-v4-pro: is_multimodal = None, builtin vision=false → excluded
     fn make_full_manager() -> LLMProviderManager {
         let tmp = tempfile::tempdir().unwrap();
-        let mut mgr = LLMProviderManager::new(&tmp.into_path().into());
+        let mut mgr = LLMProviderManager::new(&tmp.keep().into());
 
         // Provider 1: OpenAI — probed multimodal
         mgr.add_provider(make_provider(
@@ -172,7 +172,7 @@ mod vision_pipeline {
         // Build a manager with NO probed models so tier 1 is empty.
         // Now all tiers run and are merged, so tier 3 models also appear.
         let tmp = tempfile::tempdir().unwrap();
-        let mut mgr = LLMProviderManager::new(&tmp.into_path().into());
+        let mut mgr = LLMProviderManager::new(&tmp.keep().into());
 
         // claude-sonnet-4-5: is_multimodal=None, builtin supports_vision=true → tier 2
         mgr.add_provider(make_provider(
@@ -213,7 +213,7 @@ mod vision_pipeline {
     #[test]
     fn test_vision_candidates_tier3_unknown_models() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut mgr = LLMProviderManager::new(&tmp.into_path().into());
+        let mut mgr = LLMProviderManager::new(&tmp.keep().into());
 
         // A model NOT in builtin DB and not probed → tier 3 includes it
         mgr.add_provider(make_provider(
@@ -252,7 +252,7 @@ mod vision_pipeline {
     #[test]
     fn test_vision_candidates_empty_when_all_explicitly_non_multimodal() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut mgr = LLMProviderManager::new(&tmp.into_path().into());
+        let mut mgr = LLMProviderManager::new(&tmp.keep().into());
 
         mgr.add_provider(make_provider(
             "p1",
