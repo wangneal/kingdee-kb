@@ -275,6 +275,29 @@ impl ImageProcessor {
         })
     }
 
+    /// 纯 OCR 处理（不经过类型分类，直接调 OCR）
+    /// 用于所有 vision 模型失败后的最终回退，确保走 OCR 而非再次尝试 vision
+    pub async fn ocr_only(&self, path: &str) -> Result<ImageContent, ImageError> {
+        let start = std::time::Instant::now();
+        let img_bytes = std::fs::read(path).map_err(|e| ImageError::IoError(e.to_string()))?;
+        let img_base64 = base64::engine::general_purpose::STANDARD.encode(&img_bytes);
+        let img_type = self.classify_image(&img_bytes)?;
+
+        let text = if let Some(ref config) = self.ocr_config {
+            // 有专用 OCR 配置 → 直接 OCR
+            self.ocr(&img_base64, Some(path), config).await?
+        } else {
+            // 无 OCR 配置 → 用 LLM 做 OCR（vision_ocr 会调 vision，但这是最后手段）
+            self.vision_ocr(&img_base64, Some(path)).await?
+        };
+
+        Ok(ImageContent {
+            image_type: img_type,
+            text,
+            processing_time_ms: start.elapsed().as_millis() as u64,
+        })
+    }
+
     fn classify_image(&self, img_bytes: &[u8]) -> Result<ImageType, ImageError> {
         let img = image::load_from_memory(img_bytes)
             .map_err(|e| ImageError::FormatError(e.to_string()))?;

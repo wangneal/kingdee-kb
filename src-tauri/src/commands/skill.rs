@@ -484,9 +484,9 @@ pub async fn process_image(
 
     // 所有 LLM 模型都失败了，尝试纯 OCR（如果配置了）
     if let Some(ref ocr) = ocr_config {
-        tracing::info!("All vision models failed, trying OCR fallback for image: {}", image_path);
+        tracing::info!("All vision models failed, trying pure OCR fallback for image: {}", image_path);
 
-        // 用任意有 API key 的模型创建处理器（OCR 不需要多模态 LLM）
+        // OCR fallback: 创建处理器用于纯 OCR，不再走 vision 路径
         let (api_key, base_url, model_name) = candidates
             .first()
             .map(|(k, u, m, _, _, _)| (k.clone(), u.clone(), m.clone()))
@@ -497,7 +497,7 @@ pub async fn process_image(
         );
         processor.set_ocr_config(ocr.clone());
 
-        match processor.process_image(&image_path).await {
+        match processor.ocr_only(&image_path).await {
             Ok(result) => {
                 return Ok(ImageProcessResult {
                     image_type: match result.image_type {
