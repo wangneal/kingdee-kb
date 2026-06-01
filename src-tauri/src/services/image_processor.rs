@@ -129,14 +129,63 @@ impl ImageProcessor {
 
         let is_multimodal = match result {
             Ok(resp) => {
-                if resp.status().is_success() {
-                    true
-                } else {
-                    // 非成功状态码 → 不支持多模态
+                let status = resp.status();
+                if !status.is_success() {
+                    // 非 2xx 状态码 → 不支持多模态
+                    tracing::info!(
+                        "Multimodal probe failed with status {} for model {}",
+                        status, self.llm_model
+                    );
                     false
+                } else {
+                    // 2xx 状态码还需检查响应体：某些 API 代理/网关会返回 200 但 body 含错误
+                    match resp.text().await {
+                        Ok(body) => {
+                            // 尝试解析为 JSON，检查是否有 choices（正常响应）
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                                if json["choices"].is_array() {
+                                    true
+                                } else if json["error"].is_object() {
+                                    // OpenAI 兼容 API 在 body 中返回错误
+                                    tracing::info!(
+                                        "Multimodal probe got 200 but error in body for model {}: {:?}",
+                                        self.llm_model, json["error"]
+                                    );
+                                    false
+                                } else {
+                                    // 有响应但格式不标准，保守认为支持
+                                    tracing::info!(
+                                        "Multimodal probe got unexpected response format for model {}, assuming multimodal",
+                                        self.llm_model
+                                    );
+                                    true
+                                }
+                            } else {
+                                // 非 JSON 响应，保守认为支持（某些本地模型返回非标准格式）
+                                tracing::info!(
+                                    "Multimodal probe got non-JSON response for model {}, assuming multimodal",
+                                    self.llm_model
+                                );
+                                true
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Multimodal probe failed to read response body for model {}: {:?}",
+                                self.llm_model, e
+                            );
+                            false
+                        }
+                    }
                 }
             }
-            Err(_) => false,
+            Err(e) => {
+                tracing::warn!(
+                    "Multimodal probe HTTP error for model {}: {:?}",
+                    self.llm_model, e
+                );
+                false
+            }
         };
 
         self.llm_multimodal.store(is_multimodal, Ordering::Relaxed);
@@ -333,31 +382,30 @@ impl ImageProcessor {
         Ok(words.join("\n"))
     }
 
-    /// LLM 图像理解（使用主 LLM 的多模态能力）
+/// LLM 图像理解（直接尝试调用，不预先探测）
     async fn vision(
         &self,
         img_base64: &str,
         local_path: Option<&str>,
         prompt: &str,
     ) -> Result<String, ImageError> {
-        // 未探测过则自动探测
-        if !self.probed.load(Ordering::Relaxed) {
-            self.probe_multimodal().await;
-        }
-        if !self.is_llm_multimodal() {
-            return Err(ImageError::LlmNotMultimodal);
-        }
-
         let api_key = &self.llm_api_key;
         let base_url = &self.llm_base_url;
         let model = &self.llm_model;
 
         if api_key.is_empty() {
-            return Err(ImageError::LlmNotConfigured);
+            return Err(ImageError::LlmNotMultimodal);
+        }
+
+        // 如果之前已确认不支持多模态，直接返回错误（避免重复无效请求）
+        if self.probed.load(Ordering::Relaxed) && !self.llm_multimodal.load(Ordering::Relaxed) {
+            return Err(ImageError::LlmNotMultimodal);
         }
 
         let url = format!("{}/chat/completions", base_url);
-        // 1. 尝试使用 Base64
+        let mut last_api_error: Option<String> = None;
+
+        // ─── 1. 尝试 Base64 ───
         let resp = self.client
             .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
@@ -367,101 +415,137 @@ impl ImageProcessor {
                     {"type": "text", "text": prompt},
                     {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{}", img_base64)}}
                 ]}],
-                "max_tokens": 1000
+                "max_tokens": 2048
             }))
             .send()
             .await;
 
-        let mut success_resp = None;
         match resp {
             Ok(r) => {
-                if r.status().is_success() {
-                    success_resp = Some(r);
+                let status = r.status();
+                if status.is_success() {
+                    let body = r.text().await.unwrap_or_default();
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                        if json["choices"].is_array() {
+                            self.llm_multimodal.store(true, Ordering::Relaxed);
+                            self.probed.store(true, Ordering::Relaxed);
+                            let content = json["choices"][0]["message"]["content"]
+                                .as_str().unwrap_or("").to_string();
+                            if content.is_empty() {
+                                return Err(ImageError::ApiError("LLM 返回内容为空".to_string()));
+                            }
+                            return Ok(content);
+                        } else if json["error"].is_object() {
+                            let err_msg = format!("API 返回错误: {}", json["error"]);
+                            tracing::warn!("Vision got 200 but error in body for model {}: {}", model, err_msg);
+                            if err_msg.contains("image") || err_msg.contains("vision") || err_msg.contains("multimodal") {
+                                self.llm_multimodal.store(false, Ordering::Relaxed);
+                                self.probed.store(true, Ordering::Relaxed);
+                                return Err(ImageError::LlmNotMultimodal);
+                            }
+                            last_api_error = Some(err_msg);
+                        }
+                    }
+                    last_api_error = Some(format!("响应格式异常 (HTTP 200), body 前200字: {}",
+                        &body.chars().take(200).collect::<String>()));
                 } else {
-                    let status = r.status();
                     let err_text = r.text().await.unwrap_or_default();
-                    tracing::warn!(
-                        "Vision request with Base64 failed for model {}. Status: {}, Response: {}",
-                        model,
-                        status,
-                        err_text
-                    );
+                    let err_lower = err_text.to_lowercase();
+                    if err_lower.contains("image") || err_lower.contains("vision")
+                        || err_lower.contains("multimodal") || err_lower.contains("does not support")
+                        || err_lower.contains("not supported")
+                        || status.as_u16() == 400 || status.as_u16() == 422
+                    {
+                        self.llm_multimodal.store(false, Ordering::Relaxed);
+                        self.probed.store(true, Ordering::Relaxed);
+                        return Err(ImageError::LlmNotMultimodal);
+                    }
+                    last_api_error = Some(format!("HTTP {} ({} > {}): {}",
+                        status, base_url, model,
+                        &err_text.chars().take(300).collect::<String>()));
                 }
             }
             Err(e) => {
-                tracing::warn!(
-                    "Vision request with Base64 HTTP error for model {}: {:?}",
-                    model,
-                    e
-                );
+                last_api_error = Some(format!("请求失败 ({} > {}): {:?}", base_url, model, e));
             }
         }
 
-        // 2. 如果 Base64 失败并且有本地路径，尝试本地 file:/// 绝对路径
-        if success_resp.is_none() {
-            if let Some(path) = local_path {
-                let absolute_path = std::path::Path::new(path)
-                    .canonicalize()
-                    .unwrap_or_else(|_| std::path::PathBuf::from(path));
-                let file_url = format!(
-                    "file:///{}",
-                    absolute_path.to_string_lossy().replace('\\', "/")
-                );
-                tracing::info!(
-                    "Attempting vision request with local file path fallback for model {}: {}",
-                    model,
-                    file_url
-                );
+        // ─── 2. 尝试本地 file:/// 路径回退 ───
+        if let Some(path) = local_path {
+            let absolute_path = std::path::Path::new(path)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from(path));
+            let file_url = format!("file:///{}", absolute_path.to_string_lossy().replace('\\', "/"));
 
-                let resp_local = self
-                    .client
-                    .post(&url)
-                    .header("Authorization", format!("Bearer {}", api_key))
-                    .json(&serde_json::json!({
-                        "model": model,
-                        "messages": [{"role": "user", "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": file_url}}
-                        ]}],
-                        "max_tokens": 1000
-                    }))
-                    .send()
-                    .await;
+            let resp_local = self.client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", api_key))
+                .json(&serde_json::json!({
+                    "model": model,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": file_url}}
+                    ]}],
+                    "max_tokens": 2048
+                }))
+                .send()
+                .await;
 
-                match resp_local {
-                    Ok(r) => {
-                        if r.status().is_success() {
-                            success_resp = Some(r);
-                        } else {
-                            let status = r.status();
-                            let err_text = r.text().await.unwrap_or_default();
-                            tracing::warn!("Vision request with local path failed for model {}. Status: {}, Response: {}", model, status, err_text);
+            match resp_local {
+                Ok(r) => {
+                    let status = r.status();
+                    if status.is_success() {
+                        let body = r.text().await.unwrap_or_default();
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                            if json["choices"].is_array() {
+                                self.llm_multimodal.store(true, Ordering::Relaxed);
+                                self.probed.store(true, Ordering::Relaxed);
+                                let content = json["choices"][0]["message"]["content"]
+                                    .as_str().unwrap_or("").to_string();
+                                if content.is_empty() {
+                                    return Err(ImageError::ApiError("LLM 返回内容为空".to_string()));
+                                }
+                                return Ok(content);
+                            } else if json["error"].is_object() {
+                                let err_msg = format!("API 返回错误: {}", json["error"]);
+                                if err_msg.contains("image") || err_msg.contains("vision") || err_msg.contains("multimodal") {
+                                    self.llm_multimodal.store(false, Ordering::Relaxed);
+                                    self.probed.store(true, Ordering::Relaxed);
+                                    return Err(ImageError::LlmNotMultimodal);
+                                }
+                                last_api_error = Some(err_msg);
+                            }
                         }
+                        last_api_error = Some(format!("file:// 回退响应格式异常, body 前200字: {}",
+                            &body.chars().take(200).collect::<String>()));
+                    } else {
+                        let err_text = r.text().await.unwrap_or_default();
+                        let err_lower = err_text.to_lowercase();
+                        if err_lower.contains("image") || err_lower.contains("vision")
+                            || err_lower.contains("multimodal") || err_lower.contains("does not support")
+                            || err_lower.contains("not supported")
+                        {
+                            self.llm_multimodal.store(false, Ordering::Relaxed);
+                            self.probed.store(true, Ordering::Relaxed);
+                            return Err(ImageError::LlmNotMultimodal);
+                        }
+                        // 非 200 但非多模态不支持 → 保留错误信息，不再降级
+                        last_api_error = Some(format!("file:// 回退 HTTP {} ({} > {}): {}",
+                            status, base_url, model,
+                            &err_text.chars().take(300).collect::<String>()));
                     }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Vision request with local path HTTP error for model {}: {:?}",
-                            model,
-                            e
-                        );
-                    }
+                }
+                Err(e) => {
+                    last_api_error = Some(format!("file:// 回退请求失败 ({} > {}): {:?}", base_url, model, e));
                 }
             }
         }
 
-        let resp = success_resp.ok_or_else(|| {
-            ImageError::ApiError(
-                "多模态图像识别请求失败（Base64 与本地路径均无法成功）".to_string(),
-            )
-        })?;
-        let result: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| ImageError::ApiError(e.to_string()))?;
-        result["choices"][0]["message"]["content"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| ImageError::ApiError("LLM 返回为空".to_string()))
+        // 返回实际 API 错误，而非笼统信息
+        let detail = last_api_error.unwrap_or_else(|| "未知错误".to_string());
+        Err(ImageError::ApiError(format!(
+            "多模态图像识别失败 ({} > {}): {}", base_url, model, detail
+        )))
     }
 
     pub fn compute_image_hash(path: &str) -> Result<String, ImageError> {
