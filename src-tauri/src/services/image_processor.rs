@@ -51,6 +51,7 @@ pub struct ImageProcessor {
     llm_model: String,
     llm_multimodal: Arc<AtomicBool>,
     probed: Arc<AtomicBool>,
+    protocol: Option<crate::services::llm_providers::LLMProtocol>,
 }
 
 impl ImageProcessor {
@@ -63,11 +64,16 @@ impl ImageProcessor {
             llm_model,
             llm_multimodal: Arc::new(AtomicBool::new(false)),
             probed: Arc::new(AtomicBool::new(false)),
+            protocol: None,
         }
     }
 
     pub fn set_ocr_config(&mut self, config: OcrConfig) {
         self.ocr_config = Some(config);
+    }
+
+    pub fn set_protocol(&mut self, protocol: crate::services::llm_providers::LLMProtocol) {
+        self.protocol = Some(protocol);
     }
 
     pub fn is_llm_multimodal(&self) -> bool {
@@ -108,6 +114,16 @@ impl ImageProcessor {
         if self.llm_api_key.is_empty() {
             self.probed.store(true, Ordering::Relaxed);
             return false;
+        }
+
+        // 非 OpenAI 协议不在此探测（由多模型回退机制在实际 vision 调用中处理）
+        if let Some(ref proto) = self.protocol {
+            if *proto != crate::services::llm_providers::LLMProtocol::OpenAI
+                && *proto != crate::services::llm_providers::LLMProtocol::Local
+            {
+                self.probed.store(true, Ordering::Relaxed);
+                return false;
+            }
         }
 
         // 用 1x1 透明图片测试
@@ -389,11 +405,7 @@ impl ImageProcessor {
         local_path: Option<&str>,
         prompt: &str,
     ) -> Result<String, ImageError> {
-        let api_key = &self.llm_api_key;
-        let base_url = &self.llm_base_url;
-        let model = &self.llm_model;
-
-        if api_key.is_empty() {
+        if self.llm_api_key.is_empty() {
             return Err(ImageError::LlmNotMultimodal);
         }
 
@@ -401,6 +413,104 @@ impl ImageProcessor {
         if self.probed.load(Ordering::Relaxed) && !self.llm_multimodal.load(Ordering::Relaxed) {
             return Err(ImageError::LlmNotMultimodal);
         }
+
+        let protocol = self.protocol.as_ref().unwrap_or(&crate::services::llm_providers::LLMProtocol::OpenAI);
+
+        match protocol {
+            crate::services::llm_providers::LLMProtocol::Anthropic => {
+                self.vision_anthropic(img_base64, local_path, prompt).await
+            }
+            crate::services::llm_providers::LLMProtocol::OpenAI
+            | crate::services::llm_providers::LLMProtocol::Local => {
+                self.vision_openai_compatible(img_base64, local_path, prompt).await
+            }
+        }
+    }
+
+    /// Anthropic Messages API 格式的视觉调用
+    async fn vision_anthropic(
+        &self,
+        img_base64: &str,
+        local_path: Option<&str>,
+        prompt: &str,
+    ) -> Result<String, ImageError> {
+        let url = format!("{}/v1/messages", self.llm_base_url.trim_end_matches('/'));
+
+        let media_type = local_path
+            .and_then(|p| std::path::Path::new(p).extension())
+            .and_then(|e| e.to_str())
+            .map(|e| match e.to_lowercase().as_str() {
+                "jpg" | "jpeg" => "image/jpeg",
+                "png" => "image/png",
+                "gif" => "image/gif",
+                "webp" => "image/webp",
+                _ => "image/png",
+            })
+            .unwrap_or("image/png");
+
+        let resp = self.client
+            .post(&url)
+            .header("x-api-key", &self.llm_api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({
+                "model": self.llm_model,
+                "max_tokens": 4096,
+                "messages": [{"role": "user", "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": img_base64}},
+                    {"type": "text", "text": prompt}
+                ]}]
+            }))
+            .send()
+            .await;
+
+        match resp {
+            Ok(r) => {
+                let status = r.status();
+                if status.is_success() {
+                    let json: serde_json::Value = r.json().await
+                        .map_err(|e| ImageError::ApiError(format!("Anthropic 响应解析失败: {}", e)))?;
+                    let text = json["content"][0]["text"].as_str()
+                        .ok_or_else(|| ImageError::ApiError("Anthropic API: 响应中无文本内容".to_string()))?;
+                    if text.is_empty() {
+                        return Err(ImageError::ApiError("LLM 返回内容为空".to_string()));
+                    }
+                    self.llm_multimodal.store(true, Ordering::Relaxed);
+                    self.probed.store(true, Ordering::Relaxed);
+                    Ok(text.to_string())
+                } else {
+                    let err_text = r.text().await.unwrap_or_default();
+                    let err_lower = err_text.to_lowercase();
+                    if err_lower.contains("image") || err_lower.contains("vision")
+                        || err_lower.contains("multimodal") || err_lower.contains("not supported")
+                    {
+                        self.llm_multimodal.store(false, Ordering::Relaxed);
+                        self.probed.store(true, Ordering::Relaxed);
+                        return Err(ImageError::LlmNotMultimodal);
+                    }
+                    Err(ImageError::ApiError(format!(
+                        "Anthropic API HTTP {} ({} > {}): {}",
+                        status, self.llm_base_url, self.llm_model,
+                        &err_text.chars().take(300).collect::<String>()
+                    )))
+                }
+            }
+            Err(e) => Err(ImageError::ApiError(format!(
+                "Anthropic 请求失败 ({} > {}): {:?}", self.llm_base_url, self.llm_model, e
+            ))),
+        }
+    }
+
+    /// OpenAI 兼容格式的视觉调用（原有实现）
+    async fn vision_openai_compatible(
+        &self,
+        img_base64: &str,
+        local_path: Option<&str>,
+        prompt: &str,
+    ) -> Result<String, ImageError> {
+        let api_key = &self.llm_api_key;
+        let base_url = &self.llm_base_url;
+        let model = &self.llm_model;
 
         let url = format!("{}/chat/completions", base_url);
         let mut last_api_error: Option<String> = None;

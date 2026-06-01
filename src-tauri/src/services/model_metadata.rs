@@ -65,7 +65,12 @@ pub async fn resolve_metadata(provider: &LLMProviderConfig, model_name: &str) ->
     meta
 }
 
-fn from_builtin_db(model_name: &str) -> Option<ModelMetadata> {
+/// 同步查询内置数据库：模型是否支持视觉（用于候选筛选）
+pub fn builtin_supports_vision(model_name: &str) -> Option<bool> {
+    from_builtin_db(model_name).map(|m| m.supports_vision)
+}
+
+pub(crate) fn from_builtin_db(model_name: &str) -> Option<ModelMetadata> {
     let specs_str = include_str!("../../resources/model_specs.json");
     let specs: serde_json::Value = serde_json::from_str(specs_str).ok()?;
 
