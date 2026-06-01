@@ -55,6 +55,15 @@ pub struct ImageProcessor {
 }
 
 impl ImageProcessor {
+    /// 构造 Anthropic Messages API 的完整 URL
+    /// base_url 可能是 `https://api.anthropic.com/v1` 或 `https://api.anthropic.com`，
+    /// 需要归一化避免拼接出 `/v1/v1/messages`
+    pub fn anthropic_messages_url(base_url: &str) -> String {
+        let normalized = base_url.trim_end_matches('/');
+        let normalized = normalized.trim_end_matches("/v1");
+        format!("{}/v1/messages", normalized)
+    }
+
     pub fn new(llm_api_key: String, llm_base_url: String, llm_model: String) -> Self {
         Self {
             ocr_config: None,
@@ -132,7 +141,7 @@ impl ImageProcessor {
         let result = match protocol {
             // Anthropic Messages API 探测
             crate::services::llm_providers::LLMProtocol::Anthropic => {
-                let url = format!("{}/v1/messages", self.llm_base_url.trim_end_matches('/'));
+                let url = Self::anthropic_messages_url(&self.llm_base_url);
                 let mut req = self.client
                     .post(&url)
                     .header("anthropic-version", "2023-06-01")
@@ -497,7 +506,7 @@ impl ImageProcessor {
         local_path: Option<&str>,
         prompt: &str,
     ) -> Result<String, ImageError> {
-        let url = format!("{}/v1/messages", self.llm_base_url.trim_end_matches('/'));
+        let url = Self::anthropic_messages_url(&self.llm_base_url);
 
         let media_type = local_path
             .and_then(|p| std::path::Path::new(p).extension())

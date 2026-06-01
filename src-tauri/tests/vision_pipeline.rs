@@ -574,4 +574,45 @@ mod vision_pipeline {
             "未设置协议时空 key 应要求 API 密钥"
         );
     }
+
+    // ─── Test: Anthropic URL 归一化 ───────────────────────────────────────────
+
+    #[test]
+    fn test_anthropic_url_with_trailing_v1() {
+        use kingdee_kb_lib::services::image_processor::ImageProcessor;
+
+        // base_url 已含 /v1 → 应去掉后重新拼接
+        let url = ImageProcessor::anthropic_messages_url("https://api.anthropic.com/v1");
+        assert_eq!(
+            url,
+            "https://api.anthropic.com/v1/messages",
+            "base_url 含 /v1 时不应产生 /v1/v1/messages"
+        );
+    }
+
+    #[test]
+    fn test_anthropic_url_without_v1() {
+        use kingdee_kb_lib::services::image_processor::ImageProcessor;
+
+        // base_url 不含 /v1 → 直接拼接
+        let url = ImageProcessor::anthropic_messages_url("https://api.anthropic.com");
+        assert_eq!(
+            url,
+            "https://api.anthropic.com/v1/messages",
+            "base_url 不含 /v1 时应正常拼接"
+        );
+    }
+
+    #[test]
+    fn test_anthropic_url_trailing_slash() {
+        use kingdee_kb_lib::services::image_processor::ImageProcessor;
+
+        // 尾部斜杠 + /v1
+        let url = ImageProcessor::anthropic_messages_url("https://api.anthropic.com/v1/");
+        assert_eq!(
+            url,
+            "https://api.anthropic.com/v1/messages",
+            "尾部斜杠 + /v1 应正确归一化"
+        );
+    }
 }
