@@ -1,8 +1,8 @@
 # KingdeeKB LLM 防幻觉体系设计
 
-> **版本**: v1.0
+> **版本**: v2.0
 > **日期**: 2026-06-02
-> **范围**: 跨场景 LLM 输出验证层 + RAG 检索增强
+> **范围**: 跨场景 LLM 输出验证层 + 知识编译与增量更新 + RAG 检索增强
 > **前置文档**: `2026-06-01-kingdeekb-technical-spec.md`, `2026-06-01-llm-wiki-research-report.md`
 
 ---
@@ -315,9 +315,160 @@ pub enum ScenarioType {
 
 ---
 
-## 5. 场景集成
+---
 
-### 5.1 Chat / Agent 场景
+## 5. 知识编译与增量更新 (Knowledge Compilation)
+
+### 5.1 核心理念
+
+```
+传统 RAG:       文档 → 分块 → 检索 → LLM 每次重新推理 → 回答
+知识编译:       文档 → 编译为 Wiki 页面 → 持久化 → 查询时直接读 Wiki
+```
+
+与每次查询都让 LLM 重新推理不同，知识编译在摄入阶段就把原始文档"编译"为结构化的 Wiki 页面，写入数据库。查询时直接读取编译后的页面，**没有 LLM 推理步骤**，从根本上消除推理阶段的幻觉。
+
+### 5.2 三层数据架构
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  Layer 1: Raw Sources (不可变原始文档)                       │
+│  原始上传的文件，SHA256 内容寻址，永不覆盖                   │
+│  表: raw_sources (已有 schema)                              │
+├────────────────────────────────────────────────────────────┤
+│  Layer 2: Chunks (可检索片段)                               │
+│  现有的 chunk 层，向量 + BM25 双索引                        │
+│  表: chunks + vector_index + bm25_index (已有)              │
+├────────────────────────────────────────────────────────────┤
+│  Layer 3: Wiki Pages (编译知识页)                     ← 新增 │
+│  LLM 编译生成的结构化 Markdown 页面                          │
+│  表: wiki_pages (已有 schema)                               │
+│  字段: slug, title, page_type, content, sources[],          │
+│        content_candidate(编译中), wikilinks[]                │
+└────────────────────────────────────────────────────────────┘
+```
+
+### 5.3 两步链路式思考摄入
+
+参考 llm_wiki 的 `ingest.ts` 设计，适配到 KingdeeKB 的 Rust 后端：
+
+```
+Step 1 — 快速分析 (Rust, 无 LLM)
+  输入: 原始文档文本 (从 raw_sources 读取)
+  处理: 章节结构提取、术语抽取、实体识别（jieba 分词 + 规则）
+  输出: AnalysisResult { sections, terms, entities }
+  位置: services/ingestion.rs 或新增 services/wiki_compiler.rs
+
+Step 2 — 知识编译 (LLM, 可选)
+  输入: Source 原始内容 + Step 1 的分析结果
+  Prompt: "你是金蝶ERP专家，请基于以下原始文档生成 Wiki 页面"
+  输出: WikiPage { title, content, sources[], wikilinks[] }
+  Temperature: 0.1 (低随机性)
+
+Step 2.5 — 验证 pass (LLM, 可选)
+  条件: 内容 ≥ 10K 字符
+  功能: 让 LLM 检查自身生成的 Wiki 页面是否准确、完整
+  输出: REVIEW 块（标记待人工审查项）
+  注: 可复用现有的 VerificationPipeline
+```
+
+**关键设计参数：**
+- LLM temperature: 0.1
+- Step 1 始终执行（纯本地，零成本）
+- Step 2 按源文件粒度触发，用户可手动触发/跳过
+- Step 2.5 自动执行（条件满足时），结果写入 `wiki_pages.content_candidate`
+
+### 5.4 Wiki 页面结构
+
+```yaml
+---
+title: "应收管理模块"
+slug: "accounts-receivable"
+page_type: entity                    # entity | concept | feature | config
+sources:                             # 来源追踪
+  - source_id: 42                    # raw_sources.id
+    document_id: 7                   # documents.id
+    chunks: [451, 452, 453]          # 关联的 chunk_id 列表
+wikilinks:                           # 交叉引用
+  - "应付管理"
+  - "账龄分析"
+tags: ["金蝶云星空", "财务模块"]
+confidence: 0.92                     # 编译置信度
+compiled_at: "2026-06-02T10:30:00Z"
+review_status: "confirmed"           # pending | confirmed | needs_review
+---
+```
+
+**核心设计决定：Wiki 页面直接引用 chunk_id 列表**（`sources.chunks`），而不是文档名。这样：
+- 验证层可以用 `[chunk:N]` 直接校验
+- 源文档更新时，精确定位受影响的 chunk 和 Wiki 页面
+- 用户点击引用可跳到原文对应段落
+
+### 5.5 SHA256 增量更新
+
+```
+触发条件: 源文件变更（re-import 或文本更新）
+
+流程:
+1. 计算新文件的 SHA256
+2. 查 ingest_cache 表: ① hash 匹配? ② 所有输出的 wiki_pages 仍存在?
+   - 命中 → 跳过（内容未变）
+   - 未命中 → 进入编译管道
+3. 执行 Step 1 → Step 2 → Step 2.5
+4. 写入新 wiki_pages，更新 ingest_cache
+```
+
+**缓存表结构**（复用已有 `analysis_cache`/`ingest_cache` schema）：
+
+```sql
+-- 增量缓存（已有 ingest_cache 表扩展）
+-- 新增字段: files_written JSON (输出的 wiki_page slugs)
+-- 命中条件: SHA256 匹配 + 所有 files_written 仍然存在
+```
+
+### 5.6 持久化摄入队列
+
+```
+状态机: pending → processing → [success / failed]
+存储:    ingest_queue 表（已有 schema）
+重试:    最多 3 次，第 3 次后标记 failed
+恢复:    启动时 processing 状态重置为 pending
+场景:    批量导入多个文档、重新编译、定时检查更新
+```
+
+### 5.7 三层页面合并保护
+
+参考 llm_wiki 的 `page-merge.ts`，防止 LLM 覆盖用户已有编辑。
+
+```
+情况 1: 页面不存在 → 直接创建
+情况 2: 页面存在且未被用户编辑 → 覆盖
+情况 3: 页面存在且被用户编辑过 → 写入 content_candidate，标记 needs_review
+```
+
+**检测用户编辑**：用 `updated_at` 字段（用户编辑后更新）比对编译时间戳。
+
+### 5.8 知识编译与验证层的关系
+
+```
+知识编译 (方案B)                      验证层 (方案C，已实现)
+──────────────                      ──────────────────────
+预防性 — 编译时就消除幻觉            发现性 — 生成后发现幻觉
+一次编译，多次安全查询                每次查询都验证
+需要 LLM 调用（编译时）              需要 LLM 调用（查询时）
+适合稳定、高频查询的内容             适合动态、一次性的问题
+```
+
+两者是**互补关系**：
+- 金蝶产品标准功能 → 知识编译（一次编译，顾问反复查询）
+- 客户特定问题 → RAG + 验证层（每次动态生成）
+- 文档生成/调研报告 → 知识编译模板 + 验证层兜底
+
+---
+
+## 6. 场景集成
+
+### 6.1 Chat / Agent 场景
 
 **集成点**: `rig_agent.rs` → `llm_service.rag_query_rig()` 之后
 
@@ -329,7 +480,7 @@ pub enum ScenarioType {
 | 生成后 | 引用校验 + 一致性检查 + 不确定性标记 | **必选** |
 | 输出 | 置信度标签展示 | 前端 |
 
-### 5.2 搜索问答场景
+### 6.2 搜索问答场景
 
 **集成点**: `search_llm.rs` 命令
 
@@ -339,7 +490,7 @@ pub enum ScenarioType {
 | 生成后 | 引用校验 + 一致性检查 |
 | 输出 | 无引用断言必须标记待确认 |
 
-### 5.3 文档生成场景
+### 6.3 文档生成场景
 
 **集成点**: `doc_generator.rs` + `template_*.rs`
 
@@ -349,7 +500,7 @@ pub enum ScenarioType {
 | 生成后 | 引用校验 + 一致性检查 + **自一致性验证** |
 | 输出 | 校验报告写入文档元数据 |
 
-### 5.4 调研场景
+### 6.4 调研场景
 
 **集成点**: `research_session.rs` 的 AI 辅助生成
 
@@ -358,7 +509,7 @@ pub enum ScenarioType {
 | 生成后 | 引用校验 + 不确定性标记 |
 | 输出 | 每个回答标明依据来源 |
 
-### 5.5 风控报告场景
+### 6.5 风控报告场景
 
 **集成点**: `risk_control.rs`
 
@@ -366,20 +517,23 @@ pub enum ScenarioType {
 |------|------|
 | 生成后 | 引用校验 + 事实一致性检查 |
 
-### 5.6 知识编译场景 (计划中)
+### 6.6 知识编译场景
 
-**集成点**: Wiki 两步摄入管道
+**集成点**: `wiki_compiler.rs` (新增) + `wiki_pages` 表
 
 | 阶段 | 措施 |
 |------|------|
-| 编译中 | 验证 pass 作为第三步 |
-| 编译后 | 引用校验 + 一致性检查 + 自一致性验证 |
+| Step 1 分析 | Rust 本地分析（jieba 分词 + 规则提取） |
+| Step 2 生成 | LLM 编译生成 Wiki 页面 (temperature=0.1) |
+| Step 2.5 验证 | 复用 VerificationPipeline 做编译后校验 |
+| 增量更新 | SHA256 缓存检测 + 受影响页面精确重编译 |
+| 页面合并 | 三层保护（创建/覆盖/候选）防止覆盖用户编辑 |
 
 ---
 
-## 6. 数据结构变更
+## 7. 数据结构变更
 
-### 6.1 新增 SQLite 表
+### 7.1 新增 SQLite 表
 
 ```sql
 -- 验证日志 - 记录每次验证结果，用于分析和调试
@@ -405,7 +559,17 @@ CREATE TABLE verification_cache (
 );
 ```
 
-### 6.2 RAGSource 扩展
+### 7.2 Wiki 页面相关表
+
+```sql
+-- wiki_pages（已有 schema，补充字段说明）
+-- id, project, slug, title, page_type, content, content_candidate
+-- sources JSON: [{source_id, document_id, chunks: []}]
+-- wikilinks JSON: [关联页面 slugs]
+-- confidence REAL, compiled_at TEXT, review_status TEXT
+```
+
+### 7.3 RAGSource 扩展
 
 ```rust
 // 在现有 RAGSource 基础上扩展字段
@@ -423,7 +587,7 @@ pub struct RAGSourceV2 {
 
 ---
 
-## 7. 置信度展示 (前端)
+## 8. 置信度展示 (前端)
 
 ### 7.1 交互模式
 
@@ -454,31 +618,46 @@ pub struct RAGSourceV2 {
 
 ---
 
-## 8. 实现计划
+## 9. 实现计划
 
-### Phase 1: 验证层基础设施 (预计 3-5 天)
+优先级排序原则：先做预防性（方案B 知识编译），再做发现性（方案C 验证层剩余集成），最后做增强性（方案A 检索优化）。
+
+### Phase 1: ✅ 验证层核心 (已完成)
+
+| 任务 | 状态 |
+|------|------|
+| 核心类型定义 (VerificationLevel, CheckResult, VerificationReport, Checker) | ✅ |
+| 引用存在性校验器 (CitationExistenceChecker + [chunk:N] 校验) | ✅ |
+| 事实一致性检查器 (FactualConsistencyChecker) | ✅ |
+| 内部矛盾检测器 (SelfContradictionChecker) | ✅ |
+| 不确定性标记器 (UncertaintyMarker) | ✅ |
+| 验证管线编排 (VerificationPipeline) | ✅ |
+| Chat/Agent 集成 (verified_rag_query) | ✅ |
+| 来源锚定 + chunk_id 校验 | ✅ |
+
+### Phase 2: 知识编译与增量更新 (预计 5-7 天) ⬅ 当前
 
 | 任务 | 文件 | 说明 |
 |------|------|------|
-| 定义核心类型 | `services/verification/types.rs` | `VerificationLevel`, `CheckResult`, `VerificationReport`, `VerificationInput` |
-| 实现引用校验器 | `services/verification/citation.rs` | `CitationExistenceChecker` |
-| 实现事实一致性检查 | `services/verification/consistency.rs` | `FactualConsistencyChecker` |
-| 实现矛盾检测 | `services/verification/contradiction.rs` | `SelfContradictionChecker` |
-| 实现不确定性标记 | `services/verification/uncertainty.rs` | `UncertaintyMarker` |
-| 实现验证管线 | `services/verification/pipeline.rs` | `VerificationPipeline` 编排 |
-| 注册模块 | `services/mod.rs` | 新增模块注册 |
+| Wiki 编译器核心 | `services/wiki_compiler.rs` | Step 1 (Rust 分析) + Step 2 (LLM 生成) |
+| Wiki 页面存储 | `services/wiki_store.rs` | wiki_pages 表 CRUD、frontmatter 解析 |
+| SHA256 增量缓存 | `services/ingestion.rs`(扩展) | 复用 ingest_cache 表，新增 files_written 追踪 |
+| 三步摄入管道 | `services/ingestion.rs`(扩展) | 编排 analysis → generate → verify |
+| 持久化摄入队列 | `services/ingestion_queue.rs`(已有) | 状态机 + 重试 + 崩溃恢复 |
+| 三层页面合并保护 | `services/wiki_compiler.rs` | 检测用户编辑，保护 content 不被覆盖 |
+| 来源追踪 | `services/wiki_compiler.rs` | Wiki 页面 sources 字段指向 chunk_id 列表 |
 
-### Phase 2: 场景集成 (预计 2-3 天)
+### Phase 3: 验证层剩余场景集成 (预计 2-3 天)
 
 | 任务 | 说明 |
 |------|------|
-| Chat/Agent 集成 | 在 `rag_query_rig` 返回后调用验证管线 |
-| 搜索问答集成 | 在 `search_llm` 命令中调用 |
+| 搜索问答集成 | 在 `search_llm` 命令中插入验证 |
 | 文档生成集成 | 在 `doc_generator` 生成后调用 |
 | 调研场景集成 | 在 AI 辅助回答后调用 |
-| 前端展示 | 验证报告渲染组件 |
+| 风控报告集成 | 在 `risk_control` 报告生成后调用 |
+| 前端置信度展示 | 验证报告折叠渲染组件 🟢/🟡/🔴 |
 
-### Phase 3: RAG 增强 (预计 2-3 天)
+### Phase 4: RAG 检索增强 (预计 2-3 天)
 
 | 任务 | 文件 | 说明 |
 |------|------|------|
@@ -486,20 +665,24 @@ pub struct RAGSourceV2 {
 | 查询分解 | `services/query_decomposition.rs` | LLM 驱动的查询分解 |
 | 缺失检测 | `services/hybrid_search.rs` | 检索质量评估与补充检索 |
 
-### Phase 4: 自一致性验证 + 缓存 (预计 2 天)
+### Phase 5: 自一致性验证 + 缓存 (预计 2 天)
 
 | 任务 | 说明 |
 |------|------|
-| 自一致性验证 | LLM 多轮生成对比 |
-| 验证缓存 | 避免重复验证 |
-| 验证日志查询 | 分析验证数据分布 |
+| 自一致性验证 | LLM 多轮生成对比（仅文档生成场景默认开启） |
+| 验证缓存 | 避免对相同 query+context 重复验证 |
+| 验证日志表 | verification_logs 查询与分析 |
 
 ---
 
-## 9. 权衡与约束
+## 10. 权衡与约束
 
 | 决策 | 权衡 |
 |------|------|
+| 知识编译 vs 纯 RAG 二选一 | 不是二选一，是互补。稳定内容走编译(方案B)，动态内容走RAG+验证(方案C) |
+| 知识编译 Step 2 使用 LLM (temperature=0.1) | 低温度保证一致性，但可能缺乏多样性；编译准确但风格单一 |
+| 知识编译 Step 1 纯 Rust 实现 | 零 LLM 成本、速度快，但分析深度有限；适合做第一道过滤 |
+| Step 2.5 验证 pass 复用 VerificationPipeline | 无需额外基础设施，但验证层当前侧重发现性检查，需补充编译场景特定检查 |
 | 验证层默认走策略 A（基于规则的 chunk 比较） | 速度更快成本更低，但覆盖面不如 LLM 判官；策略 B 作为降级选项 |
 | 引用校验仅验证「存在性」，不验证「正确性」 | 存在性可自动验证，正确性需 LLM 判官；分阶段实现 |
 | 自一致性验证仅在文档生成场景默认开启 | 成本考虑（2-3x LLM 调用），其他场景可选配置 |
@@ -508,9 +691,12 @@ pub struct RAGSourceV2 {
 
 ---
 
-## 10. 与现有系统的关系
+## 11. 与现有系统的关系
 
 - **不破坏已有功能**: 验证层作为可插拔组件，配置关闭时行为完全不变
 - **不修改现有 prompt**: 验证层独立于 prompt 设计，二者互补
+- **知识编译不替代现有 chunk 层**: Wiki 页面建在 chunk 之上，chunk 仍然是检索的基本单元
+- **知识编译不阻塞现有功能**: 编译在后台异步执行，不影响 Chat/搜索等实时操作
+- **增量更新只重编译受影响页面**: SHA256 精确定位变更，不触发全量重编译
 - **验证日志可查询**: 帮助识别高频幻觉模式，指导检索优化
 - **验证缓存**: 对相同 query+context 避免重复计算
