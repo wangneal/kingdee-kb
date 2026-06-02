@@ -109,6 +109,7 @@ pub async fn process_with_kb_compilation(
         match run_llm_compilation(
             &analysis_result.analysis,
             project,
+            &[],
             &wiki_pages,
             &provider_manager,
         )
@@ -179,6 +180,7 @@ pub async fn process_with_kb_compilation(
 async fn run_llm_compilation(
     analysis: &DocumentAnalysis,
     project: &str,
+    chunk_ids: &[i64],
     wiki_pages: &Arc<Mutex<WikiPageStore>>,
     provider_manager: &Arc<Mutex<LLMProviderManager>>,
 ) -> Result<Vec<String>, String> {
@@ -198,6 +200,13 @@ async fn run_llm_compilation(
     )
     .await?;
 
+    let sources_json = serde_json::json!([{
+        "source_id": serde_json::Value::Null,
+        "document_id": serde_json::Value::Null,
+        "chunks": chunk_ids,
+    }])
+    .to_string();
+
     let slug = write_or_update_wiki_page(
         wiki_pages,
         project,
@@ -205,6 +214,7 @@ async fn run_llm_compilation(
         &page_title,
         &generated_content,
         &generated_tags,
+        Some(sources_json),
     )?;
 
     Ok(vec![slug])
@@ -398,6 +408,7 @@ fn write_or_update_wiki_page(
     title: &str,
     content: &str,
     tags: &str,
+    sources: Option<String>,
 ) -> Result<String, String> {
     let store = wiki_pages
         .lock()
@@ -450,7 +461,7 @@ fn write_or_update_wiki_page(
             page_type: "summary".to_string(),
             content: String::new(),
             frontmatter: Some("{}".to_string()),
-            sources: Some(format!("[\"{}\"]", slug)),
+            sources: sources.or(Some("[]".to_string())),
             wikilinks: Some("[]".to_string()),
             tags: Some(tags.to_string()),
             page_metadata: Some("{}".to_string()),
