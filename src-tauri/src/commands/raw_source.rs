@@ -1,0 +1,105 @@
+use sha2::{Digest, Sha256};
+use std::io::Read;
+use tauri::State;
+
+use crate::app_state::AppState;
+use crate::services::raw_source::{InsertRawSource, RawSource};
+
+/// 导入一个原始文件到知识库项目中。
+///
+/// 将源文件复制到 `raw/{project}/sources/{identity}`，计算 SHA256，
+/// 并在 raw_sources 表中创建记录。
+#[tauri::command]
+pub async fn create_raw_source(
+    state: State<'_, AppState>,
+    project: String,
+    identity: String,
+    source_path: String,
+    mime_type: Option<String>,
+) -> Result<RawSource, String> {
+    // 计算 SHA256
+    let sha256 = compute_sha256(&source_path)?;
+
+    // 读取文件大小
+    let metadata = std::fs::metadata(&source_path)
+        .map_err(|e| format!("读取源文件信息失败: {}", e))?;
+    let file_size = Some(metadata.len() as i64);
+
+    // 创建目标存储目录
+    let storage_dir = state
+        .data_dir
+        .join("raw")
+        .join(&project)
+        .join("sources");
+    std::fs::create_dir_all(&storage_dir)
+        .map_err(|e| format!("创建存储目录失败: {}", e))?;
+
+    // 目标路径 = raw/{project}/sources/{identity}
+    let storage_path = storage_dir.join(&identity);
+    std::fs::copy(&source_path, &storage_path)
+        .map_err(|e| format!("复制文件失败: {}", e))?;
+
+    let storage_path_str = storage_path.to_string_lossy().to_string();
+
+    // 插入数据库记录
+    let insert = InsertRawSource {
+        project: project.clone(),
+        identity: identity.clone(),
+        original_path: source_path,
+        storage_path: storage_path_str,
+        sha256,
+        file_size,
+        mime_type,
+    };
+
+    let store = state
+        .raw_sources
+        .lock()
+        .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+    store.insert(&insert)
+}
+
+/// 列出指定项目的所有活跃原始文件。
+#[tauri::command]
+pub async fn list_raw_sources(
+    state: State<'_, AppState>,
+    project: String,
+) -> Result<Vec<RawSource>, String> {
+    let store = state
+        .raw_sources
+        .lock()
+        .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+    store.list_by_project(&project)
+}
+
+/// 软删除一个原始文件记录（标记为 deleted）。
+#[tauri::command]
+pub async fn soft_delete_raw_source(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    let store = state
+        .raw_sources
+        .lock()
+        .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+    store.soft_delete(id)
+}
+
+/// 计算文件的 SHA256 哈希值
+fn compute_sha256(file_path: &str) -> Result<String, String> {
+    let mut file = std::fs::File::open(file_path)
+        .map_err(|e| format!("打开文件失败: {}", e))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let bytes_read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("读取文件失败: {}", e))?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    let hash = hasher.finalize();
+    Ok(format!("{:x}", hash))
+}
