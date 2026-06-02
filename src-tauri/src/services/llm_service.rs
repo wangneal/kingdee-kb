@@ -756,6 +756,32 @@ impl LLMService {
         Ok((chunks, report))
     }
 
+    /// 执行 chat_completion + 验证（适用于非 RAG 场景：文档生成、风控报告等）
+    pub async fn verified_chat_completion(
+        &self,
+        messages: &[ChatMessage],
+        config: &LLMProviderConfig,
+        scenario: ScenarioType,
+    ) -> Result<(String, Option<VerificationReport>), String> {
+        let response = self.chat_completion(messages, config).await?;
+
+        let report = if let Some(ref verifier) = self.verifier {
+            let input = VerificationInput {
+                generated_text: response.clone(),
+                retrieved_chunks: vec![],
+                chunk_titles: vec![],
+                available_chunk_ids: vec![],
+                query: String::new(),
+                scenario,
+            };
+            Some(verifier.verify(&input).await)
+        } else {
+            None
+        };
+
+        Ok((response, report))
+    }
+
     async fn stream_rig_to_sender(
         &self,
         config: &LLMProviderConfig,

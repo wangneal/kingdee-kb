@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use super::llm_service::{ChatMessage, LLMService};
+use crate::services::verification::types::ScenarioType;
 
 /// RAII guard：作用域结束时自动清理临时文件
 struct TempFileGuard(PathBuf);
@@ -465,7 +466,7 @@ impl RiskControlStore {
         ];
 
         let config = llm.get_active_config()?;
-        let response = llm.chat_completion(&messages, &config).await?;
+        let (response, _report) = llm.verified_chat_completion(&messages, &config, ScenarioType::RiskReport).await?;
 
         // 解析JSON响应
         serde_json::from_str(&response)
@@ -570,7 +571,7 @@ impl RiskControlStore {
         ];
 
         let config = llm.get_active_config()?;
-        let response = llm.chat_completion(&messages, &config).await?;
+        let (response, _report) = llm.verified_chat_completion(&messages, &config, ScenarioType::RiskReport).await?;
 
         serde_json::from_str(&response)
             .map_err(|e| format!("LLM返回格式错误: {} — 原始响应: {}", e, response))
@@ -677,7 +678,7 @@ impl RiskControlStore {
             },
         ];
         let config = llm.get_active_config()?;
-        let response = llm.chat_completion(&messages, &config).await?;
+        let (response, _report) = llm.verified_chat_completion(&messages, &config, ScenarioType::RiskReport).await?;
         Self::extract_json_from_llm_response(&response)
     }
 

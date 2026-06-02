@@ -23,6 +23,7 @@ use super::docx_filler;
 use super::embedding::EmbeddingService;
 use super::hybrid_search;
 use super::llm_service::LLMService;
+use crate::services::verification::types::ScenarioType;
 use super::metadata::MetadataStore;
 use super::template_schema::SchemaField;
 use super::vector_index::VectorIndex;
@@ -349,7 +350,7 @@ async fn generate_llm_fields(
 
     // Use LLM service's configured settings
     let config = llm.get_active_config()?;
-    let response = llm.chat_completion(&messages, &config).await?;
+    let (response, _report) = llm.verified_chat_completion(&messages, &config, ScenarioType::DocGen).await?;
 
     // Parse JSON response
     let json_str = extract_json_from_response(&response);
@@ -806,7 +807,7 @@ async fn generate_llm_fields_with_recipe(
 
     // Use LLM service's configured settings
     let config = llm.get_active_config()?;
-    let response = llm.chat_completion(&messages, &config).await?;
+    let (response, _report) = llm.verified_chat_completion(&messages, &config, ScenarioType::DocGen).await?;
 
     // Parse JSON response
     let json_str = extract_json_from_response(&response);
@@ -877,7 +878,7 @@ async fn generate_full_document_content(
     ];
 
     let config = llm.get_active_config()?;
-    let response = llm.chat_completion(&messages, &config).await?;
+    let (response, _report) = llm.verified_chat_completion(&messages, &config, ScenarioType::DocGen).await?;
 
     // Clean up the response - remove code block markers if present
     let content = response
