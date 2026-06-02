@@ -153,6 +153,10 @@ pub fn run() {
             commands::ingestion::ingest_file,
             commands::ingestion::extract_file_text,
             commands::ingestion::ingest_directory,
+            // Phase 2: 持久化摄入队列
+            commands::ingestion_queue::enqueue_ingestion,
+            commands::ingestion_queue::list_ingestion_queue,
+            commands::ingestion_queue::retry_failed_ingestions,
             // Document Management
             commands::document::list_documents,
             commands::document::get_document_chunks,
@@ -300,6 +304,40 @@ pub fn run() {
             commands::llm_provider::list_available_models,
             commands::llm_provider::get_next_api_key,
             commands::llm_provider::is_llm_configured,
+            // Raw source management
+            commands::raw_source::create_raw_source,
+            commands::raw_source::list_raw_sources,
+            commands::raw_source::soft_delete_raw_source,
+            // Wiki Page management
+            commands::wiki_page::create_wiki_page,
+            commands::wiki_page::get_wiki_page,
+            commands::wiki_page::get_wiki_page_by_slug,
+            commands::wiki_page::list_wiki_pages,
+            commands::wiki_page::update_wiki_page,
+            commands::wiki_page::delete_wiki_page,
+            commands::wiki_page::approve_wiki_page,
+            commands::wiki_page::reject_wiki_page,
+            commands::wiki_page::seed_demo_wiki_pages,
+            // Phase 5: Wikilink 编辑器
+            commands::wiki_page::search_wikilink_candidates,
+            commands::wiki_page::add_wikilink,
+            commands::wiki_page::remove_wikilink,
+            commands::wiki_page::get_wikilink_targets,
+            commands::wiki_page::get_backlinks,
+            // Phase 4: 大纲编辑器
+            commands::outline::create_outline_node,
+            commands::outline::update_outline_node,
+            commands::outline::delete_outline_node,
+            commands::outline::move_outline_node,
+            commands::outline::get_outline_tree,
+            commands::outline::export_outline,
+            commands::outline::get_outline_stats,
+            // Phase 5: 知识图谱
+            commands::knowledge_graph::build_knowledge_graph,
+            commands::knowledge_graph::traverse_graph,
+            commands::knowledge_graph::get_graph_neighbors,
+            commands::knowledge_graph::get_graph_stats,
+            commands::knowledge_graph::graph_expand_search,
             // File operations
             commands::core::save_attachment_as,
         ])

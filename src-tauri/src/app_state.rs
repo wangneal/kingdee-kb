@@ -7,19 +7,25 @@
 //! 注意：AppState 字段较多（22个）是 Tauri 框架的典型模式。
 //! 所有命令通过 `State<'_, AppState>` 访问，拆分为子状态会增加大量胶水代码。
 
+use crate::services::analysis_cache::AnalysisCacheStore;
 use crate::services::audio_capture::AudioCapture;
 use crate::services::bm25_service::BM25Service;
 use crate::services::desensitize::Desensitizer;
 use crate::services::edition_config::EditionConfig;
 use crate::services::embedding::{EmbeddingService, ModelManager};
 use crate::services::image_processor::ImageProcessor;
+use crate::services::ingest_cache::IngestCacheStore;
 use crate::services::llm_providers::LLMProviderManager;
 use crate::services::llm_service::LLMService;
 use crate::services::metadata::MetadataStore;
 use crate::services::product_store::ProductStore;
 use crate::services::question_tool::{self, PendingQuestions};
+use crate::services::raw_source::RawSourceStore;
 use crate::services::research_indexer::ResearchIndexer;
+use crate::services::wiki_page::WikiPageStore;
+use crate::services::knowledge_graph::GraphStore;
 use crate::services::research_session::ResearchSessionStore;
+use crate::services::outline::OutlineStore;
 use crate::services::rig_agent::RigAgent;
 use crate::services::risk_control::RiskControlStore;
 use crate::services::signal_writer::SignalWriter;
@@ -27,6 +33,7 @@ use crate::services::skill_manager::SkillManager;
 use crate::services::template_manager::TemplateManager;
 use crate::services::vector_index::VectorIndex;
 use crate::services::whisper_service::WhisperService;
+use crate::services::ingestion_queue::IngestionQueue;
 use crate::AsrConfigStore;
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -52,6 +59,16 @@ pub struct AppState {
     pub llm: LLMService,
     /// 用于生成文档管理的产品存储
     pub products: Arc<Mutex<ProductStore>>,
+    /// 原始导入文件管理（raw_sources 表）
+    pub raw_sources: Arc<Mutex<RawSourceStore>>,
+    /// 维基页面管理（wiki_pages 表）
+    pub wiki_pages: Arc<Mutex<WikiPageStore>>,
+    /// 知识图谱存储（knowledge_graph 表）
+    pub graph_store: Arc<Mutex<GraphStore>>,
+    /// 分析缓存管理（analysis_cache 表）
+    pub analysis_cache: Arc<Mutex<AnalysisCacheStore>>,
+    /// 摄入缓存管理（ingest_cache 表）
+    pub ingest_cache_store: Arc<Mutex<IngestCacheStore>>,
     /// 嵌入模型的下载进度（0–100）。由后台线程更新。
     pub download_progress: Arc<AtomicU32>,
     /// 版本配置（企业版 / 旗舰版）
@@ -60,6 +77,8 @@ pub struct AppState {
     pub research_indexer: ResearchIndexer,
     /// 研究会话存储
     pub research_session_store: ResearchSessionStore,
+    /// 研究大纲节点存储
+    pub outline_store: Arc<Mutex<OutlineStore>>,
     /// 风险控制存储（需求蔓延警报/爆雷预警/话术库）
     pub risk_control_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
     /// 数据脱敏器（本地敏感信息过滤）
@@ -84,6 +103,8 @@ pub struct AppState {
     pub image_processor: Arc<Mutex<ImageProcessor>>,
     /// LLM 供应商管理器
     pub llm_providers: Arc<Mutex<LLMProviderManager>>,
+    /// 持久化摄入队列（JSON 文件 + 崩溃恢复）
+    pub ingest_queue: Mutex<IngestionQueue>,
     /// Agent 会话取消标志（session_id → cancel flag）
     pub cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
@@ -121,6 +142,49 @@ impl AppState {
         let products_db_path = data_dir.join("products.db");
         let products = ProductStore::new(products_db_path)?;
 
+        // 初始化 RawSourceStore（共享 metadata.db）
+        let raw_source_conn = Connection::open(&db_path)
+            .map_err(|e| format!("打开原始文件数据库失败: {}", e))?;
+        let raw_source_store = RawSourceStore::new(raw_source_conn);
+        raw_source_store.ensure_table()?;
+        let raw_sources = Arc::new(Mutex::new(raw_source_store));
+
+        // 初始化 WikiPageStore（共享 metadata.db）
+        let wiki_pages = {
+            let conn = Connection::open(&db_path)
+                .map_err(|e| format!("打开维基页面数据库失败: {}", e))?;
+            let store = WikiPageStore::new(conn);
+            store.ensure_table()?;
+            Arc::new(Mutex::new(store))
+        };
+
+        // 初始化 GraphStore（共享 metadata.db）
+        let graph_store = {
+            let conn = Connection::open(&db_path)
+                .map_err(|e| format!("打开知识图谱数据库失败: {}", e))?;
+            let store = GraphStore::new(conn);
+            store.ensure_table()?;
+            Arc::new(Mutex::new(store))
+        };
+
+        // 初始化 AnalysisCacheStore（共享 metadata.db）
+        let analysis_cache = {
+            let conn = Connection::open(&db_path)
+                .map_err(|e| format!("打开分析缓存数据库失败: {}", e))?;
+            let store = AnalysisCacheStore::new(conn);
+            store.ensure_table()?;
+            Arc::new(Mutex::new(store))
+        };
+
+        // 初始化 IngestCacheStore（共享 metadata.db）
+        let ingest_cache_store = {
+            let conn = Connection::open(&db_path)
+                .map_err(|e| format!("打开摄入缓存数据库失败: {}", e))?;
+            let store = IngestCacheStore::new(conn);
+            store.ensure_table()?;
+            Arc::new(Mutex::new(store))
+        };
+
         // 初始化 EditionConfig（共享 metadata.db 的 app_config 表）
         let edition_config = {
             let conn = Connection::open(&db_path)
@@ -139,6 +203,12 @@ impl AppState {
 
         // 初始化 ResearchSessionStore（共享 metadata.db）
         let research_session_store = ResearchSessionStore::new(&db_path)?;
+
+        // 初始化 OutlineStore（共享 metadata.db）
+        let outline_store = {
+            let store = OutlineStore::new(&db_path)?;
+            Arc::new(Mutex::new(store))
+        };
 
         // 初始化 RiskControlStore（共享 metadata.db）
         let risk_control_store =
@@ -183,6 +253,9 @@ impl AppState {
         // 初始化 LLM 服务（从 LLMProviderManager 获取配置并传入数据脱敏器）
         let llm = LLMService::with_desensitizer(llm_providers.clone(), desensitizer.clone());
 
+        // 初始化持久化摄入队列
+        let ingest_queue = Mutex::new(IngestionQueue::new(data_dir));
+
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
             model_manager: Arc::new(Mutex::new(model_manager)),
@@ -192,10 +265,16 @@ impl AppState {
             bm25: Arc::new(Mutex::new(bm25)),
             llm,
             products: Arc::new(Mutex::new(products)),
+            raw_sources,
+            wiki_pages,
+            graph_store,
+            analysis_cache,
+            ingest_cache_store,
             download_progress: Arc::new(AtomicU32::new(0)),
             edition_config,
             research_indexer,
             research_session_store,
+            outline_store,
             risk_control_store,
             desensitizer,
             whisper_service: Arc::new(Mutex::new(whisper_service)),
@@ -208,6 +287,7 @@ impl AppState {
             template_manager: Arc::new(Mutex::new(template_manager)),
             image_processor: Arc::new(Mutex::new(image_processor)),
             llm_providers,
+            ingest_queue,
             cancel_flags: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -263,6 +343,16 @@ impl AppState {
             }
         };
 
+        // OutlineStore 失败时用内存兜底
+        let outline_store = Arc::new(Mutex::new(match OutlineStore::new(&db_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("WARNING: OutlineStore init failed (non-fatal): {}", e);
+                OutlineStore::new_in_memory()
+                    .expect("Fatal: cannot create in-memory OutlineStore")
+            }
+        }));
+
         let risk_control_store = Arc::new(tokio::sync::Mutex::new(
             match RiskControlStore::new(&db_path) {
                 Ok(s) => s,
@@ -284,6 +374,18 @@ impl AppState {
         let llm_providers = Arc::new(Mutex::new(LLMProviderManager::new(&data_dir.to_path_buf())));
         let llm = LLMService::with_desensitizer(llm_providers.clone(), desensitizer.clone());
 
+        let raw_sources = {
+            let conn = Connection::open(&db_path)
+                .expect("Fatal: cannot open DB for RawSourceStore");
+            let store = RawSourceStore::new(conn);
+            store
+                .ensure_table()
+                .expect("Fatal: cannot init raw_sources table");
+            Arc::new(Mutex::new(store))
+        };
+
+        let ingest_queue = Mutex::new(IngestionQueue::new(data_dir));
+
         Self {
             data_dir: data_dir.to_path_buf(),
             model_manager: Arc::new(Mutex::new(ModelManager::new(data_dir.join("models")))),
@@ -293,10 +395,40 @@ impl AppState {
             bm25: Arc::new(Mutex::new(bm25)),
             llm,
             products: Arc::new(Mutex::new(products)),
+            raw_sources,
+            wiki_pages: Arc::new(Mutex::new({
+                let conn = Connection::open(&db_path)
+                    .expect("Fatal: cannot open DB for WikiPageStore");
+                let store = WikiPageStore::new(conn);
+                store.ensure_table().expect("Fatal: cannot init wiki_pages table");
+                store
+            })),
+            graph_store: Arc::new(Mutex::new({
+                let conn = Connection::open(&db_path)
+                    .expect("Fatal: cannot open DB for GraphStore");
+                let store = GraphStore::new(conn);
+                store.ensure_table().expect("Fatal: cannot init knowledge_graph table");
+                store
+            })),
+            analysis_cache: Arc::new(Mutex::new({
+                let conn = Connection::open(&db_path)
+                    .expect("Fatal: cannot open DB for AnalysisCacheStore");
+                let store = AnalysisCacheStore::new(conn);
+                store.ensure_table().expect("Fatal: cannot init analysis_cache table");
+                store
+            })),
+            ingest_cache_store: Arc::new(Mutex::new({
+                let conn = Connection::open(&db_path)
+                    .expect("Fatal: cannot open DB for IngestCacheStore");
+                let store = IngestCacheStore::new(conn);
+                store.ensure_table().expect("Fatal: cannot init ingest_cache table");
+                store
+            })),
             download_progress: Arc::new(AtomicU32::new(0)),
             edition_config,
             research_indexer,
             research_session_store,
+            outline_store,
             risk_control_store,
             desensitizer,
             rig_agent: RigAgent,
@@ -322,6 +454,7 @@ impl AppState {
                 String::new(),
             ))),
             llm_providers,
+            ingest_queue,
             cancel_flags: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -356,7 +489,13 @@ impl AppState {
     /// 确保 embedding 模型已加载（懒加载）。
     /// 合并自 ingestion.rs 和 search_llm.rs 的重复实现。
     pub fn ensure_embedding_ready(&self) {
-        let emb = self.embedding.lock().unwrap();
+        let emb = match self.embedding.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("[LazyLoad] Embedding lock poisoned: {}", e);
+                return;
+            }
+        };
         if emb.is_ready() {
             return;
         }
@@ -373,7 +512,13 @@ impl AppState {
             }
         }
         if let Some(model) = mm.take_model() {
-            let mut emb = self.embedding.lock().unwrap();
+            let mut emb = match self.embedding.lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    eprintln!("[LazyLoad] Embedding lock poisoned: {}", e);
+                    return;
+                }
+            };
             emb.set_model(model);
         }
     }

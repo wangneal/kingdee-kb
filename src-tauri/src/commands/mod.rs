@@ -1,7 +1,10 @@
 pub mod core;
+pub mod raw_source;
 pub mod document;
 pub mod embedding;
 pub mod ingestion;
+pub mod ingestion_queue;
+pub mod knowledge_graph;
 pub mod llm_provider;
 pub mod media;
 pub mod product;
@@ -10,3 +13,5 @@ pub mod risk_blueprint;
 pub mod search_llm;
 pub mod skill;
 pub mod template_doc;
+pub mod wiki_page;
+pub mod outline;
