@@ -3,7 +3,7 @@ use super::types::{CheckResult, Checker, VerificationInput};
 pub struct FactualConsistencyChecker;
 
 impl FactualConsistencyChecker {
-    fn split_sentences(text: &str) -> Vec<String> {
+    pub fn split_sentences(text: &str) -> Vec<String> {
         let mut sentences = Vec::new();
         let mut current = String::new();
         let mut chars = text.chars().peekable();
