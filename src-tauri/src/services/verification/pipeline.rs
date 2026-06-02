@@ -92,6 +92,7 @@ mod tests {
                 "K/3 WISE 适用于中小企业".to_string(),
             ],
             chunk_titles: vec!["产品介绍.md".to_string(), "K3WISE概述.md".to_string()],
+            available_chunk_ids: vec![],
             query: "金蝶产品对比".to_string(),
             scenario: ScenarioType::Chat,
         };
@@ -106,6 +107,7 @@ mod tests {
             generated_text: "test".to_string(),
             retrieved_chunks: vec![],
             chunk_titles: vec![],
+            available_chunk_ids: vec![],
             query: "test".to_string(),
             scenario: ScenarioType::Chat,
         };

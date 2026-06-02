@@ -159,6 +159,7 @@ mod tests {
                 "金蝶云星空适用于大型企业集团".to_string(),
             ],
             chunk_titles: vec!["doc1.md".to_string(), "doc2.md".to_string()],
+            available_chunk_ids: vec![],
             query: "金蝶云星空".to_string(),
             scenario: super::super::types::ScenarioType::Chat,
         };
@@ -176,6 +177,7 @@ mod tests {
                 "金蝶云星空适用于大型企业集团".to_string(),
             ],
             chunk_titles: vec!["doc1.md".to_string(), "doc2.md".to_string()],
+            available_chunk_ids: vec![],
             query: "金蝶云星空".to_string(),
             scenario: super::super::types::ScenarioType::Chat,
         };

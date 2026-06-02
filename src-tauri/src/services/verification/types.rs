@@ -144,6 +144,7 @@ pub struct VerificationInput {
     pub generated_text: String,
     pub retrieved_chunks: Vec<String>,
     pub chunk_titles: Vec<String>,
+    pub available_chunk_ids: Vec<i64>,
     pub query: String,
     pub scenario: ScenarioType,
 }

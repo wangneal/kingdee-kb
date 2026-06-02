@@ -109,6 +109,7 @@ mod tests {
             generated_text: "金蝶云星空支持多组织架构。它适用于大型企业。系统支持多语言。".to_string(),
             retrieved_chunks: vec![],
             chunk_titles: vec![],
+            available_chunk_ids: vec![],
             query: "test".to_string(),
             scenario: super::super::types::ScenarioType::Chat,
         };

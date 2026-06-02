@@ -78,6 +78,7 @@ mod tests {
             generated_text: "金蝶云星空支持多组织架构（来源：产品介绍.md）。这是一个集成解决方案。".to_string(),
             retrieved_chunks: vec![],
             chunk_titles: vec![],
+            available_chunk_ids: vec![],
             query: "test".to_string(),
             scenario: super::super::types::ScenarioType::Chat,
         };
@@ -92,6 +93,7 @@ mod tests {
             generated_text: "金蝶云星空支持多组织架构。这是一个很好的产品。".to_string(),
             retrieved_chunks: vec![],
             chunk_titles: vec![],
+            available_chunk_ids: vec![],
             query: "test".to_string(),
             scenario: super::super::types::ScenarioType::Chat,
         };

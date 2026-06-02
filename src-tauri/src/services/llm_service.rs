@@ -471,8 +471,8 @@ pub fn assemble_context(results: &[HybridSearchResult], max_tokens: u32) -> Stri
         let section = result.section_path.as_deref().unwrap_or("（无章节信息）");
 
         let entry = format!(
-            "[来源：{} | {}]\n{}\n\n",
-            result.title, section, result.content
+            "[chunk:{} | {} | {}]\n{}\n\n",
+            result.chunk_id, result.title, section, result.content
         );
         context.push_str(&entry);
     }
@@ -742,6 +742,7 @@ impl LLMService {
                 generated_text: full_text,
                 retrieved_chunks: context_chunks.iter().map(|c| c.content.clone()).collect(),
                 chunk_titles: context_chunks.iter().map(|c| c.title.clone()).collect(),
+                available_chunk_ids: context_chunks.iter().map(|c| c.chunk_id).collect(),
                 query: messages.last().map(|m| m.content.clone()).unwrap_or_default(),
                 scenario: ScenarioType::Chat,
             };
