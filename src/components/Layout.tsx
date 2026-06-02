@@ -10,7 +10,7 @@ const LS_KEY_ANSWER = "kb_sidebar_answer";
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "概览" },
-  { to: "/browse", icon: BookOpen, label: "知识浏览" },
+  { to: "/browse", icon: BookOpen, label: "知识库" },
   { to: "/search", icon: Search, label: "检索" },
   { to: "/chat", icon: MessageSquare, label: "AI 对话" },
   { to: "/research", icon: ClipboardList, label: "调研助手" },

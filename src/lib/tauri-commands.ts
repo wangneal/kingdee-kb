@@ -1090,3 +1090,115 @@ export async function saveAsrConfig(config: {
 export async function getAsrConfigStatus(): Promise<AsrConfigStatus> {
   return invoke("get_asr_config_status");
 }
+
+// ── Wiki 页面 ────────────────────────────────────────────────────────────────
+
+/** Wiki 页面 */
+export interface WikiPage {
+  id: number;
+  project: string;
+  slug: string;
+  title: string;
+  page_type: string;
+  content: string;
+  content_candidate: string | null;
+  candidate_status: string | null;
+  frontmatter: string;
+  sources: string;
+  wikilinks: string;
+  tags: string;
+  page_metadata: string;
+  candidate_version: number | null;
+  page_status: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 创建 Wiki 页面参数 */
+export interface CreateWikiPage {
+  project: string;
+  slug: string;
+  title: string;
+  page_type: string;
+  content: string;
+  frontmatter?: string;
+  sources?: string;
+  wikilinks?: string;
+  tags?: string;
+  page_metadata?: string;
+  page_status?: string;
+}
+
+/** Wiki 页面简略信息 */
+export interface WikiPageBrief {
+  id: number;
+  slug: string;
+  title: string;
+  page_type: string;
+}
+
+/** Wikilink 目标 */
+export interface WikiLinkTarget {
+  slug: string;
+  title: string;
+  page_type: string;
+  page_status: string;
+}
+
+/** 列出所有 Wiki 页面 */
+export async function listWikiPages(project: string): Promise<WikiPageBrief[]> {
+  return invoke("list_wiki_pages", { project });
+}
+
+/** 获取 Wiki 页面详情 */
+export async function getWikiPage(id: number): Promise<WikiPage> {
+  return invoke("get_wiki_page", { id });
+}
+
+/** 根据 slug 获取 Wiki 页面 */
+export async function getWikiPageBySlug(project: string, slug: string): Promise<WikiPage | null> {
+  return invoke("get_wiki_page_by_slug", { project, slug });
+}
+
+/** 创建 Wiki 页面 */
+export async function createWikiPage(data: CreateWikiPage): Promise<WikiPage> {
+  return invoke("create_wiki_page", { data });
+}
+
+/** 更新 Wiki 页面 */
+export async function updateWikiPage(id: number, data: Partial<CreateWikiPage>): Promise<WikiPage> {
+  return invoke("update_wiki_page", { id, data });
+}
+
+/** 删除 Wiki 页面 */
+export async function deleteWikiPage(id: number): Promise<void> {
+  return invoke("delete_wiki_page", { id });
+}
+
+/** 批准 Wiki 页面候选内容 */
+export async function approveWikiPage(id: number): Promise<WikiPage> {
+  return invoke("approve_wiki_page", { id });
+}
+
+/** 搜索 Wiki 页面（用于 wikilink 候选） */
+export async function searchWikilinkCandidates(project: string, query: string): Promise<WikiPageBrief[]> {
+  return invoke("search_wikilink_candidates", { project, query });
+}
+
+/** 获取反向链接 */
+export async function getBacklinks(slug: string, project: string): Promise<{slug: string; title: string; page_type: string}[]> {
+  return invoke("get_backlinks", { slug, project });
+}
+
+// ── 知识图谱 ──────────────────────────────────────────────────────
+
+/** 知识图谱统计 */
+export async function getGraphStats(project: string): Promise<{ node_count: number; edge_count: number }> {
+  return invoke("get_graph_stats", { project });
+}
+
+/** 获取节点邻居（关联页面） */
+export async function getGraphNeighbors(project: string, slug: string): Promise<{ slug: string; title: string; relation: string; weight: number }[]> {
+  return invoke("get_graph_neighbors", { project, slug });
+}
