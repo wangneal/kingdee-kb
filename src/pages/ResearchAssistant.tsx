@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import {
@@ -17,6 +18,8 @@ import {
   Send,
   AlertCircle,
   Brain,
+  ListTodo,
+  Network,
 } from "lucide-react";
 import {
   type ResearchSession,
@@ -44,14 +47,20 @@ import {
 import { useAgent, DEFAULT_SLOT } from "../contexts/AgentContext"
 import { useProject } from "../contexts/ProjectContext";
 import { useToast } from "../components/Toast";
+import { useOutline } from "../contexts/OutlineContext";
+import OutlineTree from "../components/outliner/OutlineTree";
+import NodeDetailPanel from "../components/outliner/NodeDetailPanel";
+import MindmapView from "../components/outliner/MindmapView";
 
 export default function ResearchAssistant() {
   const { projectId } = useProject();
+  const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
   const [mode, setMode] = useState<"list" | "detail" | "new">("list");
   const [sessions, setSessions] = useState<ResearchSession[]>([]);
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [initialOutlineTab, setInitialOutlineTab] = useState(false);
 
   // Load sessions on mount
   const refreshList = useCallback(async () => {
@@ -66,6 +75,17 @@ export default function ResearchAssistant() {
   }, [projectId]);
 
   useEffect(() => { refreshList(); }, [refreshList]);
+
+  // URL 直接访问大纲视图时自动打开会话
+  useEffect(() => {
+    if (urlSessionId && sessions.length > 0 && mode === "list") {
+      const id = Number(urlSessionId);
+      if (!isNaN(id)) {
+        setInitialOutlineTab(true);
+        openSession(id);
+      }
+    }
+  }, [urlSessionId, sessions, mode]);
 
   const openSession = useCallback(async (id: number) => {
     setLoading(true);
@@ -178,10 +198,11 @@ export default function ResearchAssistant() {
     return (
       <SessionDetailView
         detail={detail}
-        onBack={() => { setMode("list"); setDetail(null); refreshList(); }}
+        onBack={() => { setMode("list"); setDetail(null); refreshList(); setInitialOutlineTab(false); }}
         onUpdated={() => {
           if (detail) getResearchSession(detail.session.id).then(setDetail);
         }}
+        initialTab={initialOutlineTab ? "outline" : "qa"}
       />
     );
   }
@@ -272,7 +293,7 @@ function NewSessionForm({ onCreated, onCancel }: { onCreated: (id: number) => vo
 
 // ── Session Detail View ─────────────────────────────────────────────────────
 
-function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetail; onBack: () => void; onUpdated: () => void }) {
+function SessionDetailView({ detail, onBack, onUpdated, initialTab = "qa" }: { detail: SessionDetail; onBack: () => void; onUpdated: () => void; initialTab?: "qa" | "outline" | "mindmap" }) {
   const { session, records } = detail;
   const agent = useAgent();
   const slot = agent.slots.get("research") ?? DEFAULT_SLOT;
@@ -288,7 +309,32 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
   const [newAnswer, setNewAnswer] = useState("");
   const [editingRecord, setEditingRecord] = useState<number | null>(null);
   const [editAnswer, setEditAnswer] = useState("");
+  const [activeTab, setActiveTab] = useState<"qa" | "outline" | "mindmap">(initialTab);
   const toast = useToast();
+
+  // 大纲上下文
+  const outline = useOutline();
+  const outlineSelectedNode = outline.nodes.find((n) => n.id === outline.selectedNodeId) ?? null;
+  // 将 OutlineNode 转换为 TreeNode（需要 children 字段）
+  const outlineSelectedTreeNode = (() => {
+    if (!outlineSelectedNode) return null;
+    const findInTree = (nodes: typeof outline.tree): typeof outlineSelectedNode & { children: typeof outline.tree } | null => {
+      for (const n of nodes) {
+        if (n.id === outlineSelectedNode.id) return n;
+        const found = findInTree(n.children);
+        if (found) return found;
+      }
+      return null;
+    };
+    return findInTree(outline.tree);
+  })();
+
+  // 切换到大纲视图或脑图视图时加载大纲
+  useEffect(() => {
+    if (activeTab === "outline" || activeTab === "mindmap") {
+      outline.loadOutline(session.id);
+    }
+  }, [activeTab, session.id, outline]);
 
   useEffect(() => {
     getWhisperStatus().then(setWhisperStatus).catch((err) => {
@@ -463,10 +509,51 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
         </div>
       </div>
 
+      {/* Tab Navigation */}
+      <div className="flex border-b border-neutral-200 px-6">
+        <button
+          type="button"
+          onClick={() => setActiveTab("qa")}
+          className={`flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-xs font-medium transition-colors ${
+            activeTab === "qa"
+              ? "border-[#1A6BD8] text-[#1A6BD8]"
+              : "border-transparent text-neutral-500 hover:text-neutral-700"
+          }`}
+        >
+          <MessageSquare className="h-3.5 w-3.5" />
+          问答记录
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("outline")}
+          className={`flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-xs font-medium transition-colors ${
+            activeTab === "outline"
+              ? "border-[#1A6BD8] text-[#1A6BD8]"
+              : "border-transparent text-neutral-500 hover:text-neutral-700"
+          }`}
+        >
+          <ListTodo className="h-3.5 w-3.5" />
+          大纲视图
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("mindmap")}
+          className={`flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-xs font-medium transition-colors ${
+            activeTab === "mindmap"
+              ? "border-[#1A6BD8] text-[#1A6BD8]"
+              : "border-transparent text-neutral-500 hover:text-neutral-700"
+          }`}
+        >
+          <Network className="h-3.5 w-3.5" />
+          脑图视图
+        </button>
+      </div>
+
       {/* Content */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Q&A Records */}
-        <div className="flex-1 overflow-y-auto p-6">
+      {activeTab === "qa" ? (
+        <div className="flex flex-1 overflow-hidden">
+          {/* Q&A Records */}
+          <div className="flex-1 overflow-y-auto p-6">
           {records.length === 0 ? (
             <div className="flex flex-col items-center justify-center pt-16 text-center">
               <MessageSquare className="mb-3 h-10 w-10 text-neutral-200" />
@@ -596,6 +683,45 @@ function SessionDetailView({ detail, onBack, onUpdated }: { detail: SessionDetai
           </div>
         </div>
       </div>
+      ) : activeTab === "outline" ? (
+        /* 大纲视图 */
+        <div className="flex flex-1 overflow-hidden">
+          {/* 大纲树 */}
+          <div className="flex flex-1 flex-col overflow-hidden">
+            {/* 工具栏 */}
+            <div className="flex items-center gap-2 border-b border-neutral-200 px-4 py-2">
+              <button
+                type="button"
+                onClick={() => outline.createNode(null, "")}
+                className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#1558B0] transition-colors"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                添加根节点
+              </button>
+              <span className="text-[10px] text-neutral-400">
+                {outline.nodes.length} 个节点
+              </span>
+            </div>
+            {/* 树内容 */}
+            <div className="flex-1 overflow-y-auto p-2">
+              <OutlineTree sessionId={session.id} />
+            </div>
+          </div>
+
+          {/* 节点详情面板 */}
+          <div className="w-72 shrink-0 border-l border-neutral-200 bg-white">
+            <NodeDetailPanel
+              node={outlineSelectedTreeNode}
+              sessionId={session.id}
+            />
+          </div>
+        </div>
+      ) : (
+        /* 脑图视图 */
+        <div className="flex flex-1 overflow-hidden">
+          <MindmapView sessionId={session.id} />
+        </div>
+      )}
     </div>
   );
 }
