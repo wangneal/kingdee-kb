@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 
 use crate::services::agent_timeout::{retry_delay, MAX_RETRIES};
+use crate::services::wiki_page::WikiPageStore;
 
 /// 用户回答澄清问题的超时时间（秒）
 const QUESTION_TIMEOUT_SECS: u64 = 300; // 5 分钟
@@ -129,6 +130,7 @@ pub struct SearchKnowledgeTool {
     pub metadata: Arc<Mutex<MetadataStore>>,
     pub project_id: Option<String>,
     pub extra_project_ids: Vec<String>,
+    pub wiki_pages: Option<Arc<Mutex<WikiPageStore>>>,
 }
 
 #[derive(Deserialize)]
@@ -144,6 +146,7 @@ impl SearchKnowledgeTool {
         vector_index: Arc<Mutex<VectorIndex>>,
         bm25: Arc<Mutex<BM25Service>>,
         metadata: Arc<Mutex<MetadataStore>>,
+        wiki_pages: Option<Arc<Mutex<WikiPageStore>>>,
     ) -> Self {
         Self {
             project_id,
@@ -152,6 +155,7 @@ impl SearchKnowledgeTool {
             vector_index,
             bm25,
             metadata,
+            wiki_pages,
         }
     }
 }
@@ -177,6 +181,32 @@ impl Tool for SearchKnowledgeTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        // 优先从 wiki_pages 搜索
+        if let Some(wiki_store) = &self.wiki_pages {
+            if let Ok(store) = wiki_store.lock() {
+                if let Ok(pages) = store.search_pages(self.project_id.as_deref(), &args.query, 5) {
+                    if let Some(top) = pages.first() {
+                        if top.score > 0.5 {
+                            let mut output = String::new();
+                            output.push_str(&format!("找到 {} 条相关结果（来自 Wiki）：\n\n", pages.len()));
+                            for (i, r) in pages.iter().enumerate() {
+                                output.push_str(&format!(
+                                    "【{}】{} (相关度: {:.3}, 来源: {})\n{}\n\n",
+                                    i + 1,
+                                    r.title,
+                                    r.score,
+                                    r.source,
+                                    truncate_content(&r.content, 500),
+                                ));
+                            }
+                            return Ok(output);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 回退到 chunks hybrid_search
         let results = hybrid_search::hybrid_search(
             &args.query,
             self.project_id.as_deref(),
@@ -2481,6 +2511,7 @@ pub fn all_rig_tools(
     skill_manager: Arc<Mutex<crate::services::skill_manager::SkillManager>>,
     risk_project_id: Option<i64>,
     extra_search_project_ids: Vec<String>,
+    wiki_pages: Option<Arc<Mutex<WikiPageStore>>>,
 ) -> Vec<Box<dyn rig_core::tool::ToolDyn>> {
     // Risk tools use numeric risk project ids. Non-numeric KB project names stay on the global scope.
     let risk_project_id = risk_project_id
@@ -2496,6 +2527,7 @@ pub fn all_rig_tools(
             vector_index.clone(),
             bm25.clone(),
             metadata.clone(),
+            wiki_pages.clone(),
         ))),
         // GenerateDocTool writes files — side effect, no retry
         Box::new(GenerateDocTool::new(

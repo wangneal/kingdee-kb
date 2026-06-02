@@ -29,6 +29,7 @@ use crate::services::question_tool::PendingQuestions;
 use crate::services::react_agent::ReActEvent;
 use crate::services::rig_provider::{build_anthropic_client, build_openai_client};
 use crate::services::rig_tool::{all_rig_tools, runtime_rig_tools};
+use crate::services::wiki_page::WikiPageStore;
 use crate::services::risk_control::RiskControlStore;
 use crate::services::types::{AgentMode, AttachmentInfo};
 use crate::services::vector_index::VectorIndex;
@@ -148,6 +149,7 @@ impl RigAgent {
         attachments: Option<Vec<AttachmentInfo>>,
         image_processor: Arc<Mutex<crate::services::image_processor::ImageProcessor>>,
         llm_providers: Arc<Mutex<crate::services::llm_providers::LLMProviderManager>>,
+        wiki_pages: Option<Arc<Mutex<WikiPageStore>>>,
     ) {
         let sid = session_id.to_string();
         let started_at = Instant::now();
@@ -544,6 +546,7 @@ impl RigAgent {
                         skill_manager.clone(),
                         risk_project_id,
                         attachment_search_projects.clone(),
+                        wiki_pages.clone(),
                     );
                     tools.extend(runtime_rig_tools(
                         pending.clone(),
@@ -599,6 +602,7 @@ impl RigAgent {
                         skill_manager.clone(),
                         risk_project_id,
                         attachment_search_projects.clone(),
+                        wiki_pages.clone(),
                     );
                     tools.extend(runtime_rig_tools(
                         pending.clone(),
