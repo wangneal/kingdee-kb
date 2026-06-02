@@ -62,6 +62,10 @@ pub struct QARecord {
     pub answer_text: String,
     pub notes: String,
     pub sort_order: i32,
+    /// 记录来源：auto（自动生成）或 manual（手动添加）
+    pub source: String,
+    /// 是否已收藏
+    pub is_bookmarked: bool,
     pub created_at: String,
 }
 
@@ -146,7 +150,44 @@ impl ResearchSessionStore {
             .map_err(|e| format!("Failed to add project column: {}", e))?;
         }
 
-        // Step 3: Create indexes (now safe because project column exists)
+        // Step 3: 迁移 — 为 session_qa_records 添加 source 和 is_bookmarked 列
+        let has_source = {
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(session_qa_records)")
+                .map_err(|e| format!("Failed to query table info: {}", e))?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| format!("Failed to read table info: {}", e))?;
+            let found = rows.flatten().any(|col| col == "source");
+            found
+        };
+        if !has_source {
+            conn.execute(
+                "ALTER TABLE session_qa_records ADD COLUMN source TEXT CHECK(source IN ('auto','manual')) DEFAULT 'auto'",
+                [],
+            )
+            .map_err(|e| format!("Failed to add source column: {}", e))?;
+        }
+
+        let has_bookmarked = {
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(session_qa_records)")
+                .map_err(|e| format!("Failed to query table info: {}", e))?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| format!("Failed to read table info: {}", e))?;
+            let found = rows.flatten().any(|col| col == "is_bookmarked");
+            found
+        };
+        if !has_bookmarked {
+            conn.execute(
+                "ALTER TABLE session_qa_records ADD COLUMN is_bookmarked INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|e| format!("Failed to add is_bookmarked column: {}", e))?;
+        }
+
+        // Step 4: Create indexes (now safe because project column exists)
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_qa_session ON session_qa_records(session_id);
              CREATE INDEX IF NOT EXISTS idx_sessions_module ON research_sessions(module_code);
@@ -320,8 +361,8 @@ impl ResearchSessionStore {
     ) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         conn.execute(
-            "INSERT INTO session_qa_records (session_id, question_id, question_text, answer_text, notes, sort_order)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO session_qa_records (session_id, question_id, question_text, answer_text, notes, sort_order, source, is_bookmarked)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'manual', 0)",
             params![session_id, question_id, question_text, answer_text, notes, sort_order],
         )
         .map_err(|e| format!("Failed to add record: {}", e))?;
@@ -333,13 +374,16 @@ impl ResearchSessionStore {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, session_id, question_id, question_text, answer_text, notes, sort_order, created_at
+                "SELECT id, session_id, question_id, question_text, answer_text, notes, sort_order,
+                        COALESCE(source, 'manual'), COALESCE(is_bookmarked, 0), created_at
                  FROM session_qa_records WHERE session_id = ?1 ORDER BY sort_order, id",
             )
             .map_err(|e| format!("Failed to prepare get_records: {}", e))?;
 
         let rows = stmt
             .query_map(params![session_id], |row| {
+                let source: String = row.get(7)?;
+                let is_bookmarked_int: i32 = row.get(8)?;
                 Ok(QARecord {
                     id: row.get(0)?,
                     session_id: row.get(1)?,
@@ -348,7 +392,9 @@ impl ResearchSessionStore {
                     answer_text: row.get(4)?,
                     notes: row.get(5)?,
                     sort_order: row.get(6)?,
-                    created_at: row.get(7)?,
+                    source,
+                    is_bookmarked: is_bookmarked_int != 0,
+                    created_at: row.get(9)?,
                 })
             })
             .map_err(|e| format!("Failed to query records: {}", e))?;
