@@ -4,6 +4,7 @@ import {
   agentChat,
   cancelAgentStream,
   answerQuestion,
+  runVerification,
   type ClarificationPayload,
   type ChatMessage,
   type PlanStep,
@@ -407,6 +408,18 @@ export function AgentProvider({ children }: { children: ReactNode }) {
             );
             slot.loading = false;
             slot.currentTrace = { thinking: "", toolCalls: [], plan: null, currentStepIndex: null, totalSteps: 0, stepResults: {}, replanReason: null, plannerTimeoutMessage: null };
+
+            // 验证层：对最后一条 assistant 消息执行验证
+            const lastMsg = slot.messages[slot.messages.length - 1];
+            if (lastMsg && lastMsg.role === "assistant" && lastMsg.content) {
+              runVerification(lastMsg.content, "chat").then((res) => {
+                updateMessages(slotId, (prev) =>
+                  prev.map((m) =>
+                    m.id === lastMsg.id ? { ...m, verificationReport: res.report } : m,
+                  ),
+                );
+              }).catch(() => {});
+            }
             break;
           }
 

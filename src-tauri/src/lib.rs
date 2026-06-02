@@ -308,6 +308,8 @@ pub fn run() {
             commands::raw_source::create_raw_source,
             commands::raw_source::list_raw_sources,
             commands::raw_source::soft_delete_raw_source,
+            // Verification
+            commands::verification::run_verification,
             // Wiki Page management
             commands::wiki_page::create_wiki_page,
             commands::wiki_page::get_wiki_page,

@@ -13,5 +13,6 @@ pub mod risk_blueprint;
 pub mod search_llm;
 pub mod skill;
 pub mod template_doc;
+pub mod verification;
 pub mod wiki_page;
 pub mod outline;

@@ -1191,6 +1191,21 @@ export async function getBacklinks(slug: string, project: string): Promise<{slug
   return invoke("get_backlinks", { slug, project });
 }
 
+/** 验证报告（与 backend VerificationReport 对应） */
+export interface VerificationReport {
+  level: "Confirmed" | "NeedsReview" | "Suspected" | "Failed";
+  overall_confidence: number;
+  checks: { check_name: string; passed: boolean; confidence: number; detail: string; evidence: string[] }[];
+  suggested_labels: string[];
+}
+
+// ── 验证报告 ──────────────────────────────────────────────────────
+
+/** 对已生成的文本执行验证（Chat 完成后调用） */
+export async function runVerification(generatedText: string, scenario: string): Promise<{report: VerificationReport}> {
+  return invoke("run_verification", { request: { generated_text: generatedText, scenario } });
+}
+
 // ── 知识图谱 ──────────────────────────────────────────────────────
 
 /** 知识图谱统计 */
