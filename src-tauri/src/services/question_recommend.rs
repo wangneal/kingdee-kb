@@ -19,6 +19,7 @@ use crate::services::metadata::MetadataStore;
 use crate::services::research_indexer::ResearchIndexer;
 use crate::services::research_outline::{Edition, FlatQuestion};
 use crate::services::smart_completion::{KBSource, SmartFillResult};
+use crate::services::verification::types::ScenarioType;
 use crate::services::vector_index::VectorIndex;
 
 // --- Types ---
@@ -354,28 +355,12 @@ pub async fn generate_followup_questions(
         },
     ];
 
-    let llm_response = llm.chat_completion(&messages, &config).await;
-
-    match llm_response {
-        Ok(response_text) => {
-            // Step 5: Parse response
-            let followup_questions = parse_followup_response(&response_text);
-            Ok(FollowUpResult {
-                followup_questions,
-                kb_sources,
-            })
-        }
-        Err(e) => {
-            eprintln!(
-                "[QuestionRecommend] Follow-up question LLM call failed (non-fatal): {}",
-                e
-            );
-            Ok(FollowUpResult {
-                followup_questions: Vec::new(),
-                kb_sources,
-            })
-        }
-    }
+    let (response_text, _report) = llm.verified_chat_completion(&messages, &config, ScenarioType::Research).await?;
+    let followup_questions = parse_followup_response(&response_text);
+    Ok(FollowUpResult {
+        followup_questions,
+        kb_sources,
+    })
 }
 
 // ─── T3: smart_fill_for_question ───
@@ -468,10 +453,10 @@ pub async fn smart_fill_for_question(
         },
     ];
 
-    let llm_response = llm.chat_completion(&messages, &config).await;
+    let llm_response = llm.verified_chat_completion(&messages, &config, ScenarioType::Research).await;
 
     match llm_response {
-        Ok(answer) => {
+        Ok((answer, _report)) => {
             if answer.trim().is_empty() {
                 missing_fields.push(question_text.to_string());
             } else {

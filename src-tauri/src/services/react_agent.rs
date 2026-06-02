@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::services::question_tool::ClarificationPayload;
+use crate::services::verification::types::VerificationReport;
 
 /// ReAct 事件 — 通过 SSE 流式发送给前端
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,7 +31,11 @@ pub enum ReActEvent {
     #[serde(rename = "error")]
     Error { session_id: String, message: String },
     #[serde(rename = "done")]
-    Done { session_id: String },
+    Done {
+        session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        verification_report: Option<VerificationReport>,
+    },
     /// Agent uses the `question` tool to ask the user a clarification question.
     /// `payload` contains question_id, prompt, mode, and options.
     #[serde(rename = "clarification")]

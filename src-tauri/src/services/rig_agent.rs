@@ -637,9 +637,7 @@ impl RigAgent {
                 session_id: timeout_sid.clone(),
                 message: "会话超时（超过10分钟），请重新开始对话".to_string(),
             });
-            let _ = timeout_sender.send(ReActEvent::Done {
-                session_id: timeout_sid,
-            });
+            let _ = timeout_sender.send(ReActEvent::Done { session_id: timeout_sid, verification_report: None });
         }
     }
 
@@ -676,8 +674,8 @@ impl RigAgent {
                 });
                 let _ = sender.send(ReActEvent::Done {
                     session_id: sid.to_string(),
+                    verification_report: None,
                 });
-                return;
             }
 
             match item {
@@ -837,6 +835,7 @@ impl RigAgent {
                     );
                     let _ = sender.send(ReActEvent::Done {
                         session_id: sid.to_string(),
+                        verification_report: None,
                     });
                 }
                 // non_exhaustive 回退处理新变体
@@ -995,7 +994,7 @@ impl RigAgent {
             }
         }
 
-        let _ = sender.send(ReActEvent::Done { session_id: sid });
+        let _ = sender.send(ReActEvent::Done { session_id: sid, verification_report: None });
         Ok(())
     }
 }
