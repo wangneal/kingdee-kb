@@ -19,6 +19,20 @@ export interface RAGSource {
   score: number;
 }
 
+/** 验证报告（与 backend VerificationReport 对应） */
+export interface VerificationReport {
+  level: "Confirmed" | "NeedsReview" | "Suspected" | "Failed";
+  overall_confidence: number;
+  checks: {
+    check_name: string;
+    passed: boolean;
+    confidence: number;
+    detail: string;
+    evidence: string[];
+  }[];
+  suggested_labels: string[];
+}
+
 export interface AgentMessage {
   id: string;
   role: "user" | "assistant";
@@ -31,6 +45,8 @@ export interface AgentMessage {
   sources?: RAGSource[];
   /** 文件附件（用户发送的文件、Agent 生成的文件） */
   attachments?: FileAttachment[];
+  /** 验证层报告 */
+  verificationReport?: VerificationReport;
 }
 
 /** 文件附件类型 */

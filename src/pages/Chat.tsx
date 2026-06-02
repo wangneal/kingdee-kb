@@ -39,6 +39,7 @@ import {
   type FileAttachment,
   type ReActTrace,
 } from "../contexts/AgentContext"
+import { VerificationBadge } from "../components/VerificationBadge";
 import { useProject } from "../contexts/ProjectContext";
 import {
   isLLMConfigured,
@@ -1178,6 +1179,11 @@ const MessageBubble = memo(function MessageBubble({
                 {message.content.replace(/^\n+/, "")}
               </ReactMarkdown>
             </div>
+          )}
+
+          {/* 验证报告 */}
+          {message.verificationReport && !message.streaming && (
+            <VerificationBadge report={message.verificationReport} />
           )}
 
           {/* File Attachments */}
