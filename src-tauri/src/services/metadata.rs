@@ -133,6 +133,8 @@ impl MetadataStore {
 
         Ok(())
 
+    }
+
     // ─── Document operations ───
 
     /// Insert a new document. Returns the document ID.

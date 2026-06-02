@@ -31,7 +31,7 @@ fn project_allowed(project: &str, project_id: Option<&str>, extra_project_ids: &
     project_id.map_or(true, |pid| project == pid)
 }
 
-// ─── Jieba Tokenizer for tantivy ───
+// ─── tantivy 的 Jieba 分词器 ───
 
 /// 使用 jieba `cut_for_search` 进行中文文本分词的分词器
 pub struct JiebaTokenizer {
@@ -116,7 +116,7 @@ const KINGDEE_DOMAIN_WORDS: &[(&str, usize)] = &[
 ];
 
 impl JiebaTokenizer {
-    /// Create a JiebaTokenizer with the default dict + Kingdee domain words
+    /// 使用默认词典和金蝶领域专业术语创建 JiebaTokenizer
     pub fn with_domain_dict() -> Self {
         let mut jieba = Jieba::new();
         for (word, freq) in KINGDEE_DOMAIN_WORDS {
@@ -139,7 +139,7 @@ impl Clone for JiebaTokenizer {
 /// jieba cut_for_search 的 token 流
 pub struct JiebaTokenStream {
     token: tantivy::tokenizer::Token,
-    tokens: Vec<(usize, usize, String)>, // (byte_offset_from, byte_offset_to, text)
+    tokens: Vec<(usize, usize, String)>, // （字节偏移起始、字节偏移结束、文本）
     index: usize,
 }
 
@@ -177,7 +177,7 @@ impl tantivy::tokenizer::Tokenizer for JiebaTokenizer {
         let mut search_from = 0usize;
 
         for word in words {
-            // jieba returns &str slices; find their byte offsets in the original text
+            // jieba 返回 &str 切片；在原始文本中查找其字节偏移量
             if let Some(byte_start) = text[search_from..].find(word) {
                 let byte_offset_from = search_from + byte_start;
                 let byte_offset_to = byte_offset_from + word.len();
@@ -194,26 +194,26 @@ impl tantivy::tokenizer::Tokenizer for JiebaTokenizer {
     }
 }
 
-// ─── BM25 Search Result ───
+// ─── BM25 搜索结果 ───
 
 /// BM25 搜索结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BM25SearchResult {
-    /// Chunk ID from the metadata store
+    /// 来自元数据存储的 Chunk ID
     pub chunk_id: i64,
-    /// Document title
+    /// 文档标题
     pub title: String,
-    /// Chunk content (snippet)
+    /// Chunk 内容（片段）
     pub content: String,
-    /// BM25 relevance score
+    /// BM25 相关性评分
     pub score: f32,
-    /// Optional section path
+    /// 可选的章节路径
     pub section_path: Option<String>,
-    /// Project name
+    /// 项目名称
     pub project: String,
 }
 
-// ─── BM25 Service ───
+// ─── BM25 服务 ───
 
 /// 基于 tantivy 和 jieba 分词的 BM25 全文搜索服务
 pub struct BM25Service {
@@ -221,7 +221,7 @@ pub struct BM25Service {
     reader: IndexReader,
     writer: Arc<Mutex<IndexWriter>>,
     index_dir: PathBuf,
-    // Field handles (cached for performance)
+    // 字段句柄（缓存以提高性能）
     field_chunk_id: Field,
     field_content: Field,
     field_title: Field,
@@ -230,17 +230,17 @@ pub struct BM25Service {
 }
 
 impl BM25Service {
-    /// Create or open a BM25 index at the given directory
+    /// 在指定目录创建或打开 BM25 索引
     pub fn new(index_dir: PathBuf) -> Result<Self, String> {
         std::fs::create_dir_all(&index_dir)
             .map_err(|e| format!("Failed to create BM25 index directory: {}", e))?;
 
         let mut schema_builder = Schema::builder();
 
-        // chunk_id: indexed i64 for deletion and retrieval
+        // chunk_id：已索引的 i64 字段，用于删除和检索
         let field_chunk_id = schema_builder.add_i64_field("chunk_id", STORED | INDEXED);
 
-        // content: full-text indexed with jieba tokenizer, stored for snippets
+        // content：使用 jieba 分词器进行全文索引，存储用于片段显示
         let field_content = schema_builder.add_text_field(
             "content",
             TextOptions::default()
@@ -252,7 +252,7 @@ impl BM25Service {
                 .set_stored(),
         );
 
-        // title: full-text indexed with jieba, stored
+        // title：使用 jieba 进行全文索引，已存储
         let field_title = schema_builder.add_text_field(
             "title",
             TextOptions::default()
@@ -264,10 +264,10 @@ impl BM25Service {
                 .set_stored(),
         );
 
-        // section_path: stored only
+        // section_path：仅存储
         let field_section_path = schema_builder.add_text_field("section_path", STORED);
 
-        // project: indexed with raw tokenizer for exact-match filtering, stored
+        // project：使用原始分词器索引用于精确匹配过滤，已存储
         let field_project = schema_builder.add_text_field(
             "project",
             TextOptions::default()
@@ -281,7 +281,7 @@ impl BM25Service {
 
         let schema = schema_builder.build();
 
-        // Open existing or create new index
+        // 打开现有索引或创建新索引
         let index = if index_dir.join("meta.json").exists() {
             Index::open_in_dir(&index_dir)
                 .map_err(|e| format!("Failed to open BM25 index: {}", e))?
@@ -290,7 +290,7 @@ impl BM25Service {
                 .map_err(|e| format!("Failed to create BM25 index: {}", e))?
         };
 
-        // Register tokenizers (jieba with Kingdee domain dict + raw)
+        // 注册分词器（jieba 使用金蝶领域词典 + 原始分词器）
         index
             .tokenizers()
             .register("jieba", JiebaTokenizer::with_domain_dict());
@@ -298,14 +298,14 @@ impl BM25Service {
             .tokenizers()
             .register("raw", tantivy::tokenizer::RawTokenizer::default());
 
-        // Reader with manual reload policy
+        // 使用手动重载策略的读取器
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()
             .map_err(|e| format!("Failed to create BM25 reader: {}", e))?;
 
-        // Writer with 50MB heap
+        // 使用 50MB 堆内存的写入器
         let writer = index
             .writer(50_000_000)
             .map_err(|e| format!("Failed to create BM25 writer: {}", e))?;
@@ -323,7 +323,7 @@ impl BM25Service {
         })
     }
 
-    /// Index a single chunk
+    /// 索引单个 chunk
     pub fn add_chunk(
         &self,
         chunk_id: i64,
@@ -350,7 +350,7 @@ impl BM25Service {
         Ok(())
     }
 
-    /// Index multiple chunks in batch
+    /// 批量索引多个 chunk
     pub fn add_chunks(
         &self,
         chunks: &[(i64, String, String, Option<String>, String)],
@@ -374,7 +374,7 @@ impl BM25Service {
         Ok(())
     }
 
-    /// Remove a chunk from the index by its chunk_id
+    /// 根据 chunk_id 从索引中移除 chunk
     pub fn remove_chunk(&self, chunk_id: i64) -> Result<(), String> {
         let writer = self.writer.lock().map_err(|e| e.to_string())?;
         let term = tantivy::Term::from_field_i64(self.field_chunk_id, chunk_id);
@@ -382,9 +382,9 @@ impl BM25Service {
         Ok(())
     }
 
-    /// Remove multiple chunks and commit (batch delete with physical persistence)
+    /// 移除多个 chunk 并提交（批量删除并持久化）
     pub fn remove_chunks(&self, chunk_ids: &[i64]) -> Result<(), String> {
-        let writer = self.writer.lock().map_err(|e| e.to_string())?;
+        let mut writer = self.writer.lock().map_err(|e| e.to_string())?;
         for cid in chunk_ids {
             let term = tantivy::Term::from_field_i64(self.field_chunk_id, *cid);
             writer.delete_term(term);
@@ -397,7 +397,7 @@ impl BM25Service {
         Ok(())
     }
 
-    /// Remove all chunks for a project
+    /// 移除项目中的所有 chunk
     pub fn remove_project(&self, project: &str) -> Result<(), String> {
         let writer = self.writer.lock().map_err(|e| e.to_string())?;
         let term = tantivy::Term::from_field_text(self.field_project, project);
@@ -405,7 +405,7 @@ impl BM25Service {
         Ok(())
     }
 
-    /// Commit pending changes and reload the reader
+    /// 提交待处理的更改并重新加载读取器
     pub fn commit(&self) -> Result<(), String> {
         let mut writer = self.writer.lock().map_err(|e| e.to_string())?;
         writer
@@ -420,9 +420,9 @@ impl BM25Service {
         Ok(())
     }
 
-    /// Search for chunks matching the query, optionally filtered by project.
-    /// Supports pre-filtering exclusion of chunk IDs at the tantivy query level
-    /// (fixes "search hijacking" by chat-attachments projects).
+    /// 搜索匹配查询的 chunk，可选按项目过滤。
+    /// 支持在 tantivy 查询级别预过滤排除 chunk ID
+    /// （修复聊天附件项目的"搜索劫持"问题）。
     pub fn search(
         &self,
         query: &str,
@@ -525,28 +525,28 @@ impl BM25Service {
         Ok(results)
     }
 
-    /// Get the number of indexed documents
+    /// 获取已索引文档数量
     pub fn doc_count(&self) -> usize {
         self.reader.searcher().num_docs() as usize
     }
 
-    /// Get index directory path
+    /// 获取索引目录路径
     pub fn index_dir(&self) -> &PathBuf {
         &self.index_dir
     }
 
-    /// Rebuild the entire index from provided chunks
+    /// 使用提供的 chunk 重建整个索引
     pub fn rebuild(
         &self,
         chunks: &[(i64, String, String, Option<String>, String)],
     ) -> Result<(), String> {
         let mut writer = self.writer.lock().map_err(|e| e.to_string())?;
-        // Clear all existing documents
+        // 清除所有现有文档
         writer
             .delete_all_documents()
             .map_err(|e| format!("Failed to clear BM25 index: {}", e))?;
 
-        // Re-index all chunks
+        // 重新索引所有 chunk
         for (chunk_id, title, content, section_path, project) in chunks {
             let mut doc = TantivyDocument::new();
             doc.add_i64(self.field_chunk_id, *chunk_id);
@@ -585,7 +585,7 @@ mod tests {
         let index_dir = tmp.path().join("bm25");
         let service = BM25Service::new(index_dir).unwrap();
 
-        // Index some Chinese content
+        // 索引一些中文内容
         service
             .add_chunk(
                 1,
@@ -618,19 +618,19 @@ mod tests {
 
         service.commit().unwrap();
 
-        // Search for Chinese content
+        // 搜索中文内容
         let results = service.search("表单插件", None, &[], 10, &[]).unwrap();
         assert!(!results.is_empty(), "Should find results for '表单插件'");
         assert_eq!(results[0].chunk_id, 2, "Chunk 2 should be top result");
 
-        // Search with project filter
+        // 使用项目过滤搜索
         let results_a = service
             .search("工作流", Some("project_a"), &[], 10, &[])
             .unwrap();
         assert!(!results_a.is_empty(), "Should find '工作流' in project_a");
         assert_eq!(results_a[0].chunk_id, 3);
 
-        // Search in wrong project
+        // 在错误的项目中搜索
         let results_b = service
             .search("工作流", Some("project_b"), &[], 10, &[])
             .unwrap();
@@ -646,14 +646,14 @@ mod tests {
         let index_dir = tmp.path().join("bm25");
         let service = BM25Service::new(index_dir).unwrap();
 
-        // Index
+        // 索引
         service
             .add_chunk(1, "测试文档", "这是一个测试内容", None, "default")
             .unwrap();
         service.commit().unwrap();
         assert_eq!(service.doc_count(), 1);
 
-        // Delete
+        // 删除
         service.remove_chunk(1).unwrap();
         service.commit().unwrap();
 
@@ -730,7 +730,7 @@ mod tests {
         service.commit().unwrap();
         assert_eq!(service.doc_count(), 1);
 
-        // Rebuild with new content
+        // 使用新内容重建
         let chunks = vec![
             (
                 10,
@@ -749,7 +749,7 @@ mod tests {
         ];
         service.rebuild(&chunks).unwrap();
 
-        // Old content gone, new content present
+        // 旧内容已消失，新内容已存在
         let results = service.search("内容A", None, &[], 10, &[]).unwrap();
         assert!(
             results.is_empty(),

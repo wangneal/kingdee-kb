@@ -1,44 +1,44 @@
-//! usearch HNSW vector index management
+//! usearch HNSW 向量索引管理
 //!
-//! Wraps usearch Index for create/insert/search/save/load operations.
-//! Uses 512-dim vectors with cosine distance, BF16 quantization.
-//! Index persisted to `~/.kingdee-kb/index/vectors.usearch`.
+//! 封装 usearch Index，提供创建/插入/搜索/保存/加载操作。
+//! 使用 512 维向量、余弦距离、BF16 量化。
+//! 索引持久化到 `~/.kingdee-kb/index/vectors.usearch`。
 //!
-//! ## Safety: Auto-reserve before add()
+//! ## 安全性：add() 前自动 reserve
 //!
-//! usearch C++ `add()` accesses `contexts_[config.thread]` which is only
-//! allocated by `try_reserve()`. Calling `add()` on an un-reserved index
-//! causes Access Violation 0xc0000005 (null pointer + offset). We prevent
-//! this by auto-reserving `MIN_RESERVE_CAPACITY` before the first `add()`.
+//! usearch C++ 的 `add()` 会访问 `contexts_[config.thread]`，该缓冲区仅通过
+//! `try_reserve()` 分配。在未 reserve 的索引上调用 `add()` 会导致
+//! Access Violation 0xc0000005（空指针 + 偏移）。我们在首次 `add()` 前
+//! 自动 reserve `MIN_RESERVE_CAPACITY` 以防止此崩溃。
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use usearch::{new_index, Index, IndexOptions, MetricKind, ScalarKind};
 
-/// Default HNSW parameters for bge-small-zh-v1.5 (512-dim)
+/// bge-small-zh-v1.5 (512 维) 的默认 HNSW 参数
 const DEFAULT_CONNECTIVITY: usize = 16;
 const DEFAULT_EXPANSION_ADD: usize = 200;
 const DEFAULT_EXPANSION_SEARCH: usize = 64;
 
-/// Minimum reserve capacity to ensure usearch `contexts_` buffer is allocated.
+/// 确保 usearch `contexts_` 缓冲区已分配的最小预留容量。
 ///
-/// usearch `add()` crashes (Access Violation 0xc0000005) if `contexts_` is
-/// null — which happens when `reserve()` has never been called. We auto-reserve
-/// this minimum capacity before the first `add()` to prevent the crash.
+/// usearch 的 `add()` 在 `contexts_` 为空时会崩溃（Access Violation 0xc0000005），
+/// 这发生在从未调用过 `reserve()` 时。我们在首次 `add()` 前自动预留
+/// 此最小容量以防止崩溃。
 const MIN_RESERVE_CAPACITY: usize = 1024;
 
-/// A search result from the vector index
+/// 向量索引的搜索结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
-    /// The key (vector ID) in the index
+    /// 索引中的键（向量 ID）
     pub key: u64,
-    /// Cosine distance (0 = identical, 2 = opposite)
+    /// 余弦距离（0 = 完全相同，2 = 完全相反）
     pub distance: f32,
-    /// Cosine similarity = 1 - distance (for cosine metric)
+    /// 余弦相似度 = 1 - 距离（适用于余弦度量）
     pub similarity: f32,
 }
 
-/// Index statistics
+/// 索引统计信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexStats {
     pub vector_count: usize,
@@ -46,31 +46,33 @@ pub struct IndexStats {
     pub index_path: String,
 }
 
-/// HNSW vector index manager
+/// HNSW 向量索引管理器
 pub struct VectorIndex {
     index: Index,
     index_path: PathBuf,
     dimensions: usize,
-    /// Track whether contexts_ has been allocated (reserve called or index loaded with data).
-    /// Prevents redundant reserve calls and the Access Violation crash.
+    /// 跟踪 contexts_ 是否已分配（已调用 reserve 或索引已加载数据）。
+    /// 防止冗余的 reserve 调用和 Access Violation 崩溃。
     reserved: bool,
     /// 逻辑删除计数，用于触发后台碎片整理
     deleted_count: std::sync::atomic::AtomicUsize,
     /// 上次重建时间，用于冷却期判断
     last_compact: std::sync::Mutex<std::time::Instant>,
+    /// 最大已使用 key 值，用于 compact 时的遍历范围
+    max_key: std::sync::atomic::AtomicU64,
 }
 
 impl VectorIndex {
     const COMPACT_THRESHOLD: f64 = 0.2; // 20%
     const COMPACT_COOLDOWN_SECS: u64 = 300; // 5 分钟
 
-    /// Create a new empty index, persisting to the given directory
-    /// `dimensions` should match the embedding model output (512 for BGE, 384 for MiniLM).
+    /// 创建新的空索引，持久化到指定目录
+    /// `dimensions` 应与嵌入模型输出维度匹配（BGE 为 512，MiniLM 为 384）。
     pub fn new(index_dir: PathBuf) -> Result<Self, String> {
         Self::with_dimensions(index_dir, 512)
     }
 
-    /// Create a new empty index with explicit dimensions
+    /// 创建指定维度的新空索引
     pub fn with_dimensions(index_dir: PathBuf, dimensions: usize) -> Result<Self, String> {
         std::fs::create_dir_all(&index_dir)
             .map_err(|e| format!("Failed to create index directory: {}", e))?;
@@ -96,57 +98,37 @@ impl VectorIndex {
             reserved: false,
             deleted_count: std::sync::atomic::AtomicUsize::new(0),
             last_compact: std::sync::Mutex::new(std::time::Instant::now()),
+            max_key: std::sync::atomic::AtomicU64::new(0),
         })
+    }
 
-    /// Load an existing index from disk (auto-detect dimensions from file)
+    /// 从磁盘加载已有索引
+    /// `dimensions` 必须与保存时的索引维度一致。
     pub fn load(index_path: PathBuf) -> Result<Self, String> {
         Self::load_with_dimensions(index_path, 512)
     }
 
-    /// Load an existing index with explicit dimensions
-    pub fn load_with_dimensions(index_path: PathBuf, dimensions: usize) -> Result<Self, String> {
-        let options = IndexOptions {
-
-        ...
-
-        Ok(Self {
-            index,
-            index_path,
-            dimensions,
-            reserved: true,
-            deleted_count: std::sync::atomic::AtomicUsize::new(0),
-            last_compact: std::sync::Mutex::new(std::time::Instant::now()),
-        })
-    }
-
-    /// Load an existing index from disk
-    /// `dimensions` must match the index that was saved.
-    pub fn load(index_path: PathBuf) -> Result<Self, String> {
-        Self::load_with_dimensions(index_path, 512)
-    }
-
-    /// Load an existing index from disk with explicit dimensions.
+    /// 从磁盘加载已有索引，支持显式指定维度。
     ///
-    /// If the on-disk index was built with `multi: false` (legacy), it is
-    /// automatically deleted and a new `multi: true` index is created in its
-    /// place. The caller should re-ingest documents to repopulate the index.
+    /// 如果磁盘上的索引是用 `multi: false`（旧版）构建的，会自动删除并
+    /// 创建一个新的 `multi: true` 索引。调用方需要重新导入文档以填充索引。
     pub fn load_with_dimensions(index_path: PathBuf, dimensions: usize) -> Result<Self, String> {
-        // Try to read metadata from the existing index file.
-        // If it was built with multi:false, delete it — we can't load it
-        // with multi:true (usearch rejects mismatched multi flag).
+        // 尝试读取已有索引文件的元数据。
+        // 如果是 multi:false 构建的，删除它——无法用 multi:true 加载
+        // （usearch 会拒绝不匹配的 multi 标志）。
         if index_path.exists() {
             if let Ok(meta) = Index::metadata(index_path.to_str().unwrap_or("")) {
                 if !meta.multi {
-                    // Legacy index with multi:false — delete and recreate.
-                    // The caller will need to re-ingest, but this prevents
-                    // the "Duplicate keys" crash at runtime.
+                    // 旧版索引，multi:false —— 删除并重建。
+                    // 调用方需要重新导入，但这可以防止
+                    // 运行时的 "Duplicate keys" 崩溃。
                     let _ = std::fs::remove_file(&index_path);
                 }
             }
         }
 
         if !index_path.exists() {
-            // No index file (deleted above or never created) — return a fresh index.
+            // 无索引文件（上面已删除或从未创建）——返回一个全新索引。
             let index_dir = index_path.parent().ok_or("Invalid index path: no parent")?;
             return Self::with_dimensions(index_dir.to_path_buf(), dimensions);
         }
@@ -169,24 +151,28 @@ impl VectorIndex {
             .load(path_str)
             .map_err(|e| format!("Failed to load index from {:?}: {}", index_path, e))?;
 
-        // A loaded index with existing vectors already has contexts_ allocated
+        // 已加载且包含向量的索引，其 contexts_ 已经分配
         let reserved = index.capacity() > 0 || index.size() > 0;
 
+        let max_k = index.size() as u64;
         Ok(Self {
             index,
             index_path: index_path.to_path_buf(),
             dimensions,
             reserved,
+            deleted_count: std::sync::atomic::AtomicUsize::new(0),
+            last_compact: std::sync::Mutex::new(std::time::Instant::now()),
+            max_key: std::sync::atomic::AtomicU64::new(max_k),
         })
     }
 
-    /// Ensure the usearch `contexts_` buffer is allocated before `add()`/`search()`.
+    /// 确保 usearch `contexts_` 缓冲区在 `add()`/`search()` 前已分配。
     ///
-    /// Auto-reserves `MIN_RESERVE_CAPACITY` if no reserve has been performed yet.
-    /// This prevents the Access Violation 0xc0000005 crash that occurs when
-    /// `add()` dereferences a null `contexts_` pointer.
+    /// 如果尚未执行 reserve，会自动预留 `MIN_RESERVE_CAPACITY`。
+    /// 这防止了 `add()` 解引用空 `contexts_` 指针时的
+    /// Access Violation 0xc0000005 崩溃。
     ///
-    /// Also handles dynamic扩容 when current capacity is insufficient.
+    /// 同时处理当前容量不足时的动态扩容。
     fn ensure_reserved(&mut self) -> Result<(), String> {
         let current_size = self.index.size();
         let current_cap = self.index.capacity();
@@ -217,15 +203,18 @@ impl VectorIndex {
         Ok(())
     }
 
-    /// Add a single vector with the given key
+    /// 添加单个向量到索引
     pub fn add(&mut self, key: u64, vector: &[f32]) -> Result<(), String> {
         self.ensure_reserved()?;
         self.index
             .add(key, vector)
-            .map_err(|e| format!("Failed to add vector {}: {}", key, e))
+            .map_err(|e| format!("Failed to add vector {}: {}", key, e))?;
+        // 更新最大 key
+        self.max_key.fetch_max(key, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
     }
 
-    /// Add multiple vectors in batch
+    /// 批量添加多个向量
     pub fn add_batch(&mut self, keys: &[u64], vectors: &[Vec<f32>]) -> Result<(), String> {
         if keys.len() != vectors.len() {
             return Err(format!(
@@ -241,12 +230,13 @@ impl VectorIndex {
             self.index
                 .add(*key, vector)
                 .map_err(|e| format!("Failed to add vector {}: {}", key, e))?;
+            self.max_key.fetch_max(*key, std::sync::atomic::Ordering::Relaxed);
         }
 
         Ok(())
     }
 
-    /// Search for the top_k nearest neighbors
+    /// 搜索 top_k 个最近邻
     pub fn search(&self, query: &[f32], top_k: usize) -> Result<Vec<SearchResult>, String> {
         let results = self
             .index
@@ -267,9 +257,9 @@ impl VectorIndex {
         Ok(search_results)
     }
 
-    /// Remove a vector by key from the index.
+    /// 从索引中按 key 移除向量。
     ///
-    /// Returns the number of vectors removed (0 if key not found, 1 if found).
+    /// 返回移除的向量数量（未找到返回 0，找到返回 1）。
     pub fn remove(&self, key: u64) -> Result<usize, String> {
         let result = self
             .index
@@ -281,7 +271,7 @@ impl VectorIndex {
         result
     }
 
-    /// Remove multiple vectors by keys (batch delete).
+    /// 按 keys 批量移除向量。
     pub fn remove_keys(&self, keys: &[i64]) -> Result<usize, String> {
         let mut count = 0;
         for key in keys {
@@ -295,7 +285,7 @@ impl VectorIndex {
 
     /// 检查是否超过碎片整理阈值（20% 逻辑删除 + 5 分钟冷却）
     pub fn check_compact(&self) -> bool {
-        let total = self.index.len() as f64;
+        let total = self.len() as f64;
         if total <= 0.0 { return false; }
         if let Ok(last) = self.last_compact.lock() {
             if last.elapsed() < std::time::Duration::from_secs(Self::COMPACT_COOLDOWN_SECS) {
@@ -308,18 +298,22 @@ impl VectorIndex {
 
     /// 后台碎片整理：重建 HNSW 图，剔除已删除节点
     /// 在 tokio::task::spawn_blocking 中执行，不阻塞主线程
-    pub fn compact(&self) -> Result<(), String> {
-        let surviving: Vec<(u64, Vec<f32>)> = {
-            let n = self.index.len() as u64;
-            let mut survivors = Vec::with_capacity(n as usize);
-            for key in 1..=n {
-                if let Ok(vec) = self.index.get(key) {
-                    survivors.push((key, vec.to_vec()));
-                }
+    pub fn compact(&mut self) -> Result<(), String> {
+        let n = self.len() as u64;
+        if n == 0 || self.deleted_count.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            return Ok(());
+        }
+        // 收集幸存向量（key = 1..=max_key，逐 key 尝试获取）
+        // 注意：不能使用 1..=n（当前存活数），key 由 autoincrement 生成可能不连续
+        let max_k = self.max_key.load(std::sync::atomic::Ordering::Relaxed);
+        let mut surviving: Vec<(u64, Vec<f32>)> = Vec::with_capacity(n as usize);
+        for key in 1..=max_k {
+            let mut vec = vec![0.0f32; self.dimensions];
+            if self.index.get(key, &mut vec).is_ok() {
+                surviving.push((key, vec));
             }
-            survivors
-        };
-        // 使用兼容的默认选项重建
+        }
+        // 创建新索引
         let options = IndexOptions {
             dimensions: self.dimensions,
             metric: MetricKind::Cos,
@@ -327,9 +321,9 @@ impl VectorIndex {
             connectivity: DEFAULT_CONNECTIVITY,
             expansion_add: DEFAULT_EXPANSION_ADD,
             expansion_search: DEFAULT_EXPANSION_SEARCH,
-            multi: true,
+            multi: true, // 保持与当前配置一致
         };
-        let mut new_index = Index::new(options)
+        let mut new_index = new_index(&options)
             .map_err(|e| format!("创建新索引失败: {}", e))?;
         new_index.reserve(surviving.len())
             .map_err(|e| format!("预留容量失败: {}", e))?;
@@ -347,7 +341,7 @@ impl VectorIndex {
         Ok(())
     }
 
-    /// Save the index to disk
+    /// 保存索引到磁盘
     pub fn save(&self) -> Result<(), String> {
         let path_str = self
             .index_path
@@ -359,22 +353,22 @@ impl VectorIndex {
             .map_err(|e| format!("Failed to save index to {:?}: {}", self.index_path, e))
     }
 
-    /// Get the number of vectors in the index
+    /// 获取索引中的向量数量
     pub fn len(&self) -> usize {
         self.index.size()
     }
 
-    /// Check if the index is empty
+    /// 检查索引是否为空
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Get index capacity
+    /// 获取索引容量
     pub fn capacity(&self) -> usize {
         self.index.capacity()
     }
 
-    /// Reserve capacity for expected number of vectors
+    /// 为预期的向量数量预留容量
     pub fn reserve(&mut self, capacity: usize) -> Result<(), String> {
         self.index
             .reserve(capacity)
@@ -383,7 +377,7 @@ impl VectorIndex {
         Ok(())
     }
 
-    /// Get index statistics
+    /// 获取索引统计信息
     pub fn stats(&self) -> IndexStats {
         IndexStats {
             vector_count: self.len(),
@@ -426,24 +420,24 @@ mod tests {
         assert_eq!(index.len(), 1);
         assert!(!index.is_empty());
 
-        // Search for self
+        // 搜索自身
         let results = index.search(&v0, 3).unwrap();
         assert_eq!(results[0].key, 1);
         assert!(results[0].distance < 0.01);
         assert!(results[0].similarity > 0.99);
 
-        // Remove
+        // 移除
         let removed = index.remove(1).unwrap();
         assert_eq!(removed, 1);
-        assert_eq!(index.len(), 0); // remove() decrements size
+        assert_eq!(index.len(), 0); // remove() 会减少 size
 
-        // Save and reload
+        // 保存并重新加载
         index.save().unwrap();
         let index_path = tmp.path().join("vectors.usearch");
         assert!(index_path.exists());
 
         let loaded = VectorIndex::load(index_path).unwrap();
-        assert_eq!(loaded.len(), 0); // vector was removed before save
+        assert_eq!(loaded.len(), 0); // 向量在保存前已被移除
     }
 
     #[test]
@@ -458,20 +452,20 @@ mod tests {
 
         let results = index.search(&vectors[0], 5).unwrap();
         assert!(!results.is_empty());
-        assert_eq!(results[0].key, 0); // self should be first
+        assert_eq!(results[0].key, 0); // 自身应该是第一个
     }
 
     #[test]
     fn test_add_without_explicit_reserve_does_not_crash() {
-        // This test verifies the core fix: calling add() on a fresh index
-        // (without explicit reserve) should NOT cause Access Violation 0xc0000005.
-        // Previously, usearch add() would dereference null contexts_ pointer.
+        // 此测试验证核心修复：在全新索引上调用 add()
+        // （不显式 reserve）不应导致 Access Violation 0xc0000005。
+        // 之前，usearch 的 add() 会解引用空的 contexts_ 指针。
         let tmp = tempfile::tempdir().unwrap();
         let mut index = VectorIndex::new(tmp.path().to_path_buf()).unwrap();
 
-        // No explicit reserve() call — auto-reserve should kick in
+        // 不显式调用 reserve() —— 自动预留机制应生效
         let v = random_vector(512, 1);
-        index.add(1, &v).unwrap(); // Should NOT crash
+        index.add(1, &v).unwrap(); // 不应崩溃
         assert_eq!(index.len(), 1);
     }
 }

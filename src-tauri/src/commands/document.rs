@@ -67,7 +67,7 @@ pub async fn delete_document(
         if idx.check_compact() {
             let idx_ref = state.vector_index.clone();
             std::thread::spawn(move || {
-                if let Ok(idxx) = idx_ref.lock() {
+                if let Ok(mut idxx) = idx_ref.lock() {
                     let _ = idxx.compact();
                 }
             });
@@ -127,7 +127,7 @@ pub async fn delete_documents_batch(
         if idx.check_compact() {
             let idx_ref = state.vector_index.clone();
             std::thread::spawn(move || {
-                if let Ok(idxx) = idx_ref.lock() {
+                if let Ok(mut idxx) = idx_ref.lock() {
                     let _ = idxx.compact();
                 }
             });
