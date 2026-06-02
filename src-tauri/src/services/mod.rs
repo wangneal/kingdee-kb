@@ -74,4 +74,5 @@ pub mod analysis_cache;
 pub mod ingest_cache;
 pub mod whisper_service;
 pub mod xfyun_asr;
+pub mod verification;
 pub mod xlsx_filler;
