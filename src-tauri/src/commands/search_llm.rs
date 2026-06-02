@@ -42,6 +42,8 @@ pub async fn hybrid_search(
         &state.vector_index,
         &state.bm25,
         &state.metadata,
+        state.reranker.as_ref(),
+        Some(&state.wiki_pages),
     )
 }
 

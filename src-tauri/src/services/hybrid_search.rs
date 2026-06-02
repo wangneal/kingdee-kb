@@ -10,7 +10,9 @@ use std::collections::HashMap;
 use crate::services::bm25_service::BM25Service;
 use crate::services::embedding::EmbeddingService;
 use crate::services::metadata::MetadataStore;
+use crate::services::rerank::RerankerService;
 use crate::services::vector_index::VectorIndex;
+use crate::services::wiki_page::WikiPageStore;
 
 /// RRF constant — higher k favors more uniform weighting across retrievers
 const RRF_K: f32 = 60.0;
@@ -123,8 +125,22 @@ pub fn hybrid_search(
     vector_index: &std::sync::Mutex<VectorIndex>,
     bm25: &std::sync::Mutex<BM25Service>,
     metadata: &std::sync::Mutex<MetadataStore>,
+    reranker: Option<&RerankerService>,
+    wiki_pages: Option<&std::sync::Mutex<WikiPageStore>>,
 ) -> Result<Vec<HybridSearchResult>, String> {
-    // ── Step 0: 前置过滤——收集 chat-attachments 的 chunk_id 供排除 ──
+    // ── Step 0: wiki_pages 优先搜索 ──
+    if let Some(wiki_store) = wiki_pages {
+        if let Ok(store) = wiki_store.lock() {
+            if let Ok(mut wiki_results) = store.search_pages(project_id, query, top_k) {
+                wiki_results.retain(|r| project_allowed(&r.project, project_id, extra_project_ids));
+                if wiki_results.first().map(|r| r.score).unwrap_or(0.0) > 0.5 {
+                    return Ok(wiki_results);
+                }
+            }
+        }
+    }
+
+    // ── Step 0.5: 前置过滤——收集 chat-attachments 的 chunk_id 供排除 ──
     let exclude_chunk_ids: Vec<i64> = {
         let meta = metadata.lock().map_err(|e| e.to_string())?;
         meta.get_chat_attachment_chunk_ids()?
@@ -228,6 +244,22 @@ pub fn hybrid_search(
 
     // ── Step 7: MMR diversity re-ranking ──
     results = diversify_by_title(results, top_k);
+
+    // ── Step 8: Cross-Encoder Rerank（可选）──
+    if let Some(reranker) = reranker {
+        if let Ok(reranked) = reranker.rerank(query, &results) {
+            return Ok(reranked.into_iter().map(|r| HybridSearchResult {
+                chunk_id: r.chunk_id,
+                title: r.title,
+                content: r.content,
+                score: r.score,
+                source: r.source,
+                document_id: r.document_id,
+                section_path: r.section_path,
+                project: r.project,
+            }).collect());
+        }
+    }
 
     Ok(results)
 }

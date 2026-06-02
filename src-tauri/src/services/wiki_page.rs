@@ -455,6 +455,78 @@ impl WikiPageStore {
         Ok(results)
     }
 
+    /// 按标题/内容模糊搜索 wiki 页面，返回 HybridSearchResult
+    pub fn search_pages(
+        &self,
+        project: Option<&str>,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<crate::services::hybrid_search::HybridSearchResult>, String> {
+        use crate::services::hybrid_search::HybridSearchResult;
+
+        let pattern = format!("%{}%", query);
+
+        let mut results = Vec::new();
+        if let Some(proj) = project {
+            let mut stmt = self.db.prepare(
+                "SELECT id, project, title, content, 0.7 AS score
+                 FROM wiki_pages
+                 WHERE project = ?1 AND title LIKE ?2
+                 UNION
+                 SELECT id, project, title, content, 0.4 AS score
+                 FROM wiki_pages
+                 WHERE project = ?1 AND content LIKE ?2 AND title NOT LIKE ?2
+                 ORDER BY score DESC
+                 LIMIT ?3"
+            ).map_err(|e| format!("准备搜索 wiki_pages 查询失败: {}", e))?;
+            let mapped = stmt.query_map(params![proj, pattern, top_k as i64], |row| {
+                let score: f64 = row.get(4)?;
+                Ok(HybridSearchResult {
+                    chunk_id: row.get::<_, i64>(0)?,
+                    title: row.get::<_, String>(2)?,
+                    content: row.get::<_, String>(3)?,
+                    score: score as f32,
+                    source: "wiki_pages".to_string(),
+                    document_id: row.get::<_, i64>(0)?,
+                    section_path: None,
+                    project: row.get::<_, String>(1)?,
+                })
+            }).map_err(|e| format!("执行搜索 wiki_pages 查询失败: {}", e))?;
+            for row in mapped {
+                results.push(row.map_err(|e| format!("读取 wiki_pages 搜索行失败: {}", e))?);
+            }
+        } else {
+            let mut stmt = self.db.prepare(
+                "SELECT id, project, title, content, 0.7 AS score
+                 FROM wiki_pages
+                 WHERE title LIKE ?1
+                 UNION
+                 SELECT id, project, title, content, 0.4 AS score
+                 FROM wiki_pages
+                 WHERE content LIKE ?1 AND title NOT LIKE ?1
+                 ORDER BY score DESC
+                 LIMIT ?2"
+            ).map_err(|e| format!("准备搜索 wiki_pages 查询失败: {}", e))?;
+            let mapped = stmt.query_map(params![pattern, top_k as i64], |row| {
+                let score: f64 = row.get(4)?;
+                Ok(HybridSearchResult {
+                    chunk_id: row.get::<_, i64>(0)?,
+                    title: row.get::<_, String>(2)?,
+                    content: row.get::<_, String>(3)?,
+                    score: score as f32,
+                    source: "wiki_pages".to_string(),
+                    document_id: row.get::<_, i64>(0)?,
+                    section_path: None,
+                    project: row.get::<_, String>(1)?,
+                })
+            }).map_err(|e| format!("执行搜索 wiki_pages 查询失败: {}", e))?;
+            for row in mapped {
+                results.push(row.map_err(|e| format!("读取 wiki_pages 搜索行失败: {}", e))?);
+            }
+        }
+        Ok(results)
+    }
+
     /// 获取反向链接（哪些页面引用了当前页面）
     pub fn get_backlinks(&self, project: &str, slug: &str) -> Result<Vec<WikiPageBrief>, String> {
         let pattern = format!("%{}%", slug);
