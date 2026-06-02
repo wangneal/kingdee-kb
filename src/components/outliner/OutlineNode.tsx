@@ -4,22 +4,23 @@
  * 单个大纲节点的完整交互：选择、展开/收起、内联编辑、
  * 键盘导航、完成状态切换、语音按钮占位。
  */
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+
 import {
-  ChevronRight,
-  ChevronDown,
-  GripVertical,
   CheckCircle,
+  ChevronDown,
+  ChevronRight,
   Circle,
+  GripVertical,
   Mic,
   Trash2,
-} from "lucide-react";
-import { useOutline, type TreeNode } from "../../contexts/OutlineContext";
-import { useAudio } from "../../contexts/AudioContext";
+} from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useAudio } from "../../contexts/AudioContext"
+import { type TreeNode, useOutline } from "../../contexts/OutlineContext"
 
 interface OutlineNodeProps {
-  node: TreeNode;
-  depth: number;
+  node: TreeNode
+  depth: number
 }
 
 export default function OutlineNode({ node, depth }: OutlineNodeProps) {
@@ -33,264 +34,282 @@ export default function OutlineNode({ node, depth }: OutlineNodeProps) {
     updateNode,
     deleteNode,
     moveNode,
-  } = useOutline();
+  } = useOutline()
 
-  const { status, startAudioRecording, stopAudioRecording } = useAudio();
-  const [editing, setEditing] = useState(false);
-  const [editContent, setEditContent] = useState(node.content);
-  const [isRecording, setRecording] = useState(false);
-  const contentRef = useRef<HTMLDivElement>(null);
+  const { status, startAudioRecording, stopAudioRecording } = useAudio()
+  const [editing, setEditing] = useState(false)
+  const [editContent, setEditContent] = useState(node.content)
+  const [isRecording, setRecording] = useState(false)
+  const contentRef = useRef<HTMLDivElement>(null)
 
-  const isSelected = selectedNodeId === node.id;
-  const isExpanded = expandedNodeIds.has(node.id);
-  const hasChildren = node.children.length > 0;
+  const isSelected = selectedNodeId === node.id
+  const isExpanded = expandedNodeIds.has(node.id)
+  const hasChildren = node.children.length > 0
 
   // 同步外部内容变化
   useEffect(() => {
     if (!editing) {
-      setEditContent(node.content);
+      setEditContent(node.content)
     }
-  }, [node.content, editing]);
+  }, [node.content, editing])
 
   // ── 辅助：获取可见节点的扁平列表（用于键盘导航） ──
   const getVisibleNodeIds = useCallback((): number[] => {
-    const ids: number[] = [];
+    const ids: number[] = []
     const walk = (nodes: TreeNode[]) => {
       for (const n of nodes) {
-        ids.push(n.id);
+        ids.push(n.id)
         if (expandedNodeIds.has(n.id) && n.children.length > 0) {
-          walk(n.children);
+          walk(n.children)
         }
       }
-    };
-    walk(tree);
-    return ids;
-  }, [tree, expandedNodeIds]);
+    }
+    walk(tree)
+    return ids
+  }, [tree, expandedNodeIds])
 
   // ── 选择 ──
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
-      e.stopPropagation();
-      selectNode(node.id);
+      e.stopPropagation()
+      selectNode(node.id)
     },
     [node.id, selectNode],
-  );
+  )
 
   // ── 展开/收起 ──
   const handleToggle = useCallback(
     (e: React.MouseEvent) => {
-      e.stopPropagation();
-      toggleExpand(node.id);
+      e.stopPropagation()
+      toggleExpand(node.id)
     },
     [node.id, toggleExpand],
-  );
+  )
 
   // ── 双击进入编辑模式 ──
   const handleDoubleClick = useCallback(() => {
-    setEditing(true);
-    setEditContent(node.content);
+    setEditing(true)
+    setEditContent(node.content)
     // 延迟聚焦，等待 contentEditable 渲染
     requestAnimationFrame(() => {
       if (contentRef.current) {
-        contentRef.current.focus();
+        contentRef.current.focus()
         // 选中全部文本
-        const range = document.createRange();
-        range.selectNodeContents(contentRef.current);
-        const sel = window.getSelection();
-        sel?.removeAllRanges();
-        sel?.addRange(range);
+        const range = document.createRange()
+        range.selectNodeContents(contentRef.current)
+        const sel = window.getSelection()
+        sel?.removeAllRanges()
+        sel?.addRange(range)
       }
-    });
-  }, [node.content]);
+    })
+  }, [node.content])
 
   // ── 保存编辑 ──
   const saveEdit = useCallback(async () => {
-    const trimmed = editContent.trim();
+    const trimmed = editContent.trim()
     if (trimmed !== node.content) {
-      await updateNode(node.id, { content: trimmed });
+      await updateNode(node.id, { content: trimmed })
     }
-    setEditing(false);
-  }, [editContent, node.content, node.id, updateNode]);
+    setEditing(false)
+  }, [editContent, node.content, node.id, updateNode])
 
   // ── 取消编辑 ──
   const cancelEdit = useCallback(() => {
-    setEditContent(node.content);
-    setEditing(false);
-  }, [node.content]);
+    setEditContent(node.content)
+    setEditing(false)
+  }, [node.content])
 
   // ── 完成状态切换 ──
   const handleToggleCompleted = useCallback(
     (e: React.MouseEvent) => {
-      e.stopPropagation();
-      updateNode(node.id, { completed: !node.completed });
+      e.stopPropagation()
+      updateNode(node.id, { completed: !node.completed })
     },
     [node.id, node.completed, updateNode],
-  );
+  )
 
   // ── 删除节点 ──
   const handleDelete = useCallback(
     (e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (window.confirm(`确认删除节点"${node.content}"？${hasChildren ? "子节点也将被删除。" : ""}`)) {
-        deleteNode(node.id);
+      e.stopPropagation()
+      if (
+        window.confirm(`确认删除节点"${node.content}"？${hasChildren ? "子节点也将被删除。" : ""}`)
+      ) {
+        deleteNode(node.id)
       }
     },
     [node.id, node.content, hasChildren, deleteNode],
-  );
+  )
 
   // ── 语音输入：开始/停止录音并追加转录文本 ──
   const handleVoice = useCallback(
     async (e: React.MouseEvent) => {
-      e.stopPropagation();
+      e.stopPropagation()
       if (status === "idle" || status === "error") {
-        await startAudioRecording();
-        setRecording(true);
+        await startAudioRecording()
+        setRecording(true)
       } else if (status === "recording") {
-        setRecording(false);
-        const text = await stopAudioRecording();
+        setRecording(false)
+        const text = await stopAudioRecording()
         if (text) {
-          const newContent = node.content ? `${node.content}\n${text}` : text;
-          await updateNode(node.id, { content: newContent });
+          const newContent = node.content ? `${node.content}\n${text}` : text
+          await updateNode(node.id, { content: newContent })
         }
       }
     },
     [status, startAudioRecording, stopAudioRecording, node.content, node.id, updateNode],
-  );
+  )
 
   // ── 编辑模式键盘处理 ──
   const handleEditKeyDown = useCallback(
     async (e: React.KeyboardEvent) => {
       if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        await saveEdit();
+        e.preventDefault()
+        await saveEdit()
         // 创建同级节点
-        const newNode = await createNode(node.parent_id, "");
+        const newNode = await createNode(node.parent_id, "")
         if (newNode) {
-          selectNode(newNode.id);
+          selectNode(newNode.id)
         }
       } else if (e.key === "Escape") {
-        e.preventDefault();
-        cancelEdit();
+        e.preventDefault()
+        cancelEdit()
       } else if (e.key === "Tab") {
-        e.preventDefault();
-        await saveEdit();
+        e.preventDefault()
+        await saveEdit()
         if (e.shiftKey) {
           // Shift+Tab: 提升层级（成为父节点的兄弟）
           if (node.parent_id !== null) {
-            const parentNode = tree.find((n) => n.id === node.parent_id);
+            const parentNode = tree.find((n) => n.id === node.parent_id)
             if (parentNode) {
-              await moveNode(node.id, parentNode.parent_id, parentNode.sort_order + 1);
+              await moveNode(node.id, parentNode.parent_id, parentNode.sort_order + 1)
             }
           }
         } else {
           // Tab: 缩进（成为上一个兄弟的子节点）
-          const siblings = tree.filter((n) => n.parent_id === node.parent_id);
-          const idx = siblings.findIndex((n) => n.id === node.id);
+          const siblings = tree.filter((n) => n.parent_id === node.parent_id)
+          const idx = siblings.findIndex((n) => n.id === node.id)
           if (idx > 0) {
-            const prevSibling = siblings[idx - 1];
-            await moveNode(node.id, prevSibling.id, prevSibling.children.length);
+            const prevSibling = siblings[idx - 1]
+            await moveNode(node.id, prevSibling.id, prevSibling.children.length)
           }
         }
       }
     },
     [saveEdit, cancelEdit, createNode, node, selectNode, moveNode, tree],
-  );
+  )
 
   // ── 导航模式键盘处理 ──
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (editing) return; // 编辑模式下不处理导航键
+      if (editing) return // 编辑模式下不处理导航键
 
-      const visibleIds = getVisibleNodeIds();
-      const currentIdx = visibleIds.indexOf(node.id);
+      const visibleIds = getVisibleNodeIds()
+      const currentIdx = visibleIds.indexOf(node.id)
 
       switch (e.key) {
         case "ArrowUp": {
-          e.preventDefault();
+          e.preventDefault()
           if (currentIdx > 0) {
-            selectNode(visibleIds[currentIdx - 1]);
+            selectNode(visibleIds[currentIdx - 1])
           }
-          break;
+          break
         }
         case "ArrowDown": {
-          e.preventDefault();
+          e.preventDefault()
           if (currentIdx < visibleIds.length - 1) {
-            selectNode(visibleIds[currentIdx + 1]);
+            selectNode(visibleIds[currentIdx + 1])
           }
-          break;
+          break
         }
         case "ArrowLeft": {
-          e.preventDefault();
+          e.preventDefault()
           if (isExpanded && hasChildren) {
-            toggleExpand(node.id);
+            toggleExpand(node.id)
           }
-          break;
+          break
         }
         case "ArrowRight": {
-          e.preventDefault();
+          e.preventDefault()
           if (!isExpanded && hasChildren) {
-            toggleExpand(node.id);
+            toggleExpand(node.id)
           }
-          break;
+          break
         }
         case "Enter": {
-          e.preventDefault();
+          e.preventDefault()
           // 创建同级节点
           createNode(node.parent_id, "").then((newNode) => {
-            if (newNode) selectNode(newNode.id);
-          });
-          break;
+            if (newNode) selectNode(newNode.id)
+          })
+          break
         }
         case "Tab": {
-          e.preventDefault();
+          e.preventDefault()
           if (e.shiftKey) {
             // Shift+Tab: 提升层级
             if (node.parent_id !== null) {
-              const parentNode = tree.find((n) => n.id === node.parent_id);
+              const parentNode = tree.find((n) => n.id === node.parent_id)
               if (parentNode) {
-                moveNode(node.id, parentNode.parent_id, parentNode.sort_order + 1);
+                moveNode(node.id, parentNode.parent_id, parentNode.sort_order + 1)
               }
             }
           } else {
             // Tab: 缩进
-            const siblings = tree.filter((n) => n.parent_id === node.parent_id);
-            const idx = siblings.findIndex((n) => n.id === node.id);
+            const siblings = tree.filter((n) => n.parent_id === node.parent_id)
+            const idx = siblings.findIndex((n) => n.id === node.id)
             if (idx > 0) {
-              const prevSibling = siblings[idx - 1];
-              moveNode(node.id, prevSibling.id, prevSibling.children.length);
+              const prevSibling = siblings[idx - 1]
+              moveNode(node.id, prevSibling.id, prevSibling.children.length)
             }
           }
-          break;
+          break
         }
         case "Delete":
         case "Backspace": {
-          e.preventDefault();
-          if (window.confirm(`确认删除节点"${node.content}"？${hasChildren ? "子节点也将被删除。" : ""}`)) {
-            deleteNode(node.id);
+          e.preventDefault()
+          if (
+            window.confirm(
+              `确认删除节点"${node.content}"？${hasChildren ? "子节点也将被删除。" : ""}`,
+            )
+          ) {
+            deleteNode(node.id)
           }
-          break;
+          break
         }
       }
     },
-    [editing, node, isExpanded, hasChildren, getVisibleNodeIds, selectNode, toggleExpand, createNode, moveNode, deleteNode, tree],
-  );
+    [
+      editing,
+      node,
+      isExpanded,
+      hasChildren,
+      getVisibleNodeIds,
+      selectNode,
+      toggleExpand,
+      createNode,
+      moveNode,
+      deleteNode,
+      tree,
+    ],
+  )
 
   // ── 选中时自动聚焦（接收键盘事件） ──
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (isSelected && !editing && containerRef.current) {
-      containerRef.current.focus();
+      containerRef.current.focus()
     }
-  }, [isSelected, editing]);
+  }, [isSelected, editing])
 
   // ── 解析标签 ──
   const tags = useMemo(() => {
     try {
-      return JSON.parse(node.tags) as string[];
+      return JSON.parse(node.tags) as string[]
     } catch {
-      return [];
+      return []
     }
-  }, [node.tags]);
+  }, [node.tags])
 
   return (
     <div>
@@ -304,9 +323,7 @@ export default function OutlineNode({ node, depth }: OutlineNodeProps) {
         onClick={handleClick}
         onKeyDown={handleKeyDown}
         className={`group flex items-center gap-1 rounded-md px-2 py-1 text-sm transition-colors outline-none ${
-          isSelected
-            ? "bg-[#1A6BD8]/10 text-[#1A6BD8]"
-            : "text-neutral-700 hover:bg-neutral-100"
+          isSelected ? "bg-[#1A6BD8]/10 text-[#1A6BD8]" : "text-neutral-700 hover:bg-neutral-100"
         } ${node.completed ? "opacity-60" : ""}`}
         style={{ paddingLeft: `${depth * 20 + 8}px` }}
       >
@@ -396,11 +413,7 @@ export default function OutlineNode({ node, depth }: OutlineNodeProps) {
                 : "text-neutral-300 opacity-0 group-hover:opacity-100 hover:text-[#1A6BD8]"
           }`}
           title={
-            isRecording
-              ? "点击停止录音"
-              : status === "transcribing"
-                ? "转录中..."
-                : "语音输入"
+            isRecording ? "点击停止录音" : status === "transcribing" ? "转录中..." : "语音输入"
           }
         >
           <Mic className="h-3.5 w-3.5" />
@@ -426,5 +439,5 @@ export default function OutlineNode({ node, depth }: OutlineNodeProps) {
         </div>
       )}
     </div>
-  );
+  )
 }

@@ -234,13 +234,17 @@ pub async fn setup_backend(app: AppHandle) -> Result<(), String> {
     // 初始化阶段 2 服务
     match AppState::new(&data_dir, skill_manager) {
         Ok(app_state) => {
+            // 启动时补偿 pending 删除
+            crate::compensate_pending_deletions(&app_state);
             app.manage(app_state);
             println!("Phase 2 services initialized (embedding, vector index, metadata)");
         }
         Err(e) => {
             eprintln!("WARNING: Phase 2 services failed to initialize: {}", e);
             eprintln!("The app will start in limited mode (no embedding/search/LLM).");
-            app.manage(AppState::minimal(&data_dir));
+            let app_state = AppState::minimal(&data_dir);
+            crate::compensate_pending_deletions(&app_state);
+            app.manage(app_state);
         }
     }
 

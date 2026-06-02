@@ -68,39 +68,28 @@ export async function searchWikilinkCandidates(
 /**
  * 添加 wikilink（追加 slug 到页面的 wikilinks JSON 数组，去重）
  */
-export async function addWikilink(
-  pageId: number,
-  targetSlug: string,
-): Promise<WikiPage> {
+export async function addWikilink(pageId: number, targetSlug: string): Promise<WikiPage> {
   return invoke("add_wikilink", { pageId, targetSlug })
 }
 
 /**
  * 移除 wikilink（从页面的 wikilinks JSON 数组中删除 slug）
  */
-export async function removeWikilink(
-  pageId: number,
-  targetSlug: string,
-): Promise<WikiPage> {
+export async function removeWikilink(pageId: number, targetSlug: string): Promise<WikiPage> {
   return invoke("remove_wikilink", { pageId, targetSlug })
 }
 
 /**
  * 获取 wikilink 目标页面详情（批量查询被引页面的标题/slug/type/status）
  */
-export async function getWikilinkTargets(
-  slugs: string[],
-): Promise<WikiLinkTarget[]> {
+export async function getWikilinkTargets(slugs: string[]): Promise<WikiLinkTarget[]> {
   return invoke("get_wikilink_targets", { slugs })
 }
 
 /**
  * 获取反向链接（哪些页面引用了当前页面）
  */
-export async function getBacklinks(
-  project: string,
-  slug: string,
-): Promise<WikiPageBrief[]> {
+export async function getBacklinks(project: string, slug: string): Promise<WikiPageBrief[]> {
   return invoke("get_backlinks", { project, slug })
 }
 

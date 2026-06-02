@@ -1,32 +1,32 @@
-import { Component, ErrorInfo, ReactNode } from "react";
-import { AlertTriangle, RefreshCw } from "lucide-react";
+import { AlertTriangle, RefreshCw } from "lucide-react"
+import { Component, type ErrorInfo, type ReactNode } from "react"
 
 interface Props {
-  children: ReactNode;
+  children: ReactNode
 }
 
 interface State {
-  hasError: boolean;
-  error: Error | null;
+  hasError: boolean
+  error: Error | null
 }
 
 export default class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
-    super(props);
-    this.state = { hasError: false, error: null };
+    super(props)
+    this.state = { hasError: false, error: null }
   }
 
   static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, error };
+    return { hasError: true, error }
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("[ErrorBoundary]", error, info);
+    console.error("[ErrorBoundary]", error, info)
   }
 
   handleRetry = () => {
-    this.setState({ hasError: false, error: null });
-  };
+    this.setState({ hasError: false, error: null })
+  }
 
   render() {
     if (this.state.hasError) {
@@ -36,9 +36,7 @@ export default class ErrorBoundary extends Component<Props, State> {
             <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-red-50">
               <AlertTriangle className="h-6 w-6 text-red-500" />
             </div>
-            <h2 className="mb-2 text-lg font-semibold text-neutral-800">
-              页面渲染出错
-            </h2>
+            <h2 className="mb-2 text-lg font-semibold text-neutral-800">页面渲染出错</h2>
             <p className="mb-6 text-sm text-neutral-500">
               {this.state.error?.message || "发生了未知错误"}
             </p>
@@ -52,9 +50,9 @@ export default class ErrorBoundary extends Component<Props, State> {
             </button>
           </div>
         </div>
-      );
+      )
     }
 
-    return this.props.children;
+    return this.props.children
   }
 }

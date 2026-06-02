@@ -1,48 +1,50 @@
-import { useState, useEffect } from "react";
-import { BookOpen, AlertCircle, CheckCircle } from "lucide-react";
+import { AlertCircle, BookOpen, CheckCircle } from "lucide-react"
+import { useEffect, useState } from "react"
+import { useProject } from "../contexts/ProjectContext"
 import {
-  listWikiPages,
-  getWikiPage,
   approveWikiPage,
   getGraphNeighbors,
+  getWikiPage,
+  listWikiPages,
   type WikiPage,
   type WikiPageBrief,
-} from "../lib/tauri-commands";
-import { useProject } from "../contexts/ProjectContext";
+} from "../lib/tauri-commands"
 
 export default function Browse() {
-  const { projectId } = useProject();
-  const [wikiPages, setWikiPages] = useState<WikiPageBrief[]>([]);
-  const [selectedWiki, setSelectedWiki] = useState<WikiPage | null>(null);
-  const [neighbors, setNeighbors] = useState<{slug: string; title: string; relation: string; weight: number}[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { projectId } = useProject()
+  const [wikiPages, setWikiPages] = useState<WikiPageBrief[]>([])
+  const [selectedWiki, setSelectedWiki] = useState<WikiPage | null>(null)
+  const [neighbors, setNeighbors] = useState<
+    { slug: string; title: string; relation: string; weight: number }[]
+  >([])
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (!projectId) return;
-    setLoading(true);
+    if (!projectId) return
+    setLoading(true)
     listWikiPages(projectId)
       .then(setWikiPages)
       .catch(() => setWikiPages([]))
-      .finally(() => setLoading(false));
-  }, [projectId]);
+      .finally(() => setLoading(false))
+  }, [projectId])
 
   const pageTypeLabel = (t: string) => {
-    if (t === "entity") return "实体";
-    if (t === "concept") return "概念";
-    return t;
-  };
+    if (t === "entity") return "实体"
+    if (t === "concept") return "概念"
+    return t
+  }
 
   const statusLabel = (s: string) => {
-    if (s === "pending") return "待审核";
-    if (s === "conflict") return "有冲突";
-    return "已确认";
-  };
+    if (s === "pending") return "待审核"
+    if (s === "conflict") return "有冲突"
+    return "已确认"
+  }
 
   const statusIcon = (s: string) => {
-    if (s === "pending") return <AlertCircle className="h-3 w-3 text-yellow-500" />;
-    if (s === "conflict") return <AlertCircle className="h-3 w-3 text-red-500" />;
-    return <CheckCircle className="h-3 w-3 text-green-500" />;
-  };
+    if (s === "pending") return <AlertCircle className="h-3 w-3 text-yellow-500" />
+    if (s === "conflict") return <AlertCircle className="h-3 w-3 text-red-500" />
+    return <CheckCircle className="h-3 w-3 text-green-500" />
+  }
 
   return (
     <div className="flex h-full gap-4 p-6">
@@ -67,9 +69,11 @@ export default function Browse() {
                 type="button"
                 key={wp.id}
                 onClick={async () => {
-                  const page = await getWikiPage(wp.id);
-                  setSelectedWiki(page);
-                  getGraphNeighbors(projectId ?? "", page.slug).then(setNeighbors).catch(() => setNeighbors([]));
+                  const page = await getWikiPage(wp.id)
+                  setSelectedWiki(page)
+                  getGraphNeighbors(projectId ?? "", page.slug)
+                    .then(setNeighbors)
+                    .catch(() => setNeighbors([]))
                 }}
                 className={`w-full rounded-lg px-3 py-2 text-left text-sm transition-colors ${
                   selectedWiki?.id === wp.id
@@ -110,8 +114,8 @@ export default function Browse() {
                 <button
                   type="button"
                   onClick={async () => {
-                    const updated = await approveWikiPage(selectedWiki.id);
-                    setSelectedWiki(updated);
+                    const updated = await approveWikiPage(selectedWiki.id)
+                    setSelectedWiki(updated)
                   }}
                   className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs text-white hover:bg-amber-600"
                 >
@@ -120,7 +124,9 @@ export default function Browse() {
               )}
             </div>
             <div className="prose prose-sm max-w-none prose-headings:text-neutral-800 prose-a:text-amber-600 prose-code:bg-neutral-100 prose-pre:bg-neutral-900 prose-pre:text-neutral-100">
-              <pre className="whitespace-pre-wrap text-sm leading-relaxed">{selectedWiki.content}</pre>
+              <pre className="whitespace-pre-wrap text-sm leading-relaxed">
+                {selectedWiki.content}
+              </pre>
             </div>
 
             {/* 关联页面 */}
@@ -134,14 +140,18 @@ export default function Browse() {
                       type="button"
                       onClick={async () => {
                         try {
-                          const pages = await listWikiPages(projectId ?? "");
-                          const found = pages.find((p) => p.slug === n.slug);
+                          const pages = await listWikiPages(projectId ?? "")
+                          const found = pages.find((p) => p.slug === n.slug)
                           if (found) {
-                            const page = await getWikiPage(found.id);
-                            setSelectedWiki(page);
-                            getGraphNeighbors(projectId ?? "", page.slug).then(setNeighbors).catch(() => setNeighbors([]));
+                            const page = await getWikiPage(found.id)
+                            setSelectedWiki(page)
+                            getGraphNeighbors(projectId ?? "", page.slug)
+                              .then(setNeighbors)
+                              .catch(() => setNeighbors([]))
                           }
-                        } catch { /* ignore */ }
+                        } catch {
+                          /* ignore */
+                        }
                       }}
                       className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-700 hover:bg-amber-100"
                     >
@@ -162,5 +172,5 @@ export default function Browse() {
         )}
       </div>
     </div>
-  );
+  )
 }

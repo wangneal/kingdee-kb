@@ -1,62 +1,59 @@
-import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom"
-import { useProject } from "../contexts/ProjectContext";
 import {
+  ArrowRight,
   BookOpen,
-  Search,
+  Calendar,
+  ClipboardList,
   FileEdit,
-  MessageSquare,
-  Package,
   FileText,
   FolderOpen,
-  Calendar,
-  ArrowRight,
   Loader2,
-  ClipboardList,
+  MessageSquare,
+  Package,
+  Search,
   ShieldAlert,
-} from "lucide-react";
+} from "lucide-react"
+import { useEffect, useState } from "react"
+import { useNavigate } from "react-router-dom"
+import { useProject } from "../contexts/ProjectContext"
 import {
   getStats,
-  listProducts,
-  scanTemplates,
   type KnowledgeStats,
+  listProducts,
   type ProductMeta,
+  scanTemplates,
   type TemplateInfo,
-} from "../lib/tauri-commands";
+} from "../lib/tauri-commands"
 
 export default function Home() {
-  const { projectId } = useProject();
-  const navigate = useNavigate();
-  const [stats, setStats] = useState<KnowledgeStats | null>(null);
-  const [products, setProducts] = useState<ProductMeta[]>([]);
-  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { projectId } = useProject()
+  const navigate = useNavigate()
+  const [stats, setStats] = useState<KnowledgeStats | null>(null)
+  const [products, setProducts] = useState<ProductMeta[]>([])
+  const [templates, setTemplates] = useState<TemplateInfo[]>([])
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    (async () => {
+    ;(async () => {
       try {
         const [statsData, productsData, templatesData] = await Promise.all([
           getStats(projectId).catch(() => null),
           listProducts(projectId).catch(() => []),
           scanTemplates().catch(() => []),
-        ]);
-        setStats(statsData);
-        setProducts(productsData);
-        setTemplates(templatesData);
+        ])
+        setStats(statsData)
+        setProducts(productsData)
+        setTemplates(templatesData)
       } catch (e) {
-        console.error("Failed to load dashboard data:", e);
+        console.error("Failed to load dashboard data:", e)
       } finally {
-        setLoading(false);
+        setLoading(false)
       }
-    })();
-  }, [projectId]);
+    })()
+  }, [projectId])
 
   const recentProducts = products
-    .sort(
-      (a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    )
-    .slice(0, 5);
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, 5)
 
   const formatDate = (dateStr: string) => {
     try {
@@ -65,11 +62,11 @@ export default function Home() {
         day: "2-digit",
         hour: "2-digit",
         minute: "2-digit",
-      });
+      })
     } catch {
-      return dateStr;
+      return dateStr
     }
-  };
+  }
 
   const quickActions = [
     {
@@ -114,7 +111,7 @@ export default function Home() {
       path: "/risk",
       color: "bg-red-600",
     },
-  ];
+  ]
 
   if (loading) {
     return (
@@ -122,7 +119,7 @@ export default function Home() {
         <Loader2 className="h-6 w-6 animate-spin text-[#1A6BD8]" />
         <span className="ml-2 text-sm text-neutral-500">加载概览…</span>
       </div>
-    );
+    )
   }
 
   return (
@@ -143,9 +140,7 @@ export default function Home() {
               <FileEdit className="h-5 w-5 text-[#1A6BD8]" />
             </div>
             <div>
-              <p className="text-2xl font-semibold text-neutral-800">
-                {templates.length}
-              </p>
+              <p className="text-2xl font-semibold text-neutral-800">{templates.length}</p>
               <p className="text-xs text-neutral-500">模板数量</p>
             </div>
           </div>
@@ -157,9 +152,7 @@ export default function Home() {
               <Package className="h-5 w-5 text-purple-600" />
             </div>
             <div>
-              <p className="text-2xl font-semibold text-neutral-800">
-                {products.length}
-              </p>
+              <p className="text-2xl font-semibold text-neutral-800">{products.length}</p>
               <p className="text-xs text-neutral-500">生成产物</p>
             </div>
           </div>
@@ -182,9 +175,7 @@ export default function Home() {
 
       {/* Quick actions */}
       <div className="mb-8">
-        <h2 className="text-sm font-semibold text-neutral-700 mb-4">
-          快捷操作
-        </h2>
+        <h2 className="text-sm font-semibold text-neutral-700 mb-4">快捷操作</h2>
         <div className="grid grid-cols-4 gap-3">
           {quickActions.map((action) => (
             <button
@@ -198,12 +189,8 @@ export default function Home() {
               >
                 <action.icon className="h-4 w-4 text-white" />
               </div>
-              <p className="text-sm font-medium text-neutral-800">
-                {action.label}
-              </p>
-              <p className="text-xs text-neutral-400 mt-0.5">
-                {action.description}
-              </p>
+              <p className="text-sm font-medium text-neutral-800">{action.label}</p>
+              <p className="text-xs text-neutral-400 mt-0.5">{action.description}</p>
             </button>
           ))}
         </div>
@@ -212,9 +199,7 @@ export default function Home() {
       {/* Recent products */}
       <div>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-sm font-semibold text-neutral-700">
-            最近产物
-          </h2>
+          <h2 className="text-sm font-semibold text-neutral-700">最近产物</h2>
           {products.length > 0 && (
             <button
               type="button"
@@ -231,9 +216,7 @@ export default function Home() {
           <div className="rounded-lg border border-dashed border-neutral-200 bg-white p-8 text-center">
             <Package className="mx-auto h-8 w-8 text-neutral-300" />
             <p className="mt-2 text-sm text-neutral-500">暂无产物</p>
-            <p className="text-xs text-neutral-400 mt-1">
-              前往文档生成页面创建您的第一个产物
-            </p>
+            <p className="text-xs text-neutral-400 mt-1">前往文档生成页面创建您的第一个产物</p>
             <button
               type="button"
               onClick={() => navigate("/templates")}
@@ -251,9 +234,7 @@ export default function Home() {
                 type="button"
                 onClick={() => navigate("/products")}
                 className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-neutral-50 ${
-                  idx < recentProducts.length - 1
-                    ? "border-b border-neutral-100"
-                    : ""
+                  idx < recentProducts.length - 1 ? "border-b border-neutral-100" : ""
                 }`}
               >
                 {product.template_name.endsWith(".xlsx") ||
@@ -263,9 +244,7 @@ export default function Home() {
                   <FileText className="h-4 w-4 shrink-0 text-[#1A6BD8]" />
                 )}
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm text-neutral-700 truncate">
-                    {product.template_name}
-                  </p>
+                  <p className="text-sm text-neutral-700 truncate">{product.template_name}</p>
                   <p className="text-xs text-neutral-400 flex items-center gap-2">
                     <span className="flex items-center gap-1">
                       <FolderOpen className="h-2.5 w-2.5" />
@@ -284,5 +263,5 @@ export default function Home() {
         )}
       </div>
     </div>
-  );
+  )
 }

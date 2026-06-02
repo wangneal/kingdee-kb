@@ -10,6 +10,7 @@ pub use commands::core::{ensure_data_dir, setup_backend, SetupState};
 pub use services::template_docx;
 pub use services::template_schema;
 pub use services::template_xlsx;
+use crate::app_state::AppState;
 
 /// 在线 ASR 配置存储（腾讯云）- JSON 文件持久化
 pub struct AsrConfigStore {
@@ -66,6 +67,69 @@ impl AsrConfigStore {
             "tencent_configured": self.tencent_secret_id.is_some(),
         })
     }
+}
+
+/// 启动时补偿：重试 deletion_outbox 中 status='pending' 的记录
+pub fn compensate_pending_deletions(state: &AppState) {
+    let meta = match state.metadata.lock() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("获取 metadata 锁失败: {}", e);
+            return;
+        }
+    };
+
+    let pending = match meta.get_pending_deletions() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("读取 pending 删除记录失败: {}", e);
+            return;
+        }
+    };
+
+    if pending.is_empty() {
+        return;
+    }
+
+    tracing::info!("发现 {} 条 pending 删除记录，开始补偿", pending.len());
+    drop(meta);
+
+    for (id, doc_id, _project, keys_json) in &pending {
+        tracing::info!("补偿删除: outbox_id={}, document_id={}", id, doc_id);
+
+        let vector_keys: Vec<i64> = match serde_json::from_str(keys_json) {
+            Ok(k) => k,
+            Err(e) => {
+                tracing::warn!("解析 vector_keys 失败(outbox_id={}): {}", id, e);
+                if let Ok(meta) = state.metadata.lock() {
+                    let _ = meta.update_deletion_status(
+                        *id,
+                        "failed",
+                        Some(&format!("解析 vector_keys 失败: {}", e)),
+                    );
+                }
+                continue;
+            }
+        };
+
+        if let Ok(bm25) = state.bm25.lock() {
+            if let Err(e) = bm25.remove_chunks(&vector_keys) {
+                tracing::warn!("补偿 BM25 删除失败(outbox_id={}): {}", id, e);
+            }
+        }
+
+        if let Ok(idx) = state.vector_index.lock() {
+            if let Err(e) = idx.remove_keys(&vector_keys) {
+                tracing::warn!("补偿 usearch 删除失败(outbox_id={}): {}", id, e);
+            }
+        }
+
+        if let Ok(meta) = state.metadata.lock() {
+            let _ = meta.update_deletion_status(*id, "completed", None);
+        }
+    }
+
+    tracing::info!("删除补偿完成，共处理 {} 条记录", pending.len());
 }
 
 pub fn run() {

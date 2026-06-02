@@ -1,78 +1,71 @@
-import { useState, useCallback, useRef, useEffect, memo } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { open, save } from "@tauri-apps/plugin-dialog";
-import { openPath } from "@tauri-apps/plugin-opener";
-import { useNavigate } from "react-router-dom";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core"
+import { open, save } from "@tauri-apps/plugin-dialog"
+import { openPath } from "@tauri-apps/plugin-opener"
 import {
-  Send,
-  Trash2,
-  Loader2,
   AlertCircle,
+  BookOpen,
   Brain,
-  Paperclip,
-  X,
-  FileText,
-  Image as ImageIcon,
-  StopCircle,
-  RefreshCw,
-  Settings,
   ChevronDown,
   ChevronUp,
-  BookOpen,
-  Zap,
-  Download,
   Copy,
+  Download,
   ExternalLink,
   File,
-  FileSpreadsheet,
-  FileCode,
   FileArchive,
-} from "lucide-react";
+  FileCode,
+  FileSpreadsheet,
+  FileText,
+  Image as ImageIcon,
+  Loader2,
+  Paperclip,
+  RefreshCw,
+  Send,
+  Settings,
+  StopCircle,
+  Trash2,
+  X,
+  Zap,
+} from "lucide-react"
+import { memo, useCallback, useEffect, useRef, useState } from "react"
+import ReactMarkdown from "react-markdown"
+import { useNavigate } from "react-router-dom"
+import remarkGfm from "remark-gfm"
+import { VerificationBadge } from "../components/VerificationBadge"
 import {
-  useAgent,
-  DEFAULT_SLOT,
-  buildAgentHistory,
   type AgentMessage,
-  type RAGSource,
+  buildAgentHistory,
+  DEFAULT_SLOT,
   type FileAttachment,
+  type RAGSource,
   type ReActTrace,
+  useAgent,
 } from "../contexts/AgentContext"
-import { VerificationBadge } from "../components/VerificationBadge";
-import { useProject } from "../contexts/ProjectContext";
-import {
-  isLLMConfigured,
-  saveChatMemory,
-  countTokens,
-} from "../lib/tauri-commands";
-import { listLLMProviders } from "../lib/skill-commands";
-import type { LLMProviderConfig } from "../lib/skill-types";
-import {
-  extractFilesFromPasteEvent,
-  extractFilesFromDropEvent,
-} from "../lib/clipboard-files";
+import { useProject } from "../contexts/ProjectContext"
+import { extractFilesFromDropEvent, extractFilesFromPasteEvent } from "../lib/clipboard-files"
+import { listLLMProviders } from "../lib/skill-commands"
+import type { LLMProviderConfig } from "../lib/skill-types"
+import { countTokens, isLLMConfigured, saveChatMemory } from "../lib/tauri-commands"
 
 interface ChatAttachment {
-  id: string;
-  path: string;
-  name: string;
-  kind: "document" | "image" | "unsupported";
-  status: "ready" | "ingesting" | "parsed" | "ingested" | "error";
-  documentId?: number;
-  extractedText?: string;
-  charCount?: number;
-  error?: string;
+  id: string
+  path: string
+  name: string
+  kind: "document" | "image" | "unsupported"
+  status: "ready" | "ingesting" | "parsed" | "ingested" | "error"
+  documentId?: number
+  extractedText?: string
+  charCount?: number
+  error?: string
   /** data URL for preview (temp files that convertFileSrc can't access) */
-  previewUrl?: string;
+  previewUrl?: string
 }
 
 function nextId(): string {
-  return crypto.randomUUID();
+  return crypto.randomUUID()
 }
 
-const CHAT_STORAGE_KEY = "kingdee_kb_chat_history";
-const MAX_STORED_MESSAGES = 500;
+const CHAT_STORAGE_KEY = "kingdee_kb_chat_history"
+const MAX_STORED_MESSAGES = 500
 
 const DOCUMENT_EXTENSIONS = new Set([
   "md",
@@ -86,72 +79,86 @@ const DOCUMENT_EXTENSIONS = new Set([
   "docx",
   "xlsx",
   "xls",
-]);
-const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "bmp", "gif"]);
+])
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "bmp", "gif"])
 
 function loadChatHistory(): AgentMessage[] {
   try {
-    const raw = localStorage.getItem(CHAT_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return (parsed as AgentMessage[]).filter((m) => m.id && m.role);
+    const raw = localStorage.getItem(CHAT_STORAGE_KEY)
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return (parsed as AgentMessage[]).filter((m) => m.id && m.role)
   } catch {
-    return [];
+    return []
   }
 }
 
 function saveChatHistory(messages: AgentMessage[]) {
   try {
-    const clean = messages.map((m) => ({ ...m, streaming: false }));
-    const trimmed = clean.length > MAX_STORED_MESSAGES
-      ? clean.slice(clean.length - MAX_STORED_MESSAGES)
-      : clean;
-    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(trimmed));
+    const clean = messages.map((m) => ({ ...m, streaming: false }))
+    const trimmed =
+      clean.length > MAX_STORED_MESSAGES ? clean.slice(clean.length - MAX_STORED_MESSAGES) : clean
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(trimmed))
   } catch {
     // 忽略
   }
 }
 
 function summarizeToolArgs(args: string): string {
-  if (!args.trim()) return "";
+  if (!args.trim()) return ""
   try {
-    const parsed = JSON.parse(args) as Record<string, unknown>;
-    const parts: string[] = [];
-    for (const key of ["skill_name", "script", "action", "name_or_query", "template_id", "project_name"]) {
-      const value = parsed[key];
-      if (typeof value === "string") parts.push(`${key}: ${value}`);
+    const parsed = JSON.parse(args) as Record<string, unknown>
+    const parts: string[] = []
+    for (const key of [
+      "skill_name",
+      "script",
+      "action",
+      "name_or_query",
+      "template_id",
+      "project_name",
+    ]) {
+      const value = parsed[key]
+      if (typeof value === "string") parts.push(`${key}: ${value}`)
     }
-    if (Array.isArray(parsed.args)) parts.push(`args: ${parsed.args.length} 项`);
-    if (Array.isArray(parsed.input_files)) parts.push(`input_files: ${parsed.input_files.length} 个文件`);
-    return parts.join("\n") || `参数 ${args.length} 字符`;
+    if (Array.isArray(parsed.args)) parts.push(`args: ${parsed.args.length} 项`)
+    if (Array.isArray(parsed.input_files))
+      parts.push(`input_files: ${parsed.input_files.length} 个文件`)
+    return parts.join("\n") || `参数 ${args.length} 字符`
   } catch {
-    return args.length > 240 ? `参数 ${args.length} 字符` : args;
+    return args.length > 240 ? `参数 ${args.length} 字符` : args
   }
 }
 
 function PlanTimeline({ trace }: { trace: ReActTrace }) {
-  if (!trace.plan || trace.plan.length === 0) return null;
+  if (!trace.plan || trace.plan.length === 0) return null
 
   return (
     <div className="plan-timeline space-y-1 text-sm text-gray-600 mb-2">
       <div className="font-medium text-gray-700 mb-1 flex items-center gap-1">
-        📋 执行计划 ({trace.currentStepIndex !== null ? Math.min(trace.currentStepIndex + 1, trace.plan.length) : 0}/{trace.plan.length})
+        📋 执行计划 (
+        {trace.currentStepIndex !== null
+          ? Math.min(trace.currentStepIndex + 1, trace.plan.length)
+          : 0}
+        /{trace.plan.length})
       </div>
       {trace.plan.map((step, i) => {
-        const result = trace.stepResults[i];
-        const isCurrent = trace.currentStepIndex === i;
-        const isDone = result !== undefined;
-        const isFailed = result && !result.success;
+        const result = trace.stepResults[i]
+        const isCurrent = trace.currentStepIndex === i
+        const isDone = result !== undefined
+        const isFailed = result && !result.success
 
         return (
           <div
             key={step.id}
             className={`flex items-start gap-2 py-1 px-2 rounded ${
-              isCurrent ? "bg-blue-50 border-l-2 border-blue-400" :
-              isFailed ? "bg-red-50 border-l-2 border-red-300" :
-              isDone ? "bg-green-50 border-l-2 border-green-300" :
-              "bg-gray-50"
+              isCurrent
+                ? "bg-blue-50 border-l-2 border-blue-400"
+                : isFailed
+                  ? "bg-red-50 border-l-2 border-red-300"
+                  : isDone
+                    ? "bg-green-50 border-l-2 border-green-300"
+                    : "bg-gray-50"
             }`}
           >
             <span className="flex-shrink-0 mt-0.5">
@@ -165,13 +172,15 @@ function PlanTimeline({ trace }: { trace: ReActTrace }) {
                 <div className="text-xs text-gray-400">工具: {step.tool}</div>
               )}
               {result && (
-                <div className={`text-xs mt-1 ${result.success ? "text-green-600" : "text-red-500"}`}>
+                <div
+                  className={`text-xs mt-1 ${result.success ? "text-green-600" : "text-red-500"}`}
+                >
                   {result.success ? "完成" : result.result.slice(0, 100)}
                 </div>
               )}
             </div>
           </div>
-        );
+        )
       })}
       {trace.plannerTimeoutMessage && (
         <div className="text-xs text-amber-600 mt-2 p-2 bg-amber-50 rounded">
@@ -184,144 +193,147 @@ function PlanTimeline({ trace }: { trace: ReActTrace }) {
         </div>
       )}
     </div>
-  );
+  )
 }
 
 export default function Chat() {
-  const { projectId } = useProject();
-  const agent = useAgent();
-  const navigate = useNavigate();
-  const slot = agent.slots.get("chat") ?? DEFAULT_SLOT;
-  const { messages, loading, currentTrace } = slot;
+  const { projectId } = useProject()
+  const agent = useAgent()
+  const navigate = useNavigate()
+  const slot = agent.slots.get("chat") ?? DEFAULT_SLOT
+  const { messages, loading, currentTrace } = slot
 
-  const [input, setInput] = useState("");
-  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
-  const attaching = false;
-  const [llmReady, setLlmReady] = useState<boolean | null>(null);
-  const [providers, setProviders] = useState<LLMProviderConfig[]>([]);
-  const [selectedProviderId, setSelectedProviderId] = useState<string>("");
-  const [selectedModelId, setSelectedModelId] = useState<string>("");
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [isDragging, setIsDragging] = useState(false);
-  const [tokenUsage, setTokenUsage] = useState<{ used: number; total: number } | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  const lastInputRef = useRef<{ text: string; attachments: ChatAttachment[] } | null>(null);
+  const [input, setInput] = useState("")
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([])
+  const attaching = false
+  const [llmReady, setLlmReady] = useState<boolean | null>(null)
+  const [providers, setProviders] = useState<LLMProviderConfig[]>([])
+  const [selectedProviderId, setSelectedProviderId] = useState<string>("")
+  const [selectedModelId, setSelectedModelId] = useState<string>("")
+  const [dropdownOpen, setDropdownOpen] = useState(false)
+  const [isDragging, setIsDragging] = useState(false)
+  const [tokenUsage, setTokenUsage] = useState<{ used: number; total: number } | null>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+  const lastInputRef = useRef<{ text: string; attachments: ChatAttachment[] } | null>(null)
 
   // 从 localStorage 加载聊天历史到 slot
-  const didLoadRef = useRef(false);
+  const didLoadRef = useRef(false)
   useEffect(() => {
-    if (didLoadRef.current) return;
-    didLoadRef.current = true;
+    if (didLoadRef.current) return
+    didLoadRef.current = true
     if (slot.messages.length === 0) {
-      const history = loadChatHistory();
+      const history = loadChatHistory()
       if (history.length > 0) {
-        agent.updateMessages("chat", () => history);
+        agent.updateMessages("chat", () => history)
       }
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // 挂载时检查 LLM 配置
   useEffect(() => {
     isLLMConfigured()
       .then(setLlmReady)
-      .catch(() => setLlmReady(false));
-  }, []);
+      .catch(() => setLlmReady(false))
+  }, [])
 
   // 挂载时加载 LLM 供应商
   useEffect(() => {
     listLLMProviders()
       .then((fetchedProviders) => {
-        setProviders(fetchedProviders);
+        setProviders(fetchedProviders)
         // 预选默认供应商和模型
-        const defaultProvider = fetchedProviders.find((p) => p.is_default) || fetchedProviders[0];
+        const defaultProvider = fetchedProviders.find((p) => p.is_default) || fetchedProviders[0]
         if (defaultProvider) {
-          setSelectedProviderId(defaultProvider.id);
-          const defaultModel = defaultProvider.models.find((m) => m.is_default) || defaultProvider.models[0];
+          setSelectedProviderId(defaultProvider.id)
+          const defaultModel =
+            defaultProvider.models.find((m) => m.is_default) || defaultProvider.models[0]
           if (defaultModel) {
-            setSelectedModelId(defaultModel.id);
+            setSelectedModelId(defaultModel.id)
           }
         }
       })
       .catch((err) => {
-        console.warn("[Chat] Failed to load LLM providers:", err);
-      });
-  }, []);
+        console.warn("[Chat] Failed to load LLM providers:", err)
+      })
+  }, [])
 
   // Auto-scroll（rAF 节流 + 仅接近底部时跟随）
-  const scrollRafRef = useRef<number | null>(null);
+  const scrollRafRef = useRef<number | null>(null)
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
+    const el = scrollRef.current
+    if (!el) return
     // 距离底部 < 100px 才自动跟随
-    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-    if (!isNearBottom) return;
-    if (scrollRafRef.current) return;
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100
+    if (!isNearBottom) return
+    if (scrollRafRef.current) return
     scrollRafRef.current = requestAnimationFrame(() => {
-      scrollRafRef.current = null;
+      scrollRafRef.current = null
       if (scrollRef.current) {
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight
       }
-    });
+    })
     return () => {
       if (scrollRafRef.current) {
-        cancelAnimationFrame(scrollRafRef.current);
-        scrollRafRef.current = null;
+        cancelAnimationFrame(scrollRafRef.current)
+        scrollRafRef.current = null
       }
-    };
-  }, [messages, currentTrace]);
+    }
+  }, [messages, currentTrace])
 
   // Update token count（禁止在 streaming 中运行，2 秒节流）
-  const countTokensRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const countTokensRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     if (loading || messages.length === 0) {
-      if (messages.length === 0) setTokenUsage(null);
+      if (messages.length === 0) setTokenUsage(null)
       if (countTokensRef.current) {
-        clearTimeout(countTokensRef.current);
-        countTokensRef.current = null;
+        clearTimeout(countTokensRef.current)
+        countTokensRef.current = null
       }
-      return;
+      return
     }
-    if (countTokensRef.current) return; // 已有挂起的节流
+    if (countTokensRef.current) return // 已有挂起的节流
     countTokensRef.current = setTimeout(() => {
-      countTokensRef.current = null;
-      const allText = messages.map(m => m.content || "").join("\n");
-      countTokens(allText).then(count => {
-        setTokenUsage({ used: count, total: 128000 });
-      }).catch(() => {});
-    }, 2000);
+      countTokensRef.current = null
+      const allText = messages.map((m) => m.content || "").join("\n")
+      countTokens(allText)
+        .then((count) => {
+          setTokenUsage({ used: count, total: 128000 })
+        })
+        .catch(() => {})
+    }, 2000)
     return () => {
       if (countTokensRef.current) {
-        clearTimeout(countTokensRef.current);
-        countTokensRef.current = null;
+        clearTimeout(countTokensRef.current)
+        countTokensRef.current = null
       }
-    };
-  }, [messages, loading]);
+    }
+  }, [messages, loading])
 
   const handleSend = useCallback(async () => {
-    const text = input.trim();
-    if ((!text && attachments.length === 0) || loading || attaching) return;
+    const text = input.trim()
+    if ((!text && attachments.length === 0) || loading || attaching) return
 
     // 发送前检查 LLM 是否已配置
     if (llmReady === false) {
-      alert("尚未配置 AI 模型，请前往【设置 → AI 模型】添加 LLM 供应商");
-      return;
+      alert("尚未配置 AI 模型，请前往【设置 → AI 模型】添加 LLM 供应商")
+      return
     }
 
     // 保留输入以便重试时恢复
-    lastInputRef.current = { text: input, attachments: [...attachments] };
+    lastInputRef.current = { text: input, attachments: [...attachments] }
 
-    const outboundText = text || "请分析附件";
+    const outboundText = text || "请分析附件"
     const visibleText = [text || "请分析附件", buildAttachmentDisplay(attachments)]
       .filter(Boolean)
-      .join("\n\n");
+      .join("\n\n")
 
     const attachmentInfos = attachments.map((a) => ({
       name: a.name,
       path: a.path,
       kind: a.kind,
-    }));
+    }))
 
     // 转为 FileAttachment 在消息气泡中显示
     const fileAttachments: FileAttachment[] = attachments.map((a) => ({
@@ -329,12 +341,12 @@ export default function Chat() {
       path: a.path,
       name: a.name,
       kind: a.kind === "unsupported" ? "document" : a.kind,
-    }));
+    }))
 
-    setInput("");
-    setAttachments([]);
+    setInput("")
+    setAttachments([])
 
-    const history = buildAgentHistory(messages);
+    const history = buildAgentHistory(messages)
     await agent.sendMessage("chat", outboundText, {
       displayText: visibleText,
       history,
@@ -342,28 +354,31 @@ export default function Chat() {
       providerId: selectedProviderId || undefined,
       attachments: attachmentInfos,
       fileAttachments,
-    });
-  }, [input, attachments, loading, attaching, messages, agent, selectedProviderId, llmReady]);
+    })
+  }, [input, attachments, loading, attaching, messages, agent, selectedProviderId, llmReady])
 
   // 重试最后失败的消息
   const handleRetry = useCallback(async () => {
-    if (loading || !lastInputRef.current) return;
-    const { text, attachments: prevAttachments } = lastInputRef.current;
-    setInput(text);
-    setAttachments(prevAttachments);
+    if (loading || !lastInputRef.current) return
+    const { text, attachments: prevAttachments } = lastInputRef.current
+    setInput(text)
+    setAttachments(prevAttachments)
     // 短延迟等待状态更新，再触发发送
     setTimeout(() => {
-      inputRef.current?.focus();
-    }, 50);
-  }, [loading]);
+      inputRef.current?.focus()
+    }, 50)
+  }, [loading])
 
   // 导航到设置页面
-  const handleNavigateSettings = useCallback((section?: string) => {
-    navigate(section ? `/settings?section=${section}` : "/settings");
-  }, [navigate]);
+  const handleNavigateSettings = useCallback(
+    (section?: string) => {
+      navigate(section ? `/settings?section=${section}` : "/settings")
+    },
+    [navigate],
+  )
 
   const handleAttach = useCallback(async () => {
-    if (loading || attaching) return;
+    if (loading || attaching) return
     try {
       const selected = await open({
         multiple: true,
@@ -390,12 +405,12 @@ export default function Chat() {
             ],
           },
         ],
-      });
-      if (!selected) return;
+      })
+      if (!selected) return
 
-      const paths = Array.isArray(selected) ? selected : [selected];
-      const next = paths.map(createAttachment);
-      setAttachments((prev) => [...prev, ...next]);
+      const paths = Array.isArray(selected) ? selected : [selected]
+      const next = paths.map(createAttachment)
+      setAttachments((prev) => [...prev, ...next])
     } catch (err) {
       agent.updateMessages("chat", (prev) => [
         ...prev,
@@ -405,132 +420,137 @@ export default function Chat() {
           content: `附件选择失败：${String(err)}`,
           error: true,
         },
-      ]);
+      ])
     }
-  }, [loading, attaching, agent]);
+  }, [loading, attaching, agent])
 
   const removeAttachment = useCallback((id: string) => {
-    setAttachments((prev) => prev.filter((a) => a.id !== id));
-  }, []);
+    setAttachments((prev) => prev.filter((a) => a.id !== id))
+  }, [])
 
   const addFilesAsAttachments = useCallback(
     (files: import("../lib/clipboard-files").PastedFile[]) => {
       const newAttachments = files.map((f) => {
-        const att = createAttachment(f.path);
-        return f.previewUrl ? { ...att, previewUrl: f.previewUrl } : att;
-      });
-      setAttachments((prev) => [...prev, ...newAttachments]);
+        const att = createAttachment(f.path)
+        return f.previewUrl ? { ...att, previewUrl: f.previewUrl } : att
+      })
+      setAttachments((prev) => [...prev, ...newAttachments])
     },
     [],
-  );
+  )
 
   const handlePaste = useCallback(
     async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-      const files = await extractFilesFromPasteEvent(e.nativeEvent);
-      if (files.length === 0) return;
-      e.preventDefault();
-      addFilesAsAttachments(files);
+      const files = await extractFilesFromPasteEvent(e.nativeEvent)
+      if (files.length === 0) return
+      e.preventDefault()
+      addFilesAsAttachments(files)
     },
     [addFilesAsAttachments],
-  );
+  )
 
-  const dragCounterRef = useRef(0);
+  const dragCounterRef = useRef(0)
   const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-  }, []);
+    e.preventDefault()
+    e.stopPropagation()
+  }, [])
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dragCounterRef.current++;
-    setIsDragging(true);
-  }, []);
+    e.preventDefault()
+    e.stopPropagation()
+    dragCounterRef.current++
+    setIsDragging(true)
+  }, [])
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dragCounterRef.current--;
+    e.preventDefault()
+    e.stopPropagation()
+    dragCounterRef.current--
     if (dragCounterRef.current === 0) {
-      setIsDragging(false);
+      setIsDragging(false)
     }
-  }, []);
+  }, [])
 
   const handleDrop = useCallback(
     async (e: React.DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setIsDragging(false);
-      dragCounterRef.current = 0;
+      e.preventDefault()
+      e.stopPropagation()
+      setIsDragging(false)
+      dragCounterRef.current = 0
 
-      const files = await extractFilesFromDropEvent(e.nativeEvent);
-      if (files.length === 0) return;
-      addFilesAsAttachments(files);
+      const files = await extractFilesFromDropEvent(e.nativeEvent)
+      if (files.length === 0) return
+      addFilesAsAttachments(files)
     },
     [addFilesAsAttachments],
-  );
+  )
 
   // 取消正在运行的代理流
   const handleCancel = useCallback(async () => {
-    await agent.cancelSession("chat");
-  }, [agent]);
+    await agent.cancelSession("chat")
+  }, [agent])
 
   // 回答待处理的澄清问题
-  const handleClarify = useCallback(async (questionId: string, answer: string) => {
-    await agent.answerClarification("chat", questionId, answer);
-  }, [agent]);
+  const handleClarify = useCallback(
+    async (questionId: string, answer: string) => {
+      await agent.answerClarification("chat", questionId, answer)
+    },
+    [agent],
+  )
 
   // 仅在流完成后保存到本地存储
-  const prevLoadingRef = useRef(loading);
-  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevLoadingRef = useRef(loading)
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     if (!prevLoadingRef.current && loading) {
       // 流开始 → 清除待处理的保存
-      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
     }
     if (prevLoadingRef.current && !loading) {
       // 流完成 → 延迟 500ms 落盘，避免频繁写入本地存储
-      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-      saveTimeoutRef.current = setTimeout(() => saveChatHistory(messages), 500);
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
+      saveTimeoutRef.current = setTimeout(() => saveChatHistory(messages), 500)
     }
-    prevLoadingRef.current = loading;
-    return () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current); };
-  }, [loading]);
+    prevLoadingRef.current = loading
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
+    }
+  }, [loading])
 
   // 会话完成后保存聊天记忆 (loading transitions true → false)
-  const prevLoadingRef2 = useRef(loading);
+  const prevLoadingRef2 = useRef(loading)
   useEffect(() => {
     if (prevLoadingRef2.current && !loading && messages.length > 0) {
-      const lastMsg = messages[messages.length - 1];
+      const lastMsg = messages[messages.length - 1]
       if (lastMsg.role === "assistant" && !lastMsg.error) {
         const conversation = messages
           .filter((m) => !m.error)
-          .map((m) => ({ role: m.role, content: m.content }));
+          .map((m) => ({ role: m.role, content: m.content }))
         saveChatMemory(conversation, projectId).catch((e) =>
-          console.warn("[Chat] Failed to save chat memory:", e)
-        );
+          console.warn("[Chat] Failed to save chat memory:", e),
+        )
       }
     }
-    prevLoadingRef2.current = loading;
-  }, [loading, messages]);
+    prevLoadingRef2.current = loading
+  }, [loading, messages])
 
   const handleClear = useCallback(() => {
-    agent.clearSlot("chat");
-    localStorage.removeItem(CHAT_STORAGE_KEY);
-  }, [agent]);
+    agent.clearSlot("chat")
+    localStorage.removeItem(CHAT_STORAGE_KEY)
+  }, [agent])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        handleSend();
+        e.preventDefault()
+        handleSend()
       }
     },
-    [handleSend]
-  );
+    [handleSend],
+  )
 
-  const selectedProvider = providers.find((p) => p.id === selectedProviderId);
-  const selectedModel = selectedProvider?.models.find((m) => m.id === selectedModelId);
+  const selectedProvider = providers.find((p) => p.id === selectedProviderId)
+  const selectedModel = selectedProvider?.models.find((m) => m.id === selectedModelId)
 
   // 构建所有供应商+模型组合的平面列表供下拉选择
   const modelOptions = providers.flatMap((p) =>
@@ -541,8 +561,8 @@ export default function Chat() {
       modelName: m.name,
       isMultimodal: m.is_multimodal,
       isDefault: p.is_default && m.is_default,
-    }))
-  );
+    })),
+  )
 
   return (
     <div className="flex h-full flex-col">
@@ -551,18 +571,24 @@ export default function Chat() {
         <div className="flex items-center gap-2">
           <Brain className="h-5 w-5 text-amber-600" />
           <h1 className="text-base font-semibold text-neutral-800">AI 助手</h1>
-          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">Agent</span>
+          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+            Agent
+          </span>
           <span className="text-xs text-neutral-400">
             {messages.filter((m) => m.role === "user").length} 轮对话
           </span>
           {tokenUsage && (
             <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] text-neutral-500">
-              {(tokenUsage.used / 1000).toFixed(1)}K / {(tokenUsage.total / 1000).toFixed(0)}K tokens
+              {(tokenUsage.used / 1000).toFixed(1)}K / {(tokenUsage.total / 1000).toFixed(0)}K
+              tokens
             </span>
           )}
         </div>
-        <button type="button" onClick={handleClear}
-          className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-100 transition-colors">
+        <button
+          type="button"
+          onClick={handleClear}
+          className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-100 transition-colors"
+        >
           <Trash2 className="h-3.5 w-3.5" />
           清空对话
         </button>
@@ -577,7 +603,9 @@ export default function Chat() {
                 <Brain className="h-8 w-8 text-amber-300" />
               </div>
               <p className="text-sm font-medium text-neutral-500">输入问题开始对话</p>
-              <p className="mt-1 text-xs text-neutral-400">Agent 可以搜索知识库、生成文档、分析风险</p>
+              <p className="mt-1 text-xs text-neutral-400">
+                Agent 可以搜索知识库、生成文档、分析风险
+              </p>
               {llmReady === false && (
                 <div className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
                   <AlertCircle className="h-3.5 w-3.5" />
@@ -598,45 +626,51 @@ export default function Chat() {
           )}
 
           {/* ReAct Trace (while loading) */}
-          {loading && (currentTrace.thinking || currentTrace.toolCalls.length > 0 || currentTrace.plan) && (
-            <div className="space-y-2 border-l-2 border-amber-200 pl-4">
-              <PlanTimeline trace={currentTrace} />
-              {currentTrace.thinking && (
-                <details className="text-xs text-amber-700 italic leading-relaxed" open>
-                  <summary className="cursor-pointer text-amber-500 not-italic font-medium">?? 推理过程</summary>
-                  {currentTrace.thinking.length > 2000
-                    ? "..." + currentTrace.thinking.slice(-2000)
-                    : currentTrace.thinking}
-                </details>
-              )}
-              {currentTrace.toolCalls.map((tc, i) => (
-                <div key={i}>
-                  <details className="rounded-lg border border-amber-200 bg-amber-50 text-xs" open={i === currentTrace.toolCalls.length - 1}>
-                    <summary className="cursor-pointer px-3 py-2 font-medium text-amber-800">
-                      🔧 {tc.name}
+          {loading &&
+            (currentTrace.thinking || currentTrace.toolCalls.length > 0 || currentTrace.plan) && (
+              <div className="space-y-2 border-l-2 border-amber-200 pl-4">
+                <PlanTimeline trace={currentTrace} />
+                {currentTrace.thinking && (
+                  <details className="text-xs text-amber-700 italic leading-relaxed" open>
+                    <summary className="cursor-pointer text-amber-500 not-italic font-medium">
+                      ?? 推理过程
                     </summary>
-                    {tc.args && (
-                      <pre className="max-h-60 overflow-auto border-t border-amber-200 bg-white/70 px-3 py-2 font-mono text-[11px] leading-relaxed text-amber-950 whitespace-pre-wrap break-words">
-                        {summarizeToolArgs(tc.args)}
-                      </pre>
-                    )}
+                    {currentTrace.thinking.length > 2000
+                      ? "..." + currentTrace.thinking.slice(-2000)
+                      : currentTrace.thinking}
                   </details>
-                  {tc.result && (
-                    <div className="rounded-b-lg border border-green-200 border-t-0 bg-green-50 px-3 py-2 text-xs text-green-700">
-                      工具执行完成
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+                )}
+                {currentTrace.toolCalls.map((tc, i) => (
+                  <div key={i}>
+                    <details
+                      className="rounded-lg border border-amber-200 bg-amber-50 text-xs"
+                      open={i === currentTrace.toolCalls.length - 1}
+                    >
+                      <summary className="cursor-pointer px-3 py-2 font-medium text-amber-800">
+                        🔧 {tc.name}
+                      </summary>
+                      {tc.args && (
+                        <pre className="max-h-60 overflow-auto border-t border-amber-200 bg-white/70 px-3 py-2 font-mono text-[11px] leading-relaxed text-amber-950 whitespace-pre-wrap break-words">
+                          {summarizeToolArgs(tc.args)}
+                        </pre>
+                      )}
+                    </details>
+                    {tc.result && (
+                      <div className="rounded-b-lg border border-green-200 border-t-0 bg-green-50 px-3 py-2 text-xs text-green-700">
+                        工具执行完成
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
         </div>
       </div>
 
       {/* Input bar */}
       <div
         className={`relative border-t border-neutral-200 bg-white p-4 transition-colors ${
-          isDragging ? 'border-blue-400 bg-blue-50/50' : ''
+          isDragging ? "border-blue-400 bg-blue-50/50" : ""
         }`}
         onDragOver={handleDragOver}
         onDragEnter={handleDragEnter}
@@ -698,24 +732,31 @@ export default function Chat() {
                       多模态
                     </span>
                   )}
-                    <svg
-                      className={`h-3 w-3 text-neutral-400 transition-transform ${dropdownOpen ? "rotate-180" : ""}`}
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      aria-hidden="true"
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                    </svg>
-                 </button>
+                  <svg
+                    className={`h-3 w-3 text-neutral-400 transition-transform ${dropdownOpen ? "rotate-180" : ""}`}
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M19 9l-7 7-7-7"
+                    />
+                  </svg>
+                </button>
 
-                 {/* Auto-routing indicator */}
-                 {attachments.some(a => a.kind === "image") && selectedProvider && selectedProvider.is_multimodal !== true && (
-                   <div className="mt-1 flex items-center gap-1 text-[10px] text-amber-600">
-                     <Zap className="h-3 w-3" />
-                     <span>图片附件将自动使用多模态模型</span>
-                   </div>
-                 )}
+                {/* Auto-routing indicator */}
+                {attachments.some((a) => a.kind === "image") &&
+                  selectedProvider &&
+                  selectedProvider.is_multimodal !== true && (
+                    <div className="mt-1 flex items-center gap-1 text-[10px] text-amber-600">
+                      <Zap className="h-3 w-3" />
+                      <span>图片附件将自动使用多模态模型</span>
+                    </div>
+                  )}
 
                 {dropdownOpen && (
                   <div className="absolute bottom-full left-0 z-50 mb-1 w-72 rounded-lg border border-neutral-200 bg-white py-1 shadow-lg max-h-64 overflow-y-auto">
@@ -727,19 +768,22 @@ export default function Chat() {
                         key={`${option.providerId}-${option.modelId}`}
                         type="button"
                         onClick={() => {
-                          setSelectedProviderId(option.providerId);
-                          setSelectedModelId(option.modelId);
-                          setDropdownOpen(false);
+                          setSelectedProviderId(option.providerId)
+                          setSelectedModelId(option.modelId)
+                          setDropdownOpen(false)
                         }}
                         className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs hover:bg-neutral-50 transition-colors ${
-                          option.providerId === selectedProviderId && option.modelId === selectedModelId
+                          option.providerId === selectedProviderId &&
+                          option.modelId === selectedModelId
                             ? "bg-amber-50 text-amber-700"
                             : "text-neutral-700"
                         }`}
                       >
                         <div className="flex flex-col gap-0.5 min-w-0">
                           <span className="font-medium truncate">{option.providerName}</span>
-                          <span className="text-[10px] text-neutral-400 truncate">{option.modelName}</span>
+                          <span className="text-[10px] text-neutral-400 truncate">
+                            {option.modelName}
+                          </span>
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
                           {option.isMultimodal && (
@@ -752,11 +796,23 @@ export default function Chat() {
                               默认
                             </span>
                           )}
-                           {option.providerId === selectedProviderId && option.modelId === selectedModelId && (
-                             <svg className="h-3.5 w-3.5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                             </svg>
-                           )}
+                          {option.providerId === selectedProviderId &&
+                            option.modelId === selectedModelId && (
+                              <svg
+                                className="h-3.5 w-3.5 text-amber-600"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                                aria-hidden="true"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M5 13l4 4L19 7"
+                                />
+                              </svg>
+                            )}
                         </div>
                       </button>
                     ))}
@@ -802,70 +858,69 @@ export default function Chat() {
         </div>
       </div>
     </div>
-  );
+  )
 }
 
 function createAttachment(path: string): ChatAttachment {
-  const name = path.split(/[\\/]/).pop() || path;
-  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  const name = path.split(/[\\/]/).pop() || path
+  const ext = name.split(".").pop()?.toLowerCase() ?? ""
   const kind = DOCUMENT_EXTENSIONS.has(ext)
     ? "document"
     : IMAGE_EXTENSIONS.has(ext)
       ? "image"
-      : "unsupported";
+      : "unsupported"
   return {
     id: nextId(),
     path,
     name,
     kind,
     status: kind === "unsupported" ? "error" : "ready",
-    error:
-      kind === "unsupported"
-        ? "当前格式暂不支持内容解析。"
-        : undefined,
-  };
+    error: kind === "unsupported" ? "当前格式暂不支持内容解析。" : undefined,
+  }
 }
 
 function buildAttachmentDisplay(attachments: ChatAttachment[]): string {
-  if (attachments.length === 0) return "";
+  if (attachments.length === 0) return ""
   return [
     "附件：",
     ...attachments.map((a) => {
-      const status = a.status === "ingested" && a.documentId
-        ? `已入库 #${a.documentId}`
-        : a.status === "parsed"
-          ? (a.error ?? "已解析")
-        : a.kind === "image" && a.extractedText
-          ? "已识别"
-        : a.error
-          ? a.error
-          : a.status;
-      return `- ${a.name}（${status}）`;
+      const status =
+        a.status === "ingested" && a.documentId
+          ? `已入库 #${a.documentId}`
+          : a.status === "parsed"
+            ? (a.error ?? "已解析")
+            : a.kind === "image" && a.extractedText
+              ? "已识别"
+              : a.error
+                ? a.error
+                : a.status
+      return `- ${a.name}（${status}）`
     }),
-  ].join("\n");
+  ].join("\n")
 }
 
 function AttachmentChip({
   attachment,
   onRemove,
 }: {
-  attachment: ChatAttachment;
-  onRemove: () => void;
+  attachment: ChatAttachment
+  onRemove: () => void
 }) {
-  const preview = attachment.previewUrl
-    || (attachment.kind === "image" ? convertFileSrc(attachment.path) : undefined);
+  const preview =
+    attachment.previewUrl ||
+    (attachment.kind === "image" ? convertFileSrc(attachment.path) : undefined)
   const statusText =
     attachment.status === "ingesting"
       ? "入库中"
       : attachment.status === "parsed"
         ? "已解析"
-      : attachment.status === "ingested"
-        ? attachment.kind === "image"
-          ? "图片"
-          : "已入库"
-        : attachment.status === "error"
-          ? "失败"
-          : "待入库";
+        : attachment.status === "ingested"
+          ? attachment.kind === "image"
+            ? "图片"
+            : "已入库"
+          : attachment.status === "error"
+            ? "失败"
+            : "待入库"
 
   return (
     <div className="group flex max-w-[260px] items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-2">
@@ -878,11 +933,13 @@ function AttachmentChip({
       )}
       <div className="min-w-0 flex-1">
         <div className="truncate text-xs font-medium text-neutral-700">{attachment.name}</div>
-        <div className={`text-[10px] ${
-          attachment.status === "error" || attachment.kind === "unsupported"
-            ? "text-red-500"
-            : "text-neutral-400"
-        }`}>
+        <div
+          className={`text-[10px] ${
+            attachment.status === "error" || attachment.kind === "unsupported"
+              ? "text-red-500"
+              : "text-neutral-400"
+          }`}
+        >
           {statusText}
         </div>
       </div>
@@ -899,85 +956,92 @@ function AttachmentChip({
         </button>
       )}
     </div>
-  );
+  )
 }
 
 // ── 文件气泡组件 ──────────────────────────────────────────────
 
 /** 根据文件扩展名获取图标 */
 function getFileIcon(name: string) {
-  const ext = name.split(".").pop()?.toLowerCase() ?? "";
-  if (["xlsx", "xls", "csv"].includes(ext)) return FileSpreadsheet;
-  if (["js", "ts", "py", "java", "rs", "go", "html", "css", "json", "xml", "yaml", "yml"].includes(ext)) return FileCode;
-  if (["zip", "rar", "7z", "tar", "gz"].includes(ext)) return FileArchive;
-  if (["pdf"].includes(ext)) return FileText;
-  if (["doc", "docx", "md", "txt"].includes(ext)) return FileText;
-  return File;
+  const ext = name.split(".").pop()?.toLowerCase() ?? ""
+  if (["xlsx", "xls", "csv"].includes(ext)) return FileSpreadsheet
+  if (
+    ["js", "ts", "py", "java", "rs", "go", "html", "css", "json", "xml", "yaml", "yml"].includes(
+      ext,
+    )
+  )
+    return FileCode
+  if (["zip", "rar", "7z", "tar", "gz"].includes(ext)) return FileArchive
+  if (["pdf"].includes(ext)) return FileText
+  if (["doc", "docx", "md", "txt"].includes(ext)) return FileText
+  return File
 }
 
 /** 格式化文件大小 */
 function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 /** 判断是否为图片文件 */
 function isImageFile(name: string): boolean {
-  const ext = name.split(".").pop()?.toLowerCase() ?? "";
-  return ["png", "jpg", "jpeg", "webp", "bmp", "gif", "svg"].includes(ext);
+  const ext = name.split(".").pop()?.toLowerCase() ?? ""
+  return ["png", "jpg", "jpeg", "webp", "bmp", "gif", "svg"].includes(ext)
 }
 
 function FileBubble({ attachment }: { attachment: FileAttachment }) {
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const isImage = isImageFile(attachment.name);
-  const Icon = isImage ? ImageIcon : getFileIcon(attachment.name);
-  const src = isImage && attachment.path ? convertFileSrc(attachment.path) : undefined;
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const isImage = isImageFile(attachment.name)
+  const Icon = isImage ? ImageIcon : getFileIcon(attachment.name)
+  const src = isImage && attachment.path ? convertFileSrc(attachment.path) : undefined
 
   useEffect(() => {
-    if (!previewOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") setPreviewOpen(false); };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [previewOpen]);
+    if (!previewOpen) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPreviewOpen(false)
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [previewOpen])
 
   const handleClick = useCallback(() => {
     if (isImage) {
-      setPreviewOpen(true);
+      setPreviewOpen(true)
     } else {
-      openPath(attachment.path).catch((err) => console.error("Failed to open file:", err));
+      openPath(attachment.path).catch((err) => console.error("Failed to open file:", err))
     }
-  }, [isImage, attachment.path]);
+  }, [isImage, attachment.path])
 
   const handleCopyPath = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(attachment.path);
+      await navigator.clipboard.writeText(attachment.path)
     } catch (err) {
-      console.error("Failed to copy path:", err);
+      console.error("Failed to copy path:", err)
     }
-  }, [attachment.path]);
+  }, [attachment.path])
 
   const handleSaveAs = useCallback(async () => {
     try {
       const dest = await save({
         defaultPath: attachment.name,
         filters: [{ name: "All Files", extensions: ["*"] }],
-      });
+      })
       if (dest) {
-        await invoke("save_attachment_as", { source: attachment.path, dest });
+        await invoke("save_attachment_as", { source: attachment.path, dest })
       }
     } catch (err) {
-      console.error("Failed to save file:", err);
+      console.error("Failed to save file:", err)
     }
-  }, [attachment.path, attachment.name]);
+  }, [attachment.path, attachment.name])
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setContextMenu({ x: e.clientX, y: e.clientY });
-  }, []);
+    e.preventDefault()
+    setContextMenu({ x: e.clientX, y: e.clientY })
+  }, [])
 
-  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+  const closeContextMenu = useCallback(() => setContextMenu(null), [])
 
   return (
     <div className="relative">
@@ -987,11 +1051,7 @@ function FileBubble({ attachment }: { attachment: FileAttachment }) {
         className="flex items-center gap-3 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2.5 cursor-pointer hover:bg-neutral-100 transition-colors max-w-[280px]"
       >
         {src ? (
-          <img
-            src={src}
-            alt=""
-            className="h-12 w-12 rounded object-cover shrink-0"
-          />
+          <img src={src} alt="" className="h-12 w-12 rounded object-cover shrink-0" />
         ) : (
           <div className="flex h-12 w-12 items-center justify-center rounded bg-amber-50 shrink-0">
             <Icon className="h-5 w-5 text-amber-600" />
@@ -1042,7 +1102,10 @@ function FileBubble({ attachment }: { attachment: FileAttachment }) {
           >
             <button
               type="button"
-              onClick={() => { handleClick(); closeContextMenu(); }}
+              onClick={() => {
+                handleClick()
+                closeContextMenu()
+              }}
               className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-neutral-700 hover:bg-neutral-50"
             >
               <ExternalLink className="h-3.5 w-3.5" />
@@ -1050,7 +1113,10 @@ function FileBubble({ attachment }: { attachment: FileAttachment }) {
             </button>
             <button
               type="button"
-              onClick={() => { handleCopyPath(); closeContextMenu(); }}
+              onClick={() => {
+                handleCopyPath()
+                closeContextMenu()
+              }}
               className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-neutral-700 hover:bg-neutral-50"
             >
               <Copy className="h-3.5 w-3.5" />
@@ -1058,7 +1124,10 @@ function FileBubble({ attachment }: { attachment: FileAttachment }) {
             </button>
             <button
               type="button"
-              onClick={() => { handleSaveAs(); closeContextMenu(); }}
+              onClick={() => {
+                handleSaveAs()
+                closeContextMenu()
+              }}
               className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-neutral-700 hover:bg-neutral-50"
             >
               <Download className="h-3.5 w-3.5" />
@@ -1068,19 +1137,21 @@ function FileBubble({ attachment }: { attachment: FileAttachment }) {
         </>
       )}
     </div>
-  );
+  )
 }
 
 /** 内联图片预览（支持点击放大） */
 function ImagePreview({ src, alt }: { src: string; alt: string }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(false)
 
   useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open]);
+    if (!open) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false)
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [open])
 
   return (
     <>
@@ -1111,7 +1182,7 @@ function ImagePreview({ src, alt }: { src: string; alt: string }) {
         </div>
       )}
     </>
-  );
+  )
 }
 
 // ── 消息气泡组件 ──────────────────────────────────────────────
@@ -1122,24 +1193,27 @@ const MessageBubble = memo(function MessageBubble({
   onRetry,
   onNavigateSettings,
 }: {
-  message: AgentMessage;
-  onClarify: (questionId: string, answer: string) => void;
-  onRetry: () => void;
-  onNavigateSettings: (section?: string) => void;
+  message: AgentMessage
+  onClarify: (questionId: string, answer: string) => void
+  onRetry: () => void
+  onNavigateSettings: (section?: string) => void
 }) {
-  const isUser = message.role === "user";
-  const [freeInput, setFreeInput] = useState("");
+  const isUser = message.role === "user"
+  const [freeInput, setFreeInput] = useState("")
 
-  const isLLMError = message.error && /未配置|api.?key|llm|模型|unauthorized|401/i.test(message.content);
-  const isTimeoutError = message.error && /超时|timeout/i.test(message.content);
+  const isLLMError =
+    message.error && /未配置|api.?key|llm|模型|unauthorized|401/i.test(message.content)
+  const isTimeoutError = message.error && /超时|timeout/i.test(message.content)
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div className={`max-w-[80%] ${isUser ? "" : "w-full"}`}>
         {/* Avatar */}
-        <div className={`mb-1 flex items-center gap-1.5 text-xs ${
-          isUser ? "justify-end text-neutral-400" : "text-amber-600"
-        }`}>
+        <div
+          className={`mb-1 flex items-center gap-1.5 text-xs ${
+            isUser ? "justify-end text-neutral-400" : "text-amber-600"
+          }`}
+        >
           <span className="flex h-5 w-5 items-center justify-center rounded-full bg-neutral-100 text-[10px]">
             {isUser ? "👤" : "🤖"}
           </span>
@@ -1147,13 +1221,15 @@ const MessageBubble = memo(function MessageBubble({
         </div>
 
         {/* Message */}
-        <div className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-          isUser
-            ? "bg-amber-600 text-white rounded-tr-md"
-            : message.error
-            ? "bg-red-50 text-red-700 border border-red-200 rounded-tl-md"
-            : "bg-white text-neutral-700 border border-neutral-200 rounded-tl-md shadow-sm"
-        }`}>
+        <div
+          className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+            isUser
+              ? "bg-amber-600 text-white rounded-tr-md"
+              : message.error
+                ? "bg-red-50 text-red-700 border border-red-200 rounded-tl-md"
+                : "bg-white text-neutral-700 border border-neutral-200 rounded-tl-md shadow-sm"
+          }`}
+        >
           {isUser ? (
             <div className="whitespace-pre-wrap">{message.content}</div>
           ) : message.streaming ? (
@@ -1169,10 +1245,10 @@ const MessageBubble = memo(function MessageBubble({
                 remarkPlugins={[remarkGfm]}
                 components={{
                   img: ({ src, alt }) => {
-                    if (!src) return null;
+                    if (!src) return null
                     // 本地文件路径 → Tauri asset URL
-                    const imgSrc = src.startsWith("http") ? src : convertFileSrc(src);
-                    return <ImagePreview src={imgSrc} alt={alt || ""} />;
+                    const imgSrc = src.startsWith("http") ? src : convertFileSrc(src)
+                    return <ImagePreview src={imgSrc} alt={alt || ""} />
                   },
                 }}
               >
@@ -1261,8 +1337,8 @@ const MessageBubble = memo(function MessageBubble({
                     onChange={(e) => setFreeInput(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && freeInput.trim()) {
-                        onClarify(message.clarification!.question_id, freeInput.trim());
-                        setFreeInput("");
+                        onClarify(message.clarification!.question_id, freeInput.trim())
+                        setFreeInput("")
                       }
                     }}
                     placeholder="输入你的回答..."
@@ -1272,11 +1348,11 @@ const MessageBubble = memo(function MessageBubble({
                     type="button"
                     onClick={() => {
                       if (freeInput.trim()) {
-                        onClarify(message.clarification!.question_id, freeInput.trim());
-                        setFreeInput("");
+                        onClarify(message.clarification!.question_id, freeInput.trim())
+                        setFreeInput("")
                       }
                     }}
-                     disabled={!freeInput.trim()}
+                    disabled={!freeInput.trim()}
                     className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors"
                   >
                     发送
@@ -1288,12 +1364,12 @@ const MessageBubble = memo(function MessageBubble({
         </div>
       </div>
     </div>
-  );
-});
+  )
+})
 
 /** Collapsible RAG sources display */
 function SourcesDisplay({ sources }: { sources: RAGSource[] }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(false)
 
   return (
     <div className="mt-3 border-t border-neutral-100 pt-3">
@@ -1313,14 +1389,9 @@ function SourcesDisplay({ sources }: { sources: RAGSource[] }) {
       {expanded && (
         <div className="mt-2 space-y-1.5">
           {sources.map((src, i) => (
-            <div
-              key={i}
-              className="rounded-lg border border-neutral-100 bg-neutral-50 px-3 py-2"
-            >
+            <div key={i} className="rounded-lg border border-neutral-100 bg-neutral-50 px-3 py-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-medium text-neutral-700 truncate">
-                  {src.title}
-                </span>
+                <span className="text-xs font-medium text-neutral-700 truncate">{src.title}</span>
                 {src.score > 0 && (
                   <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
                     {(src.score * 100).toFixed(0)}%
@@ -1342,7 +1413,7 @@ function SourcesDisplay({ sources }: { sources: RAGSource[] }) {
         </div>
       )}
     </div>
-  );
+  )
 }
 
 /** Multi-choice checkbox group with confirm button */
@@ -1351,20 +1422,20 @@ function MultiChoiceOptions({
   questionId,
   onConfirm,
 }: {
-  options: string[];
-  questionId: string;
-  onConfirm: (questionId: string, answer: string) => void;
+  options: string[]
+  questionId: string
+  onConfirm: (questionId: string, answer: string) => void
 }) {
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Set<string>>(new Set())
 
   const toggle = (opt: string) => {
     setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(opt)) next.delete(opt);
-      else next.add(opt);
-      return next;
-    });
-  };
+      const next = new Set(prev)
+      if (next.has(opt)) next.delete(opt)
+      else next.add(opt)
+      return next
+    })
+  }
 
   return (
     <div className="space-y-2">
@@ -1380,7 +1451,8 @@ function MultiChoiceOptions({
                 : "border-neutral-200 bg-white text-neutral-600 hover:border-amber-200"
             }`}
           >
-            {selected.has(opt) ? "✓ " : ""}{opt}
+            {selected.has(opt) ? "✓ " : ""}
+            {opt}
           </button>
         ))}
       </div>
@@ -1393,5 +1465,5 @@ function MultiChoiceOptions({
         确认选择 ({selected.size})
       </button>
     </div>
-  );
+  )
 }

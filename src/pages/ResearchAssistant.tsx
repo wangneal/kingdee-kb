@@ -1,113 +1,118 @@
-import { useState, useEffect, useCallback } from "react";
-import { useParams } from "react-router-dom";
-import { invoke } from "@tauri-apps/api/core";
-import { save } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core"
+import { save } from "@tauri-apps/plugin-dialog"
 import {
-  ClipboardList,
-  Plus,
-  Mic,
-  Square,
-  Loader2,
-  Download,
-  Trash2,
-  FileText,
-  BookOpen,
-  ChevronLeft,
-  Edit3,
-  MessageSquare,
-  Send,
   AlertCircle,
+  BookOpen,
   Brain,
+  ChevronLeft,
+  ClipboardList,
+  Download,
+  Edit3,
+  FileText,
   ListTodo,
+  Loader2,
+  MessageSquare,
+  Mic,
   Network,
-} from "lucide-react";
+  Plus,
+  Send,
+  Square,
+  Trash2,
+} from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import { useParams } from "react-router-dom"
+import MindmapView from "../components/outliner/MindmapView"
+import NodeDetailPanel from "../components/outliner/NodeDetailPanel"
+import OutlineTree from "../components/outliner/OutlineTree"
+import { useToast } from "../components/Toast"
+import { DEFAULT_SLOT, useAgent } from "../contexts/AgentContext"
+import { useOutline } from "../contexts/OutlineContext"
+import { useProject } from "../contexts/ProjectContext"
 import {
-  type ResearchSession,
-  type SessionDetail,
-  listResearchSessions,
-  createResearchSession,
-  getResearchSession,
-  deleteResearchSession,
+  type AsrConfigStatus,
+  type AsrProviderInfo,
   addQARecord,
-  updateQARecord,
+  createResearchSession,
   deleteQARecord,
+  deleteResearchSession,
   exportSessionCsv,
   exportSessionMarkdown,
   extractBlueprint,
+  getAsrConfigStatus,
+  getResearchSession,
+  getWhisperStatus,
+  listAsrProviders,
+  listResearchSessions,
   loadWhisperModel,
+  type ResearchSession,
+  type SessionDetail,
   startWhisperRecording,
   stopWhisperRecording,
-  getWhisperStatus,
+  updateQARecord,
   type WhisperStatus,
-  listAsrProviders,
-  type AsrProviderInfo,
-  getAsrConfigStatus,
-  type AsrConfigStatus,
-} from "../lib/tauri-commands";
-import { useAgent, DEFAULT_SLOT } from "../contexts/AgentContext"
-import { useProject } from "../contexts/ProjectContext";
-import { useToast } from "../components/Toast";
-import { useOutline } from "../contexts/OutlineContext";
-import OutlineTree from "../components/outliner/OutlineTree";
-import NodeDetailPanel from "../components/outliner/NodeDetailPanel";
-import MindmapView from "../components/outliner/MindmapView";
+} from "../lib/tauri-commands"
 
 export default function ResearchAssistant() {
-  const { projectId } = useProject();
-  const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
-  const [mode, setMode] = useState<"list" | "detail" | "new">("list");
-  const [sessions, setSessions] = useState<ResearchSession[]>([]);
-  const [detail, setDetail] = useState<SessionDetail | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [initialOutlineTab, setInitialOutlineTab] = useState(false);
+  const { projectId } = useProject()
+  const { sessionId: urlSessionId } = useParams<{ sessionId: string }>()
+  const [mode, setMode] = useState<"list" | "detail" | "new">("list")
+  const [sessions, setSessions] = useState<ResearchSession[]>([])
+  const [detail, setDetail] = useState<SessionDetail | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [initialOutlineTab, setInitialOutlineTab] = useState(false)
 
   // Load sessions on mount
   const refreshList = useCallback(async () => {
-    setLoading(true);
+    setLoading(true)
     try {
-      const list = await listResearchSessions(projectId);
-      setSessions(list);
+      const list = await listResearchSessions(projectId)
+      setSessions(list)
     } catch (err) {
-      setError(String(err));
+      setError(String(err))
     }
-    setLoading(false);
-  }, [projectId]);
+    setLoading(false)
+  }, [projectId])
 
-  useEffect(() => { refreshList(); }, [refreshList]);
+  useEffect(() => {
+    refreshList()
+  }, [refreshList])
 
   // URL 直接访问大纲视图时自动打开会话
   useEffect(() => {
     if (urlSessionId && sessions.length > 0 && mode === "list") {
-      const id = Number(urlSessionId);
+      const id = Number(urlSessionId)
       if (!isNaN(id)) {
-        setInitialOutlineTab(true);
-        openSession(id);
+        setInitialOutlineTab(true)
+        openSession(id)
       }
     }
-  }, [urlSessionId, sessions, mode]);
+  }, [urlSessionId, sessions, mode])
 
   const openSession = useCallback(async (id: number) => {
-    setLoading(true);
+    setLoading(true)
     try {
-      const d = await getResearchSession(id);
-      setDetail(d);
-      setMode("detail");
+      const d = await getResearchSession(id)
+      setDetail(d)
+      setMode("detail")
     } catch (err) {
-      setError(String(err));
+      setError(String(err))
     }
-    setLoading(false);
-  }, []);
+    setLoading(false)
+  }, [])
 
-  const handleDelete = useCallback(async (id: number) => {
-    if (!confirm("确认删除此调研会话？所有记录将被永久删除。")) return;
-    try {
-      await deleteResearchSession(id);
-      refreshList();
-    } catch (err) {
-      setError(String(err));
-    }
-  }, [refreshList]);
+  const handleDelete = useCallback(
+    async (id: number) => {
+      if (!confirm("确认删除此调研会话？所有记录将被永久删除。")) return
+      try {
+        await deleteResearchSession(id)
+        refreshList()
+      } catch (err) {
+        setError(String(err))
+      }
+    },
+    [refreshList],
+  )
 
   // ── List View ──
   if (mode === "list") {
@@ -161,19 +166,28 @@ export default function ResearchAssistant() {
                     <h3 className="text-sm font-medium text-neutral-800 line-clamp-1">{s.title}</h3>
                     <button
                       type="button"
-                      onClick={(e) => { e.stopPropagation(); handleDelete(s.id); }}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleDelete(s.id)
+                      }}
                       className="shrink-0 rounded p-1 text-neutral-300 opacity-0 group-hover:opacity-100 hover:text-red-500 transition-all"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   </div>
                   <div className="flex flex-wrap gap-1.5 text-[10px] text-neutral-500">
-                    <span className="rounded bg-neutral-100 px-1.5 py-0.5">{s.edition === "enterprise" ? "企业版" : "旗舰版"}</span>
+                    <span className="rounded bg-neutral-100 px-1.5 py-0.5">
+                      {s.edition === "enterprise" ? "企业版" : "旗舰版"}
+                    </span>
                     {s.module_code && (
-                      <span className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-600">{s.module_code}</span>
+                      <span className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-600">
+                        {s.module_code}
+                      </span>
                     )}
                     {s.status === "completed" && (
-                      <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700">已完成</span>
+                      <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700">
+                        已完成
+                      </span>
                     )}
                   </div>
                   <p className="mt-2 text-xs text-neutral-400">
@@ -185,12 +199,20 @@ export default function ResearchAssistant() {
           )}
         </div>
       </div>
-    );
+    )
   }
 
   // ── New Session Form ──
   if (mode === "new") {
-    return <NewSessionForm onCreated={(id) => { refreshList(); openSession(id); }} onCancel={() => setMode("list")} />;
+    return (
+      <NewSessionForm
+        onCreated={(id) => {
+          refreshList()
+          openSession(id)
+        }}
+        onCancel={() => setMode("list")}
+      />
+    )
   }
 
   // ── Session Detail ──
@@ -198,46 +220,68 @@ export default function ResearchAssistant() {
     return (
       <SessionDetailView
         detail={detail}
-        onBack={() => { setMode("list"); setDetail(null); refreshList(); setInitialOutlineTab(false); }}
+        onBack={() => {
+          setMode("list")
+          setDetail(null)
+          refreshList()
+          setInitialOutlineTab(false)
+        }}
         onUpdated={() => {
-          if (detail) getResearchSession(detail.session.id).then(setDetail);
+          if (detail) getResearchSession(detail.session.id).then(setDetail)
         }}
         initialTab={initialOutlineTab ? "outline" : "qa"}
       />
-    );
+    )
   }
 
-  return null;
+  return null
 }
 
 // ── New Session Form ────────────────────────────────────────────────────────
 
-function NewSessionForm({ onCreated, onCancel }: { onCreated: (id: number) => void; onCancel: () => void }) {
-  const [title, setTitle] = useState("");
-  const [edition, setEdition] = useState("enterprise");
-  const [moduleCode, setModuleCode] = useState("");
-  const [interviewee, setInterviewee] = useState("");
-  const [sessionDate, setSessionDate] = useState(new Date().toISOString().slice(0, 10));
-  const [saving, setSaving] = useState(false);
-  const toast = useToast();
-  const { projectId } = useProject();
+function NewSessionForm({
+  onCreated,
+  onCancel,
+}: {
+  onCreated: (id: number) => void
+  onCancel: () => void
+}) {
+  const [title, setTitle] = useState("")
+  const [edition, setEdition] = useState("enterprise")
+  const [moduleCode, setModuleCode] = useState("")
+  const [interviewee, setInterviewee] = useState("")
+  const [sessionDate, setSessionDate] = useState(new Date().toISOString().slice(0, 10))
+  const [saving, setSaving] = useState(false)
+  const toast = useToast()
+  const { projectId } = useProject()
 
   const handleSubmit = async () => {
-    if (!title.trim()) return;
-    setSaving(true);
+    if (!title.trim()) return
+    setSaving(true)
     try {
-      const id = await createResearchSession(title.trim(), edition, moduleCode.trim(), interviewee.trim(), sessionDate, projectId);
-      onCreated(id);
+      const id = await createResearchSession(
+        title.trim(),
+        edition,
+        moduleCode.trim(),
+        interviewee.trim(),
+        sessionDate,
+        projectId,
+      )
+      onCreated(id)
     } catch (err) {
-      toast.error(String(err));
+      toast.error(String(err))
     }
-    setSaving(false);
-  };
+    setSaving(false)
+  }
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-14 items-center gap-2 border-b border-neutral-200 px-6">
-        <button type="button" onClick={onCancel} className="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-700 transition-colors">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-700 transition-colors"
+        >
           <ChevronLeft className="h-4 w-4" />
           返回
         </button>
@@ -248,12 +292,21 @@ function NewSessionForm({ onCreated, onCancel }: { onCreated: (id: number) => vo
         <div className="space-y-4">
           <div>
             <label className="mb-1 block text-xs font-medium text-neutral-600">会话标题 *</label>
-            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="如：BOS 基础平台调研" className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20" />
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="如：BOS 基础平台调研"
+              className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20"
+            />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="mb-1 block text-xs font-medium text-neutral-600">版本</label>
-              <select value={edition} onChange={(e) => setEdition(e.target.value)} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8]">
+              <select
+                value={edition}
+                onChange={(e) => setEdition(e.target.value)}
+                className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8]"
+              >
                 <option value="enterprise">企业版</option>
                 <option value="flagship">旗舰版</option>
               </select>
@@ -271,239 +324,317 @@ function NewSessionForm({ onCreated, onCancel }: { onCreated: (id: number) => vo
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="mb-1 block text-xs font-medium text-neutral-600">受访人</label>
-              <input value={interviewee} onChange={(e) => setInterviewee(e.target.value)} placeholder="姓名" className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20" />
+              <input
+                value={interviewee}
+                onChange={(e) => setInterviewee(e.target.value)}
+                placeholder="姓名"
+                className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20"
+              />
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-neutral-600">调研日期</label>
-              <input type="date" value={sessionDate} onChange={(e) => setSessionDate(e.target.value)} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8]" />
+              <input
+                type="date"
+                value={sessionDate}
+                onChange={(e) => setSessionDate(e.target.value)}
+                className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8]"
+              />
             </div>
           </div>
           <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={onCancel} className="rounded-lg border border-neutral-200 px-4 py-2 text-xs font-medium text-neutral-600 hover:bg-neutral-50 transition-colors">取消</button>
-            <button type="button" onClick={handleSubmit} disabled={saving || !title.trim()} className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-xs font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors">
-              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+            <button
+              type="button"
+              onClick={onCancel}
+              className="rounded-lg border border-neutral-200 px-4 py-2 text-xs font-medium text-neutral-600 hover:bg-neutral-50 transition-colors"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={saving || !title.trim()}
+              className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-xs font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
+            >
+              {saving ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Plus className="h-3.5 w-3.5" />
+              )}
               创建
             </button>
           </div>
         </div>
       </div>
     </div>
-  );
+  )
 }
 
 // ── Session Detail View ─────────────────────────────────────────────────────
 
-function SessionDetailView({ detail, onBack, onUpdated, initialTab = "qa" }: { detail: SessionDetail; onBack: () => void; onUpdated: () => void; initialTab?: "qa" | "outline" | "mindmap" }) {
-  const { session, records } = detail;
-  const agent = useAgent();
-  const slot = agent.slots.get("research") ?? DEFAULT_SLOT;
-  const aiLoading = slot.loading;
-  const { projectId } = useProject();
-  const [recording, setRecording] = useState(false);
-  const [whisperStatus, setWhisperStatus] = useState<WhisperStatus | null>(null);
-  const [loadingWhisper, setLoadingWhisper] = useState(false);
-  const [asrProviders, setAsrProviders] = useState<AsrProviderInfo[]>([]);
-  const [selectedAsrProvider, setSelectedAsrProvider] = useState<string>("whisper");
-  const [_asrConfigStatus, setAsrConfigStatus] = useState<AsrConfigStatus | null>(null);
-  const [newQuestion, setNewQuestion] = useState("");
-  const [newAnswer, setNewAnswer] = useState("");
-  const [editingRecord, setEditingRecord] = useState<number | null>(null);
-  const [editAnswer, setEditAnswer] = useState("");
-  const [activeTab, setActiveTab] = useState<"qa" | "outline" | "mindmap">(initialTab);
-  const toast = useToast();
+function SessionDetailView({
+  detail,
+  onBack,
+  onUpdated,
+  initialTab = "qa",
+}: {
+  detail: SessionDetail
+  onBack: () => void
+  onUpdated: () => void
+  initialTab?: "qa" | "outline" | "mindmap"
+}) {
+  const { session, records } = detail
+  const agent = useAgent()
+  const slot = agent.slots.get("research") ?? DEFAULT_SLOT
+  const aiLoading = slot.loading
+  const { projectId } = useProject()
+  const [recording, setRecording] = useState(false)
+  const [whisperStatus, setWhisperStatus] = useState<WhisperStatus | null>(null)
+  const [loadingWhisper, setLoadingWhisper] = useState(false)
+  const [asrProviders, setAsrProviders] = useState<AsrProviderInfo[]>([])
+  const [selectedAsrProvider, setSelectedAsrProvider] = useState<string>("whisper")
+  const [_asrConfigStatus, setAsrConfigStatus] = useState<AsrConfigStatus | null>(null)
+  const [newQuestion, setNewQuestion] = useState("")
+  const [newAnswer, setNewAnswer] = useState("")
+  const [editingRecord, setEditingRecord] = useState<number | null>(null)
+  const [editAnswer, setEditAnswer] = useState("")
+  const [activeTab, setActiveTab] = useState<"qa" | "outline" | "mindmap">(initialTab)
+  const toast = useToast()
 
   // 大纲上下文
-  const outline = useOutline();
-  const outlineSelectedNode = outline.nodes.find((n) => n.id === outline.selectedNodeId) ?? null;
+  const outline = useOutline()
+  const outlineSelectedNode = outline.nodes.find((n) => n.id === outline.selectedNodeId) ?? null
   // 将 OutlineNode 转换为 TreeNode（需要 children 字段）
   const outlineSelectedTreeNode = (() => {
-    if (!outlineSelectedNode) return null;
-    const findInTree = (nodes: typeof outline.tree): typeof outlineSelectedNode & { children: typeof outline.tree } | null => {
+    if (!outlineSelectedNode) return null
+    const findInTree = (
+      nodes: typeof outline.tree,
+    ): (typeof outlineSelectedNode & { children: typeof outline.tree }) | null => {
       for (const n of nodes) {
-        if (n.id === outlineSelectedNode.id) return n;
-        const found = findInTree(n.children);
-        if (found) return found;
+        if (n.id === outlineSelectedNode.id) return n
+        const found = findInTree(n.children)
+        if (found) return found
       }
-      return null;
-    };
-    return findInTree(outline.tree);
-  })();
+      return null
+    }
+    return findInTree(outline.tree)
+  })()
 
   // 切换到大纲视图或脑图视图时加载大纲
   useEffect(() => {
     if (activeTab === "outline" || activeTab === "mindmap") {
-      outline.loadOutline(session.id);
+      outline.loadOutline(session.id)
     }
-  }, [activeTab, session.id, outline]);
+  }, [activeTab, session.id, outline])
 
   useEffect(() => {
-    getWhisperStatus().then(setWhisperStatus).catch((err) => {
-      console.error("获取 Whisper 状态失败:", err);
-    });
-    listAsrProviders().then((providers) => {
-      // 过滤掉不支持文件识别的 provider（如讯飞 WebSocket 模式）
-      const available = (providers || []).filter(p => p.type !== "xfyun");
-      setAsrProviders(available);
-    }).catch(console.error);
-    getAsrConfigStatus().then(setAsrConfigStatus).catch(console.error);
-  }, []);
+    getWhisperStatus()
+      .then(setWhisperStatus)
+      .catch((err) => {
+        console.error("获取 Whisper 状态失败:", err)
+      })
+    listAsrProviders()
+      .then((providers) => {
+        // 过滤掉不支持文件识别的 provider（如讯飞 WebSocket 模式）
+        const available = (providers || []).filter((p) => p.type !== "xfyun")
+        setAsrProviders(available)
+      })
+      .catch(console.error)
+    getAsrConfigStatus().then(setAsrConfigStatus).catch(console.error)
+  }, [])
 
   // Sync AI answer from agent slot while streaming
   useEffect(() => {
     if (slot.loading) {
-      const last = slot.messages[slot.messages.length - 1];
+      const last = slot.messages[slot.messages.length - 1]
       if (last?.role === "assistant") {
-        setNewAnswer(last.content);
+        setNewAnswer(last.content)
       }
     }
-  }, [slot.loading, slot.messages]);
+  }, [slot.loading, slot.messages])
 
   const handleAIAssist = async () => {
-    if (!newQuestion.trim() || aiLoading) return;
-    agent.clearSlot("research");
-    setNewAnswer("");
-    const context = `当前调研：${session.title}（${session.edition}/${session.module_code}）\n已有记录：${records.map((r) => `Q: ${r.question_text}`).join("\n")}`;
-    const prompt = `请回答以下调研问题，基于知识库中的金蝶ERP实施经验。回答要具体、可操作，包含系统配置路径或单据类型；不确定的写[待确认]。\n\n问题：${newQuestion}\n\n背景：${context}`;
-    await agent.sendMessage("research", prompt, { projectId: projectId });
-  };
+    if (!newQuestion.trim() || aiLoading) return
+    agent.clearSlot("research")
+    setNewAnswer("")
+    const context = `当前调研：${session.title}（${session.edition}/${session.module_code}）\n已有记录：${records.map((r) => `Q: ${r.question_text}`).join("\n")}`
+    const prompt = `请回答以下调研问题，基于知识库中的金蝶ERP实施经验。回答要具体、可操作，包含系统配置路径或单据类型；不确定的写[待确认]。\n\n问题：${newQuestion}\n\n背景：${context}`
+    await agent.sendMessage("research", prompt, { projectId: projectId })
+  }
 
   const handleStartRecording = async () => {
     // 非 Whisper 模式（如腾讯 ASR）不需要加载本地模型
     if (selectedAsrProvider !== "whisper") {
       try {
-        await startWhisperRecording();
-        setRecording(true);
+        await startWhisperRecording()
+        setRecording(true)
       } catch (err) {
-        toast.error("启动录音失败: " + String(err));
+        toast.error("启动录音失败: " + String(err))
       }
-      return;
+      return
     }
 
     if (!whisperStatus?.model_loaded) {
-      setLoadingWhisper(true);
+      setLoadingWhisper(true)
       try {
-        await loadWhisperModel("tiny");
-        const status = await getWhisperStatus();
-        setWhisperStatus(status);
+        await loadWhisperModel("tiny")
+        const status = await getWhisperStatus()
+        setWhisperStatus(status)
       } catch (err) {
-        toast.error("加载语音模型失败: " + String(err));
-        setLoadingWhisper(false);
-        return;
+        toast.error("加载语音模型失败: " + String(err))
+        setLoadingWhisper(false)
+        return
       }
-      setLoadingWhisper(false);
+      setLoadingWhisper(false)
     }
     try {
-      await startWhisperRecording();
-      setRecording(true);
+      await startWhisperRecording()
+      setRecording(true)
     } catch (err) {
-      toast.error("启动录音失败: " + String(err));
+      toast.error("启动录音失败: " + String(err))
     }
-  };
+  }
 
   const handleStopRecording = async () => {
     try {
-      const result = selectedAsrProvider && selectedAsrProvider !== "whisper"
-        ? await stopWhisperRecording(selectedAsrProvider)
-        : await stopWhisperRecording();
-      setRecording(false);
+      const result =
+        selectedAsrProvider && selectedAsrProvider !== "whisper"
+          ? await stopWhisperRecording(selectedAsrProvider)
+          : await stopWhisperRecording()
+      setRecording(false)
       if (!result.text || !result.text.trim()) {
-        toast.warning("未检测到音频，请检查麦克风权限或输入设备");
-        return;
+        toast.warning("未检测到音频，请检查麦克风权限或输入设备")
+        return
       }
-      setNewQuestion(result.text.trim());
+      setNewQuestion(result.text.trim())
     } catch (err) {
-      setRecording(false);
-      toast.error("停止录音失败: " + String(err));
+      setRecording(false)
+      toast.error("停止录音失败: " + String(err))
     }
-  };
+  }
 
   const handleAddRecord = async () => {
-    if (!newQuestion.trim()) return;
+    if (!newQuestion.trim()) return
     try {
-      await addQARecord(session.id, null, newQuestion.trim(), newAnswer.trim(), "", records.length);
-      setNewQuestion("");
-      setNewAnswer("");
-      onUpdated();
+      await addQARecord(session.id, null, newQuestion.trim(), newAnswer.trim(), "", records.length)
+      setNewQuestion("")
+      setNewAnswer("")
+      onUpdated()
     } catch (err) {
-      toast.error(String(err));
+      toast.error(String(err))
     }
-  };
+  }
 
   const handleUpdateRecord = async (recordId: number) => {
     try {
-      await updateQARecord(recordId, editAnswer, "");
-      setEditingRecord(null);
-      onUpdated();
+      await updateQARecord(recordId, editAnswer, "")
+      setEditingRecord(null)
+      onUpdated()
     } catch (err) {
-      toast.error(String(err));
+      toast.error(String(err))
     }
-  };
+  }
 
   const handleDeleteRecord = async (recordId: number) => {
-    if (!confirm("确认删除此记录？")) return;
+    if (!confirm("确认删除此记录？")) return
     try {
-      await deleteQARecord(recordId);
-      onUpdated();
+      await deleteQARecord(recordId)
+      onUpdated()
     } catch (err) {
-      toast.error(String(err));
+      toast.error(String(err))
     }
-  };
+  }
 
   const handleExportCsv = async () => {
     try {
-      const csv = await exportSessionCsv(session.id);
-      const dest = await save({ defaultPath: `调研记录_${session.title}_${session.session_date}.csv`, filters: [{ name: "CSV", extensions: ["csv"] }] });
-      if (dest) await invoke("export_report", { content: csv, filePath: dest });
+      const csv = await exportSessionCsv(session.id)
+      const dest = await save({
+        defaultPath: `调研记录_${session.title}_${session.session_date}.csv`,
+        filters: [{ name: "CSV", extensions: ["csv"] }],
+      })
+      if (dest) await invoke("export_report", { content: csv, filePath: dest })
     } catch (err) {
-      toast.error(String(err));
+      toast.error(String(err))
     }
-  };
+  }
 
   const handleExportMd = async () => {
     try {
-      const md = await exportSessionMarkdown(session.id);
-      const dest = await save({ defaultPath: `调研记录_${session.title}_${session.session_date}.md`, filters: [{ name: "Markdown", extensions: ["md"] }] });
-      if (dest) await invoke("export_report", { content: md, filePath: dest });
+      const md = await exportSessionMarkdown(session.id)
+      const dest = await save({
+        defaultPath: `调研记录_${session.title}_${session.session_date}.md`,
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      })
+      if (dest) await invoke("export_report", { content: md, filePath: dest })
     } catch (err) {
-      toast.error(String(err));
+      toast.error(String(err))
     }
-  };
+  }
 
   const handleExtractBlueprint = async () => {
-    const qaText = records.map((r, i) => `Q${i + 1}: ${r.question_text}\nA: ${r.answer_text}`).join("\n\n");
-    if (!qaText.trim()) { toast.warning("暂无记录，无法提炼蓝图"); return; }
-    try {
-      const blueprint = await extractBlueprint(qaText);
-      const dest = await save({ defaultPath: `蓝图_${session.title}.md`, filters: [{ name: "Markdown", extensions: ["md"] }] });
-      if (dest) await invoke("export_report", { content: blueprint, filePath: dest });
-    } catch (err) {
-      toast.error("蓝图提炼失败: " + String(err));
+    const qaText = records
+      .map((r, i) => `Q${i + 1}: ${r.question_text}\nA: ${r.answer_text}`)
+      .join("\n\n")
+    if (!qaText.trim()) {
+      toast.warning("暂无记录，无法提炼蓝图")
+      return
     }
-  };
+    try {
+      const blueprint = await extractBlueprint(qaText)
+      const dest = await save({
+        defaultPath: `蓝图_${session.title}.md`,
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      })
+      if (dest) await invoke("export_report", { content: blueprint, filePath: dest })
+    } catch (err) {
+      toast.error("蓝图提炼失败: " + String(err))
+    }
+  }
 
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="flex h-14 items-center justify-between border-b border-neutral-200 px-6">
         <div className="flex items-center gap-2">
-          <button type="button" onClick={onBack} className="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-700 transition-colors">
+          <button
+            type="button"
+            onClick={onBack}
+            className="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-700 transition-colors"
+          >
             <ChevronLeft className="h-4 w-4" />
             返回
           </button>
           <span className="text-sm text-neutral-300">|</span>
           <BookOpen className="h-5 w-5 text-[#1A6BD8]" />
           <h1 className="text-base font-semibold text-neutral-800">{session.title}</h1>
-          <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-500">{session.edition}/{session.module_code}</span>
-          {session.status === "completed" && <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] text-green-700">已完成</span>}
+          <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-500">
+            {session.edition}/{session.module_code}
+          </span>
+          {session.status === "completed" && (
+            <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] text-green-700">
+              已完成
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={handleExportCsv} className="flex items-center gap-1 rounded-lg border border-neutral-200 px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50 transition-colors">
+          <button
+            type="button"
+            onClick={handleExportCsv}
+            className="flex items-center gap-1 rounded-lg border border-neutral-200 px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50 transition-colors"
+          >
             <Download className="h-3.5 w-3.5" /> CSV
           </button>
-          <button type="button" onClick={handleExportMd} className="flex items-center gap-1 rounded-lg border border-neutral-200 px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50 transition-colors">
+          <button
+            type="button"
+            onClick={handleExportMd}
+            className="flex items-center gap-1 rounded-lg border border-neutral-200 px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50 transition-colors"
+          >
             <FileText className="h-3.5 w-3.5" /> MD
           </button>
-          <button type="button" onClick={handleExtractBlueprint} className="flex items-center gap-1 rounded-lg border border-blue-200 px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 transition-colors">
+          <button
+            type="button"
+            onClick={handleExtractBlueprint}
+            className="flex items-center gap-1 rounded-lg border border-blue-200 px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 transition-colors"
+          >
             <FileText className="h-3.5 w-3.5" /> 提炼蓝图
           </button>
         </div>
@@ -554,135 +685,178 @@ function SessionDetailView({ detail, onBack, onUpdated, initialTab = "qa" }: { d
         <div className="flex flex-1 overflow-hidden">
           {/* Q&A Records */}
           <div className="flex-1 overflow-y-auto p-6">
-          {records.length === 0 ? (
-            <div className="flex flex-col items-center justify-center pt-16 text-center">
-              <MessageSquare className="mb-3 h-10 w-10 text-neutral-200" />
-              <p className="text-sm text-neutral-400">暂无记录，使用录音或手动添加问题</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {records.map((r, i) => (
-                <div key={r.id} className="rounded-lg border border-neutral-200 bg-white p-4">
-                  <div className="mb-2 flex items-start justify-between">
-                    <span className="text-xs font-medium text-[#1A6BD8]">Q{i + 1}</span>
-                    <div className="flex gap-1">
-                      <button type="button" onClick={() => { setEditingRecord(r.id); setEditAnswer(r.answer_text); }} className="rounded p-1 text-neutral-300 hover:text-[#1A6BD8] transition-colors">
-                        <Edit3 className="h-3.5 w-3.5" />
-                      </button>
-                      <button type="button" onClick={() => handleDeleteRecord(r.id)} className="rounded p-1 text-neutral-300 hover:text-red-500 transition-colors">
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                  <p className="mb-2 text-sm font-medium text-neutral-800">{r.question_text}</p>
-                  {editingRecord === r.id ? (
-                    <div className="space-y-2">
-                      <textarea value={editAnswer} onChange={(e) => setEditAnswer(e.target.value)} rows={2} className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs outline-none focus:border-[#1A6BD8]" />
-                      <div className="flex gap-2">
-                        <button type="button" onClick={() => handleUpdateRecord(r.id)} className="rounded bg-[#1A6BD8] px-3 py-1 text-xs text-white hover:bg-[#1558B0]">保存</button>
-                        <button type="button" onClick={() => setEditingRecord(null)} className="rounded border border-neutral-200 px-3 py-1 text-xs text-neutral-600 hover:bg-neutral-50">取消</button>
+            {records.length === 0 ? (
+              <div className="flex flex-col items-center justify-center pt-16 text-center">
+                <MessageSquare className="mb-3 h-10 w-10 text-neutral-200" />
+                <p className="text-sm text-neutral-400">暂无记录，使用录音或手动添加问题</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {records.map((r, i) => (
+                  <div key={r.id} className="rounded-lg border border-neutral-200 bg-white p-4">
+                    <div className="mb-2 flex items-start justify-between">
+                      <span className="text-xs font-medium text-[#1A6BD8]">Q{i + 1}</span>
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingRecord(r.id)
+                            setEditAnswer(r.answer_text)
+                          }}
+                          className="rounded p-1 text-neutral-300 hover:text-[#1A6BD8] transition-colors"
+                        >
+                          <Edit3 className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteRecord(r.id)}
+                          className="rounded p-1 text-neutral-300 hover:text-red-500 transition-colors"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
                       </div>
                     </div>
-                  ) : (
-                    <p className="text-xs leading-relaxed text-neutral-600">{r.answer_text || <span className="italic text-neutral-300">未填写回答</span>}</p>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Input Panel */}
-        <div className="flex w-80 flex-col border-l border-neutral-200 bg-neutral-50 p-4">
-          {/* Voice Recording */}
-          <div className="mb-4 rounded-lg border border-neutral-200 bg-white p-4">
-            <div className="mb-2 flex items-center gap-2">
-              <Mic className="h-4 w-4 text-[#1A6BD8]" />
-              <span className="text-xs font-semibold text-neutral-700">语音输入</span>
-            </div>
-            {/* ASR Provider selector */}
-            <div className="mb-2">
-              <select
-                value={selectedAsrProvider}
-                onChange={(e) => setSelectedAsrProvider(e.target.value)}
-                className="w-full rounded border border-neutral-200 px-2 py-1 text-[10px] text-neutral-600 outline-none focus:border-[#1A6BD8]"
-              >
-                {asrProviders.map((p) => (
-                  <option key={p.type} value={p.type}>
-                    {p.name} {p.type === "whisper" ? (whisperStatus?.model_loaded ? "✓" : "⚠") : ""}
-                  </option>
+                    <p className="mb-2 text-sm font-medium text-neutral-800">{r.question_text}</p>
+                    {editingRecord === r.id ? (
+                      <div className="space-y-2">
+                        <textarea
+                          value={editAnswer}
+                          onChange={(e) => setEditAnswer(e.target.value)}
+                          rows={2}
+                          className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-xs outline-none focus:border-[#1A6BD8]"
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateRecord(r.id)}
+                            className="rounded bg-[#1A6BD8] px-3 py-1 text-xs text-white hover:bg-[#1558B0]"
+                          >
+                            保存
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingRecord(null)}
+                            className="rounded border border-neutral-200 px-3 py-1 text-xs text-neutral-600 hover:bg-neutral-50"
+                          >
+                            取消
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-xs leading-relaxed text-neutral-600">
+                        {r.answer_text || (
+                          <span className="italic text-neutral-300">未填写回答</span>
+                        )}
+                      </p>
+                    )}
+                  </div>
                 ))}
-              </select>
-              {/* Provider description */}
-              {asrProviders.find(p => p.type === selectedAsrProvider) && (
-                <p className="text-[10px] text-neutral-400 mt-0.5">
-                  {asrProviders.find(p => p.type === selectedAsrProvider)?.description}
-                </p>
-              )}
-            </div>
-            {whisperStatus && !whisperStatus.model_loaded && selectedAsrProvider === "whisper" && (
-              <span className="text-[10px] text-amber-600">（模型未加载）</span>
-            )}
-            {loadingWhisper ? (
-              <div className="flex items-center gap-2 text-xs text-neutral-500">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                加载语音模型...
               </div>
-            ) : recording ? (
-              <button type="button" onClick={handleStopRecording} className="flex w-full items-center justify-center gap-2 rounded-lg bg-red-500 px-3 py-2 text-xs font-medium text-white hover:bg-red-600 transition-colors">
-                <Square className="h-3.5 w-3.5" />
-                停止录音
-              </button>
-            ) : (
-              <button type="button" onClick={handleStartRecording} className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#1A6BD8] px-3 py-2 text-xs font-medium text-[#1A6BD8] hover:bg-[#1A6BD8]/5 transition-colors">
-                <Mic className="h-3.5 w-3.5" />
-                开始录音
-              </button>
             )}
           </div>
 
-          {/* Manual Input */}
-          <div className="flex-1 space-y-2">
-            <span className="text-xs font-semibold text-neutral-700">添加问题</span>
-            <textarea
-              value={newQuestion}
-              onChange={(e) => setNewQuestion(e.target.value)}
-              placeholder="输入或通过语音录入问题..."
-              rows={3}
-              className="w-full resize-none rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20"
-            />
-            <textarea
-              value={newAnswer}
-              onChange={(e) => setNewAnswer(e.target.value)}
-              placeholder="回答内容..."
-              rows={2}
-              className="w-full resize-none rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20"
-            />
-            <button
-              type="button"
-              onClick={handleAddRecord}
-              disabled={!newQuestion.trim()}
-              className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#1A6BD8] px-3 py-2 text-xs font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
-            >
-              <Send className="h-3.5 w-3.5" />
-              添加记录
-            </button>
-            <button
-              type="button"
-              onClick={handleAIAssist}
-              disabled={!newQuestion.trim() || aiLoading}
-              className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors"
-            >
-              {aiLoading ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          {/* Input Panel */}
+          <div className="flex w-80 flex-col border-l border-neutral-200 bg-neutral-50 p-4">
+            {/* Voice Recording */}
+            <div className="mb-4 rounded-lg border border-neutral-200 bg-white p-4">
+              <div className="mb-2 flex items-center gap-2">
+                <Mic className="h-4 w-4 text-[#1A6BD8]" />
+                <span className="text-xs font-semibold text-neutral-700">语音输入</span>
+              </div>
+              {/* ASR Provider selector */}
+              <div className="mb-2">
+                <select
+                  value={selectedAsrProvider}
+                  onChange={(e) => setSelectedAsrProvider(e.target.value)}
+                  className="w-full rounded border border-neutral-200 px-2 py-1 text-[10px] text-neutral-600 outline-none focus:border-[#1A6BD8]"
+                >
+                  {asrProviders.map((p) => (
+                    <option key={p.type} value={p.type}>
+                      {p.name}{" "}
+                      {p.type === "whisper" ? (whisperStatus?.model_loaded ? "✓" : "⚠") : ""}
+                    </option>
+                  ))}
+                </select>
+                {/* Provider description */}
+                {asrProviders.find((p) => p.type === selectedAsrProvider) && (
+                  <p className="text-[10px] text-neutral-400 mt-0.5">
+                    {asrProviders.find((p) => p.type === selectedAsrProvider)?.description}
+                  </p>
+                )}
+              </div>
+              {whisperStatus &&
+                !whisperStatus.model_loaded &&
+                selectedAsrProvider === "whisper" && (
+                  <span className="text-[10px] text-amber-600">（模型未加载）</span>
+                )}
+              {loadingWhisper ? (
+                <div className="flex items-center gap-2 text-xs text-neutral-500">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  加载语音模型...
+                </div>
+              ) : recording ? (
+                <button
+                  type="button"
+                  onClick={handleStopRecording}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-red-500 px-3 py-2 text-xs font-medium text-white hover:bg-red-600 transition-colors"
+                >
+                  <Square className="h-3.5 w-3.5" />
+                  停止录音
+                </button>
               ) : (
-                <Brain className="h-3.5 w-3.5" />
+                <button
+                  type="button"
+                  onClick={handleStartRecording}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#1A6BD8] px-3 py-2 text-xs font-medium text-[#1A6BD8] hover:bg-[#1A6BD8]/5 transition-colors"
+                >
+                  <Mic className="h-3.5 w-3.5" />
+                  开始录音
+                </button>
               )}
-              {aiLoading ? "搜索知识库..." : "AI 辅助"}
-            </button>
+            </div>
+
+            {/* Manual Input */}
+            <div className="flex-1 space-y-2">
+              <span className="text-xs font-semibold text-neutral-700">添加问题</span>
+              <textarea
+                value={newQuestion}
+                onChange={(e) => setNewQuestion(e.target.value)}
+                placeholder="输入或通过语音录入问题..."
+                rows={3}
+                className="w-full resize-none rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20"
+              />
+              <textarea
+                value={newAnswer}
+                onChange={(e) => setNewAnswer(e.target.value)}
+                placeholder="回答内容..."
+                rows={2}
+                className="w-full resize-none rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20"
+              />
+              <button
+                type="button"
+                onClick={handleAddRecord}
+                disabled={!newQuestion.trim()}
+                className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#1A6BD8] px-3 py-2 text-xs font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
+              >
+                <Send className="h-3.5 w-3.5" />
+                添加记录
+              </button>
+              <button
+                type="button"
+                onClick={handleAIAssist}
+                disabled={!newQuestion.trim() || aiLoading}
+                className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors"
+              >
+                {aiLoading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Brain className="h-3.5 w-3.5" />
+                )}
+                {aiLoading ? "搜索知识库..." : "AI 辅助"}
+              </button>
+            </div>
           </div>
         </div>
-      </div>
       ) : activeTab === "outline" ? (
         /* 大纲视图 */
         <div className="flex flex-1 overflow-hidden">
@@ -698,9 +872,7 @@ function SessionDetailView({ detail, onBack, onUpdated, initialTab = "qa" }: { d
                 <Plus className="h-3.5 w-3.5" />
                 添加根节点
               </button>
-              <span className="text-[10px] text-neutral-400">
-                {outline.nodes.length} 个节点
-              </span>
+              <span className="text-[10px] text-neutral-400">{outline.nodes.length} 个节点</span>
             </div>
             {/* 树内容 */}
             <div className="flex-1 overflow-y-auto p-2">
@@ -710,10 +882,7 @@ function SessionDetailView({ detail, onBack, onUpdated, initialTab = "qa" }: { d
 
           {/* 节点详情面板 */}
           <div className="w-72 shrink-0 border-l border-neutral-200 bg-white">
-            <NodeDetailPanel
-              node={outlineSelectedTreeNode}
-              sessionId={session.id}
-            />
+            <NodeDetailPanel node={outlineSelectedTreeNode} sessionId={session.id} />
           </div>
         </div>
       ) : (
@@ -723,5 +892,5 @@ function SessionDetailView({ detail, onBack, onUpdated, initialTab = "qa" }: { d
         </div>
       )}
     </div>
-  );
+  )
 }

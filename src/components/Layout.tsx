@@ -1,12 +1,30 @@
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { useEffect, useRef, useState } from "react";
-import { BookOpen, Search, Upload, Settings, LayoutDashboard, MessageSquare, FileEdit, Package, ClipboardList, ShieldAlert, Zap } from "lucide-react";
-import Spotlight from "./Spotlight";
-import { agentChat, listenReActEvents, isLLMConfigured, getModelStatus, getStats } from "../lib/tauri-commands";
-import { useProject } from "../contexts/ProjectContext";
+import {
+  BookOpen,
+  ClipboardList,
+  FileEdit,
+  LayoutDashboard,
+  MessageSquare,
+  Package,
+  Search,
+  Settings,
+  ShieldAlert,
+  Upload,
+  Zap,
+} from "lucide-react"
+import { useEffect, useRef, useState } from "react"
+import { NavLink, Outlet, useNavigate } from "react-router-dom"
+import { useProject } from "../contexts/ProjectContext"
+import {
+  agentChat,
+  getModelStatus,
+  getStats,
+  isLLMConfigured,
+  listenReActEvents,
+} from "../lib/tauri-commands"
+import Spotlight from "./Spotlight"
 
-const LS_KEY_QUESTION = "kb_sidebar_question";
-const LS_KEY_ANSWER = "kb_sidebar_answer";
+const LS_KEY_QUESTION = "kb_sidebar_question"
+const LS_KEY_ANSWER = "kb_sidebar_answer"
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "概览" },
@@ -20,84 +38,92 @@ const navItems = [
   { to: "/import", icon: Upload, label: "导入" },
   { to: "/skills", icon: Zap, label: "技能体系" },
   { to: "/settings", icon: Settings, label: "设置" },
-];
+]
 
-type StatusLevel = "ok" | "warn" | "error" | "loading";
+type StatusLevel = "ok" | "warn" | "error" | "loading"
 
 interface StatusItem {
-  label: string;
-  level: StatusLevel;
-  detail?: string;
-  section: string;
+  label: string
+  level: StatusLevel
+  detail?: string
+  section: string
 }
 
 function StatusBar({ onNavigate }: { onNavigate: (path: string) => void }) {
-  const { projectId } = useProject();
+  const { projectId } = useProject()
   const [items, setItems] = useState<StatusItem[]>([
     { label: "LLM", level: "loading", section: "llm" },
     { label: "Embedding", level: "loading", section: "embedding" },
     { label: "知识库", level: "loading", section: "kb" },
-  ]);
+  ])
 
   useEffect(() => {
-    let cancelled = false;
+    let cancelled = false
 
     async function check() {
-      const results: StatusItem[] = [];
+      const results: StatusItem[] = []
 
       // LLM status
       try {
-        const configured = await isLLMConfigured();
+        const configured = await isLLMConfigured()
         results.push({
           label: "LLM",
           level: configured ? "ok" : "error",
           detail: configured ? "已配置" : "未配置",
           section: "llm",
-        });
+        })
       } catch {
-        results.push({ label: "LLM", level: "error", detail: "检测失败", section: "llm" });
+        results.push({ label: "LLM", level: "error", detail: "检测失败", section: "llm" })
       }
 
       // Embedding status
       try {
-        const loaded = await getModelStatus();
+        const loaded = await getModelStatus()
         results.push({
           label: "Embedding",
           level: loaded ? "ok" : "warn",
           detail: loaded ? "已加载" : "未加载",
           section: "embedding",
-        });
+        })
       } catch {
-        results.push({ label: "Embedding", level: "error", detail: "检测失败", section: "embedding" });
+        results.push({
+          label: "Embedding",
+          level: "error",
+          detail: "检测失败",
+          section: "embedding",
+        })
       }
 
       // KB status
       try {
-        const stats = await getStats(projectId);
+        const stats = await getStats(projectId)
         results.push({
           label: "知识库",
           level: stats.document_count > 0 ? "ok" : "warn",
           detail: `${stats.document_count} 篇文档`,
           section: "kb",
-        });
+        })
       } catch {
-        results.push({ label: "知识库", level: "error", detail: "检测失败", section: "kb" });
+        results.push({ label: "知识库", level: "error", detail: "检测失败", section: "kb" })
       }
 
-      if (!cancelled) setItems(results);
+      if (!cancelled) setItems(results)
     }
 
-    check();
-    const interval = setInterval(check, 30_000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, [projectId]);
+    check()
+    const interval = setInterval(check, 30_000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [projectId])
 
   const dotColor: Record<StatusLevel, string> = {
     ok: "bg-green-500",
     warn: "bg-yellow-500",
     error: "bg-red-500",
     loading: "bg-neutral-300 animate-pulse",
-  };
+  }
 
   return (
     <div className="border-t border-neutral-200 px-3 py-2.5 space-y-1">
@@ -111,71 +137,76 @@ function StatusBar({ onNavigate }: { onNavigate: (path: string) => void }) {
         >
           <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotColor[item.level]}`} />
           <span className="font-medium">{item.label}</span>
-          {item.detail && (
-            <span className="ml-auto truncate text-neutral-400">{item.detail}</span>
-          )}
+          {item.detail && <span className="ml-auto truncate text-neutral-400">{item.detail}</span>}
         </button>
       ))}
     </div>
-  );
+  )
 }
 
 export default function Layout() {
-  const { projectId } = useProject();
-  const sideAnswerRef = useRef("");
-  const sideSessionRef = useRef<string | null>(null);
-  const navigate = useNavigate();
+  const { projectId } = useProject()
+  const sideAnswerRef = useRef("")
+  const sideSessionRef = useRef<string | null>(null)
+  const navigate = useNavigate()
 
   // Sidebar localStorage bridge: poll for questions from Tencent Meeting sidebar
   useEffect(() => {
-    let cancelled = false;
-    let unsub: (() => void) | null = null;
+    let cancelled = false
+    let unsub: (() => void) | null = null
 
     listenReActEvents((event) => {
       // Support both snake_case and camelCase (Tauri v2 may convert)
-      const eventSessionId = event.session_id || (event as any).sessionId;
-      if (eventSessionId !== sideSessionRef.current) return;
+      const eventSessionId = event.session_id || (event as any).sessionId
+      if (eventSessionId !== sideSessionRef.current) return
       if (event.type === "text_delta") {
-        sideAnswerRef.current += event.content;
+        sideAnswerRef.current += event.content
       }
       if (event.type === "done") {
-        const answer = sideAnswerRef.current;
+        const answer = sideAnswerRef.current
         try {
-          const raw = localStorage.getItem(LS_KEY_QUESTION);
+          const raw = localStorage.getItem(LS_KEY_QUESTION)
           if (raw) {
-            const q = JSON.parse(raw);
-            localStorage.setItem(LS_KEY_ANSWER, JSON.stringify({ id: q.id, text: answer }));
+            const q = JSON.parse(raw)
+            localStorage.setItem(LS_KEY_ANSWER, JSON.stringify({ id: q.id, text: answer }))
           }
-        } catch(e) { /* localStorage unavailable */ }
-        sideAnswerRef.current = "";
-        sideSessionRef.current = null;
+        } catch (e) {
+          /* localStorage unavailable */
+        }
+        sideAnswerRef.current = ""
+        sideSessionRef.current = null
       }
     }).then((fn) => {
-      if (cancelled) { fn(); return; }
-      unsub = fn;
-    });
+      if (cancelled) {
+        fn()
+        return
+      }
+      unsub = fn
+    })
 
     const interval = setInterval(() => {
       try {
-        const raw = localStorage.getItem(LS_KEY_QUESTION);
-        if (!raw) return;
-        const q = JSON.parse(raw);
-        if (!q.text || !q.id) return;
-        localStorage.removeItem(LS_KEY_QUESTION);
-        sideAnswerRef.current = "";
+        const raw = localStorage.getItem(LS_KEY_QUESTION)
+        if (!raw) return
+        const q = JSON.parse(raw)
+        if (!q.text || !q.id) return
+        localStorage.removeItem(LS_KEY_QUESTION)
+        sideAnswerRef.current = ""
         // Generate session ID first before calling agentChat
-        const sid = `layout_${Date.now()}`;
-        sideSessionRef.current = sid;
-        agentChat(q.text, sid, projectId);
-      } catch(e) { /* poll error */ }
-    }, 2000);
+        const sid = `layout_${Date.now()}`
+        sideSessionRef.current = sid
+        agentChat(q.text, sid, projectId)
+      } catch (e) {
+        /* poll error */
+      }
+    }, 2000)
 
     return () => {
-      cancelled = true;
-      unsub?.();
-      clearInterval(interval);
-    };
-  }, [projectId]);
+      cancelled = true
+      unsub?.()
+      clearInterval(interval)
+    }
+  }, [projectId])
 
   return (
     <div className="flex h-screen bg-neutral-50">
@@ -222,5 +253,5 @@ export default function Layout() {
       {/* Global Spotlight overlay */}
       <Spotlight />
     </div>
-  );
+  )
 }

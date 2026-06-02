@@ -1,131 +1,120 @@
-import { useState, useEffect, useMemo } from "react";
+import { open } from "@tauri-apps/plugin-dialog"
 import {
-  Package,
-  FolderOpen,
-  ChevronRight,
-  ChevronDown,
-  Download,
-  Trash2,
-  FileText,
-  FileSpreadsheet,
-  Loader2,
-  Calendar,
-  Hash,
-  CheckCircle2,
   AlertCircle,
-} from "lucide-react";
-import { open } from "@tauri-apps/plugin-dialog";
-import {
-  listProducts,
-  exportProduct,
-  deleteProduct,
-  type ProductMeta,
-} from "../lib/tauri-commands";
-
-import { useProject } from "../contexts/ProjectContext";
+  Calendar,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Download,
+  FileSpreadsheet,
+  FileText,
+  FolderOpen,
+  Hash,
+  Loader2,
+  Package,
+  Trash2,
+} from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
+import { useProject } from "../contexts/ProjectContext"
+import { deleteProduct, exportProduct, listProducts, type ProductMeta } from "../lib/tauri-commands"
 
 interface ProjectGroup {
-  project: string;
-  products: ProductMeta[];
+  project: string
+  products: ProductMeta[]
 }
 
 export default function Products() {
-  const { projectId } = useProject();
-  const [products, setProducts] = useState<ProductMeta[]>([]);
-  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
-  const [expandedProduct, setExpandedProduct] = useState<number | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [exporting, setExporting] = useState<number | null>(null);
-  const [deleting, setDeleting] = useState<number | null>(null);
-  const [exportDialog, setExportDialog] = useState<ProductMeta | null>(null);
-  const [exportDir, setExportDir] = useState("");
-  const [exportResult, setExportResult] = useState<string | null>(null);
+  const { projectId } = useProject()
+  const [products, setProducts] = useState<ProductMeta[]>([])
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set())
+  const [expandedProduct, setExpandedProduct] = useState<number | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [exporting, setExporting] = useState<number | null>(null)
+  const [deleting, setDeleting] = useState<number | null>(null)
+  const [exportDialog, setExportDialog] = useState<ProductMeta | null>(null)
+  const [exportDir, setExportDir] = useState("")
+  const [exportResult, setExportResult] = useState<string | null>(null)
 
   // Group products by project
   const projectGroups = useMemo<ProjectGroup[]>(() => {
-    const map = new Map<string, ProductMeta[]>();
+    const map = new Map<string, ProductMeta[]>()
     for (const product of products) {
-      const list = map.get(product.project) ?? [];
-      list.push(product);
-      map.set(product.project, list);
+      const list = map.get(product.project) ?? []
+      list.push(product)
+      map.set(product.project, list)
     }
     return Array.from(map.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([project, prods]) => ({
         project,
         products: prods.sort(
-          (a, b) =>
-            new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+          (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
         ),
-      }));
-  }, [products]);
+      }))
+  }, [products])
 
   // Load products on mount
   useEffect(() => {
-    (async () => {
+    ;(async () => {
       try {
-        const prods = await listProducts(projectId);
-        setProducts(prods);
+        const prods = await listProducts(projectId)
+        setProducts(prods)
         // Auto-expand first project
         if (prods.length > 0) {
-          setExpandedProjects(new Set([prods[0].project]));
+          setExpandedProjects(new Set([prods[0].project]))
         }
       } catch (e) {
-        console.error("Failed to load products:", e);
+        console.error("Failed to load products:", e)
       } finally {
-        setLoading(false);
+        setLoading(false)
       }
-    })();
-  }, [projectId]);
+    })()
+  }, [projectId])
 
   const toggleProject = (project: string) => {
     setExpandedProjects((prev) => {
-      const next = new Set(prev);
-      if (next.has(project)) next.delete(project);
-      else next.add(project);
-      return next;
-    });
-  };
+      const next = new Set(prev)
+      if (next.has(project)) next.delete(project)
+      else next.add(project)
+      return next
+    })
+  }
 
   const handleExport = async () => {
-    if (!exportDialog || !exportDir.trim()) return;
-    setExporting(exportDialog.id);
-    setExportResult(null);
+    if (!exportDialog || !exportDir.trim()) return
+    setExporting(exportDialog.id)
+    setExportResult(null)
     try {
-      const result = await exportProduct(exportDialog.id, exportDir.trim(), exportDialog.project);
-      setExportResult(result);
+      const result = await exportProduct(exportDialog.id, exportDir.trim(), exportDialog.project)
+      setExportResult(result)
     } catch (e) {
-      console.error("Export failed:", e);
-      setExportResult(`导出失败: ${e}`);
+      console.error("Export failed:", e)
+      setExportResult(`导出失败: ${e}`)
     } finally {
-      setExporting(null);
+      setExporting(null)
     }
-  };
+  }
 
   const handleDelete = async (product: ProductMeta) => {
-    if (
-      !confirm(
-        `确定删除产物「${product.template_name}」？\n输出路径: ${product.output_path}`
-      )
-    )
-      return;
-    setDeleting(product.id);
+    if (!confirm(`确定删除产物「${product.template_name}」？\n输出路径: ${product.output_path}`))
+      return
+    setDeleting(product.id)
     try {
-      await deleteProduct(product.id, product.project);
-      setProducts((prev) => prev.filter((p) => p.id !== product.id));
-      if (expandedProduct === product.id) setExpandedProduct(null);
+      await deleteProduct(product.id, product.project)
+      setProducts((prev) => prev.filter((p) => p.id !== product.id))
+      if (expandedProduct === product.id) setExpandedProduct(null)
     } catch (e) {
-      console.error("Delete failed:", e);
+      console.error("Delete failed:", e)
     } finally {
-      setDeleting(null);
+      setDeleting(null)
     }
-  };
+  }
 
   const closeExportDialog = () => {
-    setExportDialog(null);
-    setExportDir("");
-    setExportResult(null);
-  };
+    setExportDialog(null)
+    setExportDir("")
+    setExportResult(null)
+  }
 
   const formatDate = (dateStr: string) => {
     try {
@@ -135,11 +124,11 @@ export default function Products() {
         day: "2-digit",
         hour: "2-digit",
         minute: "2-digit",
-      });
+      })
     } catch {
-      return dateStr;
+      return dateStr
     }
-  };
+  }
 
   const getStatusBadge = (status: string) => {
     switch (status.toLowerCase()) {
@@ -150,7 +139,7 @@ export default function Products() {
             <CheckCircle2 className="h-2.5 w-2.5" />
             完成
           </span>
-        );
+        )
       case "failed":
       case "error":
         return (
@@ -158,15 +147,15 @@ export default function Products() {
             <AlertCircle className="h-2.5 w-2.5" />
             失败
           </span>
-        );
+        )
       default:
         return (
           <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-medium text-neutral-500">
             {status}
           </span>
-        );
+        )
     }
-  };
+  }
 
   return (
     <div className="flex h-full">
@@ -177,9 +166,7 @@ export default function Products() {
             <Package className="h-4 w-4 text-[#1A6BD8]" />
             产物管理
           </h2>
-          <p className="text-xs text-neutral-400 mt-0.5">
-            {products.length} 个产物
-          </p>
+          <p className="text-xs text-neutral-400 mt-0.5">{products.length} 个产物</p>
         </div>
 
         {loading ? (
@@ -191,9 +178,7 @@ export default function Products() {
           <div className="flex flex-col items-center justify-center p-8 text-center">
             <Package className="h-10 w-10 text-neutral-300 mb-3" />
             <p className="text-sm text-neutral-500">暂无产物</p>
-            <p className="text-xs text-neutral-400 mt-1">
-              请先通过文档生成向导创建产物
-            </p>
+            <p className="text-xs text-neutral-400 mt-1">请先通过文档生成向导创建产物</p>
           </div>
         ) : (
           <div className="py-1">
@@ -223,9 +208,7 @@ export default function Products() {
                         type="button"
                         key={product.id}
                         onClick={() =>
-                          setExpandedProduct(
-                            expandedProduct === product.id ? null : product.id
-                          )
+                          setExpandedProduct(expandedProduct === product.id ? null : product.id)
                         }
                         className={`group flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors ${
                           expandedProduct === product.id
@@ -240,9 +223,7 @@ export default function Products() {
                           <FileText className="h-3.5 w-3.5 shrink-0 text-[#1A6BD8]" />
                         )}
                         <div className="flex-1 min-w-0">
-                          <span className="truncate block">
-                            {product.template_name}
-                          </span>
+                          <span className="truncate block">{product.template_name}</span>
                           <span className="text-[10px] text-neutral-400 block">
                             {formatDate(product.created_at)}
                           </span>
@@ -267,33 +248,30 @@ export default function Products() {
               <p className="mt-2 text-sm">选择左侧产物查看详情</p>
             </div>
           </div>
-        ) : (() => {
-          const selected = products.find((p) => p.id === expandedProduct);
-          if (!selected) return null;
-          return (
-            <ProductPreview
-              product={selected}
-              onExport={(p) => setExportDialog(p)}
-              onDelete={handleDelete}
-              deleting={deleting}
-              formatDate={formatDate}
-              getStatusBadge={getStatusBadge}
-            />
-          );
-        })()
-}
+        ) : (
+          (() => {
+            const selected = products.find((p) => p.id === expandedProduct)
+            if (!selected) return null
+            return (
+              <ProductPreview
+                product={selected}
+                onExport={(p) => setExportDialog(p)}
+                onDelete={handleDelete}
+                deleting={deleting}
+                formatDate={formatDate}
+                getStatusBadge={getStatusBadge}
+              />
+            )
+          })()
+        )}
       </div>
 
       {/* Export dialog */}
       {exportDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
-            <h3 className="text-lg font-semibold text-neutral-800 mb-4">
-              导出产物
-            </h3>
-            <p className="text-sm text-neutral-600 mb-2">
-              模板: {exportDialog.template_name}
-            </p>
+            <h3 className="text-lg font-semibold text-neutral-800 mb-4">导出产物</h3>
+            <p className="text-sm text-neutral-600 mb-2">模板: {exportDialog.template_name}</p>
             <p className="text-xs text-neutral-400 mb-4 break-all">
               源路径: {exportDialog.output_path}
             </p>
@@ -316,8 +294,8 @@ export default function Products() {
               <button
                 type="button"
                 onClick={async () => {
-                  const selected = await open({ directory: true });
-                  if (selected) setExportDir(selected);
+                  const selected = await open({ directory: true })
+                  if (selected) setExportDir(selected)
                 }}
                 className="flex items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-600 hover:bg-neutral-50 transition-colors"
               >
@@ -364,7 +342,7 @@ export default function Products() {
         </div>
       )}
     </div>
-  );
+  )
 }
 
 // ── Product Preview Component ─────────────────────────────────────────────────
@@ -377,28 +355,25 @@ function ProductPreview({
   formatDate,
   getStatusBadge,
 }: {
-  product: ProductMeta;
-  onExport: (p: ProductMeta) => void;
-  onDelete: (p: ProductMeta) => void;
-  deleting: number | null;
-  formatDate: (d: string) => string;
-  getStatusBadge: (s: string) => React.ReactNode;
+  product: ProductMeta
+  onExport: (p: ProductMeta) => void
+  onDelete: (p: ProductMeta) => void
+  deleting: number | null
+  formatDate: (d: string) => string
+  getStatusBadge: (s: string) => React.ReactNode
 }) {
   return (
     <div className="mx-auto max-w-full px-6 py-6">
       {/* Product header */}
       <div className="rounded-lg border border-neutral-200 bg-white p-6">
         <div className="flex items-start gap-4">
-          {product.template_name.endsWith(".xlsx") ||
-          product.template_name.endsWith(".xls") ? (
+          {product.template_name.endsWith(".xlsx") || product.template_name.endsWith(".xls") ? (
             <FileSpreadsheet className="h-12 w-12 shrink-0 text-emerald-600" />
           ) : (
             <FileText className="h-12 w-12 shrink-0 text-[#1A6BD8]" />
           )}
           <div className="flex-1 min-w-0">
-            <h2 className="text-lg font-semibold text-neutral-800">
-              {product.template_name}
-            </h2>
+            <h2 className="text-lg font-semibold text-neutral-800">{product.template_name}</h2>
             <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-neutral-500">
               <span className="flex items-center gap-1">
                 <FolderOpen className="h-3 w-3" />
@@ -420,15 +395,11 @@ function ProductPreview({
         {/* Stats */}
         <div className="mt-6 grid grid-cols-3 gap-4">
           <div className="rounded-md bg-neutral-50 p-3 text-center">
-            <p className="text-2xl font-semibold text-[#1A6BD8]">
-              {product.field_count}
-            </p>
+            <p className="text-2xl font-semibold text-[#1A6BD8]">{product.field_count}</p>
             <p className="text-xs text-neutral-500">总字段数</p>
           </div>
           <div className="rounded-md bg-neutral-50 p-3 text-center">
-            <p className="text-2xl font-semibold text-purple-600">
-              {product.llm_fields_count}
-            </p>
+            <p className="text-2xl font-semibold text-purple-600">{product.llm_fields_count}</p>
             <p className="text-xs text-neutral-500">AI 生成字段</p>
           </div>
           <div className="rounded-md bg-neutral-50 p-3 text-center">
@@ -442,9 +413,7 @@ function ProductPreview({
         {/* Output path */}
         <div className="mt-4 rounded-md border border-neutral-100 bg-neutral-50 p-3">
           <p className="text-xs font-medium text-neutral-500 mb-1">输出路径</p>
-          <p className="text-sm text-neutral-700 break-all font-mono">
-            {product.output_path}
-          </p>
+          <p className="text-sm text-neutral-700 break-all font-mono">{product.output_path}</p>
         </div>
 
         {/* Actions */}
@@ -473,5 +442,5 @@ function ProductPreview({
         </div>
       </div>
     </div>
-  );
+  )
 }

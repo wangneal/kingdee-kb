@@ -84,6 +84,8 @@ pub struct IngestionResult {
     pub vector_count: usize,
     /// Processing time in milliseconds
     pub duration_ms: u64,
+    /// 原始文件路径（目录摄入时用于 KB 编译）
+    pub source_path: Option<String>,
 }
 
 /// 摄入纯文本（来自粘贴或文本框）
@@ -143,6 +145,7 @@ pub fn ingest_text(
                     chunk_count: existing_chunks as usize,
                     vector_count: existing_chunks as usize,
                     duration_ms: start.elapsed().as_millis() as u64,
+                    source_path: source_path.map(|s| s.to_string()),
                 });
             }
         }
@@ -184,7 +187,7 @@ pub fn ingest_text(
     // Insert document first
     let doc_id = {
         let meta = metadata.lock().map_err(|e| format!("Lock error: {}", e))?;
-        meta.insert_document(title, None, Some(&sha256), Some(project))?
+        meta.insert_document(title, None, Some(&sha256), Some(project), raw_source_identity)?
     };
 
     // 创建 raw_source 记录
@@ -317,6 +320,7 @@ pub fn ingest_text(
         chunk_count,
         vector_count,
         duration_ms: start.elapsed().as_millis() as u64,
+        source_path: source_path.map(|s| s.to_string()),
     })
 }
 

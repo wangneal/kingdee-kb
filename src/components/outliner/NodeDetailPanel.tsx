@@ -3,84 +3,85 @@
  *
  * 展示选中节点的详细信息：备注、标签、关联问答、元数据、导出。
  */
-import { useState, useEffect, useMemo, useCallback } from "react";
-import { FileText, List, Hash, Link2, Download } from "lucide-react";
-import { useOutline, type TreeNode } from "../../contexts/OutlineContext";
-import { exportOutline } from "../../lib/outline-commands";
-import { useToast } from "../Toast";
+
+import { Download, FileText, Hash, Link2, List } from "lucide-react"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { type TreeNode, useOutline } from "../../contexts/OutlineContext"
+import { exportOutline } from "../../lib/outline-commands"
+import { useToast } from "../Toast"
 
 interface NodeDetailPanelProps {
-  node: TreeNode | null;
-  sessionId: number;
+  node: TreeNode | null
+  sessionId: number
 }
 
 export default function NodeDetailPanel({ node, sessionId }: NodeDetailPanelProps) {
-  const { updateNode } = useOutline();
-  const toast = useToast();
+  const { updateNode } = useOutline()
+  const toast = useToast()
 
   // ── 备注编辑状态 ──
-  const [notes, setNotes] = useState(node?.notes ?? "");
-  const [tagsInput, setTagsInput] = useState("");
+  const [notes, setNotes] = useState(node?.notes ?? "")
+  const [tagsInput, setTagsInput] = useState("")
 
   // 同步选中节点变化
   useEffect(() => {
     if (node) {
-      setNotes(node.notes ?? "");
+      setNotes(node.notes ?? "")
       // 解析 JSON 标签数组为逗号分隔字符串
       try {
-        const parsed = JSON.parse(node.tags) as string[];
-        setTagsInput(parsed.join(", "));
+        const parsed = JSON.parse(node.tags) as string[]
+        setTagsInput(parsed.join(", "))
       } catch {
-        setTagsInput("");
+        setTagsInput("")
       }
     }
-  }, [node]);
+  }, [node])
 
   // ── 解析标签 ──
   const tags = useMemo(() => {
-    if (!node) return [];
+    if (!node) return []
     try {
-      return JSON.parse(node.tags) as string[];
+      return JSON.parse(node.tags) as string[]
     } catch {
-      return [];
+      return []
     }
-  }, [node]);
+  }, [node])
 
   // ── 保存备注 ──
   const handleNotesBlur = useCallback(async () => {
-    if (!node) return;
+    if (!node) return
     if (notes !== (node.notes ?? "")) {
-      await updateNode(node.id, { notes });
+      await updateNode(node.id, { notes })
     }
-  }, [node, notes, updateNode]);
+  }, [node, notes, updateNode])
 
   // ── 保存标签 ──
   const handleTagsBlur = useCallback(async () => {
-    if (!node) return;
+    if (!node) return
     const parsed = tagsInput
       .split(",")
       .map((t) => t.trim())
-      .filter(Boolean);
-    const json = JSON.stringify(parsed);
+      .filter(Boolean)
+    const json = JSON.stringify(parsed)
     if (json !== node.tags) {
-      await updateNode(node.id, { tags: json });
+      await updateNode(node.id, { tags: json })
     }
-  }, [node, tagsInput, updateNode]);
+  }, [node, tagsInput, updateNode])
 
   // ── 导出 ──
   const handleExport = useCallback(
     async (format: string) => {
       try {
-        const content = await exportOutline(sessionId, format);
+        const content = await exportOutline(sessionId, format)
         // 复制到剪贴板
-        await navigator.clipboard.writeText(content);
-        toast.success("已复制到剪贴板");
+        await navigator.clipboard.writeText(content)
+        toast.success("已复制到剪贴板")
       } catch (err) {
-        toast.error("导出失败: " + String(err));
+        toast.error("导出失败: " + String(err))
       }
     },
     [sessionId, toast],
-  );
+  )
 
   // ── 无选中节点时的占位 ──
   if (!node) {
@@ -89,7 +90,7 @@ export default function NodeDetailPanel({ node, sessionId }: NodeDetailPanelProp
         <FileText className="mb-3 h-8 w-8 text-neutral-200" />
         <p className="text-xs text-neutral-400">选择一个节点查看详情</p>
       </div>
-    );
+    )
   }
 
   return (
@@ -108,7 +109,9 @@ export default function NodeDetailPanel({ node, sessionId }: NodeDetailPanelProp
 
       {/* 备注 */}
       <div className="mb-4">
-        <label htmlFor="node-notes" className="mb-1 block text-xs font-medium text-neutral-600">备注</label>
+        <label htmlFor="node-notes" className="mb-1 block text-xs font-medium text-neutral-600">
+          备注
+        </label>
         <textarea
           id="node-notes"
           value={notes}
@@ -154,13 +157,9 @@ export default function NodeDetailPanel({ node, sessionId }: NodeDetailPanelProp
           <span className="text-xs font-medium text-neutral-600">问答关联</span>
         </div>
         {node.question_id ? (
-          <p className="mt-1 text-[10px] text-neutral-500">
-            已关联问答记录 #{node.question_id}
-          </p>
+          <p className="mt-1 text-[10px] text-neutral-500">已关联问答记录 #{node.question_id}</p>
         ) : (
-          <p className="mt-1 text-[10px] text-neutral-400">
-            暂未关联问答记录
-          </p>
+          <p className="mt-1 text-[10px] text-neutral-400">暂未关联问答记录</p>
         )}
       </div>
 
@@ -197,5 +196,5 @@ export default function NodeDetailPanel({ node, sessionId }: NodeDetailPanelProp
         </div>
       </div>
     </div>
-  );
+  )
 }

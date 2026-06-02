@@ -1,171 +1,195 @@
-import { useState, useEffect, useCallback } from "react";
+import { open } from "@tauri-apps/plugin-dialog"
 import {
-  Search,
-  Loader2,
-  RefreshCw,
-  Zap,
-  Upload,
-  X,
-  ExternalLink,
   BookOpen,
-  Code,
   ChevronDown,
+  Code,
+  ExternalLink,
   FileText,
   FolderOpen,
-} from "lucide-react";
-import { open } from "@tauri-apps/plugin-dialog";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+  Loader2,
+  RefreshCw,
+  Search,
+  Upload,
+  X,
+  Zap,
+} from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import {
-  listSkills,
-  searchSkills,
-  getSkillStats,
-  rescanSkills,
-  importSkill,
-  getSkillFull,
-  readSkillFile,
-  matchSkillCandidates,
-  getSkillListPrompt,
   executeSkillScript,
-} from "../lib/skill-commands";
-import type { Skill, SkillFull, SkillFile, SkillStatsResponse, SkillMatch, ExecutionResult } from "../lib/skill-types";
-import { SKILL_CATEGORY_LABELS, SKILL_FILE_TYPE_LABELS, SKILL_FILE_TYPE_ICONS, MATCH_TYPE_LABELS, MATCH_TYPE_ICONS } from "../lib/skill-types";
+  getSkillFull,
+  getSkillListPrompt,
+  getSkillStats,
+  importSkill,
+  listSkills,
+  matchSkillCandidates,
+  readSkillFile,
+  rescanSkills,
+  searchSkills,
+} from "../lib/skill-commands"
+import type {
+  ExecutionResult,
+  Skill,
+  SkillFile,
+  SkillFull,
+  SkillMatch,
+  SkillStatsResponse,
+} from "../lib/skill-types"
+import {
+  MATCH_TYPE_ICONS,
+  MATCH_TYPE_LABELS,
+  SKILL_CATEGORY_LABELS,
+  SKILL_FILE_TYPE_ICONS,
+  SKILL_FILE_TYPE_LABELS,
+} from "../lib/skill-types"
 
-const CATEGORY_ORDER = ["core", "stage", "mgmt", "tool"];
+const CATEGORY_ORDER = ["core", "stage", "mgmt", "tool"]
 
 export default function Skills() {
-  const [skills, setSkills] = useState<Skill[]>([]);
-  const [stats, setStats] = useState<SkillStatsResponse | null>(null);
-  const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [scanning, setScanning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [detail, setDetail] = useState<Skill | null>(null);
-  const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
-  const [skillFull, setSkillFull] = useState<SkillFull | null>(null);
-  const [fileContent, setFileContent] = useState<string | null>(null);
-  const [loadingFile, setLoadingFile] = useState(false);
+  const [skills, setSkills] = useState<Skill[]>([])
+  const [stats, setStats] = useState<SkillStatsResponse | null>(null)
+  const [query, setQuery] = useState("")
+  const [loading, setLoading] = useState(true)
+  const [scanning, setScanning] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [detail, setDetail] = useState<Skill | null>(null)
+  const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set())
+  const [skillFull, setSkillFull] = useState<SkillFull | null>(null)
+  const [fileContent, setFileContent] = useState<string | null>(null)
+  const [loadingFile, setLoadingFile] = useState(false)
 
   // Phase 2: Trigger Match state
-  const [triggerQuery, setTriggerQuery] = useState("");
-  const [triggerResults, setTriggerResults] = useState<SkillMatch[]>([]);
-  const [triggerLoading, setTriggerLoading] = useState(false);
-  const [showPrompt, setShowPrompt] = useState(false);
-  const [promptText, setPromptText] = useState<string | null>(null);
-  const [promptLoading, setPromptLoading] = useState(false);
+  const [triggerQuery, setTriggerQuery] = useState("")
+  const [triggerResults, setTriggerResults] = useState<SkillMatch[]>([])
+  const [triggerLoading, setTriggerLoading] = useState(false)
+  const [showPrompt, setShowPrompt] = useState(false)
+  const [promptText, setPromptText] = useState<string | null>(null)
+  const [promptLoading, setPromptLoading] = useState(false)
 
   // Phase 3: Script Execution state
-  const [executingScript, setExecutingScript] = useState<string | null>(null);
-  const [scriptResult, setScriptResult] = useState<ExecutionResult | null>(null);
+  const [executingScript, setExecutingScript] = useState<string | null>(null)
+  const [scriptResult, setScriptResult] = useState<ExecutionResult | null>(null)
 
   const refresh = useCallback(async (q?: string) => {
-    setLoading(true);
-    setError(null);
+    setLoading(true)
+    setError(null)
     try {
       const [skillList, skillStats] = await Promise.all([
         q ? searchSkills(q) : listSkills(),
         getSkillStats().catch(() => null),
-      ]);
-      setSkills(skillList);
-      setStats(skillStats);
+      ])
+      setSkills(skillList)
+      setStats(skillStats)
     } catch (e) {
-      setError(String(e));
+      setError(String(e))
     }
-    setLoading(false);
-  }, []);
+    setLoading(false)
+  }, [])
 
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    refresh()
+  }, [])
 
-  const handleSearch = useCallback(() => refresh(query), [query, refresh]);
+  const handleSearch = useCallback(() => refresh(query), [query, refresh])
   const handleRescan = useCallback(async () => {
-    setScanning(true);
-    try { await rescanSkills(); await refresh(); }
-    catch (e) { setError(String(e)); }
-    setScanning(false);
-  }, [refresh]);
+    setScanning(true)
+    try {
+      await rescanSkills()
+      await refresh()
+    } catch (e) {
+      setError(String(e))
+    }
+    setScanning(false)
+  }, [refresh])
 
   const handleImport = useCallback(async () => {
     const selected = await open({
       multiple: false,
       filters: [{ name: "技能包 ZIP", extensions: ["zip"] }],
-    });
-    if (!selected) return;
+    })
+    if (!selected) return
     try {
-      await importSkill(selected as string);
-      await refresh();
-      setError(null);
-    } catch (e) { setError(String(e)); }
-  }, [refresh]);
+      await importSkill(selected as string)
+      await refresh()
+      setError(null)
+    } catch (e) {
+      setError(String(e))
+    }
+  }, [refresh])
 
   const handleCardClick = useCallback(async (name: string) => {
-    const full = await getSkillFull(name);
-    setSkillFull(full);
-    setDetail(full?.skill ?? null);
-    setFileContent(null);
-  }, []);
+    const full = await getSkillFull(name)
+    setSkillFull(full)
+    setDetail(full?.skill ?? null)
+    setFileContent(null)
+  }, [])
 
   // Phase 2: Trigger Match handlers
   const handleTriggerMatch = useCallback(async () => {
-    if (!triggerQuery.trim()) return;
-    setTriggerLoading(true);
+    if (!triggerQuery.trim()) return
+    setTriggerLoading(true)
     try {
-      const matches = await matchSkillCandidates(triggerQuery, 5);
-      setTriggerResults(matches);
+      const matches = await matchSkillCandidates(triggerQuery, 5)
+      setTriggerResults(matches)
     } catch (e) {
-      setError(String(e));
+      setError(String(e))
     }
-    setTriggerLoading(false);
-  }, [triggerQuery]);
+    setTriggerLoading(false)
+  }, [triggerQuery])
 
   const handleShowPrompt = useCallback(async () => {
-    setPromptLoading(true);
-    setShowPrompt(true);
+    setPromptLoading(true)
+    setShowPrompt(true)
     try {
-      const prompt = await getSkillListPrompt();
-      setPromptText(prompt);
+      const prompt = await getSkillListPrompt()
+      setPromptText(prompt)
     } catch (e) {
-      setPromptText(`获取失败: ${e}`);
+      setPromptText(`获取失败: ${e}`)
     }
-    setPromptLoading(false);
-  }, []);
+    setPromptLoading(false)
+  }, [])
 
   // Phase 3: Script Execution handler
   const handleExecuteScript = useCallback(async (skillId: string, scriptPath: string) => {
-    setExecutingScript(scriptPath);
-    setScriptResult(null);
+    setExecutingScript(scriptPath)
+    setScriptResult(null)
     try {
-      const result = await executeSkillScript(skillId, scriptPath, []);
-      setScriptResult(result);
+      const result = await executeSkillScript(skillId, scriptPath, [])
+      setScriptResult(result)
     } catch (e) {
       setScriptResult({
         success: false,
         output: "",
         duration_ms: 0,
         error: String(e),
-      });
+      })
     }
-    setExecutingScript(null);
-  }, []);
+    setExecutingScript(null)
+  }, [])
 
   const handleCardExpand = useCallback((name: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setExpandedCards(prev => {
-      const next = new Set(prev);
-      next.has(name) ? next.delete(name) : next.add(name);
-      return next;
-    });
-  }, []);
+    e.stopPropagation()
+    setExpandedCards((prev) => {
+      const next = new Set(prev)
+      next.has(name) ? next.delete(name) : next.add(name)
+      return next
+    })
+  }, [])
 
   // ── Detail Overlay ──
   if (detail && skillFull) {
-    const filesByType = skillFull.supporting_files.reduce((acc, f) => {
-      const type = f.file_type;
-      if (!acc[type]) acc[type] = [];
-      acc[type].push(f);
-      return acc;
-    }, {} as Record<string, SkillFile[]>);
+    const filesByType = skillFull.supporting_files.reduce(
+      (acc, f) => {
+        const type = f.file_type
+        if (!acc[type]) acc[type] = []
+        acc[type].push(f)
+        return acc
+      },
+      {} as Record<string, SkillFile[]>,
+    )
 
-    const fileTypes = ["script", "reference", "asset", "config", "other"] as const;
+    const fileTypes = ["script", "reference", "asset", "config", "other"] as const
 
     return (
       <div className="flex h-full flex-col">
@@ -174,7 +198,11 @@ export default function Skills() {
             {detail.metadata.icon || "📄"} {detail.name}
           </h2>
           <button
-            onClick={() => { setDetail(null); setSkillFull(null); setFileContent(null); }}
+            onClick={() => {
+              setDetail(null)
+              setSkillFull(null)
+              setFileContent(null)
+            }}
             className="flex h-7 w-7 items-center justify-center rounded-md text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600"
           >
             <X className="h-4 w-4" />
@@ -182,7 +210,8 @@ export default function Skills() {
         </div>
         <div className="flex-1 overflow-y-auto p-6">
           {/* Body */}
-          <div className="prose prose-sm prose-neutral max-w-4xl
+          <div
+            className="prose prose-sm prose-neutral max-w-4xl
             prose-headings:text-neutral-800
             prose-h2:mt-6 prose-h2:mb-3 prose-h2:border-b prose-h2:border-neutral-200 prose-h2:pb-2
             prose-p:text-neutral-600
@@ -193,10 +222,9 @@ export default function Skills() {
             prose-strong:text-neutral-700
             prose-li:text-neutral-600
             prose-blockquote:border-l-[#1A6BD8] prose-blockquote:text-neutral-500
-            prose-img:rounded-lg">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {detail.body || "*暂无内容*"}
-            </ReactMarkdown>
+            prose-img:rounded-lg"
+          >
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{detail.body || "*暂无内容*"}</ReactMarkdown>
           </div>
 
           {/* Supporting Files */}
@@ -206,42 +234,42 @@ export default function Skills() {
                 <FolderOpen className="h-4 w-4" />
                 支撑文件 ({skillFull.supporting_files.length})
               </h3>
-              {fileTypes.map(type => {
-                const files = filesByType[type];
-                if (!files || files.length === 0) return null;
+              {fileTypes.map((type) => {
+                const files = filesByType[type]
+                if (!files || files.length === 0) return null
                 return (
                   <div key={type} className="mb-3">
                     <p className="text-xs font-medium text-neutral-500 mb-1">
                       {SKILL_FILE_TYPE_ICONS[type]} {SKILL_FILE_TYPE_LABELS[type]} ({files.length})
                     </p>
                     <div className="flex flex-wrap gap-1.5">
-                      {files.map(f => (
+                      {files.map((f) => (
                         <div key={f.path} className="flex items-center gap-1">
                           <button
                             onClick={async () => {
-                              setLoadingFile(true);
-                              setFileContent(null);
+                              setLoadingFile(true)
+                              setFileContent(null)
                               try {
-                                const content = await readSkillFile(detail.name, f.path);
-                                setFileContent(`// ${f.name}\n${content}`);
+                                const content = await readSkillFile(detail.name, f.path)
+                                setFileContent(`// ${f.name}\n${content}`)
                               } catch (e) {
-                                setFileContent(`读取失败: ${e}`);
+                                setFileContent(`读取失败: ${e}`)
                               }
-                              setLoadingFile(false);
+                              setLoadingFile(false)
                             }}
                             className="flex items-center gap-1 rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs text-neutral-600 hover:border-[#1A6BD8]/30 hover:bg-blue-50/50 transition-colors"
                           >
                             <FileText className="h-3 w-3 text-neutral-400" />
                             {f.name}
                             <span className="text-neutral-300 text-[10px]">
-                              {f.size > 1024 ? `${(f.size/1024).toFixed(1)}KB` : `${f.size}B`}
+                              {f.size > 1024 ? `${(f.size / 1024).toFixed(1)}KB` : `${f.size}B`}
                             </span>
                           </button>
                           {type === "script" && (
                             <button
                               onClick={(e) => {
-                                e.stopPropagation();
-                                handleExecuteScript(detail.name, f.path);
+                                e.stopPropagation()
+                                handleExecuteScript(detail.name, f.path)
                               }}
                               disabled={executingScript === f.path}
                               className="flex items-center gap-1 rounded-md bg-green-500 px-2 py-1 text-xs text-white hover:bg-green-600 disabled:opacity-50"
@@ -258,7 +286,7 @@ export default function Skills() {
                       ))}
                     </div>
                   </div>
-                );
+                )
               })}
             </div>
           )}
@@ -277,7 +305,8 @@ export default function Skills() {
               </div>
               {loadingFile ? (
                 <div className="flex items-center gap-2 text-xs text-neutral-400">
-                  <Loader2 className="h-3 w-3 animate-spin" />加载中...
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  加载中...
                 </div>
               ) : (
                 <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-all text-xs text-neutral-700 font-mono">
@@ -289,10 +318,14 @@ export default function Skills() {
 
           {/* Script Execution Result */}
           {scriptResult && (
-            <div className={`mt-4 rounded-lg border p-4 ${scriptResult.success ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}`}>
+            <div
+              className={`mt-4 rounded-lg border p-4 ${scriptResult.success ? "border-green-200 bg-green-50" : "border-red-200 bg-red-50"}`}
+            >
               <div className="flex items-center justify-between mb-2">
-                <span className={`text-xs font-medium ${scriptResult.success ? 'text-green-700' : 'text-red-700'}`}>
-                  {scriptResult.success ? '✅ 执行成功' : '❌ 执行失败'}
+                <span
+                  className={`text-xs font-medium ${scriptResult.success ? "text-green-700" : "text-red-700"}`}
+                >
+                  {scriptResult.success ? "✅ 执行成功" : "❌ 执行失败"}
                 </span>
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] text-neutral-400">{scriptResult.duration_ms}ms</span>
@@ -325,7 +358,7 @@ export default function Skills() {
                 共享资源 ({skillFull.shared_references.length})
               </h3>
               <div className="flex flex-wrap gap-1.5">
-                {skillFull.shared_references.map(r => (
+                {skillFull.shared_references.map((r) => (
                   <span
                     key={r.path}
                     className="inline-flex items-center gap-1 rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] text-neutral-500"
@@ -338,7 +371,7 @@ export default function Skills() {
           )}
         </div>
       </div>
-    );
+    )
   }
 
   // ── Detail Overlay Fallback ──
@@ -357,7 +390,8 @@ export default function Skills() {
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-6">
-          <div className="prose prose-sm prose-neutral max-w-4xl
+          <div
+            className="prose prose-sm prose-neutral max-w-4xl
             prose-headings:text-neutral-800
             prose-h2:mt-6 prose-h2:mb-3 prose-h2:border-b prose-h2:border-neutral-200 prose-h2:pb-2
             prose-p:text-neutral-600
@@ -367,20 +401,19 @@ export default function Skills() {
             prose-strong:text-neutral-700
             prose-li:text-neutral-600
             prose-blockquote:border-l-[#1A6BD8] prose-blockquote:text-neutral-500
-            prose-img:rounded-lg">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {detail.body || "*暂无内容*"}
-            </ReactMarkdown>
+            prose-img:rounded-lg"
+          >
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{detail.body || "*暂无内容*"}</ReactMarkdown>
           </div>
         </div>
       </div>
-    );
+    )
   }
 
   // ── Card Grid ──
-  const grouped = CATEGORY_ORDER
-    .flatMap(cat => skills.filter(s => s.metadata.category === cat))
-    .concat(skills.filter(s => !CATEGORY_ORDER.includes(s.metadata.category)));
+  const grouped = CATEGORY_ORDER.flatMap((cat) =>
+    skills.filter((s) => s.metadata.category === cat),
+  ).concat(skills.filter((s) => !CATEGORY_ORDER.includes(s.metadata.category)))
 
   return (
     <div className="flex h-full flex-col">
@@ -395,24 +428,35 @@ export default function Skills() {
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-400" />
             <input
-              type="text" value={query}
+              type="text"
+              value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSearch()}
               placeholder="搜索..."
               className="h-8 w-36 rounded-md border border-neutral-200 bg-white pl-8 pr-2 text-xs placeholder:text-neutral-400 focus:border-[#1A6BD8] focus:outline-none"
             />
           </div>
-          <button onClick={handleImport}
+          <button
+            onClick={handleImport}
             className="flex h-8 items-center gap-1 rounded-md bg-[#1A6BD8] px-3 text-xs text-white hover:bg-[#1555B0]"
-          ><Upload className="h-3.5 w-3.5" />导入</button>
-          <button onClick={handleRescan} disabled={scanning}
+          >
+            <Upload className="h-3.5 w-3.5" />
+            导入
+          </button>
+          <button
+            onClick={handleRescan}
+            disabled={scanning}
             className="flex h-8 items-center gap-1 rounded-md border border-neutral-200 px-2.5 text-xs text-neutral-600 hover:bg-neutral-50 disabled:opacity-50"
-          ><RefreshCw className={`h-3.5 w-3.5 ${scanning ? "animate-spin" : ""}`} /></button>
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${scanning ? "animate-spin" : ""}`} />
+          </button>
         </div>
       </div>
 
       {error && (
-        <div className="mx-6 mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>
+        <div className="mx-6 mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">
+          {error}
+        </div>
       )}
 
       {/* Phase 2: Trigger Match Panel */}
@@ -444,7 +488,11 @@ export default function Skills() {
             disabled={triggerLoading || !triggerQuery.trim()}
             className="flex h-8 items-center gap-1 rounded-md bg-[#1A6BD8] px-3 text-xs text-white hover:bg-[#1555B0] disabled:opacity-50"
           >
-            {triggerLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
+            {triggerLoading ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Zap className="h-3 w-3" />
+            )}
             匹配
           </button>
         </div>
@@ -492,7 +540,10 @@ export default function Skills() {
             <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
               <h3 className="text-sm font-semibold text-neutral-800">系统提示（技能列表）</h3>
               <button
-                onClick={() => { setShowPrompt(false); setPromptText(null); }}
+                onClick={() => {
+                  setShowPrompt(false)
+                  setPromptText(null)
+                }}
                 className="flex h-7 w-7 items-center justify-center rounded-md text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600"
               >
                 <X className="h-4 w-4" />
@@ -527,7 +578,7 @@ export default function Skills() {
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {grouped.map(skill => (
+            {grouped.map((skill) => (
               <SkillCard
                 key={skill.name}
                 skill={skill}
@@ -540,7 +591,7 @@ export default function Skills() {
         )}
       </div>
     </div>
-  );
+  )
 }
 
 // ── Skill Card ──
@@ -550,14 +601,14 @@ function SkillCard({
   onClick,
   onExpand,
 }: {
-  skill: Skill;
-  expanded: boolean;
-  onClick: () => void;
-  onExpand: (e: React.MouseEvent) => void;
+  skill: Skill
+  expanded: boolean
+  onClick: () => void
+  onExpand: (e: React.MouseEvent) => void
 }) {
-  const cat = skill.metadata.category;
-  const catLabel = SKILL_CATEGORY_LABELS[cat] || cat;
-  const hasExtras = skill.scripts.length > 0 || skill.references.length > 0;
+  const cat = skill.metadata.category
+  const catLabel = SKILL_CATEGORY_LABELS[cat] || cat
+  const hasExtras = skill.scripts.length > 0 || skill.references.length > 0
 
   return (
     <div
@@ -592,7 +643,10 @@ function SkillCard({
           详情
         </button>
         <button
-          onClick={(e) => { e.stopPropagation(); onClick(); }}
+          onClick={(e) => {
+            e.stopPropagation()
+            onClick()
+          }}
           className="flex items-center gap-1 text-[11px] text-[#1A6BD8] opacity-0 transition-opacity group-hover:opacity-100 hover:underline"
         >
           查看 <ExternalLink className="h-3 w-3" />
@@ -602,21 +656,25 @@ function SkillCard({
       {/* Expanded detail */}
       {expanded && (
         <div className="mt-3 border-t border-neutral-100 pt-3 text-xs text-neutral-500">
-          {skill.metadata.version && (
-            <p className="mb-1">版本: {skill.metadata.version}</p>
-          )}
+          {skill.metadata.version && <p className="mb-1">版本: {skill.metadata.version}</p>}
           {hasExtras && (
             <div className="flex gap-3 mt-2">
               {skill.scripts.length > 0 && (
-                <span className="flex items-center gap-1"><Code className="h-3 w-3" />{skill.scripts.length} 脚本</span>
+                <span className="flex items-center gap-1">
+                  <Code className="h-3 w-3" />
+                  {skill.scripts.length} 脚本
+                </span>
               )}
               {skill.references.length > 0 && (
-                <span className="flex items-center gap-1"><BookOpen className="h-3 w-3" />{skill.references.length} 参考</span>
+                <span className="flex items-center gap-1">
+                  <BookOpen className="h-3 w-3" />
+                  {skill.references.length} 参考
+                </span>
               )}
             </div>
           )}
         </div>
       )}
     </div>
-  );
+  )
 }

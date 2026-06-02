@@ -4,20 +4,8 @@
  * 提供语音录音的完整生命周期管理：开始录音 → 转录中 → 返回文本。
  * 仅在研究助手页面（research 路由）内使用。
  */
-import {
-  createContext,
-  type ReactNode,
-  useCallback,
-  useContext,
-  useEffect,
-  useState,
-} from "react"
-import {
-  getWhisperStatus,
-  loadWhisperModel,
-  startRecording,
-  stopRecording,
-} from "../lib/audio"
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from "react"
+import { getWhisperStatus, loadWhisperModel, startRecording, stopRecording } from "../lib/audio"
 
 // ── 类型定义 ──────────────────────────────────────────────────────────────
 

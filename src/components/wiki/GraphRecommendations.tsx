@@ -4,12 +4,10 @@
  * 展示基于知识图谱的关联页面推荐结果。
  * 使用 graph_expand_search 获取多跳邻居，按组合权重排序展示。
  */
-import { useState, useEffect, useCallback } from "react"
-import { Network, Loader2, AlertCircle } from "lucide-react"
-import {
-  graphExpandSearch,
-  type GraphRecommendation,
-} from "../../lib/wiki-commands"
+
+import { AlertCircle, Loader2, Network } from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import { type GraphRecommendation, graphExpandSearch } from "../../lib/wiki-commands"
 
 interface GraphRecommendationsProps {
   /** 当前项目标识 */
@@ -34,10 +32,7 @@ const SIGNAL_COLORS: Record<string, string> = {
   co_citation: "bg-purple-100 text-purple-700",
 }
 
-export default function GraphRecommendations({
-  project,
-  slug,
-}: GraphRecommendationsProps) {
+export default function GraphRecommendations({ project, slug }: GraphRecommendationsProps) {
   const [recommendations, setRecommendations] = useState<GraphRecommendation[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -67,7 +62,9 @@ export default function GraphRecommendations({
         setLoading(false)
       }
     })
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [fetchRecommendations])
 
   // ── 权重格式化 ──

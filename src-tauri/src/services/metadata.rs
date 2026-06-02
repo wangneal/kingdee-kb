@@ -17,6 +17,7 @@ pub struct DocumentMeta {
     pub sha256: Option<String>,
     pub created_at: String,
     pub project: String,
+    pub raw_source_identity: Option<String>,
 }
 
 /// Chunk metadata (one per vector in the HNSW index)
@@ -81,7 +82,8 @@ impl MetadataStore {
                 source_path TEXT,
                 sha256 TEXT UNIQUE,
                 created_at TEXT DEFAULT (datetime('now')),
-                project TEXT DEFAULT 'default'
+                project TEXT DEFAULT 'default',
+                raw_source_identity TEXT DEFAULT NULL
             );
 
             CREATE TABLE IF NOT EXISTS chunks (
@@ -103,9 +105,25 @@ impl MetadataStore {
             CREATE TABLE IF NOT EXISTS vector_key_seq (
                 id INTEGER PRIMARY KEY AUTOINCREMENT
             );
+
+            CREATE TABLE IF NOT EXISTS deletion_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id INTEGER NOT NULL,
+                project TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                error TEXT,
+                vector_keys TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
             ",
             )
             .map_err(|e| format!("Failed to initialize schema: {}", e))?;
+
+        // 兼容已有数据库：添加 raw_source_identity 列
+        let _ = self.db.execute_batch(
+            "ALTER TABLE documents ADD COLUMN raw_source_identity TEXT DEFAULT NULL;"
+        );
 
         // Seed vector_key_seq with current max + 1 if empty
         let count: i64 = self
@@ -144,12 +162,13 @@ impl MetadataStore {
         source_path: Option<&str>,
         sha256: Option<&str>,
         project: Option<&str>,
+        raw_source_identity: Option<&str>,
     ) -> Result<i64, String> {
         self.db
             .execute(
-                "INSERT OR IGNORE INTO documents (title, source_path, sha256, project)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![title, source_path, sha256, project.unwrap_or("default")],
+                "INSERT OR IGNORE INTO documents (title, source_path, sha256, project, raw_source_identity)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![title, source_path, sha256, project.unwrap_or("default"), raw_source_identity],
             )
             .map_err(|e| format!("Failed to insert document: {}", e))?;
 
@@ -163,10 +182,25 @@ impl MetadataStore {
         Ok(self.db.last_insert_rowid())
     }
 
+    /// 更新文档的 raw_source_identity 字段
+    pub fn update_document_raw_source_identity(
+        &self,
+        document_id: i64,
+        identity: &str,
+    ) -> Result<(), String> {
+        self.db
+            .execute(
+                "UPDATE documents SET raw_source_identity = ?1 WHERE id = ?2",
+                params![identity, document_id],
+            )
+            .map_err(|e| format!("更新文档 raw_source_identity 失败: {}", e))?;
+        Ok(())
+    }
+
     /// Get a document by its SHA256 hash
     pub fn get_document_by_sha256(&self, sha256: &str) -> Result<Option<DocumentMeta>, String> {
         self.query_one_document(
-            "SELECT id, title, source_path, sha256, created_at, project
+            "SELECT id, title, source_path, sha256, created_at, project, raw_source_identity
              FROM documents WHERE sha256 = ?1",
             params![sha256],
         )
@@ -175,7 +209,7 @@ impl MetadataStore {
     /// Get a document by its ID
     pub fn get_document(&self, id: i64) -> Result<Option<DocumentMeta>, String> {
         self.query_one_document(
-            "SELECT id, title, source_path, sha256, created_at, project
+            "SELECT id, title, source_path, sha256, created_at, project, raw_source_identity
              FROM documents WHERE id = ?1",
             params![id],
         )
@@ -209,7 +243,7 @@ impl MetadataStore {
             .map(|(i, _)| format!("?{0}", i + 1))
             .collect();
         let sql = format!(
-            "SELECT id, title, source_path, sha256, created_at, project
+            "SELECT id, title, source_path, sha256, created_at, project, raw_source_identity
              FROM documents WHERE id IN ({0})",
             placeholders.join(", ")
         );
@@ -239,13 +273,13 @@ impl MetadataStore {
     pub fn list_documents(&self, project: Option<&str>) -> Result<Vec<DocumentMeta>, String> {
         if let Some(proj) = project {
             self.query_documents(
-                "SELECT id, title, source_path, sha256, created_at, project
+                "SELECT id, title, source_path, sha256, created_at, project, raw_source_identity
                  FROM documents WHERE project = ?1 ORDER BY created_at DESC",
                 params![proj],
             )
         } else {
             self.query_documents(
-                "SELECT id, title, source_path, sha256, created_at, project
+                "SELECT id, title, source_path, sha256, created_at, project, raw_source_identity
                  FROM documents ORDER BY created_at DESC",
                 [],
             )
@@ -383,6 +417,67 @@ impl MetadataStore {
             .collect();
 
         Ok(keys)
+    }
+
+    // ─── Deletion Outbox ───
+
+    /// 插入删除记录到 outbox（预写日志，防止崩溃后丢失）
+    pub fn insert_deletion_record(
+        &self,
+        document_id: i64,
+        project: Option<&str>,
+        vector_keys: &[i64],
+    ) -> Result<i64, String> {
+        let keys_json = serde_json::to_string(vector_keys)
+            .map_err(|e| format!("序列化 vector_keys 失败: {}", e))?;
+        self.db
+            .execute(
+                "INSERT INTO deletion_outbox (document_id, project, vector_keys) VALUES (?1, ?2, ?3)",
+                params![document_id, project, keys_json],
+            )
+            .map_err(|e| format!("插入删除记录失败: {}", e))?;
+        Ok(self.db.last_insert_rowid())
+    }
+
+    /// 更新 outbox 记录状态
+    pub fn update_deletion_status(
+        &self,
+        id: i64,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<(), String> {
+        self.db
+            .execute(
+                "UPDATE deletion_outbox SET status = ?1, error = ?2, updated_at = datetime('now') WHERE id = ?3",
+                params![status, error, id],
+            )
+            .map_err(|e| format!("更新删除状态失败: {}", e))?;
+        Ok(())
+    }
+
+    /// 获取所有 pending 状态的删除记录
+    pub fn get_pending_deletions(&self) -> Result<Vec<(i64, i64, Option<String>, String)>, String> {
+        let mut stmt = self
+            .db
+            .prepare(
+                "SELECT id, document_id, project, vector_keys FROM deletion_outbox WHERE status = 'pending'",
+            )
+            .map_err(|e| format!("查询 pending 删除记录失败: {}", e))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|e| format!("遍历 pending 删除记录失败: {}", e))?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| format!("读取 pending 删除记录失败: {}", e))?);
+        }
+        Ok(results)
     }
 
     // ─── Chunk operations ───
@@ -576,6 +671,48 @@ impl MetadataStore {
         })
     }
 
+    // ─── AppConfig ───
+
+    /// 确保 app_config 表存在（幂等）
+    fn ensure_app_config_table(&self) -> Result<(), String> {
+        self.db
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS app_config (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );",
+            )
+            .map_err(|e| format!("创建 app_config 表失败: {}", e))
+    }
+
+    /// 查询 KB 编译是否启用
+    pub fn get_kb_compilation_enabled(&self) -> Result<bool, String> {
+        self.ensure_app_config_table()?;
+        let result: Result<String, _> = self.db.query_row(
+            "SELECT value FROM app_config WHERE key = 'enable_kb_compilation'",
+            [],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(val) => Ok(val == "true" || val == "1"),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Err(e) => Err(format!("查询 KB 编译配置失败: {}", e)),
+        }
+    }
+
+    /// 设置 KB 编译是否启用
+    pub fn set_kb_compilation_enabled(&self, enabled: bool) -> Result<(), String> {
+        self.ensure_app_config_table()?;
+        let val = if enabled { "true" } else { "false" };
+        self.db
+            .execute(
+                "INSERT OR REPLACE INTO app_config (key, value) VALUES ('enable_kb_compilation', ?1)",
+                params![val],
+            )
+            .map_err(|e| format!("设置 KB 编译配置失败: {}", e))?;
+        Ok(())
+    }
+
     // ─── Private helpers ───
 
     fn row_to_document(row: &rusqlite::Row) -> SqlResult<DocumentMeta> {
@@ -586,6 +723,7 @@ impl MetadataStore {
             sha256: row.get(3)?,
             created_at: row.get(4)?,
             project: row.get(5)?,
+            raw_source_identity: row.get(6)?,
         })
     }
 
@@ -699,7 +837,7 @@ mod tests {
 
         // Insert document
         let doc_id = store
-            .insert_document("测试文档", Some("/path/to/doc.md"), Some("abc123"), None)
+            .insert_document("测试文档", Some("/path/to/doc.md"), Some("abc123"), None, Some("raw-id-001"))
             .unwrap();
         assert!(doc_id > 0);
 
@@ -707,10 +845,11 @@ mod tests {
         let doc = store.get_document(doc_id).unwrap().unwrap();
         assert_eq!(doc.title, "测试文档");
         assert_eq!(doc.sha256.unwrap(), "abc123");
+        assert_eq!(doc.raw_source_identity.unwrap(), "raw-id-001");
 
         // SHA256 dedup
         let doc_id2 = store
-            .insert_document("重复文档", None, Some("abc123"), None)
+            .insert_document("重复文档", None, Some("abc123"), None, None)
             .unwrap();
         assert_eq!(doc_id2, doc_id); // Should return existing ID
 
@@ -752,10 +891,10 @@ mod tests {
         let store = MetadataStore::new(tmp.path().join("test.db")).unwrap();
 
         let id1 = store
-            .insert_document("Doc A", None, Some("sha256_hash_xyz"), None)
+            .insert_document("Doc A", None, Some("sha256_hash_xyz"), None, None)
             .unwrap();
         let id2 = store
-            .insert_document("Doc B", None, Some("sha256_hash_xyz"), None)
+            .insert_document("Doc B", None, Some("sha256_hash_xyz"), None, None)
             .unwrap();
 
         assert_eq!(id1, id2);
@@ -768,10 +907,10 @@ mod tests {
         let store = MetadataStore::new(tmp.path().join("test.db")).unwrap();
 
         store
-            .insert_document("Project A doc", None, Some("hash1"), Some("project_a"))
+            .insert_document("Project A doc", None, Some("hash1"), Some("project_a"), None)
             .unwrap();
         store
-            .insert_document("Project B doc", None, Some("hash2"), Some("project_b"))
+            .insert_document("Project B doc", None, Some("hash2"), Some("project_b"), None)
             .unwrap();
 
         let docs_a = store.list_documents(Some("project_a")).unwrap();

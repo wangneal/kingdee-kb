@@ -4,7 +4,9 @@
 /* 覆盖 Tailwind 默认字体，确保中文正确渲染 */
 @layer base {
   :root {
-    --font-sans: "Inter", "Avenir", "Helvetica", "Arial", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+    --font-sans:
+      "Inter", "Avenir", "Helvetica", "Arial", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC",
+      sans-serif;
   }
 }
 

@@ -4,12 +4,10 @@
  * 按标题模糊搜索候选页面，点击选中后关闭弹窗。
  * 使用 300ms 防抖避免频繁请求。
  */
-import { useState, useEffect, useRef, useCallback } from "react"
+
 import { Search, X } from "lucide-react"
-import {
-  searchWikilinkCandidates,
-  type WikiPageBrief,
-} from "../../lib/wiki-commands"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { searchWikilinkCandidates, type WikiPageBrief } from "../../lib/wiki-commands"
 
 interface WikiLinkSearchProps {
   /** 当前项目标识 */
@@ -56,11 +54,7 @@ export default function WikiLinkSearch({
     setIsSearching(true)
     timerRef.current = setTimeout(async () => {
       try {
-        const candidates = await searchWikilinkCandidates(
-          project,
-          query.trim(),
-          excludeSlug,
-        )
+        const candidates = await searchWikilinkCandidates(project, query.trim(), excludeSlug)
         setResults(candidates)
       } catch {
         setResults([])
@@ -143,15 +137,11 @@ export default function WikiLinkSearch({
           )}
 
           {!isSearching && query.trim() && results.length === 0 && (
-            <p className="py-8 text-center text-xs text-neutral-400">
-              未找到匹配页面
-            </p>
+            <p className="py-8 text-center text-xs text-neutral-400">未找到匹配页面</p>
           )}
 
           {!isSearching && !query.trim() && (
-            <p className="py-8 text-center text-xs text-neutral-400">
-              输入关键词搜索页面
-            </p>
+            <p className="py-8 text-center text-xs text-neutral-400">输入关键词搜索页面</p>
           )}
 
           {!isSearching &&
@@ -162,9 +152,7 @@ export default function WikiLinkSearch({
                 onClick={() => handleSelect(candidate)}
                 className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-neutral-50 transition-colors"
               >
-                <span className="flex-1 truncate text-sm text-neutral-800">
-                  {candidate.title}
-                </span>
+                <span className="flex-1 truncate text-sm text-neutral-800">{candidate.title}</span>
                 <span className="shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-500">
                   {pageTypeLabel(candidate.page_type)}
                 </span>

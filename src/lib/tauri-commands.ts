@@ -1,113 +1,113 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core"
 
 // ── Types matching Rust structs ──────────────────────────────────────────────
 
 export interface AttachmentInfo {
-  name: string;
-  path: string;
-  kind: string; // "image" | "document"
+  name: string
+  path: string
+  kind: string // "image" | "document"
 }
 
 export interface HybridSearchResult {
-  chunk_id: number;
-  title: string;
-  content: string;
-  score: number;
-  source: string;
-  document_id: number;
-  section_path?: string;
-  project: string;
+  chunk_id: number
+  title: string
+  content: string
+  score: number
+  source: string
+  document_id: number
+  section_path?: string
+  project: string
 }
 
 export interface BM25SearchResult {
-  chunk_id: number;
-  score: number;
-  content: string;
+  chunk_id: number
+  score: number
+  content: string
 }
 
 export interface IngestionResult {
-  document_id: number;
-  title: string;
-  sha256: string;
-  is_duplicate: boolean;
-  chunk_count: number;
-  vector_count: number;
+  document_id: number
+  title: string
+  sha256: string
+  is_duplicate: boolean
+  chunk_count: number
+  vector_count: number
 }
 
 export interface ExtractedFileText {
-  file_path: string;
-  title: string;
-  text: string;
-  char_count: number;
+  file_path: string
+  title: string
+  text: string
+  char_count: number
 }
 
 export interface FileError {
-  path: string;
-  error: string;
+  path: string
+  error: string
 }
 
 export interface DirectoryIngestionResult {
-  imported: IngestionResult[];
-  errors: FileError[];
+  imported: IngestionResult[]
+  errors: FileError[]
 }
 
 export interface IngestionProgress {
-  step: number;
-  step_name: string;
-  progress: number;
-  message?: string;
+  step: number
+  step_name: string
+  progress: number
+  message?: string
 }
 
 export interface DocumentMeta {
-  id: number;
-  title: string;
-  source_path?: string;
-  sha256?: string;
-  created_at: string;
-  project: string;
+  id: number
+  title: string
+  source_path?: string
+  sha256?: string
+  created_at: string
+  project: string
 }
 
 export interface ChunkMeta {
-  id: number;
-  vector_key: number;
-  document_id: number;
-  content: string;
-  section_path?: string;
-  tags?: string;
-  line_no?: number;
-  created_at: string;
+  id: number
+  vector_key: number
+  document_id: number
+  content: string
+  section_path?: string
+  tags?: string
+  line_no?: number
+  created_at: string
 }
 
 export interface KnowledgeStats {
-  document_count: number;
-  chunk_count: number;
-  db_path: string;
+  document_count: number
+  chunk_count: number
+  db_path: string
 }
 
 // ── LLM / RAG Types ────────────────────────────────────────────────────────
 
 export interface ChatMessage {
-  role: string;
-  content: string;
+  role: string
+  content: string
 }
 
 export interface StreamChunk {
-  content: string;
-  done: boolean;
-  thinking?: string;
+  content: string
+  done: boolean
+  thinking?: string
 }
 
 export interface RAGSource {
-  title: string;
-  section_path?: string;
-  content_snippet: string;
-  score: number;
+  title: string
+  section_path?: string
+  content_snippet: string
+  score: number
 }
 
 export interface RAGResponse {
-  answer: string;
-  sources: RAGSource[];
-  llm_available: boolean;
+  answer: string
+  sources: RAGSource[]
+  llm_available: boolean
 }
 
 // ── Tauri command wrappers ───────────────────────────────────────────────────
@@ -117,151 +117,153 @@ export interface RAGResponse {
 
 /** Check if any LLM provider is configured with a valid API key */
 export async function isLLMConfigured(): Promise<boolean> {
-  return invoke("is_llm_configured");
+  return invoke("is_llm_configured")
 }
 
 export async function hybridSearch(
   query: string,
   projectId?: string,
-  topK?: number
+  topK?: number,
 ): Promise<HybridSearchResult[]> {
   return invoke("hybrid_search", {
     query,
     projectId: projectId ?? null,
     topK: topK ?? 5,
-  });
+  })
 }
 
 export async function bm25Search(
   query: string,
   projectId?: string,
-  topK?: number
+  topK?: number,
 ): Promise<BM25SearchResult[]> {
   return invoke("bm25_search", {
     query,
     projectId: projectId ?? null,
     topK: topK ?? 10,
-  });
+  })
 }
 
 export async function ingestText(
   text: string,
   title: string,
-  project: string
+  project: string,
 ): Promise<IngestionResult> {
-  return invoke("ingest_text", { text, title, project });
+  return invoke("ingest_text", { text, title, project })
 }
 
-export async function ingestFile(
-  filePath: string,
-  project: string
-): Promise<IngestionResult> {
-  return invoke("ingest_file", { filePath, project });
+export async function ingestFile(filePath: string, project: string): Promise<IngestionResult> {
+  return invoke("ingest_file", { filePath, project })
 }
 
 export async function extractFileText(filePath: string): Promise<ExtractedFileText> {
-  return invoke("extract_file_text", { filePath });
+  return invoke("extract_file_text", { filePath })
 }
 
 export async function ingestDirectory(
   dirPath: string,
-  project: string
+  project: string,
 ): Promise<DirectoryIngestionResult> {
-  return invoke("ingest_directory", { dirPath, project });
+  return invoke("ingest_directory", { dirPath, project })
 }
 
-export async function listDocuments(
-  project?: string
-): Promise<DocumentMeta[]> {
-  return invoke("list_documents", { project: project ?? null });
+export async function listDocuments(project?: string): Promise<DocumentMeta[]> {
+  return invoke("list_documents", { project: project ?? null })
 }
 
 export async function getDocumentChunks(documentId: number): Promise<ChunkMeta[]> {
-  return invoke("get_document_chunks", { documentId });
+  return invoke("get_document_chunks", { documentId })
 }
 
 export async function getStats(project?: string): Promise<KnowledgeStats> {
-  return invoke("get_stats", { project: project ?? null });
+  return invoke("get_stats", { project: project ?? null })
 }
 
 export async function deleteDocument(documentId: number, project?: string): Promise<void> {
-  return invoke("delete_document", { documentId, project: project ?? null });
+  return invoke("delete_document", { documentId, project: project ?? null })
 }
 
 /** Batch-delete multiple documents (and their chunks) in a single transaction */
-export async function deleteDocumentsBatch(documentIds: number[], project?: string): Promise<number> {
-  return invoke("delete_documents_batch", { documentIds, project: project ?? null });
+export async function deleteDocumentsBatch(
+  documentIds: number[],
+  project?: string,
+): Promise<number> {
+  return invoke("delete_documents_batch", { documentIds, project: project ?? null })
 }
 
 // ── Embedding model commands ──────────────────────────────────────────────────
 
 export async function initModel(): Promise<boolean> {
-  return invoke("init_model");
+  return invoke("init_model")
 }
 
 export async function getModelStatus(): Promise<boolean> {
-  return invoke("get_model_status");
+  return invoke("get_model_status")
 }
 
 /** Get embedding model download progress (0–100) */
 export async function getDownloadProgress(): Promise<number> {
-  return invoke("get_download_progress");
+  return invoke("get_download_progress")
 }
 
 // ── LLM / RAG command wrappers ───────────────────────────────────────────────
 
-export type EmbeddingProviderType = 'local' | 'openai' | 'siliconflow' | 'zhipu' | 'dashscope' | 'cohere';
+export type EmbeddingProviderType =
+  | "local"
+  | "openai"
+  | "siliconflow"
+  | "zhipu"
+  | "dashscope"
+  | "cohere"
 
 export interface EmbeddingModelConfig {
-  custom_model_dir?: string | null;
+  custom_model_dir?: string | null
 }
 
 /** Online embedding provider configuration (stored in frontend localStorage) */
 export interface EmbeddingProviderConfig {
-  provider: EmbeddingProviderType;
-  api_key: string;
-  base_url: string;
-  model_name: string;
+  provider: EmbeddingProviderType
+  api_key: string
+  base_url: string
+  model_name: string
 }
 
 export async function getEmbeddingModelConfig(): Promise<EmbeddingModelConfig> {
-  return invoke("get_embedding_model_config");
+  return invoke("get_embedding_model_config")
 }
 
-export async function setEmbeddingModelConfig(
-  customModelDir?: string | null
-): Promise<boolean> {
+export async function setEmbeddingModelConfig(customModelDir?: string | null): Promise<boolean> {
   return invoke("set_embedding_model_config", {
     customModelDir: customModelDir ?? null,
-  });
+  })
 }
 
 export async function ragQuery(
   query: string,
   projectId?: string,
-  conversationHistory?: ChatMessage[]
+  conversationHistory?: ChatMessage[],
 ): Promise<RAGResponse> {
   return invoke("rag_query", {
     query,
     projectId: projectId ?? null,
     conversationHistory: conversationHistory ?? null,
-  });
+  })
 }
 
 export async function ragQueryStream(
   query: string,
   projectId?: string,
-  conversationHistory?: ChatMessage[]
+  conversationHistory?: ChatMessage[],
 ): Promise<StreamChunk[]> {
   return invoke("rag_query_stream", {
     query,
     projectId: projectId ?? null,
     conversationHistory: conversationHistory ?? null,
-  });
+  })
 }
 
 export async function countTokens(text: string): Promise<number> {
-  return invoke("count_tokens", { text });
+  return invoke("count_tokens", { text })
 }
 
 // ── Real-time streaming chat (EventSource pattern, like EchoBird) ────────────
@@ -275,161 +277,156 @@ export async function countTokens(text: string): Promise<number> {
 export async function startChatStream(
   query: string,
   projectId?: string,
-  conversationHistory?: ChatMessage[]
+  conversationHistory?: ChatMessage[],
 ): Promise<void> {
-    return invoke("start_chat_stream", {
+  return invoke("start_chat_stream", {
     query,
     projectId: projectId ?? null,
     conversationHistory: conversationHistory ?? null,
-  });
+  })
 }
 
 /** A single event from the chat stream */
 export interface ChatStreamEvent {
-  type: "text_delta" | "done" | "error" | "sources" | "thinking";
-  content?: string;
-  message?: string;
-  sources?: RAGSource[];
+  type: "text_delta" | "done" | "error" | "sources" | "thinking"
+  content?: string
+  message?: string
+  sources?: RAGSource[]
 }
 
 /**
  * Listen for `chat_chunk` events from the backend streaming chat.
  * Returns an unlisten function to clean up.
  */
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 
-export function listenChatEvents(
-  handler: (event: ChatStreamEvent) => void
-): Promise<UnlistenFn> {
-  return listen<ChatStreamEvent>("chat_chunk", (e) => handler(e.payload));
+export function listenChatEvents(handler: (event: ChatStreamEvent) => void): Promise<UnlistenFn> {
+  return listen<ChatStreamEvent>("chat_chunk", (e) => handler(e.payload))
 }
 
 // ── Chat Memory ───────────────────────────────────────────────────────────
 
 /** Save chat conversation to memory: archive + extract → ingest into KB. */
-export async function saveChatMemory(
-  conversation: ChatMessage[],
-  project?: string,
-): Promise<void> {
-  return invoke("save_chat_memory", { conversation, project: project ?? null });
+export async function saveChatMemory(conversation: ChatMessage[], project?: string): Promise<void> {
+  return invoke("save_chat_memory", { conversation, project: project ?? null })
 }
 
 // ── Phase 9/10/11/12/13: Template & Wizard Types ────────────────────────────
 
 export interface TemplateInfo {
-  id: string;
-  name: string;
-  filename: string;
-  phase: string;
-  phase_index: number;
-  format: string;
-  file_path: string;
-  relative_path: string;
-  file_size: number;
+  id: string
+  name: string
+  filename: string
+  phase: string
+  phase_index: number
+  format: string
+  file_path: string
+  relative_path: string
+  file_size: number
 }
 
 export interface FieldInfo {
-  name: string;
-  field_type: string;
-  context: string;
-  count: number;
+  name: string
+  field_type: string
+  context: string
+  count: number
 }
 
 export interface SchemaField {
-  name: string;
-  type: string;
-  fill_strategy: string;
-  required: boolean;
-  default?: string;
-  description?: string;
-  cell_refs?: string[];
+  name: string
+  type: string
+  fill_strategy: string
+  required: boolean
+  default?: string
+  description?: string
+  cell_refs?: string[]
 }
 
 export interface TemplateSchema {
   template: {
-    id: string;
-    name: string;
-    format: string;
-    phase: string;
-  };
-  fields: SchemaField[];
+    id: string
+    name: string
+    format: string
+    phase: string
+  }
+  fields: SchemaField[]
 }
 
 export interface SmartFillRequest {
-  template_id: string;
-  user_input: string;
-  manual_fields: Record<string, string>;
-  schema_fields: SchemaField[];
-  project_name?: string;
+  template_id: string
+  user_input: string
+  manual_fields: Record<string, string>
+  schema_fields: SchemaField[]
+  project_name?: string
 }
 
 export interface KBSource {
-  title: string;
-  section_path?: string;
-  content_snippet: string;
-  score: number;
+  title: string
+  section_path?: string
+  content_snippet: string
+  score: number
 }
 
 export interface SmartFillResult {
-  filled_fields: Record<string, string>;
-  ai_fields: string[];
-  missing_fields: string[];
-  kb_sources: KBSource[];
+  filled_fields: Record<string, string>
+  ai_fields: string[]
+  missing_fields: string[]
+  kb_sources: KBSource[]
 }
 
 export interface GenerateDocRequest {
-  template_path: string;
-  output_path: string;
-  fields: Record<string, string>;
-  schema_fields?: SchemaField[];
-  project_name?: string;
-  context?: string;
+  template_path: string
+  output_path: string
+  fields: Record<string, string>
+  schema_fields?: SchemaField[]
+  project_name?: string
+  context?: string
 }
 
 export interface MissingField {
-  name: string;
-  description: string;
-  reason: string;
+  name: string
+  description: string
+  reason: string
 }
 
 export interface GeneratedDoc {
-  output_path: string;
-  fields_filled: number;
-  user_fields: string[];
-  ai_fields: string[];
-  missing_fields: string[];
-  missing_fields_detail: MissingField[];
+  output_path: string
+  fields_filled: number
+  user_fields: string[]
+  ai_fields: string[]
+  missing_fields: string[]
+  missing_fields_detail: MissingField[]
 }
 
 export interface DeliverableRecipe {
-  name: string;
-  template_id: string;
-  phase: string;
-  description: string;
-  field_overrides: Record<string, { strategy: string; hint?: string }>;
-  system_prompt: string;
+  name: string
+  template_id: string
+  phase: string
+  description: string
+  field_overrides: Record<string, { strategy: string; hint?: string }>
+  system_prompt: string
 }
 
 export interface ProductMeta {
-  id: number;
-  template_id: string;
-  template_name: string;
-  project: string;
-  status: string;
-  output_path: string;
-  field_count: number;
-  llm_fields_count: number;
-  created_at: string;
+  id: number
+  template_id: string
+  template_name: string
+  project: string
+  status: string
+  output_path: string
+  field_count: number
+  llm_fields_count: number
+  created_at: string
 }
 
 // ── Phase 9+ command wrappers ────────────────────────────────────────────────
 
 export async function scanTemplates(templateDir?: string): Promise<TemplateInfo[]> {
-  return invoke("scan_templates", { templateDir: templateDir ?? null });
+  return invoke("scan_templates", { templateDir: templateDir ?? null })
 }
 
 export async function extractTemplateFields(filePath: string): Promise<FieldInfo[]> {
-  return invoke("extract_template_fields", { filePath });
+  return invoke("extract_template_fields", { filePath })
 }
 
 export async function getTemplateSchema(
@@ -437,7 +434,7 @@ export async function getTemplateSchema(
   templateName: string,
   filePath: string,
   phase: string,
-  writeSidecar?: boolean
+  writeSidecar?: boolean,
 ): Promise<TemplateSchema> {
   return invoke("get_template_schema", {
     templateId,
@@ -445,62 +442,66 @@ export async function getTemplateSchema(
     filePath,
     phase,
     writeSidecar: writeSidecar ?? false,
-  });
+  })
 }
 
 export async function smartFill(request: SmartFillRequest): Promise<SmartFillResult> {
-  return invoke("smart_fill", { request });
+  return invoke("smart_fill", { request })
 }
 
 export async function generateDoc(request: GenerateDocRequest): Promise<GeneratedDoc> {
-  return invoke("generate_doc", { request });
+  return invoke("generate_doc", { request })
 }
 
 export async function getDeliverableRecipe(templateId: string): Promise<DeliverableRecipe> {
-  return invoke("get_deliverable_recipe", { templateId });
+  return invoke("get_deliverable_recipe", { templateId })
 }
 
 export async function listProducts(project?: string): Promise<ProductMeta[]> {
-  return invoke("list_products", { project: project ?? null });
+  return invoke("list_products", { project: project ?? null })
 }
 
-export async function exportProduct(id: number, targetDir: string, project?: string): Promise<string> {
-  return invoke("export_product", { id, targetDir, project: project ?? null });
+export async function exportProduct(
+  id: number,
+  targetDir: string,
+  project?: string,
+): Promise<string> {
+  return invoke("export_product", { id, targetDir, project: project ?? null })
 }
 
 export async function deleteProduct(id: number, project?: string): Promise<void> {
-  return invoke("delete_product", { id, project: project ?? null });
+  return invoke("delete_product", { id, project: project ?? null })
 }
 
 // ── Phase 13: Research Session Management ─────────────────────────────────
 
 export interface ResearchSession {
-  id: number;
-  title: string;
-  edition: string;
-  module_code: string;
-  interviewee: string;
-  session_date: string;
-  status: string;
-  project: string;
-  created_at: string;
-  updated_at: string;
+  id: number
+  title: string
+  edition: string
+  module_code: string
+  interviewee: string
+  session_date: string
+  status: string
+  project: string
+  created_at: string
+  updated_at: string
 }
 
 export interface QARecord {
-  id: number;
-  session_id: number;
-  question_id: number | null;
-  question_text: string;
-  answer_text: string;
-  notes: string;
-  sort_order: number;
-  created_at: string;
+  id: number
+  session_id: number
+  question_id: number | null
+  question_text: string
+  answer_text: string
+  notes: string
+  sort_order: number
+  created_at: string
 }
 
 export interface SessionDetail {
-  session: ResearchSession;
-  records: QARecord[];
+  session: ResearchSession
+  records: QARecord[]
 }
 
 export async function createResearchSession(
@@ -518,15 +519,15 @@ export async function createResearchSession(
     interviewee,
     sessionDate,
     project: project ?? null,
-  });
+  })
 }
 
 export async function listResearchSessions(project?: string): Promise<ResearchSession[]> {
-  return invoke("list_research_sessions", { project: project ?? null });
+  return invoke("list_research_sessions", { project: project ?? null })
 }
 
 export async function getResearchSession(sessionId: number): Promise<SessionDetail | null> {
-  return invoke("get_research_session", { sessionId });
+  return invoke("get_research_session", { sessionId })
 }
 
 export async function updateResearchSession(
@@ -536,11 +537,11 @@ export async function updateResearchSession(
   sessionDate: string,
   status: string,
 ): Promise<void> {
-  return invoke("update_research_session", { sessionId, title, interviewee, sessionDate, status });
+  return invoke("update_research_session", { sessionId, title, interviewee, sessionDate, status })
 }
 
 export async function deleteResearchSession(sessionId: number): Promise<void> {
-  return invoke("delete_research_session", { sessionId });
+  return invoke("delete_research_session", { sessionId })
 }
 
 export async function addQARecord(
@@ -558,7 +559,7 @@ export async function addQARecord(
     answerText,
     notes,
     sortOrder,
-  });
+  })
 }
 
 export async function updateQARecord(
@@ -566,142 +567,144 @@ export async function updateQARecord(
   answerText: string,
   notes: string,
 ): Promise<void> {
-  return invoke("update_qa_record", { recordId, answerText, notes });
+  return invoke("update_qa_record", { recordId, answerText, notes })
 }
 
 export async function deleteQARecord(recordId: number): Promise<void> {
-  return invoke("delete_qa_record", { recordId });
+  return invoke("delete_qa_record", { recordId })
 }
 
 export async function getSessionRecords(sessionId: number): Promise<QARecord[]> {
-  return invoke("get_session_records", { sessionId });
+  return invoke("get_session_records", { sessionId })
 }
 
 export async function exportSessionCsv(sessionId: number): Promise<string> {
-  return invoke("export_session_csv", { sessionId });
+  return invoke("export_session_csv", { sessionId })
 }
 
 export async function exportSessionMarkdown(sessionId: number): Promise<string> {
-  return invoke("export_session_markdown", { sessionId });
+  return invoke("export_session_markdown", { sessionId })
 }
 
 export async function reorderQARecords(sessionId: number, recordIds: number[]): Promise<void> {
-  return invoke("reorder_qa_records", { sessionId, recordIds });
+  return invoke("reorder_qa_records", { sessionId, recordIds })
 }
 
 // ── Phase 12: Whisper Voice Recognition ───────────────────────────────────
 
 export interface TranscriptionResult {
-  text: string;
-  segments: TranscriptionSegment[];
-  confidence: number;
-  processing_time_ms: number;
+  text: string
+  segments: TranscriptionSegment[]
+  confidence: number
+  processing_time_ms: number
 }
 
 export interface TranscriptionSegment {
-  start_ms: number;
-  end_ms: number;
-  text: string;
+  start_ms: number
+  end_ms: number
+  text: string
 }
 
 export interface WhisperStatus {
-  model_loaded: boolean;
-  model_size: string;
-  language: string;
+  model_loaded: boolean
+  model_size: string
+  language: string
 }
 
 export async function loadWhisperModel(modelSize: string): Promise<void> {
-  return invoke("load_whisper_model", { modelSize });
+  return invoke("load_whisper_model", { modelSize })
 }
 
 export async function getWhisperStatus(): Promise<WhisperStatus> {
-  return invoke("get_whisper_status");
+  return invoke("get_whisper_status")
 }
 
 export async function startWhisperRecording(): Promise<void> {
-  return invoke("start_whisper_recording");
+  return invoke("start_whisper_recording")
 }
 
 export async function stopWhisperRecording(provider?: string): Promise<TranscriptionResult> {
-  return invoke("stop_whisper_recording", { provider: provider ?? null });
+  return invoke("stop_whisper_recording", { provider: provider ?? null })
 }
 
 // ── P1: 双轨风险把控舱 ──────────────────────────────────────────────────
 
 export interface ContractScopeItem {
-  id: number;
-  category: string;
-  description: string;
-  is_in_scope: boolean;
-  detail: string;
-  created_at: string;
+  id: number
+  category: string
+  description: string
+  is_in_scope: boolean
+  detail: string
+  created_at: string
 }
 
 export interface ScopeCreepResult {
-  risk_level: string;
-  risk_label: string;
-  explanation: string;
-  matched_items: string[];
-  suggestion: string;
+  risk_level: string
+  risk_label: string
+  explanation: string
+  matched_items: string[]
+  suggestion: string
 }
 
 export interface HealthDimension {
-  name: string;
-  score: number;
-  weight: number;
-  detail: string;
+  name: string
+  score: number
+  weight: number
+  detail: string
 }
 
 export interface ProjectHealthScore {
-  overall_score: number;
-  risk_level: string;
-  dimensions: HealthDimension[];
-  trend: string;
-  alert_count: number;
+  overall_score: number
+  risk_level: string
+  dimensions: HealthDimension[]
+  trend: string
+  alert_count: number
 }
 
 // ── P2: 蓝图提炼 / Fit-Gap / 脱敏 ──────────────────────────────────────
 
 export async function extractBlueprint(researchContext: string): Promise<string> {
-  return invoke("extract_blueprint", { researchContext });
+  return invoke("extract_blueprint", { researchContext })
 }
 
 export async function analyzeFitGap(requirements: string): Promise<string> {
-  return invoke("analyze_fit_gap", { requirements });
+  return invoke("analyze_fit_gap", { requirements })
 }
 
-export async function desensitizeText(text: string): Promise<{ safe_text: string; mapping: Record<string, string> }> {
-  return invoke("desensitize_text", { text });
+export async function desensitizeText(
+  text: string,
+): Promise<{ safe_text: string; mapping: Record<string, string> }> {
+  return invoke("desensitize_text", { text })
 }
 
 export async function addSensitiveKeyword(keyword: string): Promise<void> {
-  return invoke("add_sensitive_keyword", { keyword });
+  return invoke("add_sensitive_keyword", { keyword })
 }
 
 export async function listSensitiveKeywords(): Promise<string[]> {
-  return invoke("list_sensitive_keywords");
+  return invoke("list_sensitive_keywords")
 }
 
 export async function removeSensitiveKeyword(keyword: string): Promise<boolean> {
-  return invoke("remove_sensitive_keyword", { keyword });
+  return invoke("remove_sensitive_keyword", { keyword })
 }
 
 // ── ReAct Agent ──────────────────────────────────────────────────────────
 
 /** Clarification payload sent from backend when agent uses the question tool */
 export interface ClarificationPayload {
-  question_id: string;
-  prompt: string;
-  mode: "single_choice" | "multi_choice" | "free_input";
-  options: string[];
+  question_id: string
+  prompt: string
+  mode: "single_choice" | "multi_choice" | "free_input"
+  options: string[]
 }
 
 export interface PlanStep {
-  id: number;
-  description: string;
-  tool: string | null;
-  expected_output: string;
-  depends_on: number[];
+  id: number
+  description: string
+  tool: string | null
+  expected_output: string
+  depends_on: number[]
 }
 
 export type ReActEvent =
@@ -712,20 +715,34 @@ export type ReActEvent =
   | { type: "error"; session_id: string; sessionId?: string; message: string }
   | { type: "done"; session_id: string; sessionId?: string }
   | { type: "plan_generated"; session_id: string; sessionId?: string; steps: PlanStep[] }
-  | { type: "step_start"; session_id: string; sessionId?: string; step_index: number; total_steps: number; description: string }
-  | { type: "step_result"; session_id: string; sessionId?: string; step_index: number; result: string; success: boolean }
+  | {
+      type: "step_start"
+      session_id: string
+      sessionId?: string
+      step_index: number
+      total_steps: number
+      description: string
+    }
+  | {
+      type: "step_result"
+      session_id: string
+      sessionId?: string
+      step_index: number
+      result: string
+      success: boolean
+    }
   | { type: "replan"; session_id: string; sessionId?: string; reason: string }
   | { type: "planner_timeout"; session_id: string; sessionId?: string; message: string }
-  | { type: "clarification"; session_id: string; sessionId?: string; payload: ClarificationPayload };
+  | { type: "clarification"; session_id: string; sessionId?: string; payload: ClarificationPayload }
 
 function nextSessionId(): string {
-  return crypto.randomUUID();
+  return crypto.randomUUID()
 }
 
 /** agentChat 请求超时时间（毫秒） */
-const AGENT_CHAT_TIMEOUT_MS = 180_000; // 3 minutes
+const AGENT_CHAT_TIMEOUT_MS = 180_000 // 3 minutes
 /** agentChat 最大重试次数 */
-const MAX_RETRIES = 2;
+const MAX_RETRIES = 2
 
 /**
  * Agent 对话入口：发送消息给 rig agent，通过 SSE 事件流返回结果。
@@ -745,9 +762,9 @@ export async function agentChat(
   providerId?: string,
   attachments?: AttachmentInfo[],
 ): Promise<string> {
-  const sid = sessionId || nextSessionId();
+  const sid = sessionId || nextSessionId()
 
-  let lastError: unknown;
+  let lastError: unknown
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const invokePromise = invoke("agent_chat", {
@@ -758,35 +775,34 @@ export async function agentChat(
         history: history ?? [],
         providerId: providerId ?? null,
         attachments: attachments ?? [],
-      });
+      })
 
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error("__AGENT_CHAT_TIMEOUT__")), AGENT_CHAT_TIMEOUT_MS),
-      );
+      )
 
-      await Promise.race([invokePromise, timeoutPromise]);
-      return sid; // Success
+      await Promise.race([invokePromise, timeoutPromise])
+      return sid // Success
     } catch (err) {
-      lastError = err;
-      const isTimeout =
-        err instanceof Error && err.message === "__AGENT_CHAT_TIMEOUT__";
+      lastError = err
+      const isTimeout = err instanceof Error && err.message === "__AGENT_CHAT_TIMEOUT__"
 
       if (isTimeout && attempt < MAX_RETRIES) {
         // Exponential backoff: 1s, 2s
-        const delay = 1000 * Math.pow(2, attempt);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        continue;
+        const delay = 1000 * 2 ** attempt
+        await new Promise((resolve) => setTimeout(resolve, delay))
+        continue
       }
 
       if (isTimeout) {
-        throw new Error("请求超时，请检查网络连接后重试");
+        throw new Error("请求超时，请检查网络连接后重试")
       }
-      throw err;
+      throw err
     }
   }
 
   // Should not reach here, but satisfy TypeScript
-  throw lastError;
+  throw lastError
 }
 
 /** Answer a pending clarification question (resolves the blocked question tool) */
@@ -799,12 +815,12 @@ export async function answerQuestion(
     questionId,
     answer,
     projectId: projectId ?? null,
-  });
+  })
 }
 
 /** Cancel a running agent stream session */
 export async function cancelAgentStream(sessionId: string): Promise<void> {
-  return invoke("cancel_agent_stream", { sessionId });
+  return invoke("cancel_agent_stream", { sessionId })
 }
 
 /**
@@ -815,57 +831,55 @@ export async function listenReActEvents(
   handler: (event: ReActEvent) => void,
   sessionId?: string,
 ): Promise<() => void> {
-  const { listen } = await import("@tauri-apps/api/event");
+  const { listen } = await import("@tauri-apps/api/event")
   const unlisten = await listen<ReActEvent>("react-event", (event) => {
     // Check session_id in both snake_case and camelCase (Tauri v2 may convert)
-    const eventSessionId = event.payload.session_id || event.payload.sessionId;
-    if (sessionId && eventSessionId !== sessionId) return;
-    handler(event.payload);
-  });
-  return unlisten;
+    const eventSessionId = event.payload.session_id || event.payload.sessionId
+    if (sessionId && eventSessionId !== sessionId) return
+    handler(event.payload)
+  })
+  return unlisten
 }
 
 // ── Utility — Export ───────────────────────────────────────────────────────
 
 /** Export content to a file with UTF-8 BOM encoding (uses PowerShell to avoid Chinese encoding issues) */
 export async function exportReport(content: string, filePath: string): Promise<string> {
-  return invoke("export_report", { content, filePath });
+  return invoke("export_report", { content, filePath })
 }
 
 // ── Phase 14: Video Transcription ───────────────────────────────────────
 
 export interface VideoTranscriptionSegment {
-  start_ms: number;
-  end_ms: number;
-  text: string;
+  start_ms: number
+  end_ms: number
+  text: string
 }
 
 export interface VideoTranscriptionResult {
-  video_path: string;
-  text: string;
-  segments: VideoTranscriptionSegment[];
-  confidence: number;
-  extraction_time_ms: number;
-  transcription_time_ms: number;
-  duration_secs: number;
+  video_path: string
+  text: string
+  segments: VideoTranscriptionSegment[]
+  confidence: number
+  extraction_time_ms: number
+  transcription_time_ms: number
+  duration_secs: number
 }
 
 export interface MeetingMinutesResult {
-  minutes: string;
-  generation_time_ms: number;
+  minutes: string
+  generation_time_ms: number
 }
 
 export interface VideoPipelineResult {
-  transcription: VideoTranscriptionResult;
-  ingestion_document_id: number | null;
-  meeting_minutes: MeetingMinutesResult | null;
+  transcription: VideoTranscriptionResult
+  ingestion_document_id: number | null
+  meeting_minutes: MeetingMinutesResult | null
 }
 
 /** Transcribe audio from a video file via Whisper. Requires loaded Whisper model. */
-export async function transcribeVideoFile(
-  videoPath: string,
-): Promise<VideoTranscriptionResult> {
-  return invoke("transcribe_video_file", { videoPath });
+export async function transcribeVideoFile(videoPath: string): Promise<VideoTranscriptionResult> {
+  return invoke("transcribe_video_file", { videoPath })
 }
 
 /** Full video pipeline: transcribe → ingest into KB → optional meeting minutes. */
@@ -878,72 +892,72 @@ export async function transcribeAndIngestVideo(
     videoPath,
     project,
     generateMinutes,
-  });
+  })
 }
 
 /** Generate meeting minutes from an existing transcript. */
 export async function generateMeetingMinutesFromTranscript(
   transcript: string,
 ): Promise<MeetingMinutesResult> {
-  return invoke("generate_meeting_minutes_from_transcript", { transcript });
+  return invoke("generate_meeting_minutes_from_transcript", { transcript })
 }
 
 /** Video processing progress event payload */
 export interface VideoProgressEvent {
-  step: "extracting" | "transcribing" | "ingesting" | "generating_minutes" | "done";
-  progress: number;
-  message: string;
+  step: "extracting" | "transcribing" | "ingesting" | "generating_minutes" | "done"
+  progress: number
+  message: string
 }
 
 /** Listen for video processing progress events. Returns unlisten function. */
 export function listenVideoProgress(
   handler: (event: VideoProgressEvent) => void,
 ): Promise<() => void> {
-  return listen<VideoProgressEvent>("video_progress", (e) => handler(e.payload));
+  return listen<VideoProgressEvent>("video_progress", (e) => handler(e.payload))
 }
 
 // ─── Risk Control Types (P1: 双轨风险把控舱) ───
 
 export interface RiskProject {
-  id: number;
-  name: string;
-  client_name: string;
-  kb_project: string;
-  contract_doc_id: number | null;
-  sow_doc_id: number | null;
-  created_at: string;
+  id: number
+  name: string
+  client_name: string
+  kb_project: string
+  contract_doc_id: number | null
+  sow_doc_id: number | null
+  created_at: string
 }
 
 export interface CandidateScopeItem {
-  category: string;
-  description: string;
-  is_in_scope: boolean;
-  detail: string;
-  confidence: number;
+  category: string
+  description: string
+  is_in_scope: boolean
+  detail: string
+  confidence: number
 }
 
 export interface DefenseScriptRequest {
-  scenario: string;
-  context?: string;
-  tone?: string;
+  scenario: string
+  context?: string
+  tone?: string
 }
 
 export interface DefenseScriptResult {
-  scenario_label: string;
-  scripts: ScriptItem[];
+  scenario_label: string
+  scripts: ScriptItem[]
 }
 
 export interface ScriptItem {
-  phase: string;
-  content: string;
-  tip: string;
+  phase: string
+  content: string
+  tip: string
 }
 
 export interface ImportDbResult {
-  db_size_bytes: number;
-  risk_project_count: number;
-  scope_item_count: number;
-  metric_count: number;
+  db_size_bytes: number
+  risk_project_count: number
+  scope_item_count: number
+  metric_count: number
 }
 
 // ─── Risk Control API ───
@@ -952,26 +966,26 @@ export interface ImportDbResult {
 export async function createRiskProject(
   name: string,
   clientName?: string,
-  kbProject?: string
+  kbProject?: string,
 ): Promise<number> {
   return invoke("create_risk_project", {
     name,
     clientName: clientName ?? "",
     kbProject: kbProject ?? "",
-  });
+  })
 }
 
 export async function listRiskProjects(): Promise<RiskProject[]> {
-  return invoke("list_risk_projects");
+  return invoke("list_risk_projects")
 }
 
 export async function deleteRiskProject(projectId: number): Promise<void> {
-  return invoke("delete_risk_project", { projectId });
+  return invoke("delete_risk_project", { projectId })
 }
 
 // 合同范围
 export async function listScopeItems(projectId: number): Promise<ContractScopeItem[]> {
-  return invoke("list_scope_items", { projectId });
+  return invoke("list_scope_items", { projectId })
 }
 
 export async function addScopeItem(
@@ -979,7 +993,7 @@ export async function addScopeItem(
   category: string,
   description: string,
   isInScope: boolean,
-  detail: string
+  detail: string,
 ): Promise<number> {
   return invoke("add_scope_item", {
     projectId,
@@ -987,233 +1001,253 @@ export async function addScopeItem(
     description,
     isInScope,
     detail,
-  });
+  })
 }
 
 export async function deleteScopeItem(itemId: number): Promise<void> {
-  return invoke("delete_scope_item", { itemId });
+  return invoke("delete_scope_item", { itemId })
 }
 
 // 需求蔓延检查
 export async function checkScopeCreep(
   projectId: number,
-  requirement: string
+  requirement: string,
 ): Promise<ScopeCreepResult> {
-  return invoke("check_scope_creep", { projectId, requirement });
+  return invoke("check_scope_creep", { projectId, requirement })
 }
 
 // 项目健康度
 export async function getProjectHealth(projectId: number): Promise<ProjectHealthScore> {
-  return invoke("get_project_health", { projectId });
+  return invoke("get_project_health", { projectId })
 }
 
 export async function recordHealthMetric(
   projectId: number,
   indicatorType: string,
   value: number,
-  notes: string
+  notes: string,
 ): Promise<number> {
   return invoke("record_health_metric", {
     projectId,
     indicatorType,
     value,
     notes,
-  });
+  })
 }
 
 // 健康风险报告
 export async function generateRiskReport(projectId: number, context: string): Promise<string> {
-  return invoke("generate_risk_report", { projectId, context });
+  return invoke("generate_risk_report", { projectId, context })
 }
 
 // 防身话术
 export async function generateDefenseScript(
-  request: DefenseScriptRequest
+  request: DefenseScriptRequest,
 ): Promise<DefenseScriptResult> {
-  return invoke("generate_defense_script", { request });
+  return invoke("generate_defense_script", { request })
 }
 
 // 文档范围提取
 export async function extractScopeFromDocument(
   projectId: number,
-  docId: number
+  docId: number,
 ): Promise<CandidateScopeItem[]> {
   return invoke("extract_scope_from_document", {
     projectId,
     docId,
-  });
+  })
 }
 
 export async function confirmScopeItems(
   projectId: number,
-  items: CandidateScopeItem[]
+  items: CandidateScopeItem[],
 ): Promise<number> {
-  return invoke("confirm_scope_items", { projectId, items });
+  return invoke("confirm_scope_items", { projectId, items })
 }
 
 // 整库备份
 export async function exportDatabase(targetPath: string): Promise<void> {
-  return invoke("export_database", { targetPath });
+  return invoke("export_database", { targetPath })
 }
 
 export async function importDatabase(backupPath: string): Promise<ImportDbResult> {
-  return invoke("import_database", { backupPath });
+  return invoke("import_database", { backupPath })
 }
 
 // ─── Phase 12b: 在线 ASR Provider ───
 
 export interface AsrProviderInfo {
-  type: string;
-  name: string;
-  description: string;
-  supports_streaming: boolean;
-  supports_file: boolean;
+  type: string
+  name: string
+  description: string
+  supports_streaming: boolean
+  supports_file: boolean
 }
 
 export async function listAsrProviders(): Promise<AsrProviderInfo[]> {
-  return invoke("list_asr_providers");
+  return invoke("list_asr_providers")
 }
 
 export interface AsrConfigStatus {
-  tencent_configured: boolean;
+  tencent_configured: boolean
 }
 
 /** 保存在线 ASR 配置（腾讯云） */
 export async function saveAsrConfig(config: {
-  tencent_secret_id?: string;
-  tencent_secret_key?: string;
+  tencent_secret_id?: string
+  tencent_secret_key?: string
 }): Promise<void> {
-  return invoke("save_asr_config", config);
+  return invoke("save_asr_config", config)
 }
 
 /** 获取当前 ASR 配置状态 */
 export async function getAsrConfigStatus(): Promise<AsrConfigStatus> {
-  return invoke("get_asr_config_status");
+  return invoke("get_asr_config_status")
 }
 
 // ── Wiki 页面 ────────────────────────────────────────────────────────────────
 
 /** Wiki 页面 */
 export interface WikiPage {
-  id: number;
-  project: string;
-  slug: string;
-  title: string;
-  page_type: string;
-  content: string;
-  content_candidate: string | null;
-  candidate_status: string | null;
-  frontmatter: string;
-  sources: string;
-  wikilinks: string;
-  tags: string;
-  page_metadata: string;
-  candidate_version: number | null;
-  page_status: string;
-  version: number;
-  created_at: string;
-  updated_at: string;
+  id: number
+  project: string
+  slug: string
+  title: string
+  page_type: string
+  content: string
+  content_candidate: string | null
+  candidate_status: string | null
+  frontmatter: string
+  sources: string
+  wikilinks: string
+  tags: string
+  page_metadata: string
+  candidate_version: number | null
+  page_status: string
+  version: number
+  created_at: string
+  updated_at: string
 }
 
 /** 创建 Wiki 页面参数 */
 export interface CreateWikiPage {
-  project: string;
-  slug: string;
-  title: string;
-  page_type: string;
-  content: string;
-  frontmatter?: string;
-  sources?: string;
-  wikilinks?: string;
-  tags?: string;
-  page_metadata?: string;
-  page_status?: string;
+  project: string
+  slug: string
+  title: string
+  page_type: string
+  content: string
+  frontmatter?: string
+  sources?: string
+  wikilinks?: string
+  tags?: string
+  page_metadata?: string
+  page_status?: string
 }
 
 /** Wiki 页面简略信息 */
 export interface WikiPageBrief {
-  id: number;
-  slug: string;
-  title: string;
-  page_type: string;
+  id: number
+  slug: string
+  title: string
+  page_type: string
 }
 
 /** Wikilink 目标 */
 export interface WikiLinkTarget {
-  slug: string;
-  title: string;
-  page_type: string;
-  page_status: string;
+  slug: string
+  title: string
+  page_type: string
+  page_status: string
 }
 
 /** 列出所有 Wiki 页面 */
 export async function listWikiPages(project: string): Promise<WikiPageBrief[]> {
-  return invoke("list_wiki_pages", { project });
+  return invoke("list_wiki_pages", { project })
 }
 
 /** 获取 Wiki 页面详情 */
 export async function getWikiPage(id: number): Promise<WikiPage> {
-  return invoke("get_wiki_page", { id });
+  return invoke("get_wiki_page", { id })
 }
 
 /** 根据 slug 获取 Wiki 页面 */
 export async function getWikiPageBySlug(project: string, slug: string): Promise<WikiPage | null> {
-  return invoke("get_wiki_page_by_slug", { project, slug });
+  return invoke("get_wiki_page_by_slug", { project, slug })
 }
 
 /** 创建 Wiki 页面 */
 export async function createWikiPage(data: CreateWikiPage): Promise<WikiPage> {
-  return invoke("create_wiki_page", { data });
+  return invoke("create_wiki_page", { data })
 }
 
 /** 更新 Wiki 页面 */
 export async function updateWikiPage(id: number, data: Partial<CreateWikiPage>): Promise<WikiPage> {
-  return invoke("update_wiki_page", { id, data });
+  return invoke("update_wiki_page", { id, data })
 }
 
 /** 删除 Wiki 页面 */
 export async function deleteWikiPage(id: number): Promise<void> {
-  return invoke("delete_wiki_page", { id });
+  return invoke("delete_wiki_page", { id })
 }
 
 /** 批准 Wiki 页面候选内容 */
 export async function approveWikiPage(id: number): Promise<WikiPage> {
-  return invoke("approve_wiki_page", { id });
+  return invoke("approve_wiki_page", { id })
 }
 
 /** 搜索 Wiki 页面（用于 wikilink 候选） */
-export async function searchWikilinkCandidates(project: string, query: string): Promise<WikiPageBrief[]> {
-  return invoke("search_wikilink_candidates", { project, query });
+export async function searchWikilinkCandidates(
+  project: string,
+  query: string,
+): Promise<WikiPageBrief[]> {
+  return invoke("search_wikilink_candidates", { project, query })
 }
 
 /** 获取反向链接 */
-export async function getBacklinks(slug: string, project: string): Promise<{slug: string; title: string; page_type: string}[]> {
-  return invoke("get_backlinks", { slug, project });
+export async function getBacklinks(
+  slug: string,
+  project: string,
+): Promise<{ slug: string; title: string; page_type: string }[]> {
+  return invoke("get_backlinks", { slug, project })
 }
 
 /** 验证报告（与 backend VerificationReport 对应） */
 export interface VerificationReport {
-  level: "Confirmed" | "NeedsReview" | "Suspected" | "Failed";
-  overall_confidence: number;
-  checks: { check_name: string; passed: boolean; confidence: number; detail: string; evidence: string[] }[];
-  suggested_labels: string[];
+  level: "Confirmed" | "NeedsReview" | "Suspected" | "Failed"
+  overall_confidence: number
+  checks: {
+    check_name: string
+    passed: boolean
+    confidence: number
+    detail: string
+    evidence: string[]
+  }[]
+  suggested_labels: string[]
 }
 
 // ── 验证报告 ──────────────────────────────────────────────────────
 
 /** 对已生成的文本执行验证（Chat 完成后调用） */
-export async function runVerification(generatedText: string, scenario: string): Promise<{report: VerificationReport}> {
-  return invoke("run_verification", { request: { generated_text: generatedText, scenario } });
+export async function runVerification(
+  generatedText: string,
+  scenario: string,
+): Promise<{ report: VerificationReport }> {
+  return invoke("run_verification", { request: { generated_text: generatedText, scenario } })
 }
 
 // ── 知识图谱 ──────────────────────────────────────────────────────
 
 /** 知识图谱统计 */
-export async function getGraphStats(project: string): Promise<{ node_count: number; edge_count: number }> {
-  return invoke("get_graph_stats", { project });
+export async function getGraphStats(
+  project: string,
+): Promise<{ node_count: number; edge_count: number }> {
+  return invoke("get_graph_stats", { project })
 }
 
 /** 获取节点邻居（关联页面） */
-export async function getGraphNeighbors(project: string, slug: string): Promise<{ slug: string; title: string; relation: string; weight: number }[]> {
-  return invoke("get_graph_neighbors", { project, slug });
+export async function getGraphNeighbors(
+  project: string,
+  slug: string,
+): Promise<{ slug: string; title: string; relation: string; weight: number }[]> {
+  return invoke("get_graph_neighbors", { project, slug })
 }

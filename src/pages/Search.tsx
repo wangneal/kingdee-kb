@@ -1,20 +1,25 @@
-import { useState, useCallback, useMemo } from "react";
-import { Search as SearchIcon, FileText, Hash, Tag, Loader2, AlertCircle, RefreshCw } from "lucide-react";
 import {
-  hybridSearch,
-  type HybridSearchResult,
-} from "../lib/tauri-commands";
-import { useProject } from "../contexts/ProjectContext";
+  AlertCircle,
+  FileText,
+  Hash,
+  Loader2,
+  RefreshCw,
+  Search as SearchIcon,
+  Tag,
+} from "lucide-react"
+import { useCallback, useMemo, useState } from "react"
+import { useProject } from "../contexts/ProjectContext"
+import { type HybridSearchResult, hybridSearch } from "../lib/tauri-commands"
 
 function highlightText(text: string, query: string): React.ReactNode {
-  if (!query.trim()) return text;
+  if (!query.trim()) return text
   const words = query
     .split(/\s+/)
     .filter(Boolean)
-    .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  if (words.length === 0) return text;
-  const regex = new RegExp(`(${words.join("|")})`, "gi");
-  const parts = text.split(regex);
+    .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+  if (words.length === 0) return text
+  const regex = new RegExp(`(${words.join("|")})`, "gi")
+  const parts = text.split(regex)
   return parts.map((part) =>
     regex.test(part) ? (
       <mark key={part} className="bg-yellow-200 text-neutral-800 rounded-sm px-0.5">
@@ -22,53 +27,52 @@ function highlightText(text: string, query: string): React.ReactNode {
       </mark>
     ) : (
       part
-    )
-  );
+    ),
+  )
 }
 
 export default function Search() {
-  const { projectId } = useProject();
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<HybridSearchResult[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [searched, setSearched] = useState(false);
-  const [tagFilter, setTagFilter] = useState("");
-  const [searchError, setSearchError] = useState<string | null>(null);
+  const { projectId } = useProject()
+  const [query, setQuery] = useState("")
+  const [results, setResults] = useState<HybridSearchResult[]>([])
+  const [loading, setLoading] = useState(false)
+  const [searched, setSearched] = useState(false)
+  const [tagFilter, setTagFilter] = useState("")
+  const [searchError, setSearchError] = useState<string | null>(null)
 
   const handleSearch = useCallback(
     async (e?: React.FormEvent) => {
-      e?.preventDefault();
-      if (!query.trim()) return;
-      setLoading(true);
-      setSearched(true);
-      setSearchError(null);
+      e?.preventDefault()
+      if (!query.trim()) return
+      setLoading(true)
+      setSearched(true)
+      setSearchError(null)
       try {
-        const res = await hybridSearch(query.trim(), projectId, 30);
-        setResults(res);
-        setSearchError(null);
+        const res = await hybridSearch(query.trim(), projectId, 30)
+        setResults(res)
+        setSearchError(null)
       } catch (err) {
-        console.error("Search failed:", err);
-        setResults([]);
-        setSearchError("搜索服务暂时不可用，请稍后重试");
+        console.error("Search failed:", err)
+        setResults([])
+        setSearchError("搜索服务暂时不可用，请稍后重试")
       } finally {
-        setLoading(false);
+        setLoading(false)
       }
     },
-    [query]
-  );
+    [query],
+  )
 
   const filteredResults = useMemo(() => {
-    if (!tagFilter.trim()) return results;
-    const lower = tagFilter.toLowerCase();
+    if (!tagFilter.trim()) return results
+    const lower = tagFilter.toLowerCase()
     return results.filter(
       (r) =>
-        r.section_path?.toLowerCase().includes(lower) ||
-        r.source.toLowerCase().includes(lower)
-    );
-  }, [results, tagFilter]);
+        r.section_path?.toLowerCase().includes(lower) || r.source.toLowerCase().includes(lower),
+    )
+  }, [results, tagFilter])
 
   return (
-      <div className="p-6">
+    <div className="p-6">
       <h1 className="text-lg font-semibold text-neutral-800 mb-4">知识检索</h1>
 
       {/* Search form */}
@@ -89,11 +93,7 @@ export default function Search() {
             disabled={loading || !query.trim()}
             className="rounded-lg bg-[#1A6BD8] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
-            {loading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              "搜索"
-            )}
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "搜索"}
           </button>
         </div>
       </form>
@@ -153,17 +153,15 @@ export default function Search() {
               <div className="mb-2 flex items-start justify-between gap-3">
                 <div className="flex items-center gap-2 min-w-0">
                   <FileText className="h-4 w-4 shrink-0 text-[#1A6BD8]" />
-                  <h3 className="text-sm font-medium text-neutral-800 truncate">
-                    {result.title}
-                  </h3>
+                  <h3 className="text-sm font-medium text-neutral-800 truncate">{result.title}</h3>
                 </div>
                 <span
                   className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
                     result.score >= 0.8
                       ? "bg-green-100 text-green-700"
                       : result.score >= 0.5
-                      ? "bg-yellow-100 text-yellow-700"
-                      : "bg-neutral-100 text-neutral-500"
+                        ? "bg-yellow-100 text-yellow-700"
+                        : "bg-neutral-100 text-neutral-500"
                   }`}
                 >
                   {(result.score * 100).toFixed(0)}%
@@ -193,5 +191,5 @@ export default function Search() {
         </div>
       )}
     </div>
-  );
+  )
 }

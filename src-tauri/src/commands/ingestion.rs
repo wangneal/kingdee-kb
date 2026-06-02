@@ -79,10 +79,11 @@ pub async fn ingest_file(
     app: AppHandle,
     file_path: String,
     project: String,
+    enable_kb_compilation: Option<bool>,
 ) -> Result<IngestionResult, String> {
     state.ensure_embedding_ready();
 
-    ingest_file_fn(
+    let result = ingest_file_fn(
         PathBuf::from(&file_path).as_path(),
         &project,
         &state.embedding,
@@ -91,7 +92,35 @@ pub async fn ingest_file(
         &state.bm25,
         Some(&state.raw_sources),
         Some(&app),
-    )
+    )?;
+
+    // 知识编译
+    if enable_kb_compilation.unwrap_or(false) {
+        let text = crate::services::file_extractor::extract_text(&PathBuf::from(&file_path))
+            .map_err(|e| format!("读取文件内容失败: {}", e))?;
+        let sha256 = result.sha256.clone();
+        let title = result.title.clone();
+        let cache_store = state.analysis_cache.clone();
+        let provider_manager = state.llm_providers.clone();
+        let wiki_pages = state.wiki_pages.clone();
+        let ingest_cache = state.ingest_cache_store.clone();
+
+        let _ = process_with_kb_compilation(
+            &text,
+            &sha256,
+            &sha256,
+            &project,
+            &title,
+            true,
+            cache_store,
+            provider_manager,
+            wiki_pages,
+            ingest_cache,
+        )
+        .await;
+    }
+
+    Ok(result)
 }
 
 #[tauri::command]
@@ -122,10 +151,11 @@ pub async fn ingest_directory(
     app: AppHandle,
     dir_path: String,
     project: String,
+    enable_kb_compilation: Option<bool>,
 ) -> Result<DirectoryIngestionResult, String> {
     state.ensure_embedding_ready();
 
-    ingest_directory_fn(
+    let result = ingest_directory_fn(
         PathBuf::from(&dir_path).as_path(),
         &project,
         &state.embedding,
@@ -134,5 +164,42 @@ pub async fn ingest_directory(
         &state.bm25,
         Some(&state.raw_sources),
         Some(&app),
-    )
+    )?;
+
+    // 知识编译（对每个成功导入的文件）
+    if enable_kb_compilation.unwrap_or(false) {
+        let cache_store = state.analysis_cache.clone();
+        let provider_manager = state.llm_providers.clone();
+        let wiki_pages = state.wiki_pages.clone();
+        let ingest_cache = state.ingest_cache_store.clone();
+
+        for imported in &result.imported {
+            if let Some(ref sp) = imported.source_path {
+                match crate::services::file_extractor::extract_text(&PathBuf::from(sp)) {
+                    Ok(text) => {
+                        let sha256 = imported.sha256.clone();
+                        let title = imported.title.clone();
+                        let _ = process_with_kb_compilation(
+                            &text,
+                            &sha256,
+                            &sha256,
+                            &project,
+                            &title,
+                            true,
+                            cache_store.clone(),
+                            provider_manager.clone(),
+                            wiki_pages.clone(),
+                            ingest_cache.clone(),
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        eprintln!("[Ingestion] KB 编译读取文件失败: {} — {}", sp, e);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(result)
 }

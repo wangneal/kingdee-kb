@@ -3,13 +3,14 @@
  *
  * 展示当前页面的 wikilinks 列表（可移除）、添加链接按钮和反向链接区域。
  */
-import { useState, useEffect, useCallback, useMemo } from "react"
-import { Link2, Plus, X, ArrowLeft } from "lucide-react"
+
+import { ArrowLeft, Link2, Plus, X } from "lucide-react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   addWikilink,
-  removeWikilink,
-  getWikilinkTargets,
   getBacklinks,
+  getWikilinkTargets,
+  removeWikilink,
   type WikiLinkTarget,
   type WikiPageBrief,
 } from "../../lib/wiki-commands"
@@ -225,9 +226,7 @@ export default function WikiLinkEditor({
           <p className="text-xs text-neutral-500">
             反向链接
             {backlinks.length > 0 && (
-              <span className="ml-1 text-neutral-400">
-                · {backlinks.length} 个页面引用此页
-              </span>
+              <span className="ml-1 text-neutral-400">· {backlinks.length} 个页面引用此页</span>
             )}
           </p>
         </div>

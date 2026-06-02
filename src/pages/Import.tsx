@@ -1,114 +1,117 @@
-import { useState, useCallback, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { save } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core"
+import { getCurrentWebview } from "@tauri-apps/api/webview"
+import { open, save } from "@tauri-apps/plugin-dialog"
 import {
-  Upload,
-  FileText,
-  FolderOpen,
-  ClipboardPaste,
-  Loader2,
-  CheckCircle2,
   AlertCircle,
-  X,
-  Video,
-  FileAudio,
+  CheckCircle2,
+  ClipboardPaste,
   Copy,
   Download,
-} from "lucide-react";
-import { open } from "@tauri-apps/plugin-dialog";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
+  FileAudio,
+  FileText,
+  FolderOpen,
+  Loader2,
+  Upload,
+  Video,
+  X,
+} from "lucide-react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import {
-  ingestText,
-  ingestFile,
-  ingestDirectory,
-  type IngestionResult,
-  transcribeAndIngestVideo,
   getWhisperStatus,
-  loadWhisperModel,
-  type VideoPipelineResult,
+  type IngestionResult,
+  ingestDirectory,
+  ingestFile,
+  ingestText,
   listenVideoProgress,
+  loadWhisperModel,
+  transcribeAndIngestVideo,
+  type VideoPipelineResult,
   type VideoProgressEvent,
-} from "../lib/tauri-commands";
+} from "../lib/tauri-commands"
 
-type ImportStatus = "idle" | "loading" | "success" | "error";
+type ImportStatus = "idle" | "loading" | "success" | "error"
 
 interface ImportFeedback {
-  status: ImportStatus;
-  message: string;
-  results?: IngestionResult[];
-  errors?: FileError[];
+  status: ImportStatus
+  message: string
+  results?: IngestionResult[]
+  errors?: FileError[]
 }
 
 interface FileError {
-  path: string;
-  error: string;
+  path: string
+  error: string
 }
 
 export default function Import() {
   // Text import state
-  const [textTitle, setTextTitle] = useState("");
-  const [textContent, setTextContent] = useState("");
-  const [textProject, setTextProject] = useState("default");
-  const [textCustomProject, setTextCustomProject] = useState("");
-  const [textFeedback, setTextFeedback] = useState<ImportFeedback | null>(null);
+  const [textTitle, setTextTitle] = useState("")
+  const [textContent, setTextContent] = useState("")
+  const [textProject, setTextProject] = useState("default")
+  const [textCustomProject, setTextCustomProject] = useState("")
+  const [textFeedback, setTextFeedback] = useState<ImportFeedback | null>(null)
 
   // File/folder import state
-  const [fileFeedback, setFileFeedback] = useState<ImportFeedback | null>(null);
-  const [fileProject, setFileProject] = useState("default");
-  const [fileCustomProject, setFileCustomProject] = useState("");
-  const [isDragging, setIsDragging] = useState(false);
+  const [fileFeedback, setFileFeedback] = useState<ImportFeedback | null>(null)
+  const [fileProject, setFileProject] = useState("default")
+  const [fileCustomProject, setFileCustomProject] = useState("")
+  const [isDragging, setIsDragging] = useState(false)
 
   // Video transcription state
-  const [videoFeedback, setVideoFeedback] = useState<ImportFeedback | null>(null);
-  const [videoProject, setVideoProject] = useState("default");
-  const [videoCustomProject, setVideoCustomProject] = useState("");
-  const [videoGeneratingMinutes, setVideoGeneratingMinutes] = useState(true);
-  const [videoResult, setVideoResult] = useState<VideoPipelineResult | null>(null);
-  const [whisperReady, setWhisperReady] = useState(false);
-  const [whisperLoading, setWhisperLoading] = useState(false);
-  const [whisperError, setWhisperError] = useState<string | null>(null);
-  const [videoProgress, setVideoProgress] = useState<VideoProgressEvent | null>(null);
-  const [copyOk, setCopyOk] = useState<string | null>(null); // "transcript" | "minutes"
-  const progressRef = useRef<VideoProgressEvent | null>(null);
+  const [videoFeedback, setVideoFeedback] = useState<ImportFeedback | null>(null)
+  const [videoProject, setVideoProject] = useState("default")
+  const [videoCustomProject, setVideoCustomProject] = useState("")
+  const [videoGeneratingMinutes, setVideoGeneratingMinutes] = useState(true)
+  const [videoResult, setVideoResult] = useState<VideoPipelineResult | null>(null)
+  const [whisperReady, setWhisperReady] = useState(false)
+  const [whisperLoading, setWhisperLoading] = useState(false)
+  const [whisperError, setWhisperError] = useState<string | null>(null)
+  const [videoProgress, setVideoProgress] = useState<VideoProgressEvent | null>(null)
+  const [copyOk, setCopyOk] = useState<string | null>(null) // "transcript" | "minutes"
+  const progressRef = useRef<VideoProgressEvent | null>(null)
 
   // Check Whisper model status on mount
   useEffect(() => {
     getWhisperStatus()
       .then((status) => {
-        setWhisperReady(status.model_loaded);
-        setWhisperError(null);
+        setWhisperReady(status.model_loaded)
+        setWhisperError(null)
       })
       .catch((err) => {
-        setWhisperReady(false);
-        setWhisperError(String(err));
-      });
-  }, []);
+        setWhisperReady(false)
+        setWhisperError(String(err))
+      })
+  }, [])
 
   // Listen for video progress events
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
+    let unlisten: (() => void) | null = null
     listenVideoProgress((event) => {
-      progressRef.current = event;
-      setVideoProgress(event);
-    }).then((fn) => { unlisten = fn; });
-    return () => { if (unlisten) unlisten(); };
-  }, []);
+      progressRef.current = event
+      setVideoProgress(event)
+    }).then((fn) => {
+      unlisten = fn
+    })
+    return () => {
+      if (unlisten) unlisten()
+    }
+  }, [])
 
   // Load Whisper model
   const handleLoadWhisper = useCallback(async () => {
-    setWhisperLoading(true);
-    setWhisperError(null);
+    setWhisperLoading(true)
+    setWhisperError(null)
     try {
-      await loadWhisperModel("tiny");
-      const status = await getWhisperStatus();
-      setWhisperReady(status.model_loaded);
+      await loadWhisperModel("tiny")
+      const status = await getWhisperStatus()
+      setWhisperReady(status.model_loaded)
     } catch (err) {
-      setWhisperReady(false);
-      setWhisperError(String(err));
+      setWhisperReady(false)
+      setWhisperError(String(err))
     } finally {
-      setWhisperLoading(false);
+      setWhisperLoading(false)
     }
-  }, []);
+  }, [])
 
   // Project options
   const projectOptions = [
@@ -116,38 +119,38 @@ export default function Import() {
     { value: "enterprise", label: "企业版" },
     { value: "flagship", label: "旗舰版" },
     { value: "custom", label: "自定义..." },
-  ];
+  ]
 
   const getProjectName = (project: string, custom: string) => {
-    if (project === "custom") return custom.trim() || "default";
-    return project;
-  };
+    if (project === "custom") return custom.trim() || "default"
+    return project
+  }
 
   // Handle text import
   const handleTextImport = useCallback(async () => {
-    if (!textContent.trim() || !textTitle.trim()) return;
-    setTextFeedback({ status: "loading", message: "正在导入文本…" });
+    if (!textContent.trim() || !textTitle.trim()) return
+    setTextFeedback({ status: "loading", message: "正在导入文本…" })
     try {
-      const project = getProjectName(textProject, textCustomProject);
-      const result = await ingestText(textContent, textTitle, project);
+      const project = getProjectName(textProject, textCustomProject)
+      const result = await ingestText(textContent, textTitle, project)
       setTextFeedback({
         status: "success",
         message: `导入成功：${result.title}，共 ${result.chunk_count} 个片段`,
         results: [result],
-      });
-      setTextContent("");
-      setTextTitle("");
+      })
+      setTextContent("")
+      setTextTitle("")
     } catch (e) {
       setTextFeedback({
         status: "error",
         message: `导入失败：${e}`,
-      });
+      })
     }
-  }, [textContent, textTitle, textProject, textCustomProject]);
+  }, [textContent, textTitle, textProject, textCustomProject])
 
   // Handle file import via dialog
   const handleFileImport = useCallback(async () => {
-    setFileFeedback({ status: "loading", message: "正在选择文件…" });
+    setFileFeedback({ status: "loading", message: "正在选择文件…" })
     try {
       const selected = await open({
         multiple: true,
@@ -157,173 +160,178 @@ export default function Import() {
             extensions: ["md", "txt", "html", "pdf", "docx", "xlsx", "xls"],
           },
         ],
-      });
+      })
       if (!selected) {
-        setFileFeedback(null);
-        return;
+        setFileFeedback(null)
+        return
       }
-      const paths = Array.isArray(selected) ? selected : [selected];
+      const paths = Array.isArray(selected) ? selected : [selected]
       setFileFeedback({
         status: "loading",
         message: `正在导入 ${paths.length} 个文件…`,
-      });
-      const project = getProjectName(fileProject, fileCustomProject);
-      const results: IngestionResult[] = [];
-      const errors: string[] = [];
+      })
+      const project = getProjectName(fileProject, fileCustomProject)
+      const results: IngestionResult[] = []
+      const errors: string[] = []
       for (const path of paths) {
         try {
-          const result = await ingestFile(path, project);
-          results.push(result);
+          const result = await ingestFile(path, project)
+          results.push(result)
         } catch (err) {
-          const filename = path.split(/[\\/]/).pop() || path;
-          errors.push(`${filename}: ${err}`);
+          const filename = path.split(/[\\/]/).pop() || path
+          errors.push(`${filename}: ${err}`)
         }
       }
       if (results.length > 0) {
-    setFileFeedback({
-      status: "success",
-      message: errors.length > 0
-        ? `成功导入 ${results.length} 个文件，${errors.length} 个失败`
-        : `成功导入 ${results.length} 个文件`,
-      results,
-    });
-  } else {
-    setFileFeedback({
-      status: "error",
-      message: errors.length > 0
-        ? `导入失败：${errors[0]}`
-        : "没有文件被成功导入（文件夹中未找到支持的文件格式）",
-    });
-  }
+        setFileFeedback({
+          status: "success",
+          message:
+            errors.length > 0
+              ? `成功导入 ${results.length} 个文件，${errors.length} 个失败`
+              : `成功导入 ${results.length} 个文件`,
+          results,
+        })
+      } else {
+        setFileFeedback({
+          status: "error",
+          message:
+            errors.length > 0
+              ? `导入失败：${errors[0]}`
+              : "没有文件被成功导入（文件夹中未找到支持的文件格式）",
+        })
+      }
     } catch (e) {
       setFileFeedback({
         status: "error",
         message: `导入失败：${e}`,
-      });
+      })
     }
-  }, [fileProject, fileCustomProject]);
+  }, [fileProject, fileCustomProject])
 
   // Handle folder import via dialog
   const handleFolderImport = useCallback(async () => {
-    setFileFeedback({ status: "loading", message: "正在选择文件夹…" });
+    setFileFeedback({ status: "loading", message: "正在选择文件夹…" })
     try {
       const selected = await open({
         directory: true,
-      });
+      })
       if (!selected) {
-        setFileFeedback(null);
-        return;
+        setFileFeedback(null)
+        return
       }
       setFileFeedback({
         status: "loading",
         message: `正在导入文件夹：${selected}…`,
-      });
-      const project = getProjectName(fileProject, fileCustomProject);
-      const result = await ingestDirectory(selected, project);
-      const { imported, errors } = result;
+      })
+      const project = getProjectName(fileProject, fileCustomProject)
+      const result = await ingestDirectory(selected, project)
+      const { imported, errors } = result
       if (imported.length > 0) {
         setFileFeedback({
           status: "success",
-          message: errors.length > 0
-            ? `成功导入 ${imported.length} 个文件，${errors.length} 个失败`
-            : `成功导入 ${imported.length} 个文件`,
+          message:
+            errors.length > 0
+              ? `成功导入 ${imported.length} 个文件，${errors.length} 个失败`
+              : `成功导入 ${imported.length} 个文件`,
           results: imported,
           errors,
-        });
+        })
       } else if (errors.length > 0) {
         setFileFeedback({
           status: "error",
           message: `导入失败：${errors.length} 个文件均未成功。例如：${errors[0].error}`,
           errors,
-        });
+        })
       } else {
         setFileFeedback({
           status: "error",
           message: "未找到支持的文件格式",
-        });
+        })
       }
     } catch (e) {
       setFileFeedback({
         status: "error",
         message: `导入失败：${e}`,
-      });
+      })
     }
-  }, [fileProject, fileCustomProject]);
+  }, [fileProject, fileCustomProject])
 
   // Handle drag and drop - Tauri native implementation
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
+    let unlisten: (() => void) | null = null
 
     const setupDragDrop = async () => {
       try {
-        const webview = getCurrentWebview();
+        const webview = getCurrentWebview()
         unlisten = await webview.onDragDropEvent((event) => {
           if (event.payload.type === "over") {
-            setIsDragging(true);
+            setIsDragging(true)
           } else if (event.payload.type === "drop") {
-            setIsDragging(false);
-            const paths = event.payload.paths;
+            setIsDragging(false)
+            const paths = event.payload.paths
             if (paths && paths.length > 0) {
-              handleFilesDrop(paths);
+              handleFilesDrop(paths)
             }
           } else if (event.payload.type === "leave") {
-            setIsDragging(false);
+            setIsDragging(false)
           }
-        });
+        })
       } catch (e) {
-        console.error("Failed to setup drag-drop:", e);
+        console.error("Failed to setup drag-drop:", e)
       }
-    };
+    }
 
-    setupDragDrop();
+    setupDragDrop()
 
     return () => {
-      if (unlisten) unlisten();
-    };
-  }, [fileProject]);
+      if (unlisten) unlisten()
+    }
+  }, [fileProject])
 
-  const handleFilesDrop = useCallback(async (paths: string[]) => {
-    setFileFeedback({
-      status: "loading",
-      message: `正在导入 ${paths.length} 个文件…`,
-    });
+  const handleFilesDrop = useCallback(
+    async (paths: string[]) => {
+      setFileFeedback({
+        status: "loading",
+        message: `正在导入 ${paths.length} 个文件…`,
+      })
 
-    const project = getProjectName(fileProject, fileCustomProject);
-    const results: IngestionResult[] = [];
-    const errors: string[] = [];
-    for (const path of paths) {
-      try {
-        const result = await ingestFile(path, project);
-        results.push(result);
-      } catch (err) {
-        const filename = path.split(/[\\/]/).pop() || path;
-        errors.push(`${filename}: ${err}`);
+      const project = getProjectName(fileProject, fileCustomProject)
+      const results: IngestionResult[] = []
+      const errors: string[] = []
+      for (const path of paths) {
+        try {
+          const result = await ingestFile(path, project)
+          results.push(result)
+        } catch (err) {
+          const filename = path.split(/[\\/]/).pop() || path
+          errors.push(`${filename}: ${err}`)
+        }
       }
-    }
 
-    if (results.length > 0) {
-      setFileFeedback({
-        status: "success",
-        message: errors.length > 0
-          ? `成功导入 ${results.length} 个文件，${errors.length} 个失败`
-          : `成功导入 ${results.length} 个文件`,
-        results,
-      });
-    } else {
-      setFileFeedback({
-        status: "error",
-        message: errors.length > 0
-          ? `导入失败：${errors[0]}`
-          : "没有文件被成功导入",
-      });
-    }
-  }, [fileProject, fileCustomProject]);
+      if (results.length > 0) {
+        setFileFeedback({
+          status: "success",
+          message:
+            errors.length > 0
+              ? `成功导入 ${results.length} 个文件，${errors.length} 个失败`
+              : `成功导入 ${results.length} 个文件`,
+          results,
+        })
+      } else {
+        setFileFeedback({
+          status: "error",
+          message: errors.length > 0 ? `导入失败：${errors[0]}` : "没有文件被成功导入",
+        })
+      }
+    },
+    [fileProject, fileCustomProject],
+  )
 
   const clearFeedback = (type: "text" | "file" | "video") => {
-    if (type === "text") setTextFeedback(null);
-    else if (type === "file") setFileFeedback(null);
-    else setVideoFeedback(null);
-  };
+    if (type === "text") setTextFeedback(null)
+    else if (type === "file") setFileFeedback(null)
+    else setVideoFeedback(null)
+  }
 
   // Handle video transcription
   const handleVideoImport = useCallback(async () => {
@@ -335,55 +343,57 @@ export default function Import() {
           extensions: ["mp4", "webm", "avi", "mov", "mkv", "flv", "wmv", "m4a", "mp3", "wav"],
         },
       ],
-    });
-    if (!filePath) return;
+    })
+    if (!filePath) return
 
-    const proj = getProjectName(videoProject, videoCustomProject);
-    setVideoFeedback({ status: "loading", message: "正在准备..." });
-    setVideoResult(null);
-    setVideoProgress(null);
+    const proj = getProjectName(videoProject, videoCustomProject)
+    setVideoFeedback({ status: "loading", message: "正在准备..." })
+    setVideoResult(null)
+    setVideoProgress(null)
 
     try {
       const result = await transcribeAndIngestVideo(
         filePath as string,
         proj,
         videoGeneratingMinutes,
-      );
+      )
       setVideoFeedback({
         status: "success",
         message: `转写完成！${result.transcription.duration_secs.toFixed(0)}秒视频 → ${result.transcription.text.length}字。已入库知识库。${result.meeting_minutes ? " 会议纪要已生成。" : ""}`,
-      });
-      setVideoResult(result);
+      })
+      setVideoResult(result)
     } catch (err) {
       setVideoFeedback({
         status: "error",
         message: String(err),
-      });
+      })
     }
-  }, [videoProject, videoCustomProject, videoGeneratingMinutes]);
+  }, [videoProject, videoCustomProject, videoGeneratingMinutes])
 
   // Copy text to clipboard
   const copyToClipboard = useCallback(async (text: string, label: string) => {
     try {
-      await navigator.clipboard.writeText(text);
-      setCopyOk(label);
-      setTimeout(() => setCopyOk(null), 2000);
-    } catch { /* clipboard not available */ }
-  }, []);
+      await navigator.clipboard.writeText(text)
+      setCopyOk(label)
+      setTimeout(() => setCopyOk(null), 2000)
+    } catch {
+      /* clipboard not available */
+    }
+  }, [])
 
   // Export text to file
   const exportToFile = useCallback(async (text: string, filename: string) => {
     const dest = await save({
       defaultPath: filename,
       filters: [{ name: "Markdown", extensions: ["md", "txt"] }],
-    });
-    if (!dest) return;
+    })
+    if (!dest) return
     try {
-      await invoke("export_report", { content: text, filePath: dest });
+      await invoke("export_report", { content: text, filePath: dest })
     } catch (err) {
-      console.error("导出失败:", err);
+      console.error("导出失败:", err)
     }
-  }, []);
+  }, [])
 
   return (
     <div className="p-6">
@@ -411,7 +421,9 @@ export default function Import() {
               className="rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
             >
               {projectOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
               ))}
             </select>
             {textProject === "custom" && (
@@ -436,9 +448,7 @@ export default function Import() {
               type="button"
               onClick={handleTextImport}
               disabled={
-                !textTitle.trim() ||
-                !textContent.trim() ||
-                textFeedback?.status === "loading"
+                !textTitle.trim() || !textContent.trim() || textFeedback?.status === "loading"
               }
               className="rounded-md bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
@@ -468,8 +478,8 @@ export default function Import() {
               textFeedback.status === "success"
                 ? "bg-green-50 text-green-700"
                 : textFeedback.status === "error"
-                ? "bg-red-50 text-red-700"
-                : "bg-blue-50 text-blue-700"
+                  ? "bg-red-50 text-red-700"
+                  : "bg-blue-50 text-blue-700"
             }`}
           >
             <div className="flex items-center gap-2">
@@ -502,13 +512,9 @@ export default function Import() {
           }`}
         >
           <Upload
-            className={`mx-auto h-8 w-8 mb-2 ${
-              isDragging ? "text-[#1A6BD8]" : "text-neutral-400"
-            }`}
+            className={`mx-auto h-8 w-8 mb-2 ${isDragging ? "text-[#1A6BD8]" : "text-neutral-400"}`}
           />
-          <p className="text-sm text-neutral-600">
-            拖拽文件到此处
-          </p>
+          <p className="text-sm text-neutral-600">拖拽文件到此处</p>
           <p className="text-xs text-neutral-400 mt-1">
             支持 Markdown、TXT、HTML、PDF、DOCX、Excel
           </p>
@@ -522,7 +528,9 @@ export default function Import() {
             className="rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
           >
             {projectOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
             ))}
           </select>
           {fileProject === "custom" && (
@@ -572,8 +580,8 @@ export default function Import() {
               fileFeedback.status === "success"
                 ? "bg-green-50 text-green-700"
                 : fileFeedback.status === "error"
-                ? "bg-red-50 text-red-700"
-                : "bg-blue-50 text-blue-700"
+                  ? "bg-red-50 text-red-700"
+                  : "bg-blue-50 text-blue-700"
             }`}
           >
             <div className="flex items-center gap-2">
@@ -603,10 +611,14 @@ export default function Import() {
               <div className="mt-2 space-y-1 text-xs text-red-600">
                 <p className="font-medium">导入失败的文件：</p>
                 {fileFeedback.errors.slice(0, 10).map((e, i) => (
-                  <p key={i} className="truncate">⚠ {e.path}: {e.error}</p>
+                  <p key={i} className="truncate">
+                    ⚠ {e.path}: {e.error}
+                  </p>
                 ))}
                 {fileFeedback.errors.length > 10 && (
-                  <p className="text-neutral-500">…还有 {fileFeedback.errors.length - 10} 个文件未显示</p>
+                  <p className="text-neutral-500">
+                    …还有 {fileFeedback.errors.length - 10} 个文件未显示
+                  </p>
                 )}
               </div>
             )}
@@ -665,7 +677,9 @@ export default function Import() {
             className="rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400/20"
           >
             {projectOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
             ))}
           </select>
           {videoProject === "custom" && (
@@ -712,8 +726,8 @@ export default function Import() {
               videoFeedback.status === "success"
                 ? "bg-green-50 text-green-700"
                 : videoFeedback.status === "error"
-                ? "bg-red-50 text-red-700"
-                : "bg-purple-50 text-purple-700"
+                  ? "bg-red-50 text-red-700"
+                  : "bg-purple-50 text-purple-700"
             }`}
           >
             <div className="flex items-center gap-2">
@@ -756,7 +770,13 @@ export default function Import() {
           <div className="mt-4">
             <div className="flex items-center justify-between mb-1">
               <span className="text-xs font-medium text-neutral-600">
-                转写结果（{videoResult.transcription.text.length}字，耗时 {((videoResult.transcription.extraction_time_ms + videoResult.transcription.transcription_time_ms) / 1000).toFixed(1)}s）
+                转写结果（{videoResult.transcription.text.length}字，耗时{" "}
+                {(
+                  (videoResult.transcription.extraction_time_ms +
+                    videoResult.transcription.transcription_time_ms) /
+                  1000
+                ).toFixed(1)}
+                s）
               </span>
               <div className="flex gap-1">
                 <button
@@ -793,7 +813,8 @@ export default function Import() {
           <div className="mt-3">
             <div className="flex items-center justify-between mb-1">
               <span className="text-xs font-medium text-neutral-600">
-                会议纪要（耗时 {(videoResult.meeting_minutes.generation_time_ms / 1000).toFixed(1)}s）
+                会议纪要（耗时 {(videoResult.meeting_minutes.generation_time_ms / 1000).toFixed(1)}
+                s）
               </span>
               <div className="flex gap-1">
                 <button
@@ -807,7 +828,9 @@ export default function Import() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => exportToFile(videoResult.meeting_minutes!.minutes, "meeting-minutes.md")}
+                  onClick={() =>
+                    exportToFile(videoResult.meeting_minutes!.minutes, "meeting-minutes.md")
+                  }
                   className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700 transition-colors"
                   title="导出会议纪要"
                 >
@@ -825,7 +848,6 @@ export default function Import() {
           </div>
         )}
       </section>
-
     </div>
-  );
+  )
 }

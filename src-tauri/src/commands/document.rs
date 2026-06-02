@@ -30,7 +30,7 @@ pub async fn delete_document(
     document_id: i64,
     project: Option<String>,
 ) -> Result<(), String> {
-    let vector_keys: Vec<i64> = {
+    let (vector_keys, outbox_id): (Vec<i64>, i64) = {
         let meta = state.metadata.lock().map_err(|e| e.to_string())?;
         if let Some(pid) = project.as_deref() {
             let doc = meta
@@ -43,26 +43,38 @@ pub async fn delete_document(
                 ));
             }
         }
-        meta.get_vector_keys_by_document_ids(&[document_id])?
+        let keys = meta.get_vector_keys_by_document_ids(&[document_id])?;
+        // 预写 outbox，防止崩溃后丢失
+        let oid = meta.insert_deletion_record(document_id, project.as_deref(), &keys)?;
+        (keys, oid)
     };
 
-    // 1. 从 BM25 删除（带 commit）
+    // 1. 从 BM25 删除（记录错误但不阻塞）
     if let Ok(bm25) = state.bm25.lock() {
-        let _ = bm25.remove_chunks(&vector_keys);
+        if let Err(e) = bm25.remove_chunks(&vector_keys) {
+            tracing::warn!("BM25 删除失败(outbox_id={}): {}", outbox_id, e);
+        }
     }
 
     // 2. 从 usearch 删除
     if let Ok(idx) = state.vector_index.lock() {
-        let _ = idx.remove_keys(&vector_keys);
+        if let Err(e) = idx.remove_keys(&vector_keys) {
+            tracing::warn!("usearch 删除失败(outbox_id={}): {}", outbox_id, e);
+        }
     }
 
-    // 3. 从 SQLite 删除（事务性，崩溃后可补偿）
+    // 3. 从 SQLite 删除
     {
         let meta = state.metadata.lock().map_err(|e| e.to_string())?;
         meta.delete_document(document_id, project.as_deref())?;
     }
 
-    // 4. 触发碎片整理检查（异步）
+    // 4. outbox 标记完成
+    if let Ok(meta) = state.metadata.lock() {
+        let _ = meta.update_deletion_status(outbox_id, "completed", None);
+    }
+
+    // 5. 触发碎片整理检查（异步）
     if let Ok(idx) = state.vector_index.lock() {
         if idx.check_compact() {
             let idx_ref = state.vector_index.clone();
