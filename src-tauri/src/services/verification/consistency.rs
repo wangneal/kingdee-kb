@@ -11,11 +11,11 @@ impl FactualConsistencyChecker {
         while let Some(ch) = chars.next() {
             current.push(ch);
             let is_end = if matches!(ch, '。' | '！' | '？') {
-                chars.peek().map_or(true, |&next| {
+                chars.peek().is_none_or(|&next| {
                     !matches!(next, '」' | '』' | '）' | ')')
                 })
             } else if matches!(ch, '.' | '!' | '?') {
-                chars.peek().map_or(true, |&next| {
+                chars.peek().is_none_or(|&next| {
                     next.is_whitespace() || matches!(next, '"' | '」' | '』' | '）' | ')')
                 })
             } else {

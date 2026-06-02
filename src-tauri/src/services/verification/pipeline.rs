@@ -25,6 +25,7 @@ impl Default for VerificationConfig {
 /// 验证管线 — 按序编排多个 Checker
 pub struct VerificationPipeline {
     checkers: Vec<Box<dyn Checker>>,
+    #[expect(dead_code)]
     config: VerificationConfig,
 }
 
