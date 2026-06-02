@@ -397,9 +397,10 @@ export function OutlineProvider({ children }: { children: ReactNode }) {
         const msg = err instanceof Error ? err.message : String(err)
         setError(msg)
         console.error("[OutlineContext] 移动节点失败:", msg)
+        await refreshOutline()
       }
     },
-    [nodes, pushUndo],
+    [nodes, pushUndo, refreshOutline],
   )
 
   // ── 选择 ──

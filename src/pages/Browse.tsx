@@ -1,5 +1,6 @@
 import { AlertCircle, BookOpen, CheckCircle } from "lucide-react"
 import { useEffect, useState } from "react"
+import WikiLinkEditor from "../components/wiki/WikiLinkEditor"
 import { useProject } from "../contexts/ProjectContext"
 import {
   approveWikiPage,
@@ -129,6 +130,25 @@ export default function Browse() {
               </pre>
             </div>
 
+            <div className="mt-6">
+              <WikiLinkEditor
+                project={projectId ?? ""}
+                pageId={selectedWiki.id}
+                pageSlug={selectedWiki.slug}
+                initialWikilinks={selectedWiki.wikilinks}
+                onWikilinksChange={(slugs) => {
+                  setSelectedWiki((current) =>
+                    current && current.id === selectedWiki.id
+                      ? { ...current, wikilinks: JSON.stringify(slugs) }
+                      : current,
+                  )
+                  getGraphNeighbors(projectId ?? "", selectedWiki.slug)
+                    .then(setNeighbors)
+                    .catch(() => setNeighbors([]))
+                }}
+              />
+            </div>
+
             {/* 关联页面 */}
             {neighbors.length > 0 && (
               <div className="mt-6 border-t border-neutral-200 pt-4">
@@ -150,7 +170,7 @@ export default function Browse() {
                               .catch(() => setNeighbors([]))
                           }
                         } catch {
-                          /* ignore */
+                          /* 忽略关联页跳转失败 */
                         }
                       }}
                       className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-700 hover:bg-amber-100"

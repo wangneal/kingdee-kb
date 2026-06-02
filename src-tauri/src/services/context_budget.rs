@@ -60,7 +60,8 @@ impl ContextBudget {
                 let current = final_alloc.get(&claim.slot).copied().unwrap_or(0);
                 let deficit = claim.ideal_tokens.saturating_sub(current);
                 let share = if remaining > 0 {
-                    remaining * deficit / total_ideal
+                    // 转换为 u64 进行计算，防止在大上下文窗口下乘法溢出
+                    ((remaining as u64 * deficit as u64) / total_ideal as u64) as u32
                 } else {
                     0
                 };

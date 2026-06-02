@@ -34,6 +34,7 @@ pub struct IngestCacheStore {
 impl IngestCacheStore {
     /// 使用已有的数据库连接创建存储
     pub fn new(db: Connection) -> Self {
+        let _ = db.busy_timeout(std::time::Duration::from_secs(5));
         Self { db }
     }
 

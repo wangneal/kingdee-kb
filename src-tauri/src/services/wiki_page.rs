@@ -86,6 +86,7 @@ pub struct WikiPageStore {
 impl WikiPageStore {
     /// 使用已有的数据库连接创建存储
     pub fn new(db: Connection) -> Self {
+        let _ = db.busy_timeout(std::time::Duration::from_secs(5));
         Self { db }
     }
 
@@ -245,8 +246,14 @@ impl WikiPageStore {
         let existing = self.get_by_id(id)?;
         let title = input.title.as_deref().unwrap_or(&existing.title);
         let content = input.content.as_deref().unwrap_or(&existing.content);
-        let content_candidate: Option<&str> = input.content_candidate.as_deref();
-        let candidate_status: Option<&str> = input.candidate_status.as_deref();
+        let content_candidate: Option<&str> = input
+            .content_candidate
+            .as_deref()
+            .or(existing.content_candidate.as_deref());
+        let candidate_status: Option<&str> = input
+            .candidate_status
+            .as_deref()
+            .or(existing.candidate_status.as_deref());
         let frontmatter = input.frontmatter.as_deref().unwrap_or(&existing.frontmatter);
         let sources = input.sources.as_deref().unwrap_or(&existing.sources);
         let wikilinks = input.wikilinks.as_deref().unwrap_or(&existing.wikilinks);
@@ -285,7 +292,7 @@ impl WikiPageStore {
     pub fn approve_candidate(&self, id: i64) -> Result<WikiPage, String> {
         let existing = self.get_by_id(id)?;
         let candidate = existing.content_candidate
-            .ok_or_else(|| "没有待批准的候选人内容".to_string())?;
+            .ok_or_else(|| "没有待批准的候选内容".to_string())?;
         self.db.execute(
             "UPDATE wiki_pages SET
                 content = ?1, content_candidate = NULL, candidate_status = NULL,
@@ -420,8 +427,12 @@ impl WikiPageStore {
         self.get_by_id(page_id)
     }
 
-    /// 获取 wikilink 目标页面详情（批量查询被引页面的标题/slug/type/status）
-    pub fn get_wikilink_targets(&self, slugs: &[String]) -> Result<Vec<WikiLinkTarget>, String> {
+    /// 获取 wikilink 目标页面详情（按项目过滤，批量查询被引页面的标题/slug/type/status）
+    pub fn get_wikilink_targets(
+        &self,
+        project: &str,
+        slugs: &[String],
+    ) -> Result<Vec<WikiLinkTarget>, String> {
         if slugs.is_empty() {
             return Ok(Vec::new());
         }
@@ -429,15 +440,17 @@ impl WikiPageStore {
         let sql = format!(
             "SELECT slug, title, page_type, page_status
              FROM wiki_pages
-             WHERE slug IN ({})",
+             WHERE project = ?{} AND slug IN ({})",
+            slugs.len() + 1,
             placeholders.join(", ")
         );
         let mut stmt = self
             .db
             .prepare(&sql)
             .map_err(|e| format!("准备 wikilink 目标查询失败: {}", e))?;
-        let params: Vec<&dyn rusqlite::types::ToSql> =
+        let mut params: Vec<&dyn rusqlite::types::ToSql> =
             slugs.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+        params.push(&project as &dyn rusqlite::types::ToSql);
         let rows = stmt
             .query_map(params.as_slice(), |row| {
                 Ok(WikiLinkTarget {

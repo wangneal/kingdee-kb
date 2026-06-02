@@ -124,7 +124,6 @@ pub fn route_mode(user_message: &str, history: &[ChatMessage]) -> AgentMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::llm_service::ChatMessage;
 
     #[test]
     fn test_simple_query_low_score() {

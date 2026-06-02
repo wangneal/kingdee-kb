@@ -51,6 +51,10 @@ impl ProductStore {
         let db =
             Connection::open(&db_path).map_err(|e| format!("Failed to open database: {}", e))?;
 
+        // 设置数据库忙超时（5秒），以防并发写入时立即返回 SQLITE_BUSY 错误
+        db.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| format!("设置数据库忙超时失败: {}", e))?;
+
         // Enable WAL mode for better concurrent read performance
         db.execute_batch("PRAGMA journal_mode=WAL;")
             .map_err(|e| format!("Failed to set WAL mode: {}", e))?;

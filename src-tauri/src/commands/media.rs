@@ -34,7 +34,7 @@ pub fn get_whisper_status(state: State<'_, AppState>) -> Result<WhisperStatus, S
 /// 开始麦克风录音。
 #[tauri::command]
 pub fn start_whisper_recording(state: State<'_, AppState>) -> Result<(), String> {
-    let mut capture = state.audio_capture.write().map_err(|e| e.to_string())?;
+    let capture = state.audio_capture.write().map_err(|e| e.to_string())?;
     capture.start_recording()
 }
 
@@ -51,7 +51,7 @@ pub async fn stop_whisper_recording(
 
         // 1. 停止录音获取 PCM 数据
         let pcm_data = {
-            let mut capture = state.audio_capture.write().map_err(|e| e.to_string())?;
+            let capture = state.audio_capture.write().map_err(|e| e.to_string())?;
             capture.stop_recording()?
         };
         if pcm_data.is_empty() {
@@ -96,7 +96,7 @@ pub async fn stop_whisper_recording(
 
     // 无 provider → 使用本地 Whisper
     let pcm_data = {
-        let mut capture = state.audio_capture.write().map_err(|e| e.to_string())?;
+        let capture = state.audio_capture.write().map_err(|e| e.to_string())?;
         capture.stop_recording()?
     };
 
@@ -129,7 +129,7 @@ pub async fn stop_whisper_recording(
         .collect();
 
     let whisper_result = {
-        let mut whisper = state.whisper_service.write().map_err(|e| e.to_string())?;
+        let whisper = state.whisper_service.write().map_err(|e| e.to_string())?;
         if !whisper.is_model_loaded() {
             return Err("Whisper model not loaded. Call load_whisper_model first.".to_string());
         }
@@ -277,6 +277,7 @@ pub async fn transcribe_and_ingest_video(
         None,
         None,
         None,
+        Some(&state.data_dir),
     )?;
 
     let meeting_minutes = if generate_minutes {

@@ -295,6 +295,7 @@ impl RigAgent {
                                 &bm,
                                 None,
                                 None,
+                                None,
                             );
                             if let Err(e) = res {
                                 tracing::warn!("后台文档入库失败 {}: {}", doc_name, e);

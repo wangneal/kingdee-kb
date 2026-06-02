@@ -3,14 +3,14 @@
 //! 防止 LLM 在同一执行步骤中重复调用相同工具（Ping-Pong 循环），
 //! 以及检测其他工具使用模式违规。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// 工具调用约束检查器
 pub struct ToolConstraintChecker {
     /// 每个步骤的工具调用历史
     call_history: HashMap<String, Vec<String>>,
-    /// Ping-Pong 检测：记录工具调用的归一化键
-    seen_keys: HashSet<String>,
+    /// Ping-Pong 检测：记录工具调用归一化键及其出现次数
+    seen_keys: HashMap<String, usize>,
     /// 最大连续相同调用次数
     max_identical_calls: usize,
 }
@@ -19,7 +19,7 @@ impl ToolConstraintChecker {
     pub fn new() -> Self {
         Self {
             call_history: HashMap::new(),
-            seen_keys: HashSet::new(),
+            seen_keys: HashMap::new(),
             max_identical_calls: 3,
         }
     }
@@ -50,7 +50,7 @@ impl ToolConstraintChecker {
         let key = Self::normalized_call_key(tool_name, args);
 
         // Ping-Pong 检测
-        let count = self.seen_keys.iter().filter(|k| **k == key).count();
+        let count = self.seen_keys.get(&key).copied().unwrap_or(0);
         if count >= self.max_identical_calls {
             return Some(ConstraintViolation::PingPongDetected {
                 tool: tool_name.to_string(),
@@ -64,7 +64,7 @@ impl ToolConstraintChecker {
             .entry(step_id.to_string())
             .or_default()
             .push(tool_name.to_string());
-        self.seen_keys.insert(key);
+        *self.seen_keys.entry(key).or_insert(0) += 1;
 
         None
     }

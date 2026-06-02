@@ -88,6 +88,8 @@ impl ResearchSessionStore {
     pub fn new(db_path: &Path) -> Result<Self, String> {
         let conn = Connection::open(db_path)
             .map_err(|e| format!("Failed to open research session DB: {}", e))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| format!("Failed to set busy timeout on research session store: {}", e))?;
         let store = Self {
             conn: Mutex::new(conn),
         };

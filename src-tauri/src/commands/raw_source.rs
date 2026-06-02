@@ -1,5 +1,6 @@
 use sha2::{Digest, Sha256};
 use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 use tauri::State;
 
 use crate::app_state::AppState;
@@ -17,6 +18,9 @@ pub async fn create_raw_source(
     source_path: String,
     mime_type: Option<String>,
 ) -> Result<RawSource, String> {
+    let identity_path = validate_source_identity(&identity)?;
+    let project_dir = validate_project_segment(&project)?;
+
     // 计算 SHA256
     let sha256 = compute_sha256(&source_path)?;
 
@@ -29,13 +33,13 @@ pub async fn create_raw_source(
     let storage_dir = state
         .data_dir
         .join("raw")
-        .join(&project)
+        .join(&project_dir)
         .join("sources");
     std::fs::create_dir_all(&storage_dir)
         .map_err(|e| format!("创建存储目录失败: {}", e))?;
 
     // 目标路径 = raw/{project}/sources/{identity}
-    let storage_path = storage_dir.join(&identity);
+    let storage_path = storage_dir.join(&identity_path);
     std::fs::copy(&source_path, &storage_path)
         .map_err(|e| format!("复制文件失败: {}", e))?;
 
@@ -83,6 +87,49 @@ pub async fn soft_delete_raw_source(
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
     store.soft_delete(id)
+}
+
+/// 校验项目目录名，避免 project 参数逃逸数据目录。
+fn validate_project_segment(project: &str) -> Result<String, String> {
+    if project.trim().is_empty() {
+        return Err("项目名称不能为空".to_string());
+    }
+    let path = Path::new(project);
+    if path.is_absolute() || project.contains("..") {
+        return Err(format!("项目名称包含非法路径片段: {}", project));
+    }
+    if path.components().count() != 1 {
+        return Err(format!("项目名称不能包含路径分隔符: {}", project));
+    }
+    Ok(project.to_string())
+}
+
+/// 校验 source identity，只允许相对路径中的普通片段。
+fn validate_source_identity(identity: &str) -> Result<PathBuf, String> {
+    if identity.trim().is_empty() {
+        return Err("identity 不能为空".to_string());
+    }
+
+    let path = Path::new(identity);
+    if path.is_absolute() {
+        return Err(format!("identity 不能是绝对路径: {}", identity));
+    }
+
+    let mut clean = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => clean.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!("identity 包含非法路径片段: {}", identity));
+            }
+        }
+    }
+
+    if clean.as_os_str().is_empty() {
+        return Err("identity 不能为空".to_string());
+    }
+    Ok(clean)
 }
 
 /// 计算文件的 SHA256 哈希值

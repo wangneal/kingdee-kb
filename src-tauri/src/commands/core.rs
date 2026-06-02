@@ -218,13 +218,13 @@ pub async fn export_report(content: String, file_path: String) -> Result<String,
     Ok(file_path)
 }
 
-/// 执行后端初始化任务（异步，不阻塞 UI 启动）
-pub async fn setup_backend(app: AppHandle) -> Result<(), String> {
+/// 初始化 AppState（同步，在 setup 中立刻调用）
+pub fn init_app_state(app: &AppHandle) -> Result<AppState, String> {
     let data_dir = ensure_data_dir()?;
     println!("Data directory initialized at: {:?}", data_dir);
 
     // 初始化技能管理器。外部 skill 包先拷贝到用户数据目录，后续导入也写入同一位置。
-    let skills_dir = seed_skills_dir(&app, &data_dir)?;
+    let skills_dir = seed_skills_dir(app, &data_dir)?;
     let skill_manager = SkillManager::new(skills_dir);
     println!(
         "Skill manager initialized with {} skills",
@@ -234,22 +234,32 @@ pub async fn setup_backend(app: AppHandle) -> Result<(), String> {
     // 初始化阶段 2 服务
     match AppState::new(&data_dir, skill_manager) {
         Ok(app_state) => {
-            // 启动时补偿 pending 删除
-            crate::compensate_pending_deletions(&app_state);
-            app.manage(app_state);
             println!("Phase 2 services initialized (embedding, vector index, metadata)");
+            Ok(app_state)
         }
         Err(e) => {
             eprintln!("WARNING: Phase 2 services failed to initialize: {}", e);
             eprintln!("The app will start in limited mode (no embedding/search/LLM).");
             let app_state = AppState::minimal(&data_dir);
-            crate::compensate_pending_deletions(&app_state);
-            app.manage(app_state);
+            Ok(app_state)
         }
+    }
+}
+
+/// 执行后端初始化异步任务（在 AppState 被托管后运行）
+pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
+    let app_state = app.state::<AppState>();
+    let data_dir = &app_state.data_dir;
+
+    // 启动时补偿 pending 删除
+    crate::compensate_pending_deletions(&app_state);
+
+    // 启动时恢复备份/摄入队列中的任务（如果有）
+    if let Err(e) = crate::commands::ingestion_queue::process_pending_queue(&app_state) {
+        tracing::warn!("恢复摄入队列失败: {}", e);
     }
 
     // 嵌入模型改为"首次使用时懒加载"，不占用启动时间。
-    // 当用户第一次执行搜索或入库时，模型会自动加载。
     println!("Embedding model will be loaded on first use (lazy load).");
 
     // 确保模板目录存在，如果为空则同步内置模板

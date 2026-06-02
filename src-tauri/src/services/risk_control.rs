@@ -137,6 +137,8 @@ impl RiskControlStore {
     pub fn new(db_path: &Path) -> Result<Self, String> {
         let conn = Connection::open(db_path)
             .map_err(|e| format!("Failed to open risk control DB: {}", e))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| format!("Failed to set busy timeout on risk control store: {}", e))?;
         let store = Self {
             conn: Mutex::new(conn),
             db_path: db_path.to_path_buf(),
@@ -731,6 +733,9 @@ impl RiskControlStore {
         let backup_conn = rusqlite::Connection::open(&db_path)
             .map_err(|e| format!("Failed to open DB for export: {}", e))?;
         backup_conn
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| format!("Failed to set busy timeout on export connection: {}", e))?;
+        backup_conn
             .execute_batch(&format!(
                 "VACUUM INTO '{}';",
                 target_path.replace('\'', "''")
@@ -782,8 +787,12 @@ impl RiskControlStore {
         // 5. 重新打开连接并初始化表结构
         {
             let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
-            *conn = rusqlite::Connection::open(db_path)
+            let reopened = rusqlite::Connection::open(db_path)
                 .map_err(|e| format!("Cannot reopen connection after import: {}", e))?;
+            reopened
+                .busy_timeout(std::time::Duration::from_secs(5))
+                .map_err(|e| format!("Cannot set busy timeout after import: {}", e))?;
+            *conn = reopened;
         } // MutexGuard 在此释放
         self.init_tables()?;
 

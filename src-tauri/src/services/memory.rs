@@ -127,6 +127,7 @@ pub async fn save_chat_memory(
         None,
         None,
         None,
+        None,
     );
 
     // 6. Cleanup stale memories (vector index + metadata)

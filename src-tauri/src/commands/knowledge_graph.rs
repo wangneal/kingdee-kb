@@ -1,4 +1,7 @@
 //! 知识图谱 Tauri 命令
+//!
+//! ⚠️ 实验性能力 — 阶段五独立计划，wiki_pages 数据充足后再纳入主流程。
+//! 当前不依赖也不影响主搜索链路，仅供探索性使用。
 
 use tauri::State;
 
@@ -7,6 +10,8 @@ use crate::services::knowledge_graph::{GraphNeighbor, GraphPath, GraphRecommenda
 
 /// 构建/重建项目知识图谱（4 信号：wikilink、tag 共现、source 共源、co_citation）。
 /// 返回插入的边数。
+///
+/// ⚠️ 实验性能力 — 不影响主流程，仅供探索性使用。
 #[tauri::command]
 pub async fn build_knowledge_graph(
     state: State<'_, AppState>,
@@ -20,6 +25,8 @@ pub async fn build_knowledge_graph(
 }
 
 /// 递归图遍历：从 seed 页面出发，沿边展开 N 层。
+///
+/// ⚠️ 实验性能力 — 不影响主流程，仅供探索性使用。
 #[tauri::command]
 pub async fn traverse_graph(
     state: State<'_, AppState>,
@@ -36,6 +43,8 @@ pub async fn traverse_graph(
 }
 
 /// 获取某页面的直接邻居（1 跳）。
+///
+/// ⚠️ 实验性能力 — 不影响主流程，仅供探索性使用。
 #[tauri::command]
 pub async fn get_graph_neighbors(
     state: State<'_, AppState>,
@@ -50,6 +59,8 @@ pub async fn get_graph_neighbors(
 }
 
 /// 获取项目知识图谱统计信息（边数、节点数、信号分布、平均度数）。
+///
+/// ⚠️ 实验性能力 — 不影响主流程，仅供探索性使用。
 #[tauri::command]
 pub async fn get_graph_stats(
     state: State<'_, AppState>,
@@ -64,6 +75,8 @@ pub async fn get_graph_stats(
 
 /// 图扩展检索：给定页面，推荐相关页面。
 /// 使用递归遍历获取多跳邻居，按组合权重排序，返回 top K。
+///
+/// ⚠️ 实验性能力 — 不影响主流程，仅供探索性使用。
 #[tauri::command]
 pub async fn graph_expand_search(
     state: State<'_, AppState>,

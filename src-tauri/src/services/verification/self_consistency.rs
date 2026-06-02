@@ -4,7 +4,6 @@
 //! 仅在文档生成等一次性重要产物场景启用。
 
 use super::types::{CheckResult, Checker, VerificationInput};
-use crate::services::llm_providers::LLMProviderConfig;
 use crate::services::llm_service::LLMService;
 use std::sync::Arc;
 

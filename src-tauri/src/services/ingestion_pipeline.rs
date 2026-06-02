@@ -156,14 +156,18 @@ pub async fn process_with_kb_compilation(
         }
     }
 
-    // Step 3: 更新 ingest_cache
-    update_ingest_cache(
-        &ingest_cache_store,
-        project,
-        source_identity,
-        sha256,
-        &generated_pages,
-    )?;
+    // Step 3: 仅在编译成功时更新 ingest_cache（失败时不写缓存，以便下次重试）
+    if compilation_done {
+        update_ingest_cache(
+            &ingest_cache_store,
+            project,
+            source_identity,
+            sha256,
+            &generated_pages,
+        )?;
+    } else {
+        tracing::info!("LLM 编译未完成，跳过 ingest_cache 更新，下次导入将重试");
+    }
 
     Ok(KbCompilationResult {
         analysis: analysis_result.analysis,
@@ -439,7 +443,8 @@ fn write_or_update_wiki_page(
         store.update(
             page.id,
             &UpdateWikiPage {
-                title: Some(title.to_string()),
+                // 设计要求：title/page_type/created_at 永不覆盖
+                title: None,
                 content: None,
                 content_candidate: Some(content.to_string()),
                 candidate_status: Some(candidate_status.to_string()),

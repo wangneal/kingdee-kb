@@ -2,7 +2,6 @@ use tauri::State;
 
 use crate::app_state::AppState;
 use crate::services::bm25_service::BM25SearchResult;
-use crate::services::embedding::EmbeddingService;
 use crate::services::hybrid_search::HybridSearchResult;
 use crate::services::llm_service::ChatMessage;
 use crate::services::memory;

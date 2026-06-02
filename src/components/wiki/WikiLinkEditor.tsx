@@ -5,7 +5,7 @@
  */
 
 import { ArrowLeft, Link2, Plus, X } from "lucide-react"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   addWikilink,
   getBacklinks,
@@ -29,6 +29,28 @@ interface WikiLinkEditorProps {
   onWikilinksChange?: (slugs: string[]) => void
 }
 
+function normalizeSlugs(slugs: string[]): string[] {
+  return Array.from(new Set(slugs.map((slug) => slug.trim()).filter(Boolean)))
+}
+
+function parseWikilinks(value?: string): string[] {
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? normalizeSlugs(parsed.filter((item) => typeof item === "string")) : []
+  } catch {
+    return []
+  }
+}
+
+function linksKey(slugs: string[]): string {
+  return normalizeSlugs(slugs).join("\u0001")
+}
+
+function requestKey(project: string, pageSlug: string, slugs: string[]): string {
+  return `${project}\u0001${pageSlug}\u0001${linksKey(slugs)}`
+}
+
 export default function WikiLinkEditor({
   project,
   pageId,
@@ -41,6 +63,8 @@ export default function WikiLinkEditor({
   const [targets, setTargets] = useState<WikiLinkTarget[]>([])
   const [backlinks, setBacklinks] = useState<WikiPageBrief[]>([])
   const [showSearch, setShowSearch] = useState(false)
+  const loadedRequestKeyRef = useRef("")
+  const localLinksKeyRef = useRef("")
 
   // ── 按 slug 索引目标信息 ──
   const targetMap = useMemo(() => {
@@ -55,20 +79,25 @@ export default function WikiLinkEditor({
   useEffect(() => {
     let cancelled = false
 
-    // 解析 JSON 数组
-    let parsed: string[] = []
-    if (initialWikilinks) {
-      try {
-        parsed = JSON.parse(initialWikilinks) as string[]
-      } catch {
-        parsed = []
+    const parsed = parseWikilinks(initialWikilinks)
+    const nextRequestKey = requestKey(project, pageSlug, parsed)
+    const nextLinksKey = linksKey(parsed)
+
+    if (loadedRequestKeyRef.current === nextRequestKey) {
+      if (localLinksKeyRef.current !== nextLinksKey) {
+        localLinksKeyRef.current = nextLinksKey
+        setLinkSlugs(parsed)
       }
+      return
     }
+
+    loadedRequestKeyRef.current = nextRequestKey
+    localLinksKeyRef.current = nextLinksKey
     setLinkSlugs(parsed)
 
     // 批量获取目标详情
     if (parsed.length > 0) {
-      getWikilinkTargets(parsed)
+      getWikilinkTargets(project, parsed)
         .then((t) => {
           if (!cancelled) setTargets(t)
         })
@@ -99,16 +128,14 @@ export default function WikiLinkEditor({
       try {
         const updated = await removeWikilink(pageId, slug)
         // 从返回的 WikiPage 解析最新 slugs
-        let newSlugs: string[] = []
-        try {
-          newSlugs = JSON.parse(updated.wikilinks) as string[]
-        } catch {
-          newSlugs = linkSlugs.filter((s) => s !== slug)
-        }
+        const parsed = parseWikilinks(updated.wikilinks)
+        const newSlugs = parsed.length > 0 ? parsed : normalizeSlugs(linkSlugs.filter((s) => s !== slug))
         setLinkSlugs(newSlugs)
+        localLinksKeyRef.current = linksKey(newSlugs)
+        loadedRequestKeyRef.current = requestKey(project, pageSlug, newSlugs)
         // 刷新目标详情
         if (newSlugs.length > 0) {
-          const t = await getWikilinkTargets(newSlugs)
+          const t = await getWikilinkTargets(project, newSlugs)
           setTargets(t)
         } else {
           setTargets([])
@@ -118,7 +145,7 @@ export default function WikiLinkEditor({
         // 静默处理错误
       }
     },
-    [pageId, linkSlugs, onWikilinksChange],
+    [pageId, project, pageSlug, linkSlugs, onWikilinksChange],
   )
 
   // ── 添加链接（WikiLinkSearch 回调） ──
@@ -127,16 +154,14 @@ export default function WikiLinkEditor({
       try {
         const updated = await addWikilink(pageId, slug)
         // 从返回的 WikiPage 解析最新 slugs
-        let newSlugs: string[] = []
-        try {
-          newSlugs = JSON.parse(updated.wikilinks) as string[]
-        } catch {
-          newSlugs = [...linkSlugs, slug]
-        }
+        const parsed = parseWikilinks(updated.wikilinks)
+        const newSlugs = parsed.length > 0 ? parsed : normalizeSlugs([...linkSlugs, slug])
         setLinkSlugs(newSlugs)
+        localLinksKeyRef.current = linksKey(newSlugs)
+        loadedRequestKeyRef.current = requestKey(project, pageSlug, newSlugs)
         // 刷新目标详情
         if (newSlugs.length > 0) {
-          const t = await getWikilinkTargets(newSlugs)
+          const t = await getWikilinkTargets(project, newSlugs)
           setTargets(t)
         } else {
           setTargets([])
@@ -147,7 +172,7 @@ export default function WikiLinkEditor({
         // 静默处理错误
       }
     },
-    [pageId, linkSlugs, onWikilinksChange],
+    [pageId, project, pageSlug, linkSlugs, onWikilinksChange],
   )
 
   // ── 页面类型中文标签 ──

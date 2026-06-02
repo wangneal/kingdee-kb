@@ -171,17 +171,18 @@ pub async fn remove_wikilink(
     store.remove_wikilink(page_id, &target_slug)
 }
 
-/// 获取 wikilink 目标页面详情（批量查询被引页面的标题/slug/type/status）。
+/// 获取 wikilink 目标页面详情（按项目过滤，批量查询被引页面的标题/slug/type/status）。
 #[tauri::command]
 pub async fn get_wikilink_targets(
     state: State<'_, AppState>,
+    project: String,
     slugs: Vec<String>,
 ) -> Result<Vec<WikiLinkTarget>, String> {
     let store = state
         .wiki_pages
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.get_wikilink_targets(&slugs)
+    store.get_wikilink_targets(&project, &slugs)
 }
 
 /// 获取反向链接（哪些页面引用了当前页面）。

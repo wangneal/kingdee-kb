@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use tauri::Manager;
 use tracing_subscriber::EnvFilter;
 
-pub use commands::core::{ensure_data_dir, setup_backend, SetupState};
+pub use commands::core::{ensure_data_dir, init_app_state, setup_backend_async, SetupState};
 pub use services::template_docx;
 pub use services::template_schema;
 pub use services::template_xlsx;
@@ -150,8 +150,18 @@ pub fn run() {
             }));
 
             let app_handle = app.handle().clone();
+            // 同步初始化 AppState 并托管，消除启动时的竞争条件
+            match init_app_state(&app_handle) {
+                Ok(app_state) => {
+                    app.manage(app_state);
+                }
+                Err(e) => {
+                    eprintln!("Fatal error during app state initialization: {}", e);
+                }
+            }
+
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = setup_backend(app_handle).await {
+                if let Err(e) = setup_backend_async(app_handle).await {
                     eprintln!("Backend setup error: {}", e);
                 }
             });

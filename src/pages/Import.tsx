@@ -17,6 +17,7 @@ import {
 } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
+  getKbCompilationEnabled,
   getWhisperStatus,
   type IngestionResult,
   ingestDirectory,
@@ -24,6 +25,7 @@ import {
   ingestText,
   listenVideoProgress,
   loadWhisperModel,
+  setKbCompilationEnabled,
   transcribeAndIngestVideo,
   type VideoPipelineResult,
   type VideoProgressEvent,
@@ -43,21 +45,30 @@ interface FileError {
   error: string
 }
 
+function formatImportSuccess(result: IngestionResult): string {
+  const engineSuffix =
+    result.kb_analysis_engine === "rust" ? "，快速分析模式（非 LLM）" : ""
+  const suffix = result.kb_compilation_error
+    ? `，知识编译失败：${result.kb_compilation_error}`
+    : ""
+  return `导入成功：${result.title}，共 ${result.chunk_count} 个片段${engineSuffix}${suffix}`
+}
+
 export default function Import() {
-  // Text import state
+  // 文本导入状态
   const [textTitle, setTextTitle] = useState("")
   const [textContent, setTextContent] = useState("")
   const [textProject, setTextProject] = useState("default")
   const [textCustomProject, setTextCustomProject] = useState("")
   const [textFeedback, setTextFeedback] = useState<ImportFeedback | null>(null)
 
-  // File/folder import state
+  // 文件和文件夹导入状态
   const [fileFeedback, setFileFeedback] = useState<ImportFeedback | null>(null)
   const [fileProject, setFileProject] = useState("default")
   const [fileCustomProject, setFileCustomProject] = useState("")
   const [isDragging, setIsDragging] = useState(false)
 
-  // Video transcription state
+  // 视频转写状态
   const [videoFeedback, setVideoFeedback] = useState<ImportFeedback | null>(null)
   const [videoProject, setVideoProject] = useState("default")
   const [videoCustomProject, setVideoCustomProject] = useState("")
@@ -67,10 +78,12 @@ export default function Import() {
   const [whisperLoading, setWhisperLoading] = useState(false)
   const [whisperError, setWhisperError] = useState<string | null>(null)
   const [videoProgress, setVideoProgress] = useState<VideoProgressEvent | null>(null)
-  const [copyOk, setCopyOk] = useState<string | null>(null) // "transcript" | "minutes"
+  const [copyOk, setCopyOk] = useState<string | null>(null) // 转写稿或会议纪要
   const progressRef = useRef<VideoProgressEvent | null>(null)
+  const [kbCompilationEnabled, setKbCompilationEnabledState] = useState(false)
+  const [kbCompilationSaving, setKbCompilationSaving] = useState(false)
 
-  // Check Whisper model status on mount
+  // 初始化 Whisper 和知识编译状态
   useEffect(() => {
     getWhisperStatus()
       .then((status) => {
@@ -81,9 +94,13 @@ export default function Import() {
         setWhisperReady(false)
         setWhisperError(String(err))
       })
+
+    getKbCompilationEnabled()
+      .then(setKbCompilationEnabledState)
+      .catch(() => setKbCompilationEnabledState(false))
   }, [])
 
-  // Listen for video progress events
+  // 监听视频处理进度
   useEffect(() => {
     let unlisten: (() => void) | null = null
     listenVideoProgress((event) => {
@@ -97,7 +114,7 @@ export default function Import() {
     }
   }, [])
 
-  // Load Whisper model
+  // 加载 Whisper 模型
   const handleLoadWhisper = useCallback(async () => {
     setWhisperLoading(true)
     setWhisperError(null)
@@ -113,7 +130,19 @@ export default function Import() {
     }
   }, [])
 
-  // Project options
+  const handleKbCompilationToggle = useCallback(async (enabled: boolean) => {
+    setKbCompilationEnabledState(enabled)
+    setKbCompilationSaving(true)
+    try {
+      await setKbCompilationEnabled(enabled)
+    } catch {
+      setKbCompilationEnabledState(!enabled)
+    } finally {
+      setKbCompilationSaving(false)
+    }
+  }, [])
+
+  // 项目选项
   const projectOptions = [
     { value: "default", label: "默认" },
     { value: "enterprise", label: "企业版" },
@@ -126,16 +155,16 @@ export default function Import() {
     return project
   }
 
-  // Handle text import
+  // 文本导入
   const handleTextImport = useCallback(async () => {
     if (!textContent.trim() || !textTitle.trim()) return
     setTextFeedback({ status: "loading", message: "正在导入文本…" })
     try {
       const project = getProjectName(textProject, textCustomProject)
-      const result = await ingestText(textContent, textTitle, project)
+      const result = await ingestText(textContent, textTitle, project, kbCompilationEnabled)
       setTextFeedback({
         status: "success",
-        message: `导入成功：${result.title}，共 ${result.chunk_count} 个片段`,
+        message: formatImportSuccess(result),
         results: [result],
       })
       setTextContent("")
@@ -146,9 +175,9 @@ export default function Import() {
         message: `导入失败：${e}`,
       })
     }
-  }, [textContent, textTitle, textProject, textCustomProject])
+  }, [textContent, textTitle, textProject, textCustomProject, kbCompilationEnabled])
 
-  // Handle file import via dialog
+  // 通过对话框导入文件
   const handleFileImport = useCallback(async () => {
     setFileFeedback({ status: "loading", message: "正在选择文件…" })
     try {
@@ -175,7 +204,7 @@ export default function Import() {
       const errors: string[] = []
       for (const path of paths) {
         try {
-          const result = await ingestFile(path, project)
+          const result = await ingestFile(path, project, kbCompilationEnabled)
           results.push(result)
         } catch (err) {
           const filename = path.split(/[\\/]/).pop() || path
@@ -206,9 +235,9 @@ export default function Import() {
         message: `导入失败：${e}`,
       })
     }
-  }, [fileProject, fileCustomProject])
+  }, [fileProject, fileCustomProject, kbCompilationEnabled])
 
-  // Handle folder import via dialog
+  // 通过对话框导入文件夹
   const handleFolderImport = useCallback(async () => {
     setFileFeedback({ status: "loading", message: "正在选择文件夹…" })
     try {
@@ -224,7 +253,7 @@ export default function Import() {
         message: `正在导入文件夹：${selected}…`,
       })
       const project = getProjectName(fileProject, fileCustomProject)
-      const result = await ingestDirectory(selected, project)
+      const result = await ingestDirectory(selected, project, kbCompilationEnabled)
       const { imported, errors } = result
       if (imported.length > 0) {
         setFileFeedback({
@@ -254,39 +283,7 @@ export default function Import() {
         message: `导入失败：${e}`,
       })
     }
-  }, [fileProject, fileCustomProject])
-
-  // Handle drag and drop - Tauri native implementation
-  useEffect(() => {
-    let unlisten: (() => void) | null = null
-
-    const setupDragDrop = async () => {
-      try {
-        const webview = getCurrentWebview()
-        unlisten = await webview.onDragDropEvent((event) => {
-          if (event.payload.type === "over") {
-            setIsDragging(true)
-          } else if (event.payload.type === "drop") {
-            setIsDragging(false)
-            const paths = event.payload.paths
-            if (paths && paths.length > 0) {
-              handleFilesDrop(paths)
-            }
-          } else if (event.payload.type === "leave") {
-            setIsDragging(false)
-          }
-        })
-      } catch (e) {
-        console.error("Failed to setup drag-drop:", e)
-      }
-    }
-
-    setupDragDrop()
-
-    return () => {
-      if (unlisten) unlisten()
-    }
-  }, [fileProject])
+  }, [fileProject, fileCustomProject, kbCompilationEnabled])
 
   const handleFilesDrop = useCallback(
     async (paths: string[]) => {
@@ -300,7 +297,7 @@ export default function Import() {
       const errors: string[] = []
       for (const path of paths) {
         try {
-          const result = await ingestFile(path, project)
+          const result = await ingestFile(path, project, kbCompilationEnabled)
           results.push(result)
         } catch (err) {
           const filename = path.split(/[\\/]/).pop() || path
@@ -324,8 +321,40 @@ export default function Import() {
         })
       }
     },
-    [fileProject, fileCustomProject],
+    [fileProject, fileCustomProject, kbCompilationEnabled],
   )
+
+  // Tauri 原生拖拽导入
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+
+    const setupDragDrop = async () => {
+      try {
+        const webview = getCurrentWebview()
+        unlisten = await webview.onDragDropEvent((event) => {
+          if (event.payload.type === "over") {
+            setIsDragging(true)
+          } else if (event.payload.type === "drop") {
+            setIsDragging(false)
+            const paths = event.payload.paths
+            if (paths && paths.length > 0) {
+              handleFilesDrop(paths)
+            }
+          } else if (event.payload.type === "leave") {
+            setIsDragging(false)
+          }
+        })
+      } catch (e) {
+        console.error("设置拖拽导入失败:", e)
+      }
+    }
+
+    setupDragDrop()
+
+    return () => {
+      if (unlisten) unlisten()
+    }
+  }, [handleFilesDrop])
 
   const clearFeedback = (type: "text" | "file" | "video") => {
     if (type === "text") setTextFeedback(null)
@@ -333,7 +362,7 @@ export default function Import() {
     else setVideoFeedback(null)
   }
 
-  // Handle video transcription
+  // 视频转写导入
   const handleVideoImport = useCallback(async () => {
     const filePath = await open({
       multiple: false,
@@ -370,18 +399,18 @@ export default function Import() {
     }
   }, [videoProject, videoCustomProject, videoGeneratingMinutes])
 
-  // Copy text to clipboard
+  // 复制文本
   const copyToClipboard = useCallback(async (text: string, label: string) => {
     try {
       await navigator.clipboard.writeText(text)
       setCopyOk(label)
       setTimeout(() => setCopyOk(null), 2000)
     } catch {
-      /* clipboard not available */
+      /* 剪贴板不可用 */
     }
   }, [])
 
-  // Export text to file
+  // 导出文本
   const exportToFile = useCallback(async (text: string, filename: string) => {
     const dest = await save({
       defaultPath: filename,
@@ -399,7 +428,25 @@ export default function Import() {
     <div className="p-6">
       <h1 className="text-lg font-semibold text-neutral-800 mb-6">导入知识</h1>
 
-      {/* Text Import Section */}
+      <section className="mb-6 rounded-lg border border-neutral-200 bg-white px-5 py-4">
+        <label className="flex items-center justify-between gap-4">
+          <span>
+            <span className="block text-sm font-medium text-neutral-700">知识编译</span>
+            <span className="mt-1 block text-xs text-neutral-500">
+              开启后导入会调用 LLM 生成 Wiki 候选页面，失败不会影响普通入库。
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={kbCompilationEnabled}
+            disabled={kbCompilationSaving}
+            onChange={(e) => handleKbCompilationToggle(e.target.checked)}
+            className="h-4 w-4 rounded border-neutral-300 text-[#1A6BD8] focus:ring-[#1A6BD8]"
+          />
+        </label>
+      </section>
+
+      {/* 文本导入区 */}
       <section className="mb-8 rounded-lg border border-neutral-200 bg-white p-5">
         <h2 className="flex items-center gap-2 text-sm font-medium text-neutral-700 mb-4">
           <ClipboardPaste className="h-4 w-4 text-[#1A6BD8]" />
@@ -471,7 +518,7 @@ export default function Import() {
           </div>
         </div>
 
-        {/* Text import feedback */}
+        {/* 文本导入反馈 */}
         {textFeedback && (
           <div
             className={`mt-3 rounded-md p-3 text-sm ${
@@ -496,14 +543,14 @@ export default function Import() {
         )}
       </section>
 
-      {/* File/Folder Import Section */}
+      {/* 文件和文件夹导入区 */}
       <section className="rounded-lg border border-neutral-200 bg-white p-5">
         <h2 className="flex items-center gap-2 text-sm font-medium text-neutral-700 mb-4">
           <FileText className="h-4 w-4 text-[#1A6BD8]" />
           文件导入
         </h2>
 
-        {/* Drag and drop zone */}
+        {/* 拖拽区域 */}
         <div
           className={`mb-4 w-full rounded-lg border-2 border-dashed p-8 text-center transition-colors ${
             isDragging
@@ -520,7 +567,7 @@ export default function Import() {
           </p>
         </div>
 
-        {/* File picker buttons */}
+        {/* 文件选择按钮 */}
         <div className="flex items-center gap-3 mb-3">
           <select
             value={fileProject}
@@ -573,7 +620,7 @@ export default function Import() {
           )}
         </div>
 
-        {/* File import feedback */}
+        {/* 文件导入反馈 */}
         {fileFeedback && (
           <div
             className={`mt-4 rounded-md p-3 text-sm ${
@@ -603,6 +650,8 @@ export default function Import() {
                     {r.is_duplicate
                       ? ` — 已存在（${r.chunk_count} 个片段）`
                       : ` — ${r.chunk_count} 个片段`}
+                    {r.kb_analysis_engine === "rust" ? "，快速分析模式（非 LLM）" : ""}
+                    {r.kb_compilation_error ? `，知识编译失败：${r.kb_compilation_error}` : ""}
                   </li>
                 ))}
               </ul>
@@ -626,7 +675,7 @@ export default function Import() {
         )}
       </section>
 
-      {/* Video/Audio Transcription Section */}
+      {/* 视频和音频转写区 */}
       <section className="mt-8 rounded-lg border border-purple-200 bg-white p-5">
         <h2 className="flex items-center gap-2 text-sm font-medium text-neutral-700 mb-4">
           <Video className="h-4 w-4 text-purple-600" />
@@ -669,7 +718,7 @@ export default function Import() {
           )}
         </div>
 
-        {/* Project selector */}
+        {/* 项目选择器 */}
         <div className="flex items-center gap-2 mb-3">
           <select
             value={videoProject}
@@ -693,7 +742,7 @@ export default function Import() {
           )}
         </div>
 
-        {/* Generate minutes toggle */}
+        {/* 生成会议纪要开关 */}
         <label className="flex items-center gap-2 mb-3 text-sm text-neutral-700">
           <input
             type="checkbox"
@@ -704,7 +753,7 @@ export default function Import() {
           自动生成会议纪要
         </label>
 
-        {/* Import button */}
+        {/* 导入按钮 */}
         <button
           type="button"
           onClick={handleVideoImport}
@@ -719,7 +768,7 @@ export default function Import() {
           选择视频/音频文件
         </button>
 
-        {/* Feedback + Progress */}
+        {/* 反馈和进度 */}
         {videoFeedback && (
           <div
             className={`mt-4 rounded-md p-3 text-sm ${
@@ -751,7 +800,7 @@ export default function Import() {
                 </button>
               )}
             </div>
-            {/* Progress bar */}
+            {/* 进度条 */}
             {videoFeedback.status === "loading" && videoProgress && (
               <div className="mt-2">
                 <div className="h-1.5 rounded-full bg-purple-200 overflow-hidden">
@@ -765,7 +814,7 @@ export default function Import() {
           </div>
         )}
 
-        {/* Transcription result — editable + copy/export */}
+        {/* 转写结果：可编辑、复制、导出 */}
         {videoResult && videoResult.transcription.text && (
           <div className="mt-4">
             <div className="flex items-center justify-between mb-1">
@@ -808,7 +857,7 @@ export default function Import() {
           </div>
         )}
 
-        {/* Meeting minutes — editable + copy/export */}
+        {/* 会议纪要：可编辑、复制、导出 */}
         {videoResult?.meeting_minutes && (
           <div className="mt-3">
             <div className="flex items-center justify-between mb-1">

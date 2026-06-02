@@ -301,19 +301,19 @@ mod tests {
     fn test_tool_deps(
         root: &std::path::Path,
     ) -> (
-        Arc<std::sync::Mutex<EmbeddingService>>,
-        Arc<std::sync::Mutex<VectorIndex>>,
-        Arc<std::sync::Mutex<BM25Service>>,
+        Arc<std::sync::RwLock<EmbeddingService>>,
+        Arc<std::sync::RwLock<VectorIndex>>,
+        Arc<std::sync::RwLock<BM25Service>>,
         Arc<std::sync::Mutex<MetadataStore>>,
         Arc<std::sync::Mutex<ProductStore>>,
         Arc<tokio::sync::Mutex<RiskControlStore>>,
     ) {
         (
-            Arc::new(std::sync::Mutex::new(EmbeddingService::empty())),
-            Arc::new(std::sync::Mutex::new(
+            Arc::new(std::sync::RwLock::new(EmbeddingService::empty())),
+            Arc::new(std::sync::RwLock::new(
                 VectorIndex::new(root.join("vector")).expect("vector index"),
             )),
-            Arc::new(std::sync::Mutex::new(
+            Arc::new(std::sync::RwLock::new(
                 BM25Service::new(root.join("bm25")).expect("bm25 index"),
             )),
             Arc::new(std::sync::Mutex::new(
@@ -377,7 +377,7 @@ mod tests {
             let tmp = tempfile::tempdir().expect("tempdir");
             let (embedding, vector_index, bm25, metadata, products, risk_store) =
                 test_tool_deps(tmp.path());
-            let providers = Arc::new(std::sync::Mutex::new(LLMProviderManager::new(
+            let providers = Arc::new(std::sync::RwLock::new(LLMProviderManager::new(
                 &tmp.path().to_path_buf(),
             )));
             let llm = LLMService::new(providers);
@@ -400,6 +400,7 @@ mod tests {
                     skill_manager,
                     None,
                     Vec::new(),
+                    None,
                 ))
                 .max_tokens(32)
                 .temperature(0.0)

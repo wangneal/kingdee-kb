@@ -53,8 +53,6 @@ pub async fn decompose_query(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_short_query_not_decomposed() {
         let result = decompose_short_query();

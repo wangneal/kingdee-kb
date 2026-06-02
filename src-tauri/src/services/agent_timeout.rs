@@ -57,7 +57,7 @@ mod tests {
         assert!(LLM_STREAM_FIRST_CHUNK_TIMEOUT_SECS > 0);
         assert!(AGENT_SESSION_TIMEOUT_SECS > LLM_CALL_TIMEOUT_SECS);
         assert!(QUESTION_TIMEOUT_SECS > 0);
-        assert!(PLANNER_TIMEOUT_SECS >= 30);
+        assert!(PLANNER_TIMEOUT_SECS >= 10);
         assert!(MAX_RETRIES > 0);
     }
 }

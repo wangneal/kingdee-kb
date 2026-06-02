@@ -46,6 +46,12 @@ pub struct IndexStats {
     pub index_path: String,
 }
 
+/// 向量索引碎片整理计划。
+pub struct VectorCompactionPlan {
+    new_index: Index,
+    surviving_count: usize,
+}
+
 /// HNSW 向量索引管理器
 pub struct VectorIndex {
     index: Index,
@@ -323,7 +329,7 @@ impl VectorIndex {
             expansion_search: DEFAULT_EXPANSION_SEARCH,
             multi: true, // 保持与当前配置一致
         };
-        let mut new_index = new_index(&options)
+        let new_index = new_index(&options)
             .map_err(|e| format!("创建新索引失败: {}", e))?;
         new_index.reserve(surviving.len())
             .map_err(|e| format!("预留容量失败: {}", e))?;
@@ -335,6 +341,60 @@ impl VectorIndex {
         let old = std::mem::replace(&mut self.index, new_index);
         drop(old); // 释放旧索引
         self.deleted_count.store(0, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(mut last) = self.last_compact.lock() {
+            *last = std::time::Instant::now();
+        }
+        Ok(())
+    }
+
+    /// 在共享读锁下准备碎片整理计划，避免长时间占用外层写锁。
+    pub fn prepare_compaction(&self) -> Result<Option<VectorCompactionPlan>, String> {
+        let n = self.len() as u64;
+        if n == 0 || self.deleted_count.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            return Ok(None);
+        }
+
+        let max_k = self.max_key.load(std::sync::atomic::Ordering::Relaxed);
+        let mut surviving: Vec<(u64, Vec<f32>)> = Vec::with_capacity(n as usize);
+        for key in 1..=max_k {
+            let mut vec = vec![0.0f32; self.dimensions];
+            if self.index.get(key, &mut vec).is_ok() {
+                surviving.push((key, vec));
+            }
+        }
+
+        let options = IndexOptions {
+            dimensions: self.dimensions,
+            metric: MetricKind::Cos,
+            quantization: ScalarKind::BF16,
+            connectivity: DEFAULT_CONNECTIVITY,
+            expansion_add: DEFAULT_EXPANSION_ADD,
+            expansion_search: DEFAULT_EXPANSION_SEARCH,
+            multi: true,
+        };
+        let new_index = new_index(&options)
+            .map_err(|e| format!("创建新索引失败: {}", e))?;
+        new_index
+            .reserve(surviving.len())
+            .map_err(|e| format!("预留容量失败: {}", e))?;
+        for (key, vec) in &surviving {
+            new_index
+                .add(*key, vec)
+                .map_err(|e| format!("添加向量失败: {}", e))?;
+        }
+
+        Ok(Some(VectorCompactionPlan {
+            new_index,
+            surviving_count: surviving.len(),
+        }))
+    }
+
+    /// 应用已准备好的碎片整理计划，只在替换阶段占用外层写锁。
+    pub fn apply_compaction(&mut self, plan: VectorCompactionPlan) -> Result<(), String> {
+        let old = std::mem::replace(&mut self.index, plan.new_index);
+        drop(old);
+        self.deleted_count.store(0, std::sync::atomic::Ordering::SeqCst);
+        self.reserved = plan.surviving_count > 0;
         if let Ok(mut last) = self.last_compact.lock() {
             *last = std::time::Instant::now();
         }

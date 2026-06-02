@@ -23,16 +23,19 @@ static RE_HEADINGS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^(#{1,6})\s+(.+)$").expect("编译正则失败: RE_HEADINGS"));
 
 /// 匹配中文书名号内容《xxx》
+#[cfg(test)]
 static RE_BOOK_TITLE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"《([^》]+)》").expect("编译正则失败: RE_BOOK_TITLE"));
 
 /// 匹配中文组织/产品名模式（XX公司、XX系统等）
+#[cfg(test)]
 static RE_ORG_NAME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[\u4e00-\u9fff]{2,}(公司|集团|系统|模块|平台|软件|产品|方案|服务)")
         .expect("编译正则失败: RE_ORG_NAME")
 });
 
 /// 匹配大写英文缩写（ERP、CRM、SQL等）
+#[cfg(test)]
 static RE_ABBREVIATION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:^|[^A-Za-z])([A-Z]{2,10})(?:$|[^A-Za-z])")
         .expect("编译正则失败: RE_ABBREVIATION")
@@ -389,6 +392,7 @@ impl RustAnalysisEngine {
     }
 
     /// 简单命名实体提取（正则匹配常见模式）
+    #[cfg(test)]
     fn extract_entities_simple(text: &str) -> Vec<String> {
         let mut entities: Vec<String> = Vec::new();
         let mut seen = std::collections::HashSet::new();

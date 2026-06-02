@@ -32,6 +32,8 @@ export interface IngestionResult {
   is_duplicate: boolean
   chunk_count: number
   vector_count: number
+  kb_compilation_error?: string | null
+  kb_analysis_engine?: string | null
 }
 
 export interface ExtractedFileText {
@@ -148,12 +150,26 @@ export async function ingestText(
   text: string,
   title: string,
   project: string,
+  enableKbCompilation?: boolean,
 ): Promise<IngestionResult> {
-  return invoke("ingest_text", { text, title, project })
+  return invoke("ingest_text", {
+    text,
+    title,
+    project,
+    enableKbCompilation: enableKbCompilation ?? null,
+  })
 }
 
-export async function ingestFile(filePath: string, project: string): Promise<IngestionResult> {
-  return invoke("ingest_file", { filePath, project })
+export async function ingestFile(
+  filePath: string,
+  project: string,
+  enableKbCompilation?: boolean,
+): Promise<IngestionResult> {
+  return invoke("ingest_file", {
+    filePath,
+    project,
+    enableKbCompilation: enableKbCompilation ?? null,
+  })
 }
 
 export async function extractFileText(filePath: string): Promise<ExtractedFileText> {
@@ -163,8 +179,21 @@ export async function extractFileText(filePath: string): Promise<ExtractedFileTe
 export async function ingestDirectory(
   dirPath: string,
   project: string,
+  enableKbCompilation?: boolean,
 ): Promise<DirectoryIngestionResult> {
-  return invoke("ingest_directory", { dirPath, project })
+  return invoke("ingest_directory", {
+    dirPath,
+    project,
+    enableKbCompilation: enableKbCompilation ?? null,
+  })
+}
+
+export async function getKbCompilationEnabled(): Promise<boolean> {
+  return invoke("get_kb_compilation_enabled")
+}
+
+export async function setKbCompilationEnabled(enabled: boolean): Promise<void> {
+  return invoke("set_kb_compilation_enabled", { enabled })
 }
 
 export async function listDocuments(project?: string): Promise<DocumentMeta[]> {

@@ -11,6 +11,7 @@ pub struct EditionConfig {
 
 impl EditionConfig {
     pub fn new(conn: Connection) -> Self {
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
         Self {
             conn: Mutex::new(conn),
         }

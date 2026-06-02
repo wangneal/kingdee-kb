@@ -17,7 +17,7 @@ pub struct OutlineNode {
     pub session_id: i64,
     pub parent_id: Option<i64>,
     pub content: String,
-    /// 排序权重（Fractional Indexing）
+    /// 排序权重（分数索引）
     pub sort_order: f64,
     /// 关联的问答记录 ID
     pub question_id: Option<i64>,
@@ -56,6 +56,8 @@ impl OutlineStore {
     pub fn new(db_path: &Path) -> Result<Self, String> {
         let conn =
             Connection::open(db_path).map_err(|e| format!("打开大纲数据库失败: {}", e))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| format!("设置大纲数据库忙超时失败: {}", e))?;
         let store = Self {
             conn: Mutex::new(conn),
         };
@@ -204,7 +206,15 @@ impl OutlineStore {
                 |row| row.get(0),
             ) {
                 Ok(id) => id,
-                Err(_) => continue, // 无根节点，跳过
+                Err(e) => {
+                    tracing::warn!(
+                        "迁移问答到大纲时未找到会话根节点，已跳过记录: session_id={}, qa_id={}, error={}",
+                        session_id,
+                        qa_id,
+                        e
+                    );
+                    continue;
+                }
             };
 
             let content = if answer.is_empty() {
@@ -242,7 +252,7 @@ impl OutlineStore {
         let conn = self.conn.lock().map_err(|e| format!("加锁失败: {}", e))?;
 
         // 计算 sort_order
-        // Fractional Indexing: 首个节点 1.0，追加 MAX + 1.0
+        // 分数索引：首个节点 1.0，追加 MAX + 1.0
         // 先计数判断是否有子节点，避免 COALESCE(MAX, 0.0) 在 MAX=0.0 时的歧义
         let parent_condition = match parent_id {
             None => "parent_id IS NULL".to_string(),
@@ -553,7 +563,7 @@ impl OutlineStore {
         Ok(ids)
     }
 
-    /// 检查 candidate 是否是 ancestor 的后代。
+    /// 检查候选节点是否是祖先节点的后代。
     fn is_descendant(
         &self,
         conn: &Connection,

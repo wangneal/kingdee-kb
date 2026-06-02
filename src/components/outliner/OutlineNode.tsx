@@ -23,8 +23,24 @@ interface OutlineNodeProps {
   depth: number
 }
 
+function sortSiblings<T extends { id: number; sort_order: number }>(nodes: T[]): T[] {
+  return [...nodes].sort((a, b) => {
+    if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order
+    return a.id - b.id
+  })
+}
+
+function sortAfter(
+  previous: { sort_order: number },
+  next?: { sort_order: number },
+): number {
+  if (!next) return previous.sort_order + 1
+  return (previous.sort_order + next.sort_order) / 2
+}
+
 export default function OutlineNode({ node, depth }: OutlineNodeProps) {
   const {
+    nodes,
     tree,
     selectedNodeId,
     expandedNodeIds,
@@ -180,23 +196,32 @@ export default function OutlineNode({ node, depth }: OutlineNodeProps) {
         if (e.shiftKey) {
           // Shift+Tab: 提升层级（成为父节点的兄弟）
           if (node.parent_id !== null) {
-            const parentNode = tree.find((n) => n.id === node.parent_id)
+            const parentNode = nodes.find((n) => n.id === node.parent_id)
             if (parentNode) {
-              await moveNode(node.id, parentNode.parent_id, parentNode.sort_order + 1)
+              const targetSiblings = sortSiblings(
+                nodes.filter((n) => n.parent_id === parentNode.parent_id && n.id !== node.id),
+              )
+              const parentIndex = targetSiblings.findIndex((n) => n.id === parentNode.id)
+              const nextSibling = parentIndex >= 0 ? targetSiblings[parentIndex + 1] : undefined
+              await moveNode(node.id, parentNode.parent_id, sortAfter(parentNode, nextSibling))
             }
           }
         } else {
           // Tab: 缩进（成为上一个兄弟的子节点）
-          const siblings = tree.filter((n) => n.parent_id === node.parent_id)
+          const siblings = sortSiblings(nodes.filter((n) => n.parent_id === node.parent_id))
           const idx = siblings.findIndex((n) => n.id === node.id)
           if (idx > 0) {
             const prevSibling = siblings[idx - 1]
-            await moveNode(node.id, prevSibling.id, prevSibling.children.length)
+              const targetChildren = sortSiblings(
+              nodes.filter((n) => n.parent_id === prevSibling.id && n.id !== node.id),
+            )
+            const lastChild = targetChildren[targetChildren.length - 1]
+            await moveNode(node.id, prevSibling.id, lastChild ? lastChild.sort_order + 1 : 1)
           }
         }
       }
     },
-    [saveEdit, cancelEdit, createNode, node, selectNode, moveNode, tree],
+    [saveEdit, cancelEdit, createNode, node, selectNode, moveNode, nodes],
   )
 
   // ── 导航模式键盘处理 ──
@@ -249,18 +274,27 @@ export default function OutlineNode({ node, depth }: OutlineNodeProps) {
           if (e.shiftKey) {
             // Shift+Tab: 提升层级
             if (node.parent_id !== null) {
-              const parentNode = tree.find((n) => n.id === node.parent_id)
+              const parentNode = nodes.find((n) => n.id === node.parent_id)
               if (parentNode) {
-                moveNode(node.id, parentNode.parent_id, parentNode.sort_order + 1)
+                const targetSiblings = sortSiblings(
+                  nodes.filter((n) => n.parent_id === parentNode.parent_id && n.id !== node.id),
+                )
+                const parentIndex = targetSiblings.findIndex((n) => n.id === parentNode.id)
+                const nextSibling = parentIndex >= 0 ? targetSiblings[parentIndex + 1] : undefined
+                moveNode(node.id, parentNode.parent_id, sortAfter(parentNode, nextSibling))
               }
             }
           } else {
             // Tab: 缩进
-            const siblings = tree.filter((n) => n.parent_id === node.parent_id)
+            const siblings = sortSiblings(nodes.filter((n) => n.parent_id === node.parent_id))
             const idx = siblings.findIndex((n) => n.id === node.id)
             if (idx > 0) {
               const prevSibling = siblings[idx - 1]
-              moveNode(node.id, prevSibling.id, prevSibling.children.length)
+              const targetChildren = sortSiblings(
+                nodes.filter((n) => n.parent_id === prevSibling.id && n.id !== node.id),
+              )
+              const lastChild = targetChildren[targetChildren.length - 1]
+              moveNode(node.id, prevSibling.id, lastChild ? lastChild.sort_order + 1 : 1)
             }
           }
           break
@@ -290,7 +324,7 @@ export default function OutlineNode({ node, depth }: OutlineNodeProps) {
       createNode,
       moveNode,
       deleteNode,
-      tree,
+      nodes,
     ],
   )
 

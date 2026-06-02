@@ -80,10 +80,13 @@ export async function removeWikilink(pageId: number, targetSlug: string): Promis
 }
 
 /**
- * 获取 wikilink 目标页面详情（批量查询被引页面的标题/slug/type/status）
+ * 获取 wikilink 目标页面详情（按项目过滤，批量查询被引页面的标题/slug/type/status）
  */
-export async function getWikilinkTargets(slugs: string[]): Promise<WikiLinkTarget[]> {
-  return invoke("get_wikilink_targets", { slugs })
+export async function getWikilinkTargets(
+  project: string,
+  slugs: string[],
+): Promise<WikiLinkTarget[]> {
+  return invoke("get_wikilink_targets", { project, slugs })
 }
 
 /**

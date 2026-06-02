@@ -17,6 +17,8 @@ impl ResearchIndexer {
     pub fn new(db_path: &Path) -> Result<Self, String> {
         let conn =
             Connection::open(db_path).map_err(|e| format!("Failed to open database: {}", e))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| format!("Failed to set busy timeout on research indexer: {}", e))?;
         Ok(Self {
             conn: Mutex::new(conn),
         })

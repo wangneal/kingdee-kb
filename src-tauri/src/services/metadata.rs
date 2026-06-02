@@ -58,6 +58,10 @@ impl MetadataStore {
         let db =
             Connection::open(&db_path).map_err(|e| format!("Failed to open database: {}", e))?;
 
+        // 设置数据库忙超时（5秒），以防并发写入时立即返回 SQLITE_BUSY 错误
+        db.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| format!("设置数据库忙超时失败: {}", e))?;
+
         // Enable WAL mode for better concurrent read performance
         db.execute_batch("PRAGMA journal_mode=WAL;")
             .map_err(|e| format!("Failed to set WAL mode: {}", e))?;
@@ -455,12 +459,12 @@ impl MetadataStore {
         Ok(())
     }
 
-    /// 获取所有 pending 状态的删除记录
+    /// 获取所有待补偿的删除记录（pending 和 failed 状态均重试）
     pub fn get_pending_deletions(&self) -> Result<Vec<(i64, i64, Option<String>, String)>, String> {
         let mut stmt = self
             .db
             .prepare(
-                "SELECT id, document_id, project, vector_keys FROM deletion_outbox WHERE status = 'pending'",
+                "SELECT id, document_id, project, vector_keys FROM deletion_outbox WHERE status IN ('pending', 'failed')",
             )
             .map_err(|e| format!("查询 pending 删除记录失败: {}", e))?;
         let rows = stmt

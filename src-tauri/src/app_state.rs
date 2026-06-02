@@ -378,16 +378,6 @@ impl AppState {
         let llm_providers = Arc::new(RwLock::new(LLMProviderManager::new(&data_dir.to_path_buf())));
         let llm = LLMService::with_desensitizer(llm_providers.clone(), desensitizer.clone());
 
-        let raw_sources = {
-            let conn = Connection::open(&db_path)
-                .expect("Fatal: cannot open DB for RawSourceStore");
-            let store = RawSourceStore::new(conn);
-            store
-                .ensure_table()
-                .expect("Fatal: cannot init raw_sources table");
-            Arc::new(Mutex::new(store))
-        };
-
         let ingest_queue = Mutex::new(IngestionQueue::new(data_dir));
 
         Self {
@@ -399,7 +389,13 @@ impl AppState {
             bm25: Arc::new(RwLock::new(bm25)),
             llm,
             products: Arc::new(Mutex::new(products)),
-            raw_sources,
+            raw_sources: Arc::new(Mutex::new({
+                let conn = Connection::open(&db_path)
+                    .expect("Fatal: cannot open DB for RawSourceStore");
+                let store = RawSourceStore::new(conn);
+                store.ensure_table().expect("Fatal: cannot init raw_sources table");
+                store
+            })),
             wiki_pages: Arc::new(Mutex::new({
                 let conn = Connection::open(&db_path)
                     .expect("Fatal: cannot open DB for WikiPageStore");

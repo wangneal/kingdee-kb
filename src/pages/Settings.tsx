@@ -54,6 +54,7 @@ import {
   type EmbeddingProviderConfig,
   type EmbeddingProviderType,
   exportDatabase,
+  getKbCompilationEnabled,
   getAsrConfigStatus,
   getDownloadProgress,
   getEmbeddingModelConfig,
@@ -66,6 +67,7 @@ import {
   listSensitiveKeywords,
   removeSensitiveKeyword,
   saveAsrConfig,
+  setKbCompilationEnabled,
   setEmbeddingModelConfig,
 } from "../lib/tauri-commands"
 
@@ -84,7 +86,7 @@ const PROVIDER_DEFAULTS: Record<string, { base_url: string; model: string }> = {
   },
 }
 
-/** Embedding provider definitions — label, default base URL, and recommended models */
+/** Embedding 供应商定义：标签、默认 Base URL、推荐模型 */
 const EMBEDDING_PROVIDERS: Record<
   EmbeddingProviderType,
   { label: string; baseUrl: string; models: string[] }
@@ -166,14 +168,14 @@ export default function Settings() {
   const [keywords, setKeywords] = useState<string[]>([])
   const [keywordError, setKeywordError] = useState<string | null>(null)
 
-  // ASR config state
+  // ASR 配置状态
   const [asrConfigStatus, setAsrConfigStatus] = useState<AsrConfigStatus | null>(null)
   const [tencentSecretId, setTencentSecretId] = useState("")
   const [tencentSecretKey, setTencentSecretKey] = useState("")
   const [asrSaving, setAsrSaving] = useState(false)
   const [asrSaveMsg, setAsrSaveMsg] = useState<string | null>(null)
 
-  // kdclub API Key state
+  // kdclub API Key 状态
   const [kdclubToken, setKdclubToken] = useState("")
   const [showKdclubToken, setShowKdclubToken] = useState(false)
   const [kdclubSaving, setKdclubSaving] = useState(false)
@@ -189,7 +191,7 @@ export default function Settings() {
     else if (section === "data" || section === "kb") setActiveTab("data")
   }, [searchParams])
 
-  // Context Engineering override state
+  // 上下文工程覆盖状态
   const [overrideModelId, setOverrideModelId] = useState("")
   const [overrideContextWindow, setOverrideContextWindow] = useState("")
   const [overrideMaxOutput, setOverrideMaxOutput] = useState("")
@@ -218,7 +220,7 @@ export default function Settings() {
     return specs
   }, [overrideKey])
 
-  // Load config, stats; poll model status (auto-load may still be async in progress)
+  // 加载配置和统计信息，并轮询模型状态（自动加载可能仍在异步执行）
   useEffect(() => {
     let cancelled = false
 
@@ -229,7 +231,7 @@ export default function Settings() {
         setStats(s)
         setEmbeddingConfig(embeddingCfg)
 
-        // Load online embedding provider config from localStorage
+        // 从 localStorage 加载在线 Embedding 供应商配置
         try {
           const stored = localStorage.getItem(EMBEDDING_PROVIDER_STORAGE_KEY)
           if (stored) {
@@ -237,17 +239,17 @@ export default function Settings() {
             setEmbeddingProviderConfig({ ...DEFAULT_EMBEDDING_PROVIDER_CONFIG, ...parsed })
           }
         } catch {
-          /* ignore parse errors */
+          /* 忽略解析错误 */
         }
 
-        // Load kdclub token from localStorage
+        // 从 localStorage 加载 kdclub token
         try {
           const kdclubStored = localStorage.getItem("kdclub_pat_token")
           if (kdclubStored) {
             setKdclubToken(kdclubStored)
           }
         } catch {
-          /* ignore */
+          /* 忽略读取错误 */
         }
       },
     )
@@ -267,7 +269,7 @@ export default function Settings() {
           return
         }
       } catch {
-        /* ignore polling errors */
+        /* 忽略轮询错误 */
       }
       retries++
       if (retries < MAX_RETRIES && !cancelled) {
@@ -292,7 +294,7 @@ export default function Settings() {
       const s = await getStats()
       setStats(s)
     } catch {
-      // ignore
+      // 忽略刷新失败
     }
   }, [])
 
@@ -301,13 +303,13 @@ export default function Settings() {
     setDownloadProgress(0)
     setInitResult(null)
 
-    // Start polling progress every 600ms
+    // 每 600ms 轮询下载进度
     const pollInterval = setInterval(async () => {
       try {
         const pct = await getDownloadProgress()
         setDownloadProgress(pct)
       } catch {
-        // ignore polling errors
+        // 忽略轮询错误
       }
     }, 600)
 
@@ -390,12 +392,12 @@ export default function Settings() {
     setEmbeddingProviderConfig((prev) => ({
       ...prev,
       provider,
-      // Auto-fill base_url only if it still matches the previous provider default
+      // 仅当 base_url 仍为上一供应商默认值时自动填充
       base_url:
         prev.base_url === EMBEDDING_PROVIDERS[prev.provider]?.baseUrl || prev.base_url === ""
           ? defaults.baseUrl
           : prev.base_url,
-      // Auto-fill model_name only if it was one of the previous provider's models
+      // 仅当 model_name 属于上一供应商预设模型时自动填充
       model_name:
         EMBEDDING_PROVIDERS[prev.provider]?.models.includes(prev.model_name) ||
         prev.model_name === ""
@@ -408,7 +410,7 @@ export default function Settings() {
     setEmbeddingProviderSaving(true)
     setEmbeddingProviderSaveMsg(null)
     try {
-      // Don't persist API key to localStorage — security risk
+      // 不将 API Key 持久化到 localStorage，避免安全风险
       const { api_key: _, ...safeConfig } = embeddingProviderConfig
       localStorage.setItem(EMBEDDING_PROVIDER_STORAGE_KEY, JSON.stringify(safeConfig))
       setEmbeddingProviderSaveMsg("配置已保存")
@@ -452,7 +454,7 @@ export default function Settings() {
         <h1 className="text-lg font-semibold text-neutral-800">设置</h1>
       </div>
 
-      {/* Tab Navigation */}
+      {/* 标签导航 */}
       <div className="mb-6 flex gap-1 rounded-lg bg-neutral-100 p-1">
         {[
           { key: "ai" as const, label: "AI 模型", icon: Brain },
@@ -475,16 +477,19 @@ export default function Settings() {
         ))}
       </div>
 
-      {/* AI 模型 Tab */}
+      {/* AI 模型页签 */}
       {activeTab === "ai" && (
         <div className="space-y-6">
-          {/* LLM Provider List */}
+          {/* LLM 供应商列表 */}
           <LLMProviderList />
 
-          {/* OCR Configuration */}
+          {/* 知识编译配置 */}
+          <KnowledgeCompilationCard />
+
+          {/* OCR 配置 */}
           <OcrConfigCard />
 
-          {/* Embedding Model Card */}
+          {/* Embedding 模型卡片 */}
           <section className="rounded-xl border border-neutral-200 bg-white">
             <div className="border-b border-neutral-100 px-5 py-3">
               <div className="flex items-center justify-between">
@@ -510,7 +515,7 @@ export default function Settings() {
             </div>
 
             <div className="p-5">
-              {/* Provider selector */}
+              {/* 供应商选择器 */}
               <div className="mb-4">
                 <div className="mb-1.5 flex items-center gap-2">
                   <ArrowLeftRight className="h-4 w-4 text-neutral-400" />
@@ -531,7 +536,7 @@ export default function Settings() {
                 </select>
               </div>
 
-              {/* Local model UI */}
+              {/* 本地模型界面 */}
               {embeddingProviderConfig.provider === "local" && (
                 <>
                   <p className="mb-3 text-sm text-neutral-500">
@@ -542,7 +547,7 @@ export default function Settings() {
                         : "模型尚未初始化。首次初始化需要从 HuggingFace 下载模型文件（约 90MB）。"}
                   </p>
 
-                  {/* Progress bar during download */}
+                  {/* 下载进度条 */}
                   {initializing && (
                     <div className="mb-3">
                       <div className="h-2 w-full overflow-hidden rounded-full bg-neutral-100">
@@ -637,7 +642,7 @@ export default function Settings() {
                 </>
               )}
 
-              {/* Online provider UI */}
+              {/* 在线供应商界面 */}
               {embeddingProviderConfig.provider !== "local" && (
                 <>
                   <p className="mb-3 text-sm text-neutral-500">
@@ -646,7 +651,7 @@ export default function Settings() {
                   </p>
 
                   <div className="space-y-3">
-                    {/* Base URL */}
+                    {/* Base URL 配置 */}
                     <div>
                       <div className="mb-1.5 flex items-center gap-2">
                         <Server className="h-4 w-4 text-neutral-400" />
@@ -663,7 +668,7 @@ export default function Settings() {
                       />
                     </div>
 
-                    {/* API Key */}
+                    {/* API Key 配置 */}
                     <div>
                       <div className="mb-1.5 flex items-center gap-2">
                         <Key className="h-4 w-4 text-neutral-400" />
@@ -695,7 +700,7 @@ export default function Settings() {
                       </div>
                     </div>
 
-                    {/* Model Name */}
+                    {/* 模型名称 */}
                     <div>
                       <div className="mb-1.5 flex items-center gap-2">
                         <Cpu className="h-4 w-4 text-neutral-400" />
@@ -718,7 +723,7 @@ export default function Settings() {
                       </datalist>
                     </div>
 
-                    {/* Model preset buttons */}
+                    {/* 模型预设按钮 */}
                     {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].models.length > 0 && (
                       <div className="flex flex-wrap gap-2">
                         {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].models.map((m) => (
@@ -741,7 +746,7 @@ export default function Settings() {
                     )}
                   </div>
 
-                  {/* Save button */}
+                  {/* 保存按钮 */}
                   <div className="mt-4 flex items-center gap-3">
                     <button
                       type="button"
@@ -765,7 +770,7 @@ export default function Settings() {
             </div>
           </section>
 
-          {/* Context Engineering Section */}
+          {/* 上下文工程配置区 */}
           <section className="rounded-xl border border-neutral-200 bg-white">
             <div className="border-b border-neutral-100 px-5 py-3">
               <div className="flex items-center gap-2">
@@ -777,7 +782,7 @@ export default function Settings() {
               </div>
             </div>
             <div className="p-5">
-              {/* Model specs table */}
+              {/* 模型规格表 */}
               <div className="mb-4 overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
@@ -805,7 +810,7 @@ export default function Settings() {
                 </table>
               </div>
 
-              {/* Manual Override Form */}
+              {/* 手动覆盖表单 */}
               <div className="rounded-lg border border-neutral-100 bg-neutral-50 p-3">
                 <h3 className="mb-2 text-xs font-semibold text-neutral-600">手动覆盖</h3>
                 <p className="mb-2 text-[10px] text-neutral-400">
@@ -852,10 +857,10 @@ export default function Settings() {
         </div>
       )}
 
-      {/* 集成服务 Tab */}
+      {/* 集成服务页签 */}
       {activeTab === "integrations" && (
         <div className="space-y-6">
-          {/* kdclub API Key Card */}
+          {/* kdclub API Key 卡片 */}
           <section className="rounded-xl border border-neutral-200 bg-white">
             <div className="border-b border-neutral-100 px-5 py-3">
               <h2 className="text-sm font-semibold text-neutral-700">金蝶云社区 API</h2>
@@ -901,7 +906,7 @@ export default function Settings() {
                     setKdclubSaving(true)
                     setKdclubSaveMsg(null)
                     try {
-                      // Save to localStorage (not to file for security)
+                      // 保存到 localStorage，不写入文件以降低安全风险
                       if (kdclubToken) {
                         localStorage.setItem("kdclub_pat_token", kdclubToken)
                       } else {
@@ -931,7 +936,7 @@ export default function Settings() {
             </div>
           </section>
 
-          {/* ASR Config Card */}
+          {/* ASR 配置卡片 */}
           <section className="rounded-xl border border-neutral-200 bg-white">
             <div className="border-b border-neutral-100 px-5 py-3">
               <h2 className="text-sm font-semibold text-neutral-700">语音识别服务配置</h2>
@@ -940,7 +945,7 @@ export default function Settings() {
               </p>
             </div>
             <div className="p-5 space-y-4">
-              {/* Tencent ASR */}
+              {/* 腾讯 ASR */}
               <div className="rounded-lg border border-neutral-200 p-4">
                 <h3 className="text-xs font-semibold text-neutral-700 mb-2">
                   腾讯云语音识别
@@ -1006,10 +1011,10 @@ export default function Settings() {
         </div>
       )}
 
-      {/* 数据管理 Tab */}
+      {/* 数据管理页签 */}
       {activeTab === "data" && (
         <div className="space-y-6">
-          {/* Storage Stats Card */}
+          {/* 存储统计卡片 */}
           <section className="rounded-xl border border-neutral-200 bg-white">
             <div className="flex items-center justify-between border-b border-neutral-100 px-5 py-3">
               <div>
@@ -1052,7 +1057,7 @@ export default function Settings() {
             </div>
           </section>
 
-          {/* Desensitization Config Card */}
+          {/* 脱敏配置卡片 */}
           <section className="rounded-xl border border-neutral-200 bg-white">
             <div className="border-b border-neutral-100 px-5 py-3">
               <h2 className="text-sm font-semibold text-neutral-700">数据脱敏配置</h2>
@@ -1121,7 +1126,7 @@ export default function Settings() {
             </div>
           </section>
 
-          {/* Database Backup Card */}
+          {/* 数据库备份卡片 */}
           <DatabaseBackupCard />
         </div>
       )}
@@ -1129,7 +1134,7 @@ export default function Settings() {
   )
 }
 
-// ── Helper Components ─────────────────────────────────────────────────────
+// ── 辅助组件 ─────────────────────────────────────────────────────
 
 function StatCard({
   label,
@@ -1274,7 +1279,7 @@ function DatabaseBackupCard() {
   )
 }
 
-// ── LLM Provider List ──────────────────────────────────────────────────
+// ── LLM 供应商列表 ──────────────────────────────────────────────────
 
 const PROTOCOL_LABELS: Record<LLMProtocol, string> = {
   openai: "OpenAI",
@@ -1791,6 +1796,93 @@ function ProviderFormDialog({
     </div>
   )
 }
+
+function KnowledgeCompilationCard() {
+  const [enabled, setEnabled] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    getKbCompilationEnabled()
+      .then((value) => {
+        if (!cancelled) setEnabled(value)
+      })
+      .catch(() => {
+        if (!cancelled) setEnabled(false)
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const handleToggle = useCallback(async (next: boolean) => {
+    setEnabled(next)
+    setSaving(true)
+    setMessage(null)
+    try {
+      await setKbCompilationEnabled(next)
+      setMessage(next ? "已开启知识编译" : "已关闭知识编译")
+      setTimeout(() => setMessage(null), 3000)
+    } catch (error) {
+      setEnabled(!next)
+      setMessage(`保存失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setSaving(false)
+    }
+  }, [])
+
+  return (
+    <section className="rounded-xl border border-neutral-200 bg-white">
+      <div className="border-b border-neutral-100 px-5 py-3">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h2 className="text-sm font-semibold text-neutral-700">知识编译</h2>
+            <p className="mt-0.5 text-xs text-neutral-400">
+              导入后尝试使用 LLM 生成 Wiki 候选页面；LLM 不可用或 30 秒超时时，会降级为快速分析模式（非 LLM）。
+            </p>
+          </div>
+          <span
+            className={`flex shrink-0 items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+              enabled ? "bg-green-50 text-green-700" : "bg-neutral-100 text-neutral-500"
+            }`}
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${enabled ? "bg-green-500" : "bg-neutral-400"}`}
+            />
+            {enabled ? "已开启" : "已关闭"}
+          </span>
+        </div>
+      </div>
+      <div className="flex items-center justify-between gap-4 p-5">
+        <div className="flex items-center gap-2 text-xs text-neutral-500">
+          <Cpu className="h-4 w-4 text-neutral-400" />
+          <span>{enabled ? "优先 LLM，失败时自动降级" : "仅执行普通入库，不生成 Wiki 候选"}</span>
+        </div>
+        <label className="flex items-center gap-2 text-xs text-neutral-600">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={loading || saving}
+            onChange={(event) => handleToggle(event.target.checked)}
+            className="h-4 w-4 rounded border-neutral-300 text-[#1A6BD8] focus:ring-[#1A6BD8]"
+          />
+          开启
+        </label>
+      </div>
+      {message && (
+        <div className="border-t border-neutral-100 px-5 py-2 text-xs text-neutral-500">
+          {message}
+        </div>
+      )}
+    </section>
+  )
+}
+
 function OcrConfigCard() {
   const [ocrConfig, setOcrConfig] = useState<OcrProviderConfig | null>(null)
   const [loading, setLoading] = useState(true)

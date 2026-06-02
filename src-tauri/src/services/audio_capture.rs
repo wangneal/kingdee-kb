@@ -188,8 +188,11 @@ impl AudioCapture {
 
         // Spawn thread that owns the stream
         std::thread::spawn(move || {
-            let err_fn = |err: cpal::StreamError| {
+            let capture_state_err = capture_state.clone();
+            let err_fn = move |err: cpal::StreamError| {
                 eprintln!("[AudioCapture] Stream error: {}", err);
+                // 发生严重音频流错误（例如设备被拔出）时，自动将录音状态设置为 false
+                capture_state_err.is_recording.store(false, Ordering::SeqCst);
             };
 
             let stream_result = match sample_format {

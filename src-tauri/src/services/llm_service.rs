@@ -32,7 +32,7 @@ use rig_core::streaming::{StreamedAssistantContent, StreamingChat};
 
 use crate::services::verification::pipeline::VerificationPipeline;
 use crate::services::verification::types::{
-    ScenarioType, VerificationInput, VerificationLevel, VerificationReport,
+    ScenarioType, VerificationInput, VerificationReport,
 };
 
 // 常量
