@@ -119,6 +119,8 @@ pub async fn smart_fill(
         vector_index,
         bm25,
         metadata,
+        None,
+        None,
     )
     .unwrap_or_default(); // KB search failure is non-fatal
 

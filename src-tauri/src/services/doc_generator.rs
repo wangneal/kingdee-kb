@@ -507,6 +507,8 @@ pub async fn generate_recipe_doc(
             vector_index,
             bm25,
             metadata,
+            None,
+            None,
         )
         .unwrap_or_default(); // KB search failure is non-fatal
 

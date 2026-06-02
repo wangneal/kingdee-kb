@@ -20,6 +20,7 @@ use crate::services::llm_service::LLMService;
 use crate::services::metadata::MetadataStore;
 use crate::services::product_store::ProductStore;
 use crate::services::question_tool::{self, PendingQuestions};
+use crate::services::rerank::RerankerService;
 use crate::services::raw_source::RawSourceStore;
 use crate::services::research_indexer::ResearchIndexer;
 use crate::services::wiki_page::WikiPageStore;
@@ -107,6 +108,8 @@ pub struct AppState {
     pub ingest_queue: Mutex<IngestionQueue>,
     /// Agent 会话取消标志（session_id → cancel flag）
     pub cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    /// Cross-Encoder Reranker（精排服务，加载失败时返回 None）
+    pub reranker: Option<RerankerService>,
 }
 
 impl AppState {
@@ -289,6 +292,7 @@ impl AppState {
             llm_providers,
             ingest_queue,
             cancel_flags: Arc::new(Mutex::new(HashMap::new())),
+            reranker: RerankerService::try_new(10).ok(),
         })
     }
 
@@ -456,6 +460,7 @@ impl AppState {
             llm_providers,
             ingest_queue,
             cancel_flags: Arc::new(Mutex::new(HashMap::new())),
+            reranker: RerankerService::try_new(10).ok(),
         }
     }
 }

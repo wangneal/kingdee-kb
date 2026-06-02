@@ -186,6 +186,8 @@ impl Tool for SearchKnowledgeTool {
             &self.vector_index,
             &self.bm25,
             &self.metadata,
+            None,
+            None,
         )
         .map_err(ToolError::msg)?;
 

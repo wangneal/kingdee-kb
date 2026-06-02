@@ -119,11 +119,13 @@ pub fn recommend_questions(
         &enhanced_query,
         request.project_name.as_deref(),
         &[],
-        top_k * 3, // over-fetch for better coverage
+        top_k * 3,
         embedding,
         vector_index,
         bm25,
         metadata,
+        None,
+        None,
     )
     .unwrap_or_default(); // KB search failure is non-fatal
 
@@ -523,6 +525,8 @@ fn search_kb_for_followup(
         vector_index,
         bm25,
         metadata,
+        None,
+        None,
     )
     .unwrap_or_default();
 
@@ -674,6 +678,8 @@ fn assemble_kb_context_for_fill(
         vector_index,
         bm25,
         metadata,
+        None,
+        None,
     )
     .unwrap_or_default(); // KB search failure is non-fatal
 

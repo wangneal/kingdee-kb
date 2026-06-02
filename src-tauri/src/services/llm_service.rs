@@ -32,7 +32,7 @@ use rig_core::streaming::{StreamedAssistantContent, StreamingChat};
 
 use crate::services::verification::pipeline::VerificationPipeline;
 use crate::services::verification::types::{
-    ScenarioType, VerificationInput, VerificationReport,
+    ScenarioType, VerificationInput, VerificationLevel, VerificationReport,
 };
 
 // 常量
@@ -1238,23 +1238,27 @@ impl LLMService {
             query,
             project_id,
             &[],
-            5, // top_k per SPEC.md
+            5,
             embedding,
             vector_index,
             bm25,
             metadata,
+            None,
+            None,
         )?;
 
-        // Step 2: Memory retrieval 鈥?search "璁板繂搴? project for relevant past memories
+        // Step 2: Memory retrieval — search "记忆库" project for relevant past memories
         if let Ok(mut memories) = hybrid_search::hybrid_search(
             query,
             Some("记忆库"),
             &[],
-            5, // fetch 5, apply temporal decay, then keep top 3
+            5,
             embedding,
             vector_index,
             bm25,
             metadata,
+            None,
+            None,
         ) {
             // Apply temporal decay: older memories score lower 鈫?naturally filtered
             apply_memory_temporal_decay(&mut memories, metadata);
@@ -1371,6 +1375,8 @@ impl LLMService {
             vector_index,
             bm25,
             metadata,
+            None,
+            None,
         )?;
 
         if !self.is_configured() {
@@ -1682,19 +1688,23 @@ impl LLMService {
                 vector_index,
                 bm25,
                 metadata,
+                None,
+                None,
             )?,
         };
 
-        // Step 1b: Memory retrieval 鈥?search "璁板繂搴? project for relevant past memories
+        // Step 1b: Memory retrieval — search "记忆库" project for relevant past memories
         if let Ok(mut memories) = hybrid_search::hybrid_search(
             query,
             Some("记忆库"),
             &[],
-            5, // fetch 5, apply temporal decay, then keep top 3
+            5,
             embedding,
             vector_index,
             bm25,
             metadata,
+            None,
+            None,
         ) {
             apply_memory_temporal_decay(&mut memories, metadata);
             for mem in memories.into_iter().take(3) {
