@@ -70,23 +70,23 @@ impl VerificationReport {
     }
 
     pub fn from_checks(checks: Vec<CheckResult>) -> Self {
-        let total = checks.len() as f32;
-        if total == 0.0 {
+        let total = checks.len();
+        if total == 0 {
             return Self::confirmed();
         }
 
-        let passed_count = checks.iter().filter(|c| c.passed).count() as f32;
-        let avg_confidence: f32 = checks.iter().map(|c| c.confidence).sum::<f32>() / total;
+        let passed = checks.iter().filter(|c| c.passed).count();
+        let avg_confidence: f32 = checks.iter().map(|c| c.confidence).sum::<f32>() / total as f32;
 
-        let level = if passed_count == total {
+        let level = if passed == total {
             if avg_confidence >= 0.8 {
                 VerificationLevel::Confirmed
             } else {
                 VerificationLevel::NeedsReview
             }
-        } else if passed_count == 0.0 {
+        } else if passed == 0 {
             VerificationLevel::Failed
-        } else if passed_count >= total * 0.5 {
+        } else if passed >= total / 2 {
             VerificationLevel::NeedsReview
         } else {
             VerificationLevel::Suspected

@@ -81,9 +81,9 @@ impl Checker for SelfConsistencyChecker {
                 }
             }
             Err(e) => {
-                CheckResult::pass("self_consistency")
-                    .with_confidence(0.5)
-                    .with_evidence(vec![format!("LLM 验证调用失败: {}", e)])
+                CheckResult::fail("self_consistency", "LLM 验证调用失败，验证未完成".to_string())
+                    .with_confidence(0.0)
+                    .with_evidence(vec![format!("LLM 调用失败: {}", e)])
             }
         }
     }

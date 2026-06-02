@@ -67,7 +67,6 @@ impl FactualConsistencyChecker {
         let mut missing = Vec::new();
 
         for term in &terms {
-            if term.len() < 4 { continue; }
             let found = context.iter().any(|chunk| chunk.contains(term));
             if !found {
                 missing.push(term.clone());

@@ -27,6 +27,9 @@ pub struct RerankedResult {
 }
 
 /// Reranker 服务 — 包装 fastembed TextRerank
+///
+/// 注意：当前使用 std::sync::Mutex。若将来在 async 上下文中调用 rerank()，
+/// 需改为 tokio::sync::Mutex 以避免阻塞工作线程。
 pub struct RerankerService {
     model: Mutex<TextRerank>,
     /// 精排时保留的 TOP K
