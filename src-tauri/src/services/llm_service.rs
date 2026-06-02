@@ -30,6 +30,11 @@ use rig_core::client::CompletionClient;
 use rig_core::completion::{Chat as RigChat, Message as RigMessage};
 use rig_core::streaming::{StreamedAssistantContent, StreamingChat};
 
+use crate::services::verification::pipeline::VerificationPipeline;
+use crate::services::verification::types::{
+    ScenarioType, VerificationInput, VerificationReport,
+};
+
 // 常量
 
 /// 系统提示词 - ERP 顾问知识助手，带有反幻觉防护。
@@ -535,6 +540,8 @@ pub struct LLMService {
     client: reqwest::Client,
     /// 本地数据脱敏器。
     desensitizer: Option<Arc<crate::services::desensitize::Desensitizer>>,
+    /// 可选的验证管线
+    pub verifier: Option<Arc<VerificationPipeline>>,
 }
 
 impl LLMService {
@@ -544,6 +551,7 @@ impl LLMService {
             providers,
             client: reqwest::Client::new(),
             desensitizer: None,
+            verifier: Some(Arc::new(VerificationPipeline::default_with_all())),
         }
     }
 
@@ -556,6 +564,7 @@ impl LLMService {
             providers,
             client: reqwest::Client::new(),
             desensitizer: Some(desensitizer),
+            verifier: Some(Arc::new(VerificationPipeline::default_with_all())),
         }
     }
 
@@ -712,6 +721,38 @@ impl LLMService {
                 Self::collect_rig_stream(&mut stream).await
             }
         }
+    }
+
+    /// 执行 RAG 查询 + 验证
+    pub async fn verified_rag_query(
+        &self,
+        config: &LLMProviderConfig,
+        system_prompt: &str,
+        messages: &[ChatMessage],
+        context_chunks: &[crate::services::hybrid_search::HybridSearchResult],
+    ) -> Result<(Vec<StreamChunk>, Option<VerificationReport>), String> {
+        // 1. 先执行原始 RAG 查询
+        let chunks = self.rag_query_rig(config, system_prompt, messages).await?;
+
+        // 2. 如果有验证器，执行验证
+        let report = if let Some(ref verifier) = self.verifier {
+            let full_text: String = chunks.iter().map(|c| c.content.as_str()).collect();
+
+            let input = VerificationInput {
+                generated_text: full_text,
+                retrieved_chunks: context_chunks.iter().map(|c| c.content.clone()).collect(),
+                chunk_titles: context_chunks.iter().map(|c| c.title.clone()).collect(),
+                query: messages.last().map(|m| m.content.clone()).unwrap_or_default(),
+                scenario: ScenarioType::Chat,
+            };
+
+            let report = verifier.verify(&input).await;
+            Some(report)
+        } else {
+            None
+        };
+
+        Ok((chunks, report))
     }
 
     async fn stream_rig_to_sender(
