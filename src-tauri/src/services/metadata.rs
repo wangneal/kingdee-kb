@@ -483,6 +483,20 @@ impl MetadataStore {
         Ok(results)
     }
 
+    /// 获取文档的所有 chunk_id（SQLite 行 id）
+    pub fn get_chunk_ids_by_document(&self, document_id: i64) -> Result<Vec<i64>, String> {
+        let mut stmt = self
+            .db
+            .prepare("SELECT id FROM chunks WHERE document_id = ?1")
+            .map_err(|e| format!("prepare 失败: {}", e))?;
+        let ids = stmt
+            .query_map(params![document_id], |row| row.get(0))
+            .map_err(|e| format!("query 失败: {}", e))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(ids)
+    }
+
     /// Get all chunks for a document
     pub fn get_chunks_by_document(&self, document_id: i64) -> Result<Vec<ChunkMeta>, String> {
         self.query_chunks(
