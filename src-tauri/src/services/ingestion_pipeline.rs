@@ -25,6 +25,8 @@ use crate::services::document_analysis::{
 };
 use crate::services::ingest_cache::{CreateIngestCache, IngestCacheStore};
 use crate::services::llm_providers::LLMProviderManager;
+use crate::services::verification::pipeline::VerificationPipeline;
+use crate::services::verification::types::{ScenarioType, VerificationInput};
 use crate::services::wiki_page::{CreateWikiPage, UpdateWikiPage, WikiPageStore};
 
 /// 两步摄入编译结果
@@ -122,6 +124,33 @@ pub async fn process_with_kb_compilation(
             }
             Err(e) => {
                 warn!("LLM 编译失败: {}，跳过 Step 2", e);
+            }
+        }
+    }
+
+    // Step 2.5: 验证编译结果
+    if compilation_done && !generated_pages.is_empty() {
+        let verifier = VerificationPipeline::default_with_all();
+        for slug in &generated_pages {
+            if let Ok(Some(page)) = wiki_pages.lock().map_err(|e| e.to_string()).and_then(|store| {
+                store.get_by_slug(project, slug).map_err(|e| e.to_string())
+            }) {
+                let input = VerificationInput {
+                    generated_text: page.content_candidate.clone().unwrap_or_default(),
+                    retrieved_chunks: vec![],
+                    chunk_titles: vec![],
+                    available_chunk_ids: vec![],
+                    query: format!("知识编译验证: {}", page.title),
+                    scenario: ScenarioType::KnowledgeCompilation,
+                };
+                let report = verifier.verify(&input).await;
+                tracing::info!(
+                    "编译验证: slug={}, level={:?}, confidence={}",
+                    slug, report.level, report.overall_confidence
+                );
+                if report.level == crate::services::verification::types::VerificationLevel::Failed {
+                    tracing::warn!("编译验证未通过: slug={}, detail={:?}", slug, report.suggested_labels);
+                }
             }
         }
     }
