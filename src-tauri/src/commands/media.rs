@@ -274,6 +274,9 @@ pub async fn transcribe_and_ingest_video(
         &state.metadata,
         &state.bm25,
         None,
+        None,
+        None,
+        None,
     )?;
 
     let meeting_minutes = if generate_minutes {

@@ -6,6 +6,7 @@ use crate::services::ingestion::{
     ingest_directory as ingest_directory_fn, ingest_file as ingest_file_fn,
     ingest_text as ingest_text_fn, DirectoryIngestionResult, IngestionResult,
 };
+use crate::services::ingestion_pipeline::process_with_kb_compilation;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ExtractedFileText {
@@ -25,10 +26,11 @@ pub async fn ingest_text(
     text: String,
     title: String,
     project: String,
+    enable_kb_compilation: Option<bool>,
 ) -> Result<IngestionResult, String> {
     state.ensure_embedding_ready();
 
-    ingest_text_fn(
+    let result = ingest_text_fn(
         &text,
         &title,
         &project,
@@ -36,8 +38,36 @@ pub async fn ingest_text(
         &state.vector_index,
         &state.metadata,
         &state.bm25,
+        Some(&state.raw_sources),
+        Some(&title),
+        None,
         Some(&app),
-    )
+    )?;
+
+    // Step 2.5: 知识编译
+    if enable_kb_compilation.unwrap_or(false) {
+        let sha256 = result.sha256.clone();
+        let cache_store = state.analysis_cache.clone();
+        let provider_manager = state.llm_providers.clone();
+        let wiki_pages = state.wiki_pages.clone();
+        let ingest_cache = state.ingest_cache_store.clone();
+
+        let _ = process_with_kb_compilation(
+            &text,
+            &sha256,
+            &sha256,
+            &project,
+            &title,
+            true,
+            cache_store,
+            provider_manager,
+            wiki_pages,
+            ingest_cache,
+        )
+        .await;
+    }
+
+    Ok(result)
 }
 
 /// 摄入单个文件
@@ -59,6 +89,7 @@ pub async fn ingest_file(
         &state.vector_index,
         &state.metadata,
         &state.bm25,
+        Some(&state.raw_sources),
         Some(&app),
     )
 }
@@ -101,6 +132,7 @@ pub async fn ingest_directory(
         &state.vector_index,
         &state.metadata,
         &state.bm25,
+        Some(&state.raw_sources),
         Some(&app),
     )
 }

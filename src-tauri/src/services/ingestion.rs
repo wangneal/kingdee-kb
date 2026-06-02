@@ -18,6 +18,7 @@ use crate::services::ingestion_helpers::{
     compute_sha256, extract_tags, extract_title_from_filename,
 };
 use crate::services::metadata::MetadataStore;
+use crate::services::raw_source::{InsertRawSource, RawSourceStore};
 use crate::services::text_cleaner::clean_text;
 use crate::services::vector_index::VectorIndex;
 use serde::{Deserialize, Serialize};
@@ -94,6 +95,9 @@ pub fn ingest_text(
     vector_index: &Arc<Mutex<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
     bm25: &Arc<Mutex<BM25Service>>,
+    raw_sources: Option<&Arc<Mutex<RawSourceStore>>>,
+    raw_source_identity: Option<&str>,
+    source_path: Option<&str>,
     app_handle: Option<&AppHandle>,
 ) -> Result<IngestionResult, String> {
     let start = std::time::Instant::now();
@@ -182,6 +186,29 @@ pub fn ingest_text(
         let meta = metadata.lock().map_err(|e| format!("Lock error: {}", e))?;
         meta.insert_document(title, None, Some(&sha256), Some(project))?
     };
+
+    // 创建 raw_source 记录
+    if let (Some(raw_store), Some(identity)) = (raw_sources, raw_source_identity) {
+        let insert = InsertRawSource {
+            project: project.to_string(),
+            identity: identity.to_string(),
+            original_path: source_path.unwrap_or("").to_string(),
+            storage_path: String::new(),
+            sha256: sha256.clone(),
+            file_size: None,
+            mime_type: None,
+        };
+        match raw_store.lock() {
+            Ok(store) => {
+                if let Err(e) = store.insert(&insert) {
+                    tracing::warn!("raw_source 创建失败: {:?}", e);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("raw_source 锁失败: {:?}", e);
+            }
+        }
+    }
 
     // Process chunks in batches
     let batch_size = 64;
@@ -301,6 +328,7 @@ pub fn ingest_file(
     vector_index: &Arc<Mutex<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
     bm25: &Arc<Mutex<BM25Service>>,
+    raw_sources: Option<&Arc<Mutex<RawSourceStore>>>,
     app_handle: Option<&AppHandle>,
 ) -> Result<IngestionResult, String> {
     // Skip temporary/junk files (Office lock files ~$*, Thumbs.db, etc.)
@@ -328,7 +356,7 @@ pub fn ingest_file(
         .unwrap_or("untitled");
     let title = extract_title_from_filename(filename);
 
-    // Ingest with metadata
+    let file_path_str = file_path.to_string_lossy();
     let mut result = ingest_text(
         &content,
         &title,
@@ -337,6 +365,9 @@ pub fn ingest_file(
         vector_index,
         metadata,
         bm25,
+        raw_sources,
+        Some(file_path_str.as_ref()),
+        Some(file_path_str.as_ref()),
         app_handle,
     )?;
 
@@ -356,6 +387,7 @@ pub fn ingest_directory(
     vector_index: &Arc<Mutex<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
     bm25: &Arc<Mutex<BM25Service>>,
+    raw_sources: Option<&Arc<Mutex<RawSourceStore>>>,
     app_handle: Option<&AppHandle>,
 ) -> Result<DirectoryIngestionResult, String> {
     if !dir_path.is_dir() {
@@ -373,6 +405,7 @@ pub fn ingest_directory(
         vector_index,
         metadata,
         bm25,
+        raw_sources,
         app_handle,
         &mut imported,
         &mut errors,
@@ -393,6 +426,7 @@ fn ingest_dir_recursive(
     vector_index: &Arc<Mutex<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
     bm25: &Arc<Mutex<BM25Service>>,
+    raw_sources: Option<&Arc<Mutex<RawSourceStore>>>,
     app_handle: Option<&AppHandle>,
     imported: &mut Vec<IngestionResult>,
     errors: &mut Vec<FileError>,
@@ -413,6 +447,7 @@ fn ingest_dir_recursive(
                 vector_index,
                 metadata,
                 bm25,
+                raw_sources,
                 app_handle,
                 imported,
                 errors,
@@ -428,6 +463,7 @@ fn ingest_dir_recursive(
                 vector_index,
                 metadata,
                 bm25,
+                raw_sources,
                 app_handle,
             ) {
                 Ok(result) => imported.push(result),
@@ -497,6 +533,9 @@ mod tests {
             &metadata,
             &bm25,
             None,
+            None,
+            None,
+            None,
         );
 
         // Should fail because embedding model is not initialized
@@ -529,6 +568,9 @@ mod tests {
             &metadata,
             &bm25,
             None,
+            None,
+            None,
+            None,
         );
 
         // Second ingest with same content (should dedup)
@@ -540,6 +582,9 @@ mod tests {
             &vector_index,
             &metadata,
             &bm25,
+            None,
+            None,
+            None,
             None,
         );
 
@@ -573,6 +618,7 @@ mod tests {
             &metadata,
             &bm25,
             None,
+            None,
         );
 
         assert!(result.is_err());
@@ -601,6 +647,7 @@ mod tests {
             &vector_index,
             &metadata,
             &bm25,
+            None,
             None,
         );
 
