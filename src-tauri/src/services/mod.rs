@@ -37,6 +37,7 @@ pub mod question_recommend;
 pub mod question_tool;
 pub mod raw_source;
 pub mod react_agent;
+pub mod rerank;
 pub mod research_indexer;
 pub mod research_outline;
 pub mod research_session;
