@@ -13,7 +13,7 @@ use crate::services::llm_providers::{
 /// 检查是否有已配置的 LLM 供应商
 #[tauri::command]
 pub async fn is_llm_configured(state: State<'_, AppState>) -> Result<bool, String> {
-    let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
     Ok(manager.list_providers().iter().any(|p| p.is_configured()))
 }
 
@@ -22,7 +22,7 @@ pub async fn is_llm_configured(state: State<'_, AppState>) -> Result<bool, Strin
 pub async fn list_llm_providers(
     state: State<'_, AppState>,
 ) -> Result<Vec<LLMProviderConfig>, String> {
-    let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
     Ok(manager.list_providers().to_vec())
 }
 
@@ -60,7 +60,7 @@ pub async fn add_llm_provider(
         models,
     };
 
-    let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.add_provider(provider)?;
 
     // 同步 ImageProcessor 的 LLM 配置
@@ -89,7 +89,7 @@ pub async fn update_llm_provider(
 
     // 保留原有的 is_default 状态
     let is_default = {
-        let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+        let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
         manager
             .get_provider(&id)
             .map(|p| p.is_default)
@@ -112,7 +112,7 @@ pub async fn update_llm_provider(
         models,
     };
 
-    let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.update_provider(&id, provider)?;
 
     // 同步 ImageProcessor 的 LLM 配置
@@ -124,7 +124,7 @@ pub async fn update_llm_provider(
 /// 删除 LLM 供应商
 #[tauri::command]
 pub async fn delete_llm_provider(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.delete_provider(&id)?;
 
     // 同步 ImageProcessor 的 LLM 配置
@@ -139,7 +139,7 @@ pub async fn set_default_llm_provider(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.set_default(&id)?;
 
     // 同步 ImageProcessor 的 LLM 配置
@@ -166,7 +166,7 @@ pub async fn add_api_key(
         is_default: false,
     };
 
-    let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.add_api_key(&provider_id, api_key)
 }
 
@@ -187,7 +187,7 @@ pub async fn update_api_key(
         is_default,
     };
 
-    let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.update_api_key(&provider_id, api_key)
 }
 
@@ -198,7 +198,7 @@ pub async fn delete_provider_api_key(
     provider_id: String,
     key_id: String,
 ) -> Result<(), String> {
-    let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.delete_api_key(&provider_id, &key_id)
 }
 
@@ -209,7 +209,7 @@ pub async fn set_default_api_key(
     provider_id: String,
     key_id: String,
 ) -> Result<(), String> {
-    let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.set_default_api_key(&provider_id, &key_id)
 }
 
@@ -234,7 +234,7 @@ pub async fn add_model(
         supports_thinking: None,
     };
 
-    let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.add_model(&provider_id, model)
 }
 
@@ -249,7 +249,7 @@ pub async fn update_model(
 ) -> Result<(), String> {
     // 保留原有的探测状态
     let (is_multimodal, last_probe_at) = {
-        let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+        let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
         manager
             .get_provider(&provider_id)
             .and_then(|p| p.models.iter().find(|m| m.id == id))
@@ -268,7 +268,7 @@ pub async fn update_model(
         supports_thinking: None,
     };
 
-    let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.update_model(&provider_id, model)
 }
 
@@ -279,7 +279,7 @@ pub async fn delete_model(
     provider_id: String,
     model_id: String,
 ) -> Result<(), String> {
-    let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.delete_model(&provider_id, &model_id)
 }
 
@@ -290,7 +290,7 @@ pub async fn set_default_model(
     provider_id: String,
     model_id: String,
 ) -> Result<(), String> {
-    let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.set_default_model(&provider_id, &model_id)
 }
 
@@ -305,7 +305,7 @@ pub async fn probe_model_multimodal(
 ) -> Result<bool, String> {
     // 克隆供应商数据，避免在 await 时持有 MutexGuard
     let (provider, model_name, api_key) = {
-        let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+        let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
         let provider = manager
             .get_provider(&provider_id)
             .ok_or_else(|| format!("供应商 '{}' 不存在", provider_id))?
@@ -328,7 +328,7 @@ pub async fn probe_model_multimodal(
 
     // 持久化探测结果（成功或失败都写回，避免重复探测）
     {
-        let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+        let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
         if let Some(provider) = manager.get_provider(&provider_id).cloned() {
             let mut updated = provider;
             if let Some(model) = updated.models.iter_mut().find(|m| m.id == model_id) {
@@ -350,7 +350,7 @@ pub async fn probe_provider_multimodal(
 ) -> Result<bool, String> {
     // 克隆供应商数据，避免在 await 时持有 MutexGuard
     let provider = {
-        let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+        let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
         manager
             .get_provider(&id)
             .ok_or_else(|| format!("供应商 '{}' 不存在", id))?
@@ -369,7 +369,7 @@ pub async fn probe_all_providers(
 ) -> Result<Vec<ModelProbeResult>, String> {
     // 克隆供应商列表，避免在 await 时持有 MutexGuard
     let providers = {
-        let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+        let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
         manager.list_providers().to_vec()
     };
 
@@ -394,7 +394,7 @@ pub async fn probe_all_providers(
 
     // 更新原始管理器中的探测结果
     {
-        let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+        let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
         for result in &results {
             if let Some(provider) = manager
                 .list_providers()
@@ -421,7 +421,7 @@ pub async fn probe_all_providers(
 pub async fn get_ocr_config(
     state: State<'_, AppState>,
 ) -> Result<Option<OcrProviderConfig>, String> {
-    let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
     Ok(manager.get_ocr_config().cloned())
 }
 
@@ -450,14 +450,14 @@ pub async fn save_ocr_config(
         is_default: true,
     };
 
-    let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.set_ocr_config(config)
 }
 
 /// 清除 OCR 配置
 #[tauri::command]
 pub async fn clear_ocr_config(state: State<'_, AppState>) -> Result<(), String> {
-    let mut manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.clear_ocr_config()
 }
 
@@ -469,7 +469,7 @@ pub async fn auto_route_model(
     state: State<'_, AppState>,
     has_images: bool,
 ) -> Result<Option<AutoRouteResult>, String> {
-    let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
 
     match manager.auto_route(has_images) {
         Some((_api_key, base_url, model_name, provider_id, model_id)) => {
@@ -490,7 +490,7 @@ pub async fn auto_route_model(
 pub async fn list_available_models(
     state: State<'_, AppState>,
 ) -> Result<Vec<AvailableModelResult>, String> {
-    let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
     let models = manager.list_all_models();
 
     Ok(models
@@ -513,7 +513,7 @@ pub async fn get_next_api_key(
     provider_id: String,
     failed_key_id: String,
 ) -> Result<Option<NextApiKeyResult>, String> {
-    let manager = state.llm_providers.lock().map_err(|e| e.to_string())?;
+    let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
     match manager.get_next_api_key(&provider_id, &failed_key_id) {
         Some((key_id, key_value)) => Ok(Some(NextApiKeyResult { key_id, key_value })),
         None => Ok(None),
@@ -531,7 +531,7 @@ fn sync_image_processor(
         let api_key = default.get_default_key_value();
         let base_url = default.base_url.clone();
         let model = default.get_default_model_name();
-        if let Ok(mut processor) = state.image_processor.lock() {
+        if let Ok(mut processor) = state.image_processor.write() {
             processor.update_llm_config(api_key, base_url, model);
         }
     }

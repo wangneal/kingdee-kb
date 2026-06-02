@@ -9,7 +9,7 @@
 
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tracing::{error, info, warn};
 
 use crate::services::bm25_service::BM25Service;
@@ -37,10 +37,10 @@ pub async fn save_chat_memory(
     conversation: &[ChatMessage],
     data_dir: &Path,
     llm: &LLMService,
-    embedding: &Arc<Mutex<EmbeddingService>>,
-    vector_index: &Arc<Mutex<VectorIndex>>,
+    embedding: &Arc<RwLock<EmbeddingService>>,
+    vector_index: &Arc<RwLock<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
-    bm25: &Arc<Mutex<BM25Service>>,
+    bm25: &Arc<RwLock<BM25Service>>,
     project: Option<&str>,
 ) {
     // --- Semantic quality check: skip trivial conversations ---
@@ -223,12 +223,12 @@ async fn is_substantive_conversation(conversation: &[ChatMessage], llm: &LLMServ
 fn is_duplicate_memory(
     title: &str,
     memory_text: &str,
-    embedding: &Arc<Mutex<EmbeddingService>>,
-    vector_index: &Arc<Mutex<VectorIndex>>,
+    embedding: &Arc<RwLock<EmbeddingService>>,
+    vector_index: &Arc<RwLock<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
 ) -> bool {
     // Compute embedding for the new memory
-    let new_vec: Vec<f32> = match embedding.lock() {
+    let new_vec: Vec<f32> = match embedding.write() {
         Ok(mut emb) => match emb.embed_text(memory_text) {
             Ok(v) => v,
             Err(e) => {
@@ -241,7 +241,7 @@ fn is_duplicate_memory(
     };
 
     // Search the vector index for nearest neighbors
-    let search_results = match vector_index.lock() {
+    let search_results = match vector_index.read() {
         Ok(idx) => match idx.search(&new_vec, 5) {
             Ok(results) => results,
             Err(_) => return false,
@@ -304,8 +304,8 @@ fn is_duplicate_memory_by_title(title: &str, metadata: &Arc<Mutex<MetadataStore>
 /// Delete oldest memory documents from vector index + metadata store
 /// when the total exceeds `MAX_MEMORY_DOCS`.
 fn cleanup_stale_memories(
-    _embedding: &Arc<Mutex<EmbeddingService>>,
-    vector_index: &Arc<Mutex<VectorIndex>>,
+    _embedding: &Arc<RwLock<EmbeddingService>>,
+    vector_index: &Arc<RwLock<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
 ) {
     let docs: Vec<crate::services::metadata::DocumentMeta> = match metadata.lock() {
@@ -339,7 +339,7 @@ fn cleanup_stale_memories(
         // Hold both locks for the entire operation to prevent
         // interleaving with concurrent ingestions.
         let chunks = {
-            let idx = vector_index.lock().unwrap_or_else(|e| e.into_inner());
+            let idx = vector_index.write().unwrap_or_else(|e| e.into_inner());
             let meta = metadata.lock().unwrap_or_else(|e| e.into_inner());
 
             // Get chunks

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 
@@ -124,9 +124,9 @@ impl ToolError {
 // ─── 1. SearchKnowledgeTool ───
 
 pub struct SearchKnowledgeTool {
-    pub embedding: Arc<Mutex<EmbeddingService>>,
-    pub vector_index: Arc<Mutex<VectorIndex>>,
-    pub bm25: Arc<Mutex<BM25Service>>,
+    pub embedding: Arc<RwLock<EmbeddingService>>,
+    pub vector_index: Arc<RwLock<VectorIndex>>,
+    pub bm25: Arc<RwLock<BM25Service>>,
     pub metadata: Arc<Mutex<MetadataStore>>,
     pub project_id: Option<String>,
     pub extra_project_ids: Vec<String>,
@@ -142,9 +142,9 @@ impl SearchKnowledgeTool {
     pub fn new(
         project_id: Option<String>,
         extra_project_ids: Vec<String>,
-        embedding: Arc<Mutex<EmbeddingService>>,
-        vector_index: Arc<Mutex<VectorIndex>>,
-        bm25: Arc<Mutex<BM25Service>>,
+        embedding: Arc<RwLock<EmbeddingService>>,
+        vector_index: Arc<RwLock<VectorIndex>>,
+        bm25: Arc<RwLock<BM25Service>>,
         metadata: Arc<Mutex<MetadataStore>>,
         wiki_pages: Option<Arc<Mutex<WikiPageStore>>>,
     ) -> Self {
@@ -259,9 +259,9 @@ fn truncate_content(text: &str, max_chars: usize) -> String {
 pub struct GenerateDocTool {
     pub data_dir: PathBuf,
     pub llm: LLMService,
-    pub embedding: Arc<Mutex<EmbeddingService>>,
-    pub vector_index: Arc<Mutex<VectorIndex>>,
-    pub bm25: Arc<Mutex<BM25Service>>,
+    pub embedding: Arc<RwLock<EmbeddingService>>,
+    pub vector_index: Arc<RwLock<VectorIndex>>,
+    pub bm25: Arc<RwLock<BM25Service>>,
     pub metadata: Arc<Mutex<MetadataStore>>,
     pub products: Arc<Mutex<ProductStore>>,
     pub project_id: Option<String>,
@@ -281,9 +281,9 @@ impl GenerateDocTool {
         data_dir: PathBuf,
         llm: LLMService,
         project_id: Option<String>,
-        embedding: Arc<Mutex<EmbeddingService>>,
-        vector_index: Arc<Mutex<VectorIndex>>,
-        bm25: Arc<Mutex<BM25Service>>,
+        embedding: Arc<RwLock<EmbeddingService>>,
+        vector_index: Arc<RwLock<VectorIndex>>,
+        bm25: Arc<RwLock<BM25Service>>,
         metadata: Arc<Mutex<MetadataStore>>,
         products: Arc<Mutex<ProductStore>>,
     ) -> Self {
@@ -2502,9 +2502,9 @@ pub fn all_rig_tools(
     project_id: Option<&str>,
     data_dir: PathBuf,
     llm: LLMService,
-    embedding: Arc<Mutex<EmbeddingService>>,
-    vector_index: Arc<Mutex<VectorIndex>>,
-    bm25: Arc<Mutex<BM25Service>>,
+    embedding: Arc<RwLock<EmbeddingService>>,
+    vector_index: Arc<RwLock<VectorIndex>>,
+    bm25: Arc<RwLock<BM25Service>>,
     metadata: Arc<Mutex<MetadataStore>>,
     products: Arc<Mutex<ProductStore>>,
     risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,

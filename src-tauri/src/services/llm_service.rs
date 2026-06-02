@@ -4,7 +4,7 @@
 //! 浼橀泤鍥為€€锛氬綋 LLM 涓嶅彲鐢ㄦ椂锛屼粎杩斿洖鎼滅储缁撴灉銆?
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -535,7 +535,7 @@ fn estimate_tokens(messages: &[ChatMessage]) -> u32 {
 #[derive(Clone)]
 pub struct LLMService {
     /// 供应商管理器。
-    providers: Arc<Mutex<LLMProviderManager>>,
+    providers: Arc<RwLock<LLMProviderManager>>,
     /// HTTP client (reusable for connection pooling)
     client: reqwest::Client,
     /// 本地数据脱敏器。
@@ -546,7 +546,7 @@ pub struct LLMService {
 
 impl LLMService {
     /// Create a new LLM service backed by LLMProviderManager.
-    pub fn new(providers: Arc<Mutex<LLMProviderManager>>) -> Self {
+    pub fn new(providers: Arc<RwLock<LLMProviderManager>>) -> Self {
         Self {
             providers,
             client: reqwest::Client::new(),
@@ -557,7 +557,7 @@ impl LLMService {
 
     /// Create a new LLM service with desensitizer integration.
     pub fn with_desensitizer(
-        providers: Arc<Mutex<LLMProviderManager>>,
+        providers: Arc<RwLock<LLMProviderManager>>,
         desensitizer: Arc<crate::services::desensitize::Desensitizer>,
     ) -> Self {
         Self {
@@ -1044,7 +1044,7 @@ impl LLMService {
 
     /// 尝试轮换指定供应商的 API Key。
     pub fn rotate_api_key(&self, provider_id: &str, failed_key_id: &str) -> Result<bool, String> {
-        let mut mgr = self.providers.lock().map_err(|e| e.to_string())?;
+        let mut mgr = self.providers.write().map_err(|e| e.to_string())?;
         if let Some((next_key_id, _)) = mgr.get_next_api_key(provider_id, failed_key_id) {
             mgr.set_default_api_key(provider_id, &next_key_id)?;
             tracing::info!(
@@ -1064,7 +1064,7 @@ impl LLMService {
 
     /// Get the active provider config from the default provider.
     pub fn get_active_config(&self) -> Result<LLMProviderConfig, String> {
-        let mgr = self.providers.lock().map_err(|e| e.to_string())?;
+        let mgr = self.providers.read().map_err(|e| e.to_string())?;
         mgr.get_default_provider()
             .cloned()
             .ok_or_else(|| "未配置默认 LLM 供应商".to_string())
@@ -1077,7 +1077,7 @@ impl LLMService {
     ) -> Result<LLMProviderConfig, String> {
         match provider_id {
             Some(id) => {
-                let mgr = self.providers.lock().map_err(|e| e.to_string())?;
+                let mgr = self.providers.read().map_err(|e| e.to_string())?;
                 mgr.get_provider(id)
                     .cloned()
                     .ok_or_else(|| format!("供应商 '{}' 不存在", id))
@@ -1228,9 +1228,9 @@ impl LLMService {
         query: &str,
         project_id: Option<&str>,
         conversation_history: Vec<ChatMessage>,
-        embedding: &Mutex<EmbeddingService>,
-        vector_index: &Mutex<VectorIndex>,
-        bm25: &Mutex<BM25Service>,
+        embedding: &RwLock<EmbeddingService>,
+        vector_index: &RwLock<VectorIndex>,
+        bm25: &RwLock<BM25Service>,
         metadata: &Mutex<MetadataStore>,
     ) -> Result<Vec<StreamChunk>, String> {
         // Step 1: Hybrid search (KB documents)
@@ -1361,9 +1361,9 @@ impl LLMService {
         query: &str,
         project_id: Option<&str>,
         conversation_history: Vec<ChatMessage>,
-        embedding: &Mutex<EmbeddingService>,
-        vector_index: &Mutex<VectorIndex>,
-        bm25: &Mutex<BM25Service>,
+        embedding: &RwLock<EmbeddingService>,
+        vector_index: &RwLock<VectorIndex>,
+        bm25: &RwLock<BM25Service>,
         metadata: &Mutex<MetadataStore>,
     ) -> Result<RAGResponse, String> {
         let search_results = hybrid_search::hybrid_search(
@@ -1466,7 +1466,7 @@ impl LLMService {
                     if !failed_key_id.is_empty() {
                         if let Ok(true) = self.rotate_api_key(&provider_id, &failed_key_id) {
                             attempts += 1;
-                            if let Ok(mgr) = self.providers.lock() {
+                            if let Ok(mgr) = self.providers.read() {
                                 if let Some(updated_provider) = mgr.get_provider(&provider_id) {
                                     current_config = updated_provider.clone();
                                     tracing::warn!("API Key auth failed. Rotated key and retrying chat_completion... Attempt {}", attempts);
@@ -1669,9 +1669,9 @@ impl LLMService {
         query: &str,
         project_id: Option<&str>,
         conversation_history: Vec<ChatMessage>,
-        embedding: &Mutex<EmbeddingService>,
-        vector_index: &Mutex<VectorIndex>,
-        bm25: &Mutex<BM25Service>,
+        embedding: &RwLock<EmbeddingService>,
+        vector_index: &RwLock<VectorIndex>,
+        bm25: &RwLock<BM25Service>,
         metadata: &Mutex<MetadataStore>,
         tx: mpsc::Sender<StreamChunk>,
         precomputed_results: Option<Vec<HybridSearchResult>>,

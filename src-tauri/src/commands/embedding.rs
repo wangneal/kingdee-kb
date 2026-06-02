@@ -13,7 +13,7 @@ use crate::services::vector_index::SearchResult;
 /// 获取当前模型状态（就绪/未就绪）。
 #[tauri::command]
 pub async fn get_model_status(state: State<'_, AppState>) -> Result<bool, String> {
-    let emb = state.embedding.lock().map_err(|e| e.to_string())?;
+    let emb = state.embedding.read().map_err(|e| e.to_string())?;
     Ok(emb.is_ready())
 }
 
@@ -31,7 +31,7 @@ pub async fn init_model(state: State<'_, AppState>) -> Result<bool, String> {
     );
 
     let model_result: Result<_, String> = {
-        let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
+        let mut mm = state.model_manager.write().map_err(|e| e.to_string())?;
         match mm.init() {
             Ok(()) => {
                 stop_clone.store(true, Ordering::Relaxed);
@@ -49,7 +49,7 @@ pub async fn init_model(state: State<'_, AppState>) -> Result<bool, String> {
 
     match model_result {
         Ok(model) => {
-            let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
+            let mut emb = state.embedding.write().map_err(|e| e.to_string())?;
             emb.set_model(model);
             Ok(true)
         }
@@ -68,7 +68,7 @@ pub async fn get_download_progress(state: State<'_, AppState>) -> Result<u32, St
 pub async fn get_embedding_model_config(
     state: State<'_, AppState>,
 ) -> Result<EmbeddingModelConfig, String> {
-    let mm = state.model_manager.lock().map_err(|e| e.to_string())?;
+    let mm = state.model_manager.read().map_err(|e| e.to_string())?;
     Ok(mm.embedding_config())
 }
 
@@ -109,24 +109,24 @@ pub async fn set_embedding_model_config(
         };
 
         {
-            let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
+            let mut mm = state.model_manager.write().map_err(|e| e.to_string())?;
             mm.set_remote_config(Some(remote_config.clone()))?;
         }
 
         // 同步配置到 EmbeddingService
-        let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
+        let mut emb = state.embedding.write().map_err(|e| e.to_string())?;
         emb.set_remote_config(Some(remote_config));
     } else {
         // 本地模式：配置本地 ONNX 模型
         let model = {
-            let mut mm = state.model_manager.lock().map_err(|e| e.to_string())?;
+            let mut mm = state.model_manager.write().map_err(|e| e.to_string())?;
             mm.set_remote_config(None)?; // 清除远程配置
             mm.set_custom_model_dir(custom_model_dir)?;
             mm.init()?;
             mm.take_model()
                 .ok_or("Model initialized but no model returned")?
         };
-        let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
+        let mut emb = state.embedding.write().map_err(|e| e.to_string())?;
         emb.set_model(model);
     }
 
@@ -137,7 +137,7 @@ pub async fn set_embedding_model_config(
 pub async fn embed_text(state: State<'_, AppState>, text: String) -> Result<Vec<f32>, String> {
     // 检查是否为远程模式
     let remote_config = {
-        let emb = state.embedding.lock().map_err(|e| e.to_string())?;
+        let emb = state.embedding.read().map_err(|e| e.to_string())?;
         emb.remote_config().cloned()
     };
 
@@ -146,7 +146,7 @@ pub async fn embed_text(state: State<'_, AppState>, text: String) -> Result<Vec<
         crate::services::embedding::remote_embed(&config, &text).await
     } else {
         // 本地模式：使用本地 ONNX 模型
-        let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
+        let mut emb = state.embedding.write().map_err(|e| e.to_string())?;
         emb.embed_text(&text)
     }
 }
@@ -159,7 +159,7 @@ pub async fn embed_batch(
 ) -> Result<Vec<Vec<f32>>, String> {
     // 检查是否为远程模式
     let remote_config = {
-        let emb = state.embedding.lock().map_err(|e| e.to_string())?;
+        let emb = state.embedding.read().map_err(|e| e.to_string())?;
         emb.remote_config().cloned()
     };
 
@@ -169,7 +169,7 @@ pub async fn embed_batch(
         crate::services::embedding::remote_embed_batch(&config, &refs).await
     } else {
         // 本地模式：使用本地 ONNX 模型
-        let mut emb = state.embedding.lock().map_err(|e| e.to_string())?;
+        let mut emb = state.embedding.write().map_err(|e| e.to_string())?;
         let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
         emb.embed_batch(&refs)
     }
@@ -182,21 +182,21 @@ pub async fn search_similar(
     query: Vec<f32>,
     top_k: u32,
 ) -> Result<Vec<SearchResult>, String> {
-    let index = state.vector_index.lock().map_err(|e| e.to_string())?;
+    let index = state.vector_index.read().map_err(|e| e.to_string())?;
     index.search(&query, top_k as usize)
 }
 
 /// 从磁盘加载向量索引
 #[tauri::command]
 pub async fn load_index(state: State<'_, AppState>) -> Result<usize, String> {
-    let index = state.vector_index.lock().map_err(|e| e.to_string())?;
+    let index = state.vector_index.read().map_err(|e| e.to_string())?;
     Ok(index.len())
 }
 
 /// 获取向量索引统计信息
 #[tauri::command]
 pub async fn get_index_stats(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let index = state.vector_index.lock().map_err(|e| e.to_string())?;
+    let index = state.vector_index.read().map_err(|e| e.to_string())?;
     let stats = index.stats();
     serde_json::to_value(stats).map_err(|e| format!("Serialization error: {}", e))
 }

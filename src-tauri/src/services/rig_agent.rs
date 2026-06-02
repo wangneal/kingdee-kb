@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
@@ -136,9 +136,9 @@ impl RigAgent {
         pending: PendingQuestions,
         project_id: Option<&str>,
         risk_project_id: Option<i64>,
-        embedding: Arc<Mutex<EmbeddingService>>,
-        vector_index: Arc<Mutex<VectorIndex>>,
-        bm25: Arc<Mutex<BM25Service>>,
+        embedding: Arc<RwLock<EmbeddingService>>,
+        vector_index: Arc<RwLock<VectorIndex>>,
+        bm25: Arc<RwLock<BM25Service>>,
         metadata: Arc<Mutex<MetadataStore>>,
         data_dir: std::path::PathBuf,
         products: Arc<Mutex<ProductStore>>,
@@ -147,8 +147,8 @@ impl RigAgent {
         cancel_flag: Option<Arc<AtomicBool>>,
         provider_id: Option<&str>,
         attachments: Option<Vec<AttachmentInfo>>,
-        image_processor: Arc<Mutex<crate::services::image_processor::ImageProcessor>>,
-        llm_providers: Arc<Mutex<crate::services::llm_providers::LLMProviderManager>>,
+        image_processor: Arc<RwLock<crate::services::image_processor::ImageProcessor>>,
+        llm_providers: Arc<RwLock<crate::services::llm_providers::LLMProviderManager>>,
         wiki_pages: Option<Arc<Mutex<WikiPageStore>>>,
     ) {
         let sid = session_id.to_string();
@@ -166,14 +166,14 @@ impl RigAgent {
         if let Some(ref list) = attachments {
             // 前置处理：获取 OCR 和多模态模型候选
             let ocr_config = {
-                if let Ok(proc) = image_processor.lock() {
+                if let Ok(proc) = image_processor.read() {
                     proc.get_ocr_config_cloned()
                 } else {
                     None
                 }
             };
             let candidates = {
-                if let Ok(mgr) = llm_providers.lock() {
+                if let Ok(mgr) = llm_providers.read() {
                     mgr.get_vision_candidates()
                 } else {
                     Vec::new()
@@ -212,7 +212,7 @@ impl RigAgent {
                             {
                                 Ok(Ok(res)) => {
                                     if processor.is_llm_multimodal() {
-                                        if let Ok(mut global) = image_processor.lock() {
+                                        if let Ok(mut global) = image_processor.write() {
                                             global.set_llm_multimodal(true);
                                         }
                                     }
@@ -882,9 +882,9 @@ impl RigAgent {
         _pending: PendingQuestions,
         project_id: Option<&str>,
         _risk_project_id: Option<i64>,
-        _embedding: Arc<Mutex<EmbeddingService>>,
-        _vector_index: Arc<Mutex<VectorIndex>>,
-        _bm25: Arc<Mutex<BM25Service>>,
+        _embedding: Arc<RwLock<EmbeddingService>>,
+        _vector_index: Arc<RwLock<VectorIndex>>,
+        _bm25: Arc<RwLock<BM25Service>>,
         _metadata: Arc<Mutex<MetadataStore>>,
         _data_dir: std::path::PathBuf,
         _products: Arc<Mutex<ProductStore>>,

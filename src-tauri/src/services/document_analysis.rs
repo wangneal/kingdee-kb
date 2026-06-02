@@ -8,7 +8,7 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Duration;
 use tracing::{info, warn};
 
@@ -625,13 +625,13 @@ pub struct AnalysisOrchestrator {
     /// 分析缓存存储
     cache_store: Arc<Mutex<AnalysisCacheStore>>,
     /// LLM 供应商管理器
-    provider_manager: Arc<Mutex<LLMProviderManager>>,
+    provider_manager: Arc<RwLock<LLMProviderManager>>,
 }
 
 impl AnalysisOrchestrator {
     pub fn new(
-        cache_store: Arc<Mutex<AnalysisCacheStore>>,
-        provider_manager: Arc<Mutex<LLMProviderManager>>,
+    cache_store: Arc<Mutex<AnalysisCacheStore>>,
+    provider_manager: Arc<RwLock<LLMProviderManager>>,
     ) -> Self {
         Self {
             cache_store,
@@ -669,7 +669,7 @@ impl AnalysisOrchestrator {
         // 2. 尝试 LLM 引擎
         if enable_kb_compilation {
             let llm_config: Option<(String, String, String)> = {
-                let mgr = match self.provider_manager.lock() {
+                let mgr = match self.provider_manager.read() {
                     Ok(m) => m,
                     Err(e) => {
                         warn!("获取 provider 管理器锁失败: {}，降级到 Rust 引擎", e);

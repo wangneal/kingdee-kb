@@ -259,7 +259,7 @@ pub async fn trigger_skill_match(
 
     // 记录匹配事件
     if let Some(first) = matches.first() {
-        if let Ok(writer) = state.signal_writer.lock() {
+        if let Ok(writer) = state.signal_writer.write() {
             let match_type = match first.match_type {
                 crate::services::skill_trigger::MatchType::Keyword => "keyword",
                 crate::services::skill_trigger::MatchType::Semantic => "semantic",
@@ -353,7 +353,7 @@ pub async fn execute_skill_script(
         .map_err(|e| e.to_string())?;
 
     // 记录执行事件
-    if let Ok(writer) = state.signal_writer.lock() {
+    if let Ok(writer) = state.signal_writer.write() {
         let event = SignalEvent::skill_executed(&skill_id, result.success, result.duration_ms);
         let _ = writer.write(event);
     }
@@ -404,7 +404,7 @@ pub async fn save_template_manifest(
 /// 检查图像处理依赖状态
 #[tauri::command]
 pub async fn check_image_deps(state: State<'_, AppState>) -> Result<ImageDepsStatus, String> {
-    let processor = state.image_processor.lock().map_err(|e| e.to_string())?;
+        let processor = state.image_processor.read().map_err(|e| e.to_string())?;
 
     Ok(ImageDepsStatus {
         ocr_configured: processor.has_ocr(),
@@ -419,7 +419,7 @@ pub async fn check_image_deps(state: State<'_, AppState>) -> Result<ImageDepsSta
 pub async fn probe_llm_multimodal(state: State<'_, AppState>) -> Result<bool, String> {
     // 从 LLMProviderManager 获取默认供应商配置
     let (llm_api_key, llm_base_url, llm_model, protocol) = {
-        let mgr = state.llm_providers.lock().map_err(|e| e.to_string())?;
+        let mgr = state.llm_providers.read().map_err(|e| e.to_string())?;
         mgr.get_default_provider()
             .map(|p| {
                 (
@@ -449,7 +449,7 @@ pub async fn save_image_config(
     ocr_api_key: Option<String>,
     ocr_secret_key: Option<String>,
 ) -> Result<(), String> {
-    let mut processor = state.image_processor.lock().map_err(|e| e.to_string())?;
+    let mut processor = state.image_processor.write().map_err(|e| e.to_string())?;
 
     // 配置 OCR
     if let (Some(provider), Some(api_key)) = (ocr_provider, ocr_api_key) {
@@ -485,13 +485,13 @@ pub async fn process_image(
 ) -> Result<ImageProcessResult, String> {
     // 获取 OCR 配置（所有尝试共享）
     let ocr_config = {
-        let processor = state.image_processor.lock().map_err(|e| e.to_string())?;
+    let processor = state.image_processor.read().map_err(|e| e.to_string())?;
         processor.get_ocr_config_cloned()
     };
 
     // 获取所有多模态候选模型
     let candidates = {
-        let mgr = state.llm_providers.lock().map_err(|e| e.to_string())?;
+        let mgr = state.llm_providers.read().map_err(|e| e.to_string())?;
         mgr.get_vision_candidates()
     };
 
@@ -525,7 +525,7 @@ pub async fn process_image(
             Ok(result) => {
                 // 成功！同步多模态状态回全局
                 if processor.is_llm_multimodal() {
-                    let mut global = state.image_processor.lock().map_err(|e| e.to_string())?;
+                    let mut global = state.image_processor.write().map_err(|e| e.to_string())?;
                     global.set_llm_multimodal(true);
                 }
 

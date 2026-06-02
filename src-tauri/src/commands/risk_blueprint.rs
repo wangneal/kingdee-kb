@@ -401,6 +401,7 @@ pub async fn agent_chat(
             attachments,
             image_processor,
             llm_providers,
+            None, // wiki_pages
         )
         .await;
     });

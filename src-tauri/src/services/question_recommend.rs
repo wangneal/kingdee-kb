@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 use crate::services::bm25_service::BM25Service;
 use crate::services::embedding::EmbeddingService;
@@ -104,9 +104,9 @@ pub fn recommend_questions(
     request: &RecommendRequest,
     indexer: &ResearchIndexer,
     edition: &Edition,
-    embedding: &Mutex<EmbeddingService>,
-    vector_index: &Mutex<VectorIndex>,
-    bm25: &Mutex<BM25Service>,
+    embedding: &RwLock<EmbeddingService>,
+    vector_index: &RwLock<VectorIndex>,
+    bm25: &RwLock<BM25Service>,
     metadata: &Mutex<MetadataStore>,
 ) -> Result<Vec<RecommendedQuestion>, String> {
     let top_k = request.top_k.unwrap_or(DEFAULT_TOP_K);
@@ -320,9 +320,9 @@ fn truncate_str(text: &str, max_chars: usize) -> String {
 pub async fn generate_followup_questions(
     request: &FollowUpRequest,
     llm: &LLMService,
-    embedding: &Mutex<EmbeddingService>,
-    vector_index: &Mutex<VectorIndex>,
-    bm25: &Mutex<BM25Service>,
+    embedding: &RwLock<EmbeddingService>,
+    vector_index: &RwLock<VectorIndex>,
+    bm25: &RwLock<BM25Service>,
     metadata: &Mutex<MetadataStore>,
 ) -> Result<FollowUpResult, String> {
     // Step 1: Build search query from answered Q&A pairs
@@ -383,9 +383,9 @@ pub async fn smart_fill_for_question(
     project_name: Option<&str>,
     indexer: &ResearchIndexer,
     llm: &LLMService,
-    embedding: &Mutex<EmbeddingService>,
-    vector_index: &Mutex<VectorIndex>,
-    bm25: &Mutex<BM25Service>,
+    embedding: &RwLock<EmbeddingService>,
+    vector_index: &RwLock<VectorIndex>,
+    bm25: &RwLock<BM25Service>,
     metadata: &Mutex<MetadataStore>,
 ) -> Result<SmartFillResult, String> {
     // Step 1: Find matching question in indexer (for context enrichment)
@@ -511,9 +511,9 @@ fn search_kb_for_followup(
     query: &str,
     project_name: Option<&str>,
     top_k: usize,
-    embedding: &Mutex<EmbeddingService>,
-    vector_index: &Mutex<VectorIndex>,
-    bm25: &Mutex<BM25Service>,
+    embedding: &RwLock<EmbeddingService>,
+    vector_index: &RwLock<VectorIndex>,
+    bm25: &RwLock<BM25Service>,
     metadata: &Mutex<MetadataStore>,
 ) -> (String, Vec<KBSource>) {
     let search_results = hybrid_search::hybrid_search(
@@ -664,9 +664,9 @@ fn assemble_kb_context_for_fill(
     question_text: &str,
     project_name: Option<&str>,
     top_k: usize,
-    embedding: &Mutex<EmbeddingService>,
-    vector_index: &Mutex<VectorIndex>,
-    bm25: &Mutex<BM25Service>,
+    embedding: &RwLock<EmbeddingService>,
+    vector_index: &RwLock<VectorIndex>,
+    bm25: &RwLock<BM25Service>,
     metadata: &Mutex<MetadataStore>,
 ) -> (Vec<HybridSearchResult>, Vec<KBSource>) {
     let search_results = hybrid_search::hybrid_search(

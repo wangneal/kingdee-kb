@@ -40,22 +40,22 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// 所有 Tauri 命令共享的全局应用状态
 pub struct AppState {
     /// 应用数据目录（~/.kingdee-kb/）
     pub data_dir: PathBuf,
     /// 嵌入模型管理器（下载、初始化、状态）
-    pub model_manager: Arc<Mutex<ModelManager>>,
+    pub model_manager: Arc<RwLock<ModelManager>>,
     /// 文本 → 向量嵌入服务
-    pub embedding: Arc<Mutex<EmbeddingService>>,
+    pub embedding: Arc<RwLock<EmbeddingService>>,
     /// 用于相似性搜索的 HNSW 向量索引
-    pub vector_index: Arc<Mutex<VectorIndex>>,
+    pub vector_index: Arc<RwLock<VectorIndex>>,
     /// 用于分块↔向量映射的 SQLite 元数据存储
     pub metadata: Arc<Mutex<MetadataStore>>,
     /// BM25 全文搜索服务（tantivy + jieba）
-    pub bm25: Arc<Mutex<BM25Service>>,
+    pub bm25: Arc<RwLock<BM25Service>>,
     /// 用于 RAG 查询的 LLM 服务（OpenAI 兼容 API）
     pub llm: LLMService,
     /// 用于生成文档管理的产品存储
@@ -89,25 +89,25 @@ pub struct AppState {
     /// 问题工具的待处理问题（跨进程状态）
     pub pending_questions: PendingQuestions,
     /// Whisper 语音转录服务（延迟加载模型）
-    pub whisper_service: Arc<Mutex<WhisperService>>,
+    pub whisper_service: Arc<RwLock<WhisperService>>,
     /// 音频捕获（麦克风录音）
-    pub audio_capture: Arc<Mutex<AudioCapture>>,
+    pub audio_capture: Arc<RwLock<AudioCapture>>,
     /// 在线 ASR 配置（腾讯/讯飞）
-    pub asr_config: Arc<Mutex<AsrConfigStore>>,
+    pub asr_config: Arc<RwLock<AsrConfigStore>>,
     /// 技能管理器（SKILL.md 加载/搜索/匹配）
     pub skill_manager: Arc<Mutex<SkillManager>>,
     /// 信号写入器（技能系统事件记录）
-    pub signal_writer: Arc<Mutex<SignalWriter>>,
+    pub signal_writer: Arc<RwLock<SignalWriter>>,
     /// 模板管理器（Gitee 模板下载和缓存）
     pub template_manager: Arc<Mutex<TemplateManager>>,
     /// 图像处理器（OCR + 多模态 LLM）
-    pub image_processor: Arc<Mutex<ImageProcessor>>,
+    pub image_processor: Arc<RwLock<ImageProcessor>>,
     /// LLM 供应商管理器
-    pub llm_providers: Arc<Mutex<LLMProviderManager>>,
+    pub llm_providers: Arc<RwLock<LLMProviderManager>>,
     /// 持久化摄入队列（JSON 文件 + 崩溃恢复）
     pub ingest_queue: Mutex<IngestionQueue>,
     /// Agent 会话取消标志（session_id → cancel flag）
-    pub cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    pub cancel_flags: Arc<RwLock<HashMap<String, Arc<AtomicBool>>>>,
     /// Cross-Encoder Reranker（精排服务，加载失败时返回 None）
     pub reranker: Option<RerankerService>,
 }
@@ -235,11 +235,11 @@ impl AppState {
         let template_manager = TemplateManager::new(template_cache_dir, String::new());
 
         // 初始化 LLM 供应商管理器
-        let llm_providers = Arc::new(Mutex::new(LLMProviderManager::new(&data_dir.to_path_buf())));
+        let llm_providers = Arc::new(RwLock::new(LLMProviderManager::new(&data_dir.to_path_buf())));
 
         // 初始化 ImageProcessor（图像处理，从 LLMProviderManager 获取配置）
         let image_processor = {
-            let mgr = llm_providers.lock().map_err(|e| e.to_string())?;
+            let mgr = llm_providers.read().map_err(|e| e.to_string())?;
             let (api_key, base_url, model) = mgr
                 .get_default_provider()
                 .map(|p| {
@@ -261,11 +261,11 @@ impl AppState {
 
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
-            model_manager: Arc::new(Mutex::new(model_manager)),
-            embedding: Arc::new(Mutex::new(embedding)),
-            vector_index: Arc::new(Mutex::new(vector_index)),
+            model_manager: Arc::new(RwLock::new(model_manager)),
+            embedding: Arc::new(RwLock::new(embedding)),
+            vector_index: Arc::new(RwLock::new(vector_index)),
             metadata: Arc::new(Mutex::new(metadata)),
-            bm25: Arc::new(Mutex::new(bm25)),
+            bm25: Arc::new(RwLock::new(bm25)),
             llm,
             products: Arc::new(Mutex::new(products)),
             raw_sources,
@@ -280,18 +280,18 @@ impl AppState {
             outline_store,
             risk_control_store,
             desensitizer,
-            whisper_service: Arc::new(Mutex::new(whisper_service)),
-            audio_capture: Arc::new(Mutex::new(audio_capture)),
-            asr_config: Arc::new(Mutex::new(asr_config)),
+            whisper_service: Arc::new(RwLock::new(whisper_service)),
+            audio_capture: Arc::new(RwLock::new(audio_capture)),
+            asr_config: Arc::new(RwLock::new(asr_config)),
             rig_agent: RigAgent,
             pending_questions,
             skill_manager: Arc::new(Mutex::new(skill_manager)),
-            signal_writer: Arc::new(Mutex::new(signal_writer)),
+            signal_writer: Arc::new(RwLock::new(signal_writer)),
             template_manager: Arc::new(Mutex::new(template_manager)),
-            image_processor: Arc::new(Mutex::new(image_processor)),
+            image_processor: Arc::new(RwLock::new(image_processor)),
             llm_providers,
             ingest_queue,
-            cancel_flags: Arc::new(Mutex::new(HashMap::new())),
+            cancel_flags: Arc::new(RwLock::new(HashMap::new())),
             reranker: RerankerService::try_new(10).ok(),
         })
     }
@@ -375,7 +375,7 @@ impl AppState {
         let whisper_service = WhisperService::new();
         let audio_capture = AudioCapture::new(data_dir);
 
-        let llm_providers = Arc::new(Mutex::new(LLMProviderManager::new(&data_dir.to_path_buf())));
+        let llm_providers = Arc::new(RwLock::new(LLMProviderManager::new(&data_dir.to_path_buf())));
         let llm = LLMService::with_desensitizer(llm_providers.clone(), desensitizer.clone());
 
         let raw_sources = {
@@ -392,11 +392,11 @@ impl AppState {
 
         Self {
             data_dir: data_dir.to_path_buf(),
-            model_manager: Arc::new(Mutex::new(ModelManager::new(data_dir.join("models")))),
-            embedding: Arc::new(Mutex::new(EmbeddingService::empty())),
-            vector_index: Arc::new(Mutex::new(vector_index)),
+            model_manager: Arc::new(RwLock::new(ModelManager::new(data_dir.join("models")))),
+            embedding: Arc::new(RwLock::new(EmbeddingService::empty())),
+            vector_index: Arc::new(RwLock::new(vector_index)),
             metadata: Arc::new(Mutex::new(metadata)),
-            bm25: Arc::new(Mutex::new(bm25)),
+            bm25: Arc::new(RwLock::new(bm25)),
             llm,
             products: Arc::new(Mutex::new(products)),
             raw_sources,
@@ -437,11 +437,11 @@ impl AppState {
             desensitizer,
             rig_agent: RigAgent,
             pending_questions,
-            whisper_service: Arc::new(Mutex::new(whisper_service)),
-            audio_capture: Arc::new(Mutex::new(audio_capture)),
-            asr_config: Arc::new(Mutex::new(AsrConfigStore::new(&db_path))),
+            whisper_service: Arc::new(RwLock::new(whisper_service)),
+            audio_capture: Arc::new(RwLock::new(audio_capture)),
+            asr_config: Arc::new(RwLock::new(AsrConfigStore::new(&db_path))),
             skill_manager: Arc::new(Mutex::new(SkillManager::new(data_dir.join("skills")))),
-            signal_writer: Arc::new(Mutex::new(
+            signal_writer: Arc::new(RwLock::new(
                 SignalWriter::new(data_dir.join("signals.jsonl")).unwrap_or_else(|_| {
                     // 降级到临时目录
                     let temp = std::env::temp_dir().join("kingdee-kb-signals.jsonl");
@@ -452,14 +452,14 @@ impl AppState {
                 data_dir.join("templates"),
                 String::new(),
             ))),
-            image_processor: Arc::new(Mutex::new(ImageProcessor::new(
+            image_processor: Arc::new(RwLock::new(ImageProcessor::new(
                 String::new(),
                 String::new(),
                 String::new(),
             ))),
             llm_providers,
             ingest_queue,
-            cancel_flags: Arc::new(Mutex::new(HashMap::new())),
+            cancel_flags: Arc::new(RwLock::new(HashMap::new())),
             reranker: RerankerService::try_new(10).ok(),
         }
     }
@@ -469,7 +469,7 @@ impl AppState {
     /// 注册一个取消标志，返回共享的 AtomicBool 传入 agent 循环。
     pub fn register_cancel_flag(&self, session_id: &str) -> Arc<AtomicBool> {
         let flag = Arc::new(AtomicBool::new(false));
-        if let Ok(mut flags) = self.cancel_flags.lock() {
+        if let Ok(mut flags) = self.cancel_flags.write() {
             flags.insert(session_id.to_string(), flag.clone());
         }
         flag
@@ -477,7 +477,7 @@ impl AppState {
 
     /// 取消指定会话的 agent 流。
     pub fn cancel_agent_session(&self, session_id: &str) {
-        if let Ok(flags) = self.cancel_flags.lock() {
+        if let Ok(flags) = self.cancel_flags.read() {
             if let Some(flag) = flags.get(session_id) {
                 flag.store(true, std::sync::atomic::Ordering::SeqCst);
             }
@@ -486,7 +486,7 @@ impl AppState {
 
     /// 移除已完成会话的取消标志（防止内存泄漏）。
     pub fn remove_cancel_flag(&self, session_id: &str) {
-        if let Ok(mut flags) = self.cancel_flags.lock() {
+        if let Ok(mut flags) = self.cancel_flags.write() {
             flags.remove(session_id);
         }
     }
@@ -494,7 +494,7 @@ impl AppState {
     /// 确保 embedding 模型已加载（懒加载）。
     /// 合并自 ingestion.rs 和 search_llm.rs 的重复实现。
     pub fn ensure_embedding_ready(&self) {
-        let emb = match self.embedding.lock() {
+        let emb = match self.embedding.read() {
             Ok(g) => g,
             Err(e) => {
                 eprintln!("[LazyLoad] Embedding lock poisoned: {}", e);
@@ -506,7 +506,7 @@ impl AppState {
         }
         drop(emb);
 
-        let mut mm = match self.model_manager.lock() {
+        let mut mm = match self.model_manager.write() {
             Ok(g) => g,
             Err(_) => return,
         };
@@ -517,7 +517,7 @@ impl AppState {
             }
         }
         if let Some(model) = mm.take_model() {
-            let mut emb = match self.embedding.lock() {
+            let mut emb = match self.embedding.write() {
                 Ok(g) => g,
                 Err(e) => {
                     eprintln!("[LazyLoad] Embedding lock poisoned: {}", e);

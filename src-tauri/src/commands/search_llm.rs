@@ -17,7 +17,7 @@ pub async fn bm25_search(
     project_id: Option<String>,
     top_k: Option<u32>,
 ) -> Result<Vec<BM25SearchResult>, String> {
-    let bm25 = state.bm25.lock().map_err(|e| e.to_string())?;
+    let bm25 = state.bm25.read().map_err(|e| e.to_string())?;
     bm25.search(&query, project_id.as_deref(), &[], top_k.unwrap_or(10), &[])
 }
 

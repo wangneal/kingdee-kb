@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 use crate::services::bm25_service::BM25Service;
 use crate::services::embedding::EmbeddingService;
@@ -84,9 +84,9 @@ const KB_TOP_K: usize = 8;
 pub async fn smart_fill(
     request: SmartFillRequest,
     llm: &LLMService,
-    embedding: &Mutex<EmbeddingService>,
-    vector_index: &Mutex<VectorIndex>,
-    bm25: &Mutex<BM25Service>,
+    embedding: &RwLock<EmbeddingService>,
+    vector_index: &RwLock<VectorIndex>,
+    bm25: &RwLock<BM25Service>,
     metadata: &Mutex<MetadataStore>,
 ) -> Result<SmartFillResult, String> {
     // ── Step 1: Identify fields to fill ──

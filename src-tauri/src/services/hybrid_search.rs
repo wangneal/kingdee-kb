@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::{Mutex, RwLock};
 
 use crate::services::bm25_service::BM25Service;
 use crate::services::embedding::EmbeddingService;
@@ -121,12 +122,12 @@ pub fn hybrid_search(
     project_id: Option<&str>,
     extra_project_ids: &[String],
     top_k: usize,
-    embedding: &std::sync::Mutex<EmbeddingService>,
-    vector_index: &std::sync::Mutex<VectorIndex>,
-    bm25: &std::sync::Mutex<BM25Service>,
-    metadata: &std::sync::Mutex<MetadataStore>,
+    embedding: &RwLock<EmbeddingService>,
+    vector_index: &RwLock<VectorIndex>,
+    bm25: &RwLock<BM25Service>,
+    metadata: &Mutex<MetadataStore>,
     reranker: Option<&RerankerService>,
-    wiki_pages: Option<&std::sync::Mutex<WikiPageStore>>,
+    wiki_pages: Option<&Mutex<WikiPageStore>>,
 ) -> Result<Vec<HybridSearchResult>, String> {
     // ── Step 0: wiki_pages 优先搜索 ──
     if let Some(wiki_store) = wiki_pages {
@@ -148,18 +149,18 @@ pub fn hybrid_search(
 
     // ── Step 1: Embed query (graceful degradation if model not initialized) ──
     let vector_resolved: Vec<ResolvedChunk> = {
-        let emb = embedding.lock().map_err(|e| e.to_string())?;
+        let emb = embedding.read().map_err(|e| e.to_string())?;
         if emb.is_ready() {
             // Embedding available → full hybrid search
             drop(emb); // release lock before mutable borrow
             let query_vec = {
-                let mut emb_mut = embedding.lock().map_err(|e| e.to_string())?;
+                let mut emb_mut = embedding.write().map_err(|e| e.to_string())?;
                 emb_mut.embed_text(query)?
             }; // drop emb_mut lock
 
             // Vector search
             let vector_raw = {
-                let index = vector_index.lock().map_err(|e| e.to_string())?;
+                let index = vector_index.read().map_err(|e| e.to_string())?;
                 index.search(&query_vec, TOP_N)?
             }; // drop index lock
 
@@ -206,7 +207,7 @@ pub fn hybrid_search(
 
     // ── Step 4: BM25 search（前置过滤已排除 chat-attachments chunk）──
     let bm25_raw = {
-        let service = bm25.lock().map_err(|e| e.to_string())?;
+        let service = bm25.read().map_err(|e| e.to_string())?;
         service.search(
             query,
             project_id,

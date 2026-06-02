@@ -18,7 +18,7 @@ pub async fn load_whisper_model(
     let data_dir = &state.data_dir;
     let _model_path = model_downloader::ensure_model(data_dir, &model_size)?;
 
-    let mut whisper = state.whisper_service.lock().map_err(|e| e.to_string())?;
+    let mut whisper = state.whisper_service.write().map_err(|e| e.to_string())?;
     whisper.load_model(data_dir, &model_size)?;
 
     Ok(())
@@ -27,14 +27,14 @@ pub async fn load_whisper_model(
 /// 获取 Whisper 服务状态
 #[tauri::command]
 pub fn get_whisper_status(state: State<'_, AppState>) -> Result<WhisperStatus, String> {
-    let whisper = state.whisper_service.lock().map_err(|e| e.to_string())?;
+    let whisper = state.whisper_service.read().map_err(|e| e.to_string())?;
     Ok(whisper.status())
 }
 
 /// 开始麦克风录音。
 #[tauri::command]
 pub fn start_whisper_recording(state: State<'_, AppState>) -> Result<(), String> {
-    let capture = state.audio_capture.lock().map_err(|e| e.to_string())?;
+    let mut capture = state.audio_capture.write().map_err(|e| e.to_string())?;
     capture.start_recording()
 }
 
@@ -51,7 +51,7 @@ pub async fn stop_whisper_recording(
 
         // 1. 停止录音获取 PCM 数据
         let pcm_data = {
-            let capture = state.audio_capture.lock().map_err(|e| e.to_string())?;
+            let mut capture = state.audio_capture.write().map_err(|e| e.to_string())?;
             capture.stop_recording()?
         };
         if pcm_data.is_empty() {
@@ -69,7 +69,7 @@ pub async fn stop_whisper_recording(
         let result = match asr_provider {
             "tencent" => {
                 let (secret_id, secret_key) = {
-                    let cfg = state.asr_config.lock().map_err(|e| e.to_string())?;
+                    let cfg = state.asr_config.read().map_err(|e| e.to_string())?;
                     let sid = cfg.tencent_secret_id.clone()
                         .ok_or_else(|| "请先在设置中配置腾讯云 SecretId".to_string())?;
                     let sk = cfg.tencent_secret_key.clone()
@@ -96,7 +96,7 @@ pub async fn stop_whisper_recording(
 
     // 无 provider → 使用本地 Whisper
     let pcm_data = {
-        let capture = state.audio_capture.lock().map_err(|e| e.to_string())?;
+        let mut capture = state.audio_capture.write().map_err(|e| e.to_string())?;
         capture.stop_recording()?
     };
 
@@ -129,7 +129,7 @@ pub async fn stop_whisper_recording(
         .collect();
 
     let whisper_result = {
-        let whisper = state.whisper_service.lock().map_err(|e| e.to_string())?;
+        let mut whisper = state.whisper_service.write().map_err(|e| e.to_string())?;
         if !whisper.is_model_loaded() {
             return Err("Whisper model not loaded. Call load_whisper_model first.".to_string());
         }
@@ -169,7 +169,7 @@ fn emit_video_progress(app_handle: Option<&AppHandle>, step: &str, progress: f32
 
 /// 内部转写逻辑（分片流式处理，内存安全）
 fn do_transcribe_video(
-    whisper_service: &std::sync::MutexGuard<'_, crate::services::whisper_service::WhisperService>,
+    whisper_service: &crate::services::whisper_service::WhisperService,
     video_path: &str,
     data_dir: &std::path::Path,
     app_handle: Option<&AppHandle>,
@@ -230,11 +230,11 @@ pub async fn transcribe_video_file(
     video_path: String,
     app_handle: AppHandle,
 ) -> Result<VideoTranscriptionResult, String> {
-    let whisper = state.whisper_service.lock().map_err(|e| e.to_string())?;
+    let whisper = state.whisper_service.read().map_err(|e| e.to_string())?;
     if !whisper.is_model_loaded() {
         return Err("Whisper 模型未加载。请先在研究助手页面加载 Whisper 模型。".to_string());
     }
-    do_transcribe_video(&whisper, &video_path, &state.data_dir, Some(&app_handle))
+    do_transcribe_video(&*whisper, &video_path, &state.data_dir, Some(&app_handle))
 }
 
 /// 视频转写一站式管道：提取音频 → 转写 → 入库 → 可选生成会议纪要。
@@ -247,11 +247,11 @@ pub async fn transcribe_and_ingest_video(
     app_handle: AppHandle,
 ) -> Result<VideoPipelineResult, String> {
     let transcription = {
-        let whisper = state.whisper_service.lock().map_err(|e| e.to_string())?;
+        let whisper = state.whisper_service.read().map_err(|e| e.to_string())?;
         if !whisper.is_model_loaded() {
             return Err("Whisper 模型未加载。请先在研究助手页面加载 Whisper 模型。".to_string());
         }
-        do_transcribe_video(&whisper, &video_path, &state.data_dir, Some(&app_handle))?
+        do_transcribe_video(&*whisper, &video_path, &state.data_dir, Some(&app_handle))?
     };
 
     if transcription.text.is_empty() {
@@ -356,13 +356,13 @@ pub fn save_asr_config(
     tencent_secret_id: Option<String>,
     tencent_secret_key: Option<String>,
 ) -> Result<(), String> {
-    let mut config = state.asr_config.lock().map_err(|e| e.to_string())?;
+    let mut config = state.asr_config.write().map_err(|e| e.to_string())?;
     config.save_tencent(tencent_secret_id, tencent_secret_key)
 }
 
 /// 获取 ASR 配置状态
 #[tauri::command]
 pub fn get_asr_config_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let config = state.asr_config.lock().map_err(|e| e.to_string())?;
+    let config = state.asr_config.read().map_err(|e| e.to_string())?;
     Ok(config.get_status())
 }

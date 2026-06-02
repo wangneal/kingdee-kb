@@ -15,7 +15,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 use super::bm25_service::BM25Service;
 use super::deliverable_recipes;
@@ -427,9 +427,9 @@ const RECIPE_KB_TOP_K: usize = 8;
 pub async fn generate_recipe_doc(
     request: RecipeDocRequest,
     llm: &LLMService,
-    embedding: &Mutex<EmbeddingService>,
-    vector_index: &Mutex<VectorIndex>,
-    bm25: &Mutex<BM25Service>,
+    embedding: &RwLock<EmbeddingService>,
+    vector_index: &RwLock<VectorIndex>,
+    bm25: &RwLock<BM25Service>,
     metadata: &Mutex<MetadataStore>,
 ) -> Result<RecipeDocResult, String> {
     // ── Step 1: Look up recipe ──

@@ -23,7 +23,7 @@ use crate::services::text_cleaner::clean_text;
 use crate::services::vector_index::VectorIndex;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tauri::{AppHandle, Emitter};
 
 /// Check if a file is a temporary/junk file that should be skipped during ingestion.
@@ -93,10 +93,10 @@ pub fn ingest_text(
     text: &str,
     title: &str,
     project: &str,
-    embedding: &Arc<Mutex<EmbeddingService>>,
-    vector_index: &Arc<Mutex<VectorIndex>>,
+    embedding: &Arc<RwLock<EmbeddingService>>,
+    vector_index: &Arc<RwLock<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
-    bm25: &Arc<Mutex<BM25Service>>,
+    bm25: &Arc<RwLock<BM25Service>>,
     raw_sources: Option<&Arc<Mutex<RawSourceStore>>>,
     raw_source_identity: Option<&str>,
     source_path: Option<&str>,
@@ -225,14 +225,14 @@ pub fn ingest_text(
 
         // Embed batch
         let embeddings = {
-            let mut emb = embedding.lock().map_err(|e| format!("Lock error: {}", e))?;
+            let mut emb = embedding.write().map_err(|e| format!("Lock error: {}", e))?;
             emb.embed_batch(&texts)?
         };
 
         // Store vectors and metadata
         {
             let mut idx = vector_index
-                .lock()
+                .write()
                 .map_err(|e| format!("Lock error: {}", e))?;
             let meta = metadata.lock().map_err(|e| format!("Lock error: {}", e))?;
 
@@ -279,7 +279,7 @@ pub fn ingest_text(
 
         // Write collected chunks to BM25 index (outside vector+metadata locks)
         if !bm25_chunks.is_empty() {
-            let bm25_guard = bm25.lock().map_err(|e| format!("BM25 lock error: {}", e))?;
+            let bm25_guard = bm25.write().map_err(|e| format!("BM25 lock error: {}", e))?;
             bm25_guard.add_chunks(&bm25_chunks)?;
             bm25_chunks.clear();
         }
@@ -298,14 +298,14 @@ pub fn ingest_text(
     // Save index
     {
         let idx = vector_index
-            .lock()
+            .read()
             .map_err(|e| format!("Lock error: {}", e))?;
         idx.save()?;
     }
 
     // Commit BM25 index to make new chunks searchable
     {
-        let bm25_guard = bm25.lock().map_err(|e| format!("BM25 lock error: {}", e))?;
+        let bm25_guard = bm25.write().map_err(|e| format!("BM25 lock error: {}", e))?;
         bm25_guard.commit()?;
     }
 
@@ -328,10 +328,10 @@ pub fn ingest_text(
 pub fn ingest_file(
     file_path: &Path,
     project: &str,
-    embedding: &Arc<Mutex<EmbeddingService>>,
-    vector_index: &Arc<Mutex<VectorIndex>>,
+    embedding: &Arc<RwLock<EmbeddingService>>,
+    vector_index: &Arc<RwLock<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
-    bm25: &Arc<Mutex<BM25Service>>,
+    bm25: &Arc<RwLock<BM25Service>>,
     raw_sources: Option<&Arc<Mutex<RawSourceStore>>>,
     app_handle: Option<&AppHandle>,
 ) -> Result<IngestionResult, String> {
@@ -387,10 +387,10 @@ pub fn ingest_file(
 pub fn ingest_directory(
     dir_path: &Path,
     project: &str,
-    embedding: &Arc<Mutex<EmbeddingService>>,
-    vector_index: &Arc<Mutex<VectorIndex>>,
+    embedding: &Arc<RwLock<EmbeddingService>>,
+    vector_index: &Arc<RwLock<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
-    bm25: &Arc<Mutex<BM25Service>>,
+    bm25: &Arc<RwLock<BM25Service>>,
     raw_sources: Option<&Arc<Mutex<RawSourceStore>>>,
     app_handle: Option<&AppHandle>,
 ) -> Result<DirectoryIngestionResult, String> {
@@ -426,10 +426,10 @@ pub fn ingest_directory(
 fn ingest_dir_recursive(
     dir_path: &Path,
     project: &str,
-    embedding: &Arc<Mutex<EmbeddingService>>,
-    vector_index: &Arc<Mutex<VectorIndex>>,
+    embedding: &Arc<RwLock<EmbeddingService>>,
+    vector_index: &Arc<RwLock<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
-    bm25: &Arc<Mutex<BM25Service>>,
+    bm25: &Arc<RwLock<BM25Service>>,
     raw_sources: Option<&Arc<Mutex<RawSourceStore>>>,
     app_handle: Option<&AppHandle>,
     imported: &mut Vec<IngestionResult>,

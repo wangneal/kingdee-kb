@@ -112,13 +112,13 @@ pub fn compensate_pending_deletions(state: &AppState) {
             }
         };
 
-        if let Ok(bm25) = state.bm25.lock() {
+        if let Ok(bm25) = state.bm25.write() {
             if let Err(e) = bm25.remove_chunks(&vector_keys) {
                 tracing::warn!("补偿 BM25 删除失败(outbox_id={}): {}", id, e);
             }
         }
 
-        if let Ok(idx) = state.vector_index.lock() {
+        if let Ok(idx) = state.vector_index.write() {
             if let Err(e) = idx.remove_keys(&vector_keys) {
                 tracing::warn!("补偿 usearch 删除失败(outbox_id={}): {}", id, e);
             }

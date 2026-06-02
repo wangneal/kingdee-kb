@@ -50,36 +50,18 @@ pub async fn delete_document(
     };
 
     // 1. 从 BM25 删除（记录错误但不阻塞）
-    if let Ok(bm25) = state.bm25.lock() {
+    if let Ok(bm25) = state.bm25.write() {
         if let Err(e) = bm25.remove_chunks(&vector_keys) {
             tracing::warn!("BM25 删除失败(outbox_id={}): {}", outbox_id, e);
         }
     }
 
     // 2. 从 usearch 删除
-    if let Ok(idx) = state.vector_index.lock() {
-        if let Err(e) = idx.remove_keys(&vector_keys) {
-            tracing::warn!("usearch 删除失败(outbox_id={}): {}", outbox_id, e);
-        }
-    }
-
-    // 3. 从 SQLite 删除
-    {
-        let meta = state.metadata.lock().map_err(|e| e.to_string())?;
-        meta.delete_document(document_id, project.as_deref())?;
-    }
-
-    // 4. outbox 标记完成
-    if let Ok(meta) = state.metadata.lock() {
-        let _ = meta.update_deletion_status(outbox_id, "completed", None);
-    }
-
-    // 5. 触发碎片整理检查（异步）
-    if let Ok(idx) = state.vector_index.lock() {
+    if let Ok(idx) = state.vector_index.read() {
         if idx.check_compact() {
             let idx_ref = state.vector_index.clone();
             std::thread::spawn(move || {
-                if let Ok(mut idxx) = idx_ref.lock() {
+                if let Ok(mut idxx) = idx_ref.write() {
                     let _ = idxx.compact();
                 }
             });
@@ -119,12 +101,12 @@ pub async fn delete_documents_batch(
     };
 
     // 1. BM25 批量删除
-    if let Ok(bm25) = state.bm25.lock() {
+    if let Ok(bm25) = state.bm25.write() {
         let _ = bm25.remove_chunks(&vector_keys);
     }
 
     // 2. usearch 批量删除
-    if let Ok(idx) = state.vector_index.lock() {
+    if let Ok(idx) = state.vector_index.write() {
         let _ = idx.remove_keys(&vector_keys);
     }
 
@@ -135,11 +117,11 @@ pub async fn delete_documents_batch(
     };
 
     // 4. 触发碎片整理检查
-    if let Ok(idx) = state.vector_index.lock() {
+    if let Ok(idx) = state.vector_index.read() {
         if idx.check_compact() {
             let idx_ref = state.vector_index.clone();
             std::thread::spawn(move || {
-                if let Ok(mut idxx) = idx_ref.lock() {
+                if let Ok(mut idxx) = idx_ref.write() {
                     let _ = idxx.compact();
                 }
             });

@@ -4,7 +4,7 @@
 //! 并通过 ingest_cache 实现增量缓存（project + source_identity + sha256 三元组）。
 
 use regex::Regex;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use tracing::{info, warn};
 
 // ─── 静态正则（LazyLock，避免每次调用重新编译） ───
@@ -61,7 +61,7 @@ pub async fn process_with_kb_compilation(
     title: &str,
     enable_kb_compilation: bool,
     cache_store: Arc<Mutex<AnalysisCacheStore>>,
-    provider_manager: Arc<Mutex<LLMProviderManager>>,
+    provider_manager: Arc<RwLock<LLMProviderManager>>,
     wiki_pages: Arc<Mutex<WikiPageStore>>,
     ingest_cache_store: Arc<Mutex<IngestCacheStore>>,
 ) -> Result<KbCompilationResult, String> {
@@ -182,7 +182,7 @@ async fn run_llm_compilation(
     project: &str,
     chunk_ids: &[i64],
     wiki_pages: &Arc<Mutex<WikiPageStore>>,
-    provider_manager: &Arc<Mutex<LLMProviderManager>>,
+    provider_manager: &Arc<RwLock<LLMProviderManager>>,
 ) -> Result<Vec<String>, String> {
     let page_slug = slugify(&analysis.title);
     let page_title = if analysis.title.is_empty() {
@@ -299,12 +299,12 @@ tags: [标签1, 标签2, 标签3]
 async fn call_llm_for_compilation(
     prompt: &str,
     _page_title: &str,
-    provider_manager: &Arc<Mutex<LLMProviderManager>>,
+    provider_manager: &Arc<RwLock<LLMProviderManager>>,
 ) -> Result<(String, String), String> {
     // 获取 LLM 供应商配置
     let (base_url, api_key, model_name) = {
         let mgr = provider_manager
-            .lock()
+            .read()
             .map_err(|e| format!("provider 管理器锁失败: {}", e))?;
         let provider = mgr
             .get_default_provider()
