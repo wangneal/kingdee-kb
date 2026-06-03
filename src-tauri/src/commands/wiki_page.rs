@@ -35,21 +35,21 @@ pub async fn get_wiki_page(
 #[tauri::command]
 pub async fn get_wiki_page_by_slug(
     state: State<'_, AppState>,
-    project: String,
+    project_id: i64,
     slug: String,
 ) -> Result<Option<WikiPage>, String> {
     let store = state
         .wiki_pages
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.get_by_slug(&project, &slug)
+    store.get_by_slug(project_id, &slug)
 }
 
 /// 列出项目下的维基页面，可按状态过滤。
 #[tauri::command]
 pub async fn list_wiki_pages(
     state: State<'_, AppState>,
-    project: String,
+    project_id: i64,
     page_status: Option<String>,
     limit: Option<i64>,
     offset: Option<i64>,
@@ -58,7 +58,7 @@ pub async fn list_wiki_pages(
         .wiki_pages
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.list(&project, page_status.as_deref(), limit, offset)
+    store.list(project_id, page_status.as_deref(), limit, offset)
 }
 
 /// 更新维基页面。
@@ -118,20 +118,20 @@ pub async fn reject_wiki_page(
 #[tauri::command]
 pub async fn seed_demo_wiki_pages(
     state: State<'_, AppState>,
-    project: String,
+    project_id: i64,
 ) -> Result<usize, String> {
     let store = state
         .wiki_pages
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.seed_demo_pages(&project)
+    store.seed_demo_pages(project_id)
 }
 
 /// 搜索 wikilink 候选页面（按标题模糊搜索，排除自身）。
 #[tauri::command]
 pub async fn search_wikilink_candidates(
     state: State<'_, AppState>,
-    project: String,
+    project_id: i64,
     query: String,
     exclude_slug: String,
     limit: Option<i64>,
@@ -140,7 +140,7 @@ pub async fn search_wikilink_candidates(
         .wiki_pages
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.search_wikilink_candidates(&project, &query, &exclude_slug, limit.unwrap_or(20))
+    store.search_wikilink_candidates(project_id, &query, &exclude_slug, limit.unwrap_or(20))
 }
 
 /// 添加 wikilink（追加 slug 到页面的 wikilinks JSON 数组，去重）。
@@ -175,26 +175,26 @@ pub async fn remove_wikilink(
 #[tauri::command]
 pub async fn get_wikilink_targets(
     state: State<'_, AppState>,
-    project: String,
+    project_id: i64,
     slugs: Vec<String>,
 ) -> Result<Vec<WikiLinkTarget>, String> {
     let store = state
         .wiki_pages
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.get_wikilink_targets(&project, &slugs)
+    store.get_wikilink_targets(project_id, &slugs)
 }
 
 /// 获取反向链接（哪些页面引用了当前页面）。
 #[tauri::command]
 pub async fn get_backlinks(
     state: State<'_, AppState>,
-    project: String,
+    project_id: i64,
     slug: String,
 ) -> Result<Vec<WikiPageBrief>, String> {
     let store = state
         .wiki_pages
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.get_backlinks(&project, &slug)
+    store.get_backlinks(project_id, &slug)
 }

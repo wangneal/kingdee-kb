@@ -27,7 +27,7 @@ pub struct WikiLinkTarget {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WikiPage {
     pub id: i64,
-    pub project: String,
+    pub project_id: i64,
     pub slug: String,
     pub title: String,
     pub page_type: String,
@@ -49,7 +49,7 @@ pub struct WikiPage {
 /// 创建维基页面时的数据传输对象
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateWikiPage {
-    pub project: String,
+    pub project_id: i64,
     pub slug: String,
     pub title: String,
     pub page_type: String,
@@ -95,7 +95,7 @@ impl WikiPageStore {
         self.db.execute_batch(
             "CREATE TABLE IF NOT EXISTS wiki_pages (
                 id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-                project            TEXT NOT NULL,
+                project_id         INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 slug               TEXT NOT NULL,
                 title              TEXT NOT NULL,
                 page_type          TEXT NOT NULL CHECK(page_type IN ('summary','blueprint','fitgap','decision','config')),
@@ -115,63 +115,42 @@ impl WikiPageStore {
                 CHECK((content_candidate IS NULL AND candidate_status IS NULL AND candidate_version IS NULL)
                    OR (content_candidate IS NOT NULL AND candidate_status IS NOT NULL AND candidate_version IS NOT NULL AND candidate_version = version + 1))
             );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_wiki_pages_slug ON wiki_pages(project, slug);
-            CREATE INDEX IF NOT EXISTS idx_wiki_pages_project ON wiki_pages(project);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_wiki_pages_slug ON wiki_pages(project_id, slug);
+            CREATE INDEX IF NOT EXISTS idx_wiki_pages_project_id ON wiki_pages(project_id);
             CREATE INDEX IF NOT EXISTS idx_wiki_pages_status ON wiki_pages(page_status);
             CREATE INDEX IF NOT EXISTS idx_wiki_pages_type ON wiki_pages(page_type);
         ").map_err(|e| format!("创建 wiki_pages 表失败: {}", e))?;
 
-        // 迁移：旧版约束 → 新版约束（领域类型 + candidate_version = version + 1）
-        let version: i64 = self.db.query_row("PRAGMA user_version", [], |row| row.get(0))
-            .map_err(|e| format!("读取 schema 版本失败: {}", e))?;
+        self.ensure_column("wiki_pages", "project_id", "INTEGER")?;
+        Ok(())
+    }
 
-        if version < 1 {
-            eprintln!("[WikiPage] 迁移 wiki_pages 表到 v1（领域类型约束）");
-            self.db.execute_batch(
-                "CREATE TABLE wiki_pages_v2 (
-                    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-                    project            TEXT NOT NULL,
-                    slug               TEXT NOT NULL,
-                    title              TEXT NOT NULL,
-                    page_type          TEXT NOT NULL CHECK(page_type IN ('summary','blueprint','fitgap','decision','config')),
-                    content            TEXT NOT NULL,
-                    content_candidate  TEXT,
-                    candidate_status   TEXT CHECK(candidate_status IN ('auto','conflict','pending')),
-                    frontmatter        TEXT NOT NULL DEFAULT '{}',
-                    sources            TEXT NOT NULL DEFAULT '[]',
-                    wikilinks          TEXT NOT NULL DEFAULT '[]',
-                    tags               TEXT NOT NULL DEFAULT '[]',
-                    page_metadata      TEXT NOT NULL DEFAULT '{}',
-                    candidate_version  INTEGER,
-                    page_status        TEXT NOT NULL DEFAULT 'draft' CHECK(page_status IN ('draft','published')),
-                    version            INTEGER NOT NULL DEFAULT 1,
-                    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
-                    CHECK((content_candidate IS NULL AND candidate_status IS NULL AND candidate_version IS NULL)
-                       OR (content_candidate IS NOT NULL AND candidate_status IS NOT NULL AND candidate_version IS NOT NULL AND candidate_version = version + 1))
-                );
-                INSERT OR IGNORE INTO wiki_pages_v2 SELECT * FROM wiki_pages;
-                DROP TABLE IF EXISTS wiki_pages;
-                ALTER TABLE wiki_pages_v2 RENAME TO wiki_pages;
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_wiki_pages_slug ON wiki_pages(project, slug);
-                CREATE INDEX IF NOT EXISTS idx_wiki_pages_project ON wiki_pages(project);
-                CREATE INDEX IF NOT EXISTS idx_wiki_pages_status ON wiki_pages(page_status);
-                CREATE INDEX IF NOT EXISTS idx_wiki_pages_type ON wiki_pages(page_type);
-            ").map_err(|e| format!("迁移 wiki_pages 表失败: {}", e))?;
-
-            self.db.execute("PRAGMA user_version = 1", [])
-                .map_err(|e| format!("更新 schema 版本失败: {}", e))?;
+    fn ensure_column(&self, table: &str, column: &str, definition: &str) -> Result<(), String> {
+        let mut stmt = self
+            .db
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .map_err(|e| format!("读取表结构失败: {}", e))?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| format!("查询表结构失败: {}", e))?;
+        for col in columns {
+            if col.map_err(|e| format!("读取列名失败: {}", e))? == column {
+                return Ok(());
+            }
         }
+        self.db
+            .execute_batch(&format!("ALTER TABLE {} ADD COLUMN {} {};", table, column, definition))
+            .map_err(|e| format!("添加列 {}.{} 失败: {}", table, column, e))?;
         Ok(())
     }
 
     /// 创建一条维基页面，返回完整记录
     pub fn create(&self, input: &CreateWikiPage) -> Result<WikiPage, String> {
         self.db.execute(
-            "INSERT INTO wiki_pages (project, slug, title, page_type, content, frontmatter, sources, wikilinks, tags, page_metadata, page_status)
+            "INSERT INTO wiki_pages (project_id, slug, title, page_type, content, frontmatter, sources, wikilinks, tags, page_metadata, page_status)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
-                input.project,
+                input.project_id,
                 input.slug,
                 input.title,
                 input.page_type,
@@ -191,7 +170,7 @@ impl WikiPageStore {
     /// 按 ID 获取一条维基页面
     pub fn get_by_id(&self, id: i64) -> Result<WikiPage, String> {
         self.query_one(
-            "SELECT id, project, slug, title, page_type, content, content_candidate,
+            "SELECT id, project_id, slug, title, page_type, content, content_candidate,
                     candidate_status, frontmatter, sources, wikilinks, tags, page_metadata,
                     candidate_version, page_status, version, created_at, updated_at
              FROM wiki_pages WHERE id = ?1",
@@ -200,43 +179,43 @@ impl WikiPageStore {
     }
 
     /// 按项目 + slug 查找页面
-    pub fn get_by_slug(&self, project: &str, slug: &str) -> Result<Option<WikiPage>, String> {
+    pub fn get_by_slug(&self, project_id: i64, slug: &str) -> Result<Option<WikiPage>, String> {
         self.query_one(
-            "SELECT id, project, slug, title, page_type, content, content_candidate,
+            "SELECT id, project_id, slug, title, page_type, content, content_candidate,
                     candidate_status, frontmatter, sources, wikilinks, tags, page_metadata,
                     candidate_version, page_status, version, created_at, updated_at
-             FROM wiki_pages WHERE project = ?1 AND slug = ?2",
-            params![project, slug],
+             FROM wiki_pages WHERE project_id = ?1 AND slug = ?2",
+            params![project_id, slug],
         )
     }
 
     /// 列出项目下的所有页面，可按状态过滤
     pub fn list(
         &self,
-        project: &str,
+        project_id: i64,
         page_status: Option<&str>,
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<Vec<WikiPage>, String> {
         if let Some(status) = page_status {
             self.query_list(
-                "SELECT id, project, slug, title, page_type, content, content_candidate,
+                "SELECT id, project_id, slug, title, page_type, content, content_candidate,
                         candidate_status, frontmatter, sources, wikilinks, tags, page_metadata,
                         candidate_version, page_status, version, created_at, updated_at
                  FROM wiki_pages
-                 WHERE project = ?1 AND page_status = ?2
+                 WHERE project_id = ?1 AND page_status = ?2
                  ORDER BY updated_at DESC LIMIT ?3 OFFSET ?4",
-                params![project, status, limit.unwrap_or(-1), offset.unwrap_or(0)],
+                params![project_id, status, limit.unwrap_or(-1), offset.unwrap_or(0)],
             )
         } else {
             self.query_list(
-                "SELECT id, project, slug, title, page_type, content, content_candidate,
+                "SELECT id, project_id, slug, title, page_type, content, content_candidate,
                         candidate_status, frontmatter, sources, wikilinks, tags, page_metadata,
                         candidate_version, page_status, version, created_at, updated_at
                  FROM wiki_pages
-                 WHERE project = ?1
+                 WHERE project_id = ?1
                  ORDER BY updated_at DESC LIMIT ?2 OFFSET ?3",
-                params![project, limit.unwrap_or(-1), offset.unwrap_or(0)],
+                params![project_id, limit.unwrap_or(-1), offset.unwrap_or(0)],
             )
         }
     }
@@ -316,36 +295,36 @@ impl WikiPageStore {
     }
 
     /// 插入 50 条种子演示数据，用于阶段五知识图谱开发测试
-    pub fn seed_demo_pages(&self, project: &str) -> Result<usize, String> {
+    pub fn seed_demo_pages(&self, project_id: i64) -> Result<usize, String> {
         let existing: i64 = self.db.query_row(
-            "SELECT COUNT(*) FROM wiki_pages WHERE project = ?1",
-            params![project],
+            "SELECT COUNT(*) FROM wiki_pages WHERE project_id = ?1",
+            params![project_id],
             |row| row.get(0),
         ).map_err(|e| format!("检查已有数据失败: {}", e))?;
         if existing > 0 {
-            return Err(format!("项目 '{}' 下已有 {} 条 wiki_pages，跳过种子数据", project, existing));
+            return Err(format!("项目 {} 下已有 {} 条 wiki_pages，跳过种子数据", project_id, existing));
         }
         let script_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("resources")
             .join("seed-wiki-pages.sql");
         let sql = std::fs::read_to_string(&script_path)
             .map_err(|e| format!("读取种子数据脚本失败 ({}): {}", script_path.display(), e))?;
-        let sql = sql.replace("__PROJECT__", project);
+        let sql = sql.replace("__PROJECT__", &project_id.to_string());
         self.db.execute_batch(&sql)
             .map_err(|e| format!("执行种子数据脚本失败: {}", e))?;
         let count: i64 = self.db.query_row(
-            "SELECT COUNT(*) FROM wiki_pages WHERE project = ?1",
-            params![project],
+            "SELECT COUNT(*) FROM wiki_pages WHERE project_id = ?1",
+            params![project_id],
             |row| row.get(0),
         ).map_err(|e| format!("查询种子数据量失败: {}", e))?;
         Ok(count as usize)
     }
 
     /// 按项目删除所有页面
-    pub fn delete_by_project(&self, project: &str) -> Result<usize, String> {
+    pub fn delete_by_project(&self, project_id: i64) -> Result<usize, String> {
         let rows = self.db.execute(
-            "DELETE FROM wiki_pages WHERE project = ?1",
-            params![project],
+            "DELETE FROM wiki_pages WHERE project_id = ?1",
+            params![project_id],
         ).map_err(|e| format!("删除项目 wiki_pages 失败: {}", e))?;
         Ok(rows)
     }
@@ -355,7 +334,7 @@ impl WikiPageStore {
     /// 搜索 wikilink 候选页面（按标题模糊搜索，排除自身）
     pub fn search_wikilink_candidates(
         &self,
-        project: &str,
+        project_id: i64,
         query: &str,
         exclude_slug: &str,
         limit: i64,
@@ -366,13 +345,13 @@ impl WikiPageStore {
             .prepare(
                 "SELECT id, slug, title, page_type
                  FROM wiki_pages
-                 WHERE project = ?1 AND slug != ?2
+                 WHERE project_id = ?1 AND slug != ?2
                    AND (title LIKE ?3 OR slug LIKE ?3)
                  LIMIT ?4",
             )
             .map_err(|e| format!("准备搜索候选查询失败: {}", e))?;
         let rows = stmt
-            .query_map(params![project, exclude_slug, pattern, limit], |row| {
+            .query_map(params![project_id, exclude_slug, pattern, limit], |row| {
                 Ok(WikiPageBrief {
                     id: row.get(0)?,
                     slug: row.get(1)?,
@@ -430,7 +409,7 @@ impl WikiPageStore {
     /// 获取 wikilink 目标页面详情（按项目过滤，批量查询被引页面的标题/slug/type/status）
     pub fn get_wikilink_targets(
         &self,
-        project: &str,
+        project_id: i64,
         slugs: &[String],
     ) -> Result<Vec<WikiLinkTarget>, String> {
         if slugs.is_empty() {
@@ -440,7 +419,7 @@ impl WikiPageStore {
         let sql = format!(
             "SELECT slug, title, page_type, page_status
              FROM wiki_pages
-             WHERE project = ?{} AND slug IN ({})",
+              WHERE project_id = ?{} AND slug IN ({})",
             slugs.len() + 1,
             placeholders.join(", ")
         );
@@ -450,7 +429,7 @@ impl WikiPageStore {
             .map_err(|e| format!("准备 wikilink 目标查询失败: {}", e))?;
         let mut params: Vec<&dyn rusqlite::types::ToSql> =
             slugs.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
-        params.push(&project as &dyn rusqlite::types::ToSql);
+        params.push(&project_id as &dyn rusqlite::types::ToSql);
         let rows = stmt
             .query_map(params.as_slice(), |row| {
                 Ok(WikiLinkTarget {
@@ -471,7 +450,7 @@ impl WikiPageStore {
     /// 按标题/内容模糊搜索 wiki 页面，返回 HybridSearchResult
     pub fn search_pages(
         &self,
-        project: Option<&str>,
+        project_id: Option<i64>,
         query: &str,
         top_k: usize,
     ) -> Result<Vec<crate::services::hybrid_search::HybridSearchResult>, String> {
@@ -480,19 +459,19 @@ impl WikiPageStore {
         let pattern = format!("%{}%", query);
 
         let mut results = Vec::new();
-        if let Some(proj) = project {
+        if let Some(pid) = project_id {
             let mut stmt = self.db.prepare(
-                "SELECT id, project, title, content, 0.7 AS score
+                "SELECT id, project_id, title, content, 0.7 AS score
                  FROM wiki_pages
-                 WHERE project = ?1 AND title LIKE ?2
+                 WHERE project_id = ?1 AND title LIKE ?2
                  UNION
-                 SELECT id, project, title, content, 0.4 AS score
+                 SELECT id, project_id, title, content, 0.4 AS score
                  FROM wiki_pages
-                 WHERE project = ?1 AND content LIKE ?2 AND title NOT LIKE ?2
+                 WHERE project_id = ?1 AND content LIKE ?2 AND title NOT LIKE ?2
                  ORDER BY score DESC
                  LIMIT ?3"
             ).map_err(|e| format!("准备搜索 wiki_pages 查询失败: {}", e))?;
-            let mapped = stmt.query_map(params![proj, pattern, top_k as i64], |row| {
+            let mapped = stmt.query_map(params![pid, pattern, top_k as i64], |row| {
                 let score: f64 = row.get(4)?;
                 Ok(HybridSearchResult {
                     chunk_id: row.get::<_, i64>(0)?,
@@ -502,7 +481,7 @@ impl WikiPageStore {
                     source: "wiki_pages".to_string(),
                     document_id: row.get::<_, i64>(0)?,
                     section_path: None,
-                    project: row.get::<_, String>(1)?,
+                    project: row.get::<_, i64>(1)?.to_string(),
                 })
             }).map_err(|e| format!("执行搜索 wiki_pages 查询失败: {}", e))?;
             for row in mapped {
@@ -510,11 +489,11 @@ impl WikiPageStore {
             }
         } else {
             let mut stmt = self.db.prepare(
-                "SELECT id, project, title, content, 0.7 AS score
+                "SELECT id, project_id, title, content, 0.7 AS score
                  FROM wiki_pages
                  WHERE title LIKE ?1
                  UNION
-                 SELECT id, project, title, content, 0.4 AS score
+                 SELECT id, project_id, title, content, 0.4 AS score
                  FROM wiki_pages
                  WHERE content LIKE ?1 AND title NOT LIKE ?1
                  ORDER BY score DESC
@@ -530,7 +509,7 @@ impl WikiPageStore {
                     source: "wiki_pages".to_string(),
                     document_id: row.get::<_, i64>(0)?,
                     section_path: None,
-                    project: row.get::<_, String>(1)?,
+                    project: row.get::<_, i64>(1)?.to_string(),
                 })
             }).map_err(|e| format!("执行搜索 wiki_pages 查询失败: {}", e))?;
             for row in mapped {
@@ -541,18 +520,18 @@ impl WikiPageStore {
     }
 
     /// 获取反向链接（哪些页面引用了当前页面）
-    pub fn get_backlinks(&self, project: &str, slug: &str) -> Result<Vec<WikiPageBrief>, String> {
+    pub fn get_backlinks(&self, project_id: i64, slug: &str) -> Result<Vec<WikiPageBrief>, String> {
         let pattern = format!("%{}%", slug);
         let mut stmt = self
             .db
             .prepare(
                 "SELECT id, slug, title, page_type
                  FROM wiki_pages
-                 WHERE project = ?1 AND wikilinks LIKE ?2",
+                  WHERE project_id = ?1 AND wikilinks LIKE ?2",
             )
             .map_err(|e| format!("准备反向链接查询失败: {}", e))?;
         let rows = stmt
-            .query_map(params![project, pattern], |row| {
+            .query_map(params![project_id, pattern], |row| {
                 Ok(WikiPageBrief {
                     id: row.get(0)?,
                     slug: row.get(1)?,
@@ -573,7 +552,7 @@ impl WikiPageStore {
     fn row_to_page(row: &rusqlite::Row) -> SqlResult<WikiPage> {
         Ok(WikiPage {
             id: row.get(0)?,
-            project: row.get(1)?,
+            project_id: row.get(1)?,
             slug: row.get(2)?,
             title: row.get(3)?,
             page_type: row.get(4)?,
