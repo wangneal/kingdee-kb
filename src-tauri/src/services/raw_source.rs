@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawSource {
     pub id: i64,
-    pub project: String,
+    pub project_id: i64,
     pub identity: String,
     pub original_path: String,
     pub storage_path: String,
@@ -41,7 +41,7 @@ impl RawSourceStore {
                 "
             CREATE TABLE IF NOT EXISTS raw_sources (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                project       TEXT NOT NULL,
+                project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 identity      TEXT NOT NULL,
                 original_path TEXT NOT NULL,
                 storage_path  TEXT NOT NULL,
@@ -51,24 +51,45 @@ impl RawSourceStore {
                 status        TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','deleted')),
                 created_at    TEXT NOT NULL DEFAULT (datetime('now')),
                 deleted_at    TEXT,
-                UNIQUE(project, identity)
+                UNIQUE(project_id, identity)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_raw_sources_project ON raw_sources(project);
+            CREATE INDEX IF NOT EXISTS idx_raw_sources_project_id ON raw_sources(project_id);
             CREATE INDEX IF NOT EXISTS idx_raw_sources_status  ON raw_sources(status);
             ",
             )
-            .map_err(|e| format!("创建 raw_sources 表失败: {}", e))
+            .map_err(|e| format!("创建 raw_sources 表失败: {}", e))?;
+        self.ensure_column("raw_sources", "project_id", "INTEGER")?;
+        Ok(())
+    }
+
+    fn ensure_column(&self, table: &str, column: &str, definition: &str) -> Result<(), String> {
+        let mut stmt = self
+            .db
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .map_err(|e| format!("读取表结构失败: {}", e))?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| format!("查询表结构失败: {}", e))?;
+        for col in columns {
+            if col.map_err(|e| format!("读取列名失败: {}", e))? == column {
+                return Ok(());
+            }
+        }
+        self.db
+            .execute_batch(&format!("ALTER TABLE {} ADD COLUMN {} {};", table, column, definition))
+            .map_err(|e| format!("添加列 {}.{} 失败: {}", table, column, e))?;
+        Ok(())
     }
 
     /// 插入一条新记录，返回插入后的完整 RawSource
     pub fn insert(&self, source: &InsertRawSource) -> Result<RawSource, String> {
         self.db
             .execute(
-                "INSERT INTO raw_sources (project, identity, original_path, storage_path, sha256, file_size, mime_type)
+                "INSERT INTO raw_sources (project_id, identity, original_path, storage_path, sha256, file_size, mime_type)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
-                    source.project,
+                    source.project_id,
                     source.identity,
                     source.original_path,
                     source.storage_path,
@@ -84,29 +105,29 @@ impl RawSourceStore {
     }
 
     /// 按项目列出所有 active 的源文件
-    pub fn list_by_project(&self, project: &str) -> Result<Vec<RawSource>, String> {
+    pub fn list_by_project(&self, project_id: i64) -> Result<Vec<RawSource>, String> {
         self.query_list(
-            "SELECT id, project, identity, original_path, storage_path, sha256, file_size,
+            "SELECT id, project_id, identity, original_path, storage_path, sha256, file_size,
                     mime_type, status, created_at, deleted_at
              FROM raw_sources
-             WHERE project = ?1 AND status = 'active'
-             ORDER BY created_at DESC",
-            params![project],
+              WHERE project_id = ?1 AND status = 'active'
+              ORDER BY created_at DESC",
+            params![project_id],
         )
     }
 
     /// 按项目和标识查找（返回任意状态）
     pub fn find_by_identity(
         &self,
-        project: &str,
+        project_id: i64,
         identity: &str,
     ) -> Result<Option<RawSource>, String> {
         self.query_one(
-            "SELECT id, project, identity, original_path, storage_path, sha256, file_size,
+            "SELECT id, project_id, identity, original_path, storage_path, sha256, file_size,
                     mime_type, status, created_at, deleted_at
              FROM raw_sources
-             WHERE project = ?1 AND identity = ?2",
-            params![project, identity],
+              WHERE project_id = ?1 AND identity = ?2",
+            params![project_id, identity],
         )
     }
 
@@ -131,7 +152,7 @@ impl RawSourceStore {
     fn row_to_source(row: &rusqlite::Row) -> SqlResult<RawSource> {
         Ok(RawSource {
             id: row.get(0)?,
-            project: row.get(1)?,
+            project_id: row.get(1)?,
             identity: row.get(2)?,
             original_path: row.get(3)?,
             storage_path: row.get(4)?,
@@ -146,7 +167,7 @@ impl RawSourceStore {
 
     fn get_by_id(&self, id: i64) -> Result<RawSource, String> {
         self.query_one(
-            "SELECT id, project, identity, original_path, storage_path, sha256, file_size,
+            "SELECT id, project_id, identity, original_path, storage_path, sha256, file_size,
                     mime_type, status, created_at, deleted_at
              FROM raw_sources WHERE id = ?1",
             params![id],
@@ -196,7 +217,7 @@ impl RawSourceStore {
 /// 插入 raw_source 时使用的数据传输对象（不含自动生成字段）
 #[derive(Debug, Clone)]
 pub struct InsertRawSource {
-    pub project: String,
+    pub project_id: i64,
     pub identity: String,
     pub original_path: String,
     pub storage_path: String,

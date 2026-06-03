@@ -8,18 +8,18 @@ use crate::services::raw_source::{InsertRawSource, RawSource};
 
 /// 导入一个原始文件到知识库项目中。
 ///
-/// 将源文件复制到 `raw/{project}/sources/{identity}`，计算 SHA256，
+/// 将源文件复制到 `raw/{project_id}/sources/{identity}`，计算 SHA256，
 /// 并在 raw_sources 表中创建记录。
 #[tauri::command]
 pub async fn create_raw_source(
     state: State<'_, AppState>,
-    project: String,
+    project_id: i64,
     identity: String,
     source_path: String,
     mime_type: Option<String>,
 ) -> Result<RawSource, String> {
     let identity_path = validate_source_identity(&identity)?;
-    let project_dir = validate_project_segment(&project)?;
+    let project_dir = validate_project_id_segment(project_id)?;
 
     // 计算 SHA256
     let sha256 = compute_sha256(&source_path)?;
@@ -38,7 +38,7 @@ pub async fn create_raw_source(
     std::fs::create_dir_all(&storage_dir)
         .map_err(|e| format!("创建存储目录失败: {}", e))?;
 
-    // 目标路径 = raw/{project}/sources/{identity}
+    // 目标路径 = raw/{project_id}/sources/{identity}
     let storage_path = storage_dir.join(&identity_path);
     std::fs::copy(&source_path, &storage_path)
         .map_err(|e| format!("复制文件失败: {}", e))?;
@@ -47,7 +47,7 @@ pub async fn create_raw_source(
 
     // 插入数据库记录
     let insert = InsertRawSource {
-        project: project.clone(),
+        project_id,
         identity: identity.clone(),
         original_path: source_path,
         storage_path: storage_path_str,
@@ -67,13 +67,13 @@ pub async fn create_raw_source(
 #[tauri::command]
 pub async fn list_raw_sources(
     state: State<'_, AppState>,
-    project: String,
+    project_id: i64,
 ) -> Result<Vec<RawSource>, String> {
     let store = state
         .raw_sources
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.list_by_project(&project)
+    store.list_by_project(project_id)
 }
 
 /// 软删除一个原始文件记录（标记为 deleted）。
@@ -89,19 +89,12 @@ pub async fn soft_delete_raw_source(
     store.soft_delete(id)
 }
 
-/// 校验项目目录名，避免 project 参数逃逸数据目录。
-fn validate_project_segment(project: &str) -> Result<String, String> {
-    if project.trim().is_empty() {
-        return Err("项目名称不能为空".to_string());
+/// 校验项目 ID 目录名，避免路径逃逸数据目录。
+fn validate_project_id_segment(project_id: i64) -> Result<String, String> {
+    if project_id <= 0 {
+        return Err(format!("项目 ID 无效: {}", project_id));
     }
-    let path = Path::new(project);
-    if path.is_absolute() || project.contains("..") {
-        return Err(format!("项目名称包含非法路径片段: {}", project));
-    }
-    if path.components().count() != 1 {
-        return Err(format!("项目名称不能包含路径分隔符: {}", project));
-    }
-    Ok(project.to_string())
+    Ok(project_id.to_string())
 }
 
 /// 校验 source identity，只允许相对路径中的普通片段。
