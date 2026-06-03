@@ -1,7 +1,7 @@
 //! SQLite metadata store for chunk↔vector mapping
 //!
 //! Manages documents and chunks tables with SHA256 dedup,
-//! project filtering, and WAL journal mode.
+//! project_id filtering, and WAL journal mode.
 
 use rusqlite::{params, Connection, Result as SqlResult};
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,9 @@ pub struct DocumentMeta {
     pub source_path: Option<String>,
     pub sha256: Option<String>,
     pub created_at: String,
-    pub project: String,
+    pub project_id: i64,
+    pub document_scope: String,
+    pub chat_session_id: Option<String>,
     pub raw_source_identity: Option<String>,
 }
 
@@ -86,7 +88,9 @@ impl MetadataStore {
                 source_path TEXT,
                 sha256 TEXT UNIQUE,
                 created_at TEXT DEFAULT (datetime('now')),
-                project TEXT DEFAULT 'default',
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                document_scope TEXT NOT NULL DEFAULT 'knowledge',
+                chat_session_id TEXT,
                 raw_source_identity TEXT DEFAULT NULL
             );
 
@@ -104,7 +108,9 @@ impl MetadataStore {
             CREATE INDEX IF NOT EXISTS idx_chunks_vector_key ON chunks(vector_key);
             CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
             CREATE INDEX IF NOT EXISTS idx_documents_sha256 ON documents(sha256);
-            CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project);
+            CREATE INDEX IF NOT EXISTS idx_documents_project_id ON documents(project_id);
+            CREATE INDEX IF NOT EXISTS idx_documents_scope ON documents(document_scope);
+            CREATE INDEX IF NOT EXISTS idx_documents_chat_session_id ON documents(chat_session_id);
 
             CREATE TABLE IF NOT EXISTS vector_key_seq (
                 id INTEGER PRIMARY KEY AUTOINCREMENT
@@ -113,7 +119,7 @@ impl MetadataStore {
             CREATE TABLE IF NOT EXISTS deletion_outbox (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 document_id INTEGER NOT NULL,
-                project TEXT,
+                project_id INTEGER,
                 status TEXT NOT NULL DEFAULT 'pending',
                 error TEXT,
                 vector_keys TEXT,
@@ -124,10 +130,12 @@ impl MetadataStore {
             )
             .map_err(|e| format!("Failed to initialize schema: {}", e))?;
 
-        // 兼容已有数据库：添加 raw_source_identity 列
-        let _ = self.db.execute_batch(
-            "ALTER TABLE documents ADD COLUMN raw_source_identity TEXT DEFAULT NULL;"
-        );
+        // 兼容已有数据库：只扩展 schema，不迁移旧 project 字符串值。
+        self.ensure_column("documents", "raw_source_identity", "TEXT DEFAULT NULL")?;
+        self.ensure_column("documents", "project_id", "INTEGER")?;
+        self.ensure_column("documents", "document_scope", "TEXT NOT NULL DEFAULT 'knowledge'")?;
+        self.ensure_column("documents", "chat_session_id", "TEXT")?;
+        self.ensure_column("deletion_outbox", "project_id", "INTEGER")?;
 
         // Seed vector_key_seq with current max + 1 if empty
         let count: i64 = self
@@ -157,6 +165,25 @@ impl MetadataStore {
 
     }
 
+    fn ensure_column(&self, table: &str, column: &str, definition: &str) -> Result<(), String> {
+        let mut stmt = self
+            .db
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .map_err(|e| format!("读取表结构失败: {}", e))?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| format!("查询表结构失败: {}", e))?;
+        for col in columns {
+            if col.map_err(|e| format!("读取列名失败: {}", e))? == column {
+                return Ok(());
+            }
+        }
+        self.db
+            .execute_batch(&format!("ALTER TABLE {} ADD COLUMN {} {};", table, column, definition))
+            .map_err(|e| format!("添加列 {}.{} 失败: {}", table, column, e))?;
+        Ok(())
+    }
+
     // ─── Document operations ───
 
     /// Insert a new document. Returns the document ID.
@@ -165,14 +192,17 @@ impl MetadataStore {
         title: &str,
         source_path: Option<&str>,
         sha256: Option<&str>,
-        project: Option<&str>,
+        project_id: i64,
+        document_scope: Option<&str>,
+        chat_session_id: Option<&str>,
         raw_source_identity: Option<&str>,
     ) -> Result<i64, String> {
+        let scope = document_scope.unwrap_or("knowledge");
         self.db
             .execute(
-                "INSERT OR IGNORE INTO documents (title, source_path, sha256, project, raw_source_identity)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![title, source_path, sha256, project.unwrap_or("default"), raw_source_identity],
+                "INSERT OR IGNORE INTO documents (title, source_path, sha256, project_id, document_scope, chat_session_id, raw_source_identity)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![title, source_path, sha256, project_id, scope, chat_session_id, raw_source_identity],
             )
             .map_err(|e| format!("Failed to insert document: {}", e))?;
 
@@ -204,7 +234,7 @@ impl MetadataStore {
     /// Get a document by its SHA256 hash
     pub fn get_document_by_sha256(&self, sha256: &str) -> Result<Option<DocumentMeta>, String> {
         self.query_one_document(
-            "SELECT id, title, source_path, sha256, created_at, project, raw_source_identity
+            "SELECT id, title, source_path, sha256, created_at, project_id, document_scope, chat_session_id, raw_source_identity
              FROM documents WHERE sha256 = ?1",
             params![sha256],
         )
@@ -213,7 +243,7 @@ impl MetadataStore {
     /// Get a document by its ID
     pub fn get_document(&self, id: i64) -> Result<Option<DocumentMeta>, String> {
         self.query_one_document(
-            "SELECT id, title, source_path, sha256, created_at, project, raw_source_identity
+            "SELECT id, title, source_path, sha256, created_at, project_id, document_scope, chat_session_id, raw_source_identity
              FROM documents WHERE id = ?1",
             params![id],
         )
@@ -247,7 +277,7 @@ impl MetadataStore {
             .map(|(i, _)| format!("?{0}", i + 1))
             .collect();
         let sql = format!(
-            "SELECT id, title, source_path, sha256, created_at, project, raw_source_identity
+            "SELECT id, title, source_path, sha256, created_at, project_id, document_scope, chat_session_id, raw_source_identity
              FROM documents WHERE id IN ({0})",
             placeholders.join(", ")
         );
@@ -274,39 +304,38 @@ impl MetadataStore {
     }
 
     /// Get all documents, optionally filtered by project
-    pub fn list_documents(&self, project: Option<&str>) -> Result<Vec<DocumentMeta>, String> {
-        if let Some(proj) = project {
+    pub fn list_documents(&self, project_id: Option<i64>) -> Result<Vec<DocumentMeta>, String> {
+        if let Some(pid) = project_id {
             self.query_documents(
-                "SELECT id, title, source_path, sha256, created_at, project, raw_source_identity
-                 FROM documents WHERE project = ?1 ORDER BY created_at DESC",
-                params![proj],
+                "SELECT id, title, source_path, sha256, created_at, project_id, document_scope, chat_session_id, raw_source_identity
+                 FROM documents WHERE project_id = ?1 AND document_scope = 'knowledge' ORDER BY created_at DESC",
+                params![pid],
             )
         } else {
             self.query_documents(
-                "SELECT id, title, source_path, sha256, created_at, project, raw_source_identity
-                 FROM documents ORDER BY created_at DESC",
+                "SELECT id, title, source_path, sha256, created_at, project_id, document_scope, chat_session_id, raw_source_identity
+                 FROM documents WHERE document_scope = 'knowledge' ORDER BY created_at DESC",
                 [],
             )
         }
     }
 
     /// Delete a document and its associated chunks
-    /// If project is specified, verify the document belongs to that project before deleting
-    pub fn delete_document(&self, id: i64, project: Option<&str>) -> Result<(), String> {
-        // Verify project ownership if project is specified
-        if let Some(pid) = project {
-            let doc_project: String = self
+    /// If project_id is specified, verify the document belongs to that project before deleting
+    pub fn delete_document(&self, id: i64, project_id: Option<i64>) -> Result<(), String> {
+        if let Some(pid) = project_id {
+            let doc_project_id: i64 = self
                 .db
                 .query_row(
-                    "SELECT project FROM documents WHERE id = ?1",
+                    "SELECT project_id FROM documents WHERE id = ?1",
                     params![id],
                     |row| row.get(0),
                 )
                 .map_err(|e| format!("Document {} not found: {}", id, e))?;
-            if doc_project != pid {
+            if doc_project_id != pid {
                 return Err(format!(
-                    "Document {} belongs to project '{}', not '{}'",
-                    id, doc_project, pid
+                    "Document {} belongs to project {}, not {}",
+                    id, doc_project_id, pid
                 ));
             }
         }
@@ -321,31 +350,30 @@ impl MetadataStore {
     }
 
     /// Batch-delete multiple documents (and their chunks) in a single transaction
-    /// If project is specified, verify all documents belong to that project before deleting
+    /// If project_id is specified, verify all documents belong to that project before deleting
     pub fn delete_documents_batch(
         &self,
         document_ids: Vec<i64>,
-        project: Option<&str>,
+        project_id: Option<i64>,
     ) -> Result<u64, String> {
         if document_ids.is_empty() {
             return Ok(0);
         }
 
-        // Verify project ownership if project is specified
-        if let Some(pid) = project {
+        if let Some(pid) = project_id {
             for &doc_id in &document_ids {
-                let doc_project: String = self
+                let doc_project_id: i64 = self
                     .db
                     .query_row(
-                        "SELECT project FROM documents WHERE id = ?1",
+                        "SELECT project_id FROM documents WHERE id = ?1",
                         params![doc_id],
                         |row| row.get(0),
                     )
                     .map_err(|e| format!("Document {} not found: {}", doc_id, e))?;
-                if doc_project != pid {
+                if doc_project_id != pid {
                     return Err(format!(
-                        "Document {} belongs to project '{}', not '{}'",
-                        doc_id, doc_project, pid
+                        "Document {} belongs to project {}, not {}",
+                        doc_id, doc_project_id, pid
                     ));
                 }
             }
@@ -429,15 +457,15 @@ impl MetadataStore {
     pub fn insert_deletion_record(
         &self,
         document_id: i64,
-        project: Option<&str>,
+        project_id: Option<i64>,
         vector_keys: &[i64],
     ) -> Result<i64, String> {
         let keys_json = serde_json::to_string(vector_keys)
             .map_err(|e| format!("序列化 vector_keys 失败: {}", e))?;
         self.db
             .execute(
-                "INSERT INTO deletion_outbox (document_id, project, vector_keys) VALUES (?1, ?2, ?3)",
-                params![document_id, project, keys_json],
+                "INSERT INTO deletion_outbox (document_id, project_id, vector_keys) VALUES (?1, ?2, ?3)",
+                params![document_id, project_id, keys_json],
             )
             .map_err(|e| format!("插入删除记录失败: {}", e))?;
         Ok(self.db.last_insert_rowid())
@@ -460,11 +488,11 @@ impl MetadataStore {
     }
 
     /// 获取所有待补偿的删除记录（pending 和 failed 状态均重试）
-    pub fn get_pending_deletions(&self) -> Result<Vec<(i64, i64, Option<String>, String)>, String> {
+    pub fn get_pending_deletions(&self) -> Result<Vec<(i64, i64, Option<i64>, String)>, String> {
         let mut stmt = self
             .db
             .prepare(
-                "SELECT id, document_id, project, vector_keys FROM deletion_outbox WHERE status IN ('pending', 'failed')",
+                "SELECT id, document_id, project_id, vector_keys FROM deletion_outbox WHERE status IN ('pending', 'failed')",
             )
             .map_err(|e| format!("查询 pending 删除记录失败: {}", e))?;
         let rows = stmt
@@ -472,7 +500,7 @@ impl MetadataStore {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
-                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<i64>>(2)?,
                     row.get::<_, String>(3)?,
                 ))
             })
@@ -616,14 +644,14 @@ impl MetadataStore {
         Ok(())
     }
 
-    /// 获取所有 chat-attachments 项目的 chunk_id 列表，用于检索前置过滤
+    /// 获取所有聊天附件 chunk_id 列表，用于检索前置过滤
     pub fn get_chat_attachment_chunk_ids(&self) -> Result<Vec<i64>, String> {
         let mut stmt = self
             .db
             .prepare(
-                "SELECT c.id FROM chunks c
+                 "SELECT c.id FROM chunks c
                  JOIN documents d ON c.document_id = d.id
-                 WHERE d.project LIKE 'chat-attachments:%'",
+                 WHERE d.document_scope = 'chat_attachment'",
             )
             .map_err(|e| format!("Failed to prepare query: {}", e))?;
         let ids: Vec<i64> = stmt
@@ -636,14 +664,14 @@ impl MetadataStore {
 
     // ─── Stats ───
 
-    /// Get knowledge base statistics, optionally filtered by project
-    pub fn get_stats(&self, project: Option<&str>) -> Result<KnowledgeStats, String> {
-        let doc_count: i64 = match project {
+    /// Get knowledge base statistics, optionally filtered by project_id
+    pub fn get_stats(&self, project_id: Option<i64>) -> Result<KnowledgeStats, String> {
+        let doc_count: i64 = match project_id {
             Some(pid) => self
                 .db
                 .query_row(
-                    "SELECT COUNT(*) FROM documents WHERE project = ?1",
-                    [pid],
+                    "SELECT COUNT(*) FROM documents WHERE project_id = ?1",
+                    params![pid],
                     |row| row.get(0),
                 )
                 .map_err(|e| format!("Failed to count documents: {}", e))?,
@@ -653,12 +681,12 @@ impl MetadataStore {
                 .map_err(|e| format!("Failed to count documents: {}", e))?,
         };
 
-        let chunk_count: i64 = match project {
+        let chunk_count: i64 = match project_id {
             Some(pid) => self
                 .db
                 .query_row(
-                    "SELECT COUNT(*) FROM chunks c JOIN documents d ON c.document_id = d.id WHERE d.project = ?1",
-                    [pid],
+                    "SELECT COUNT(*) FROM chunks c JOIN documents d ON c.document_id = d.id WHERE d.project_id = ?1",
+                    params![pid],
                     |row| row.get(0),
                 )
                 .map_err(|e| format!("Failed to count chunks: {}", e))?,
@@ -726,8 +754,10 @@ impl MetadataStore {
             source_path: row.get(2)?,
             sha256: row.get(3)?,
             created_at: row.get(4)?,
-            project: row.get(5)?,
-            raw_source_identity: row.get(6)?,
+            project_id: row.get(5)?,
+            document_scope: row.get(6)?,
+            chat_session_id: row.get(7)?,
+            raw_source_identity: row.get(8)?,
         })
     }
 
@@ -832,28 +862,59 @@ impl MetadataStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::project_store::ProjectStore;
+
+    fn init_store_with_projects() -> (tempfile::TempDir, MetadataStore, i64, i64) {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let project_store = ProjectStore::new(&db_path).unwrap();
+        let default_project_id = project_store.ensure_default_project().unwrap();
+        let other_project_id = project_store
+            .create_project("测试项目 B", "", "")
+            .unwrap();
+        drop(project_store);
+        let store = MetadataStore::new(db_path).unwrap();
+        (tmp, store, default_project_id, other_project_id)
+    }
 
     #[test]
     fn test_metadata_store_crud() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db_path = tmp.path().join("test.db");
-        let store = MetadataStore::new(db_path).unwrap();
+        let (_tmp, store, default_project_id, _) = init_store_with_projects();
 
         // Insert document
         let doc_id = store
-            .insert_document("测试文档", Some("/path/to/doc.md"), Some("abc123"), None, Some("raw-id-001"))
+            .insert_document(
+                "测试文档",
+                Some("/path/to/doc.md"),
+                Some("abc123"),
+                default_project_id,
+                Some("knowledge"),
+                None,
+                Some("raw-id-001"),
+            )
             .unwrap();
         assert!(doc_id > 0);
 
         // Check document
         let doc = store.get_document(doc_id).unwrap().unwrap();
         assert_eq!(doc.title, "测试文档");
+        assert_eq!(doc.project_id, default_project_id);
+        assert_eq!(doc.document_scope, "knowledge");
+        assert_eq!(doc.chat_session_id, None);
         assert_eq!(doc.sha256.unwrap(), "abc123");
         assert_eq!(doc.raw_source_identity.unwrap(), "raw-id-001");
 
         // SHA256 dedup
         let doc_id2 = store
-            .insert_document("重复文档", None, Some("abc123"), None, None)
+            .insert_document(
+                "重复文档",
+                None,
+                Some("abc123"),
+                default_project_id,
+                Some("knowledge"),
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(doc_id2, doc_id); // Should return existing ID
 
@@ -891,14 +952,13 @@ mod tests {
 
     #[test]
     fn test_sha256_dedup() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = MetadataStore::new(tmp.path().join("test.db")).unwrap();
+        let (_tmp, store, default_project_id, _) = init_store_with_projects();
 
         let id1 = store
-            .insert_document("Doc A", None, Some("sha256_hash_xyz"), None, None)
+            .insert_document("Doc A", None, Some("sha256_hash_xyz"), default_project_id, Some("knowledge"), None, None)
             .unwrap();
         let id2 = store
-            .insert_document("Doc B", None, Some("sha256_hash_xyz"), None, None)
+            .insert_document("Doc B", None, Some("sha256_hash_xyz"), default_project_id, Some("knowledge"), None, None)
             .unwrap();
 
         assert_eq!(id1, id2);
@@ -906,22 +966,39 @@ mod tests {
     }
 
     #[test]
-    fn test_project_filtering() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = MetadataStore::new(tmp.path().join("test.db")).unwrap();
+    fn test_project_id_filtering_and_chat_attachment_scope() {
+        let (_tmp, store, default_project_id, other_project_id) = init_store_with_projects();
 
         store
-            .insert_document("Project A doc", None, Some("hash1"), Some("project_a"), None)
+            .insert_document("Project A doc", None, Some("hash1"), default_project_id, Some("knowledge"), None, None)
             .unwrap();
         store
-            .insert_document("Project B doc", None, Some("hash2"), Some("project_b"), None)
+            .insert_document("Project B doc", None, Some("hash2"), other_project_id, Some("knowledge"), None, None)
+            .unwrap();
+        let attachment_id = store
+            .insert_document(
+                "对话附件",
+                None,
+                Some("hash3"),
+                default_project_id,
+                Some("chat_attachment"),
+                Some("session-123"),
+                None,
+            )
             .unwrap();
 
-        let docs_a = store.list_documents(Some("project_a")).unwrap();
+        let docs_a = store.list_documents(Some(default_project_id)).unwrap();
         assert_eq!(docs_a.len(), 1);
-        assert_eq!(docs_a[0].project, "project_a");
+        assert_eq!(docs_a[0].project_id, default_project_id);
+        assert_eq!(docs_a[0].document_scope, "knowledge");
 
         let docs_all = store.list_documents(None).unwrap();
         assert_eq!(docs_all.len(), 2);
+        assert!(docs_all.iter().all(|doc| doc.document_scope == "knowledge"));
+
+        let attachment = store.get_document(attachment_id).unwrap().unwrap();
+        assert_eq!(attachment.project_id, default_project_id);
+        assert_eq!(attachment.document_scope, "chat_attachment");
+        assert_eq!(attachment.chat_session_id.as_deref(), Some("session-123"));
     }
 }

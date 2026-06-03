@@ -7,10 +7,10 @@ use crate::services::metadata::{ChunkMeta, DocumentMeta, KnowledgeStats};
 #[tauri::command]
 pub async fn list_documents(
     state: State<'_, AppState>,
-    project: Option<String>,
+    project_id: Option<i64>,
 ) -> Result<Vec<DocumentMeta>, String> {
     let meta = state.metadata.lock().map_err(|e| e.to_string())?;
-    meta.list_documents(project.as_deref())
+    meta.list_documents(project_id)
 }
 
 /// 获取指定文档的所有分块
@@ -34,24 +34,24 @@ pub async fn get_document_chunks(
 pub async fn delete_document(
     state: State<'_, AppState>,
     document_id: i64,
-    project: Option<String>,
+    project_id: Option<i64>,
 ) -> Result<(), String> {
     let (vector_keys, outbox_id): (Vec<i64>, i64) = {
         let meta = state.metadata.lock().map_err(|e| e.to_string())?;
-        if let Some(pid) = project.as_deref() {
+        if let Some(pid) = project_id {
             let doc = meta
                 .get_document(document_id)?
                 .ok_or_else(|| format!("Document not found: {}", document_id))?;
-            if doc.project != pid {
+            if doc.project_id != pid {
                 return Err(format!(
-                    "Document {} belongs to project '{}', not '{}'",
-                    document_id, doc.project, pid
+                    "Document {} belongs to project {}, not {}",
+                    document_id, doc.project_id, pid
                 ));
             }
         }
         let keys = meta.get_vector_keys_by_document_ids(&[document_id])?;
         // 预写 outbox，防止崩溃后丢失
-        let oid = meta.insert_deletion_record(document_id, project.as_deref(), &keys)?;
+        let oid = meta.insert_deletion_record(document_id, project_id, &keys)?;
         (keys, oid)
     };
 
@@ -80,7 +80,7 @@ pub async fn delete_document(
     // 3. 从 SQLite 删除元数据
     {
         let meta = state.metadata.lock().map_err(|e| e.to_string())?;
-        if let Err(e) = meta.delete_document(document_id, project.as_deref()) {
+        if let Err(e) = meta.delete_document(document_id, project_id) {
             let err_msg = format!("SQLite 删除失败(outbox_id={}): {}", outbox_id, e);
             tracing::error!("{}", err_msg);
             errors.push(err_msg);
@@ -136,7 +136,7 @@ pub async fn delete_document(
 pub async fn delete_documents_batch(
     state: State<'_, AppState>,
     document_ids: Vec<i64>,
-    project: Option<String>,
+    project_id: Option<i64>,
 ) -> Result<u64, String> {
     if document_ids.is_empty() {
         return Ok(0);
@@ -145,15 +145,15 @@ pub async fn delete_documents_batch(
     // 1. 验证项目归属并收集 vector_keys
     let all_vector_keys: Vec<i64> = {
         let meta = state.metadata.lock().map_err(|e| e.to_string())?;
-        if let Some(pid) = project.as_deref() {
+        if let Some(pid) = project_id {
             for doc_id in &document_ids {
                 let doc = meta
                     .get_document(*doc_id)?
                     .ok_or_else(|| format!("Document not found: {}", doc_id))?;
-                if doc.project != pid {
+                if doc.project_id != pid {
                     return Err(format!(
-                        "Document {} belongs to project '{}', not '{}'",
-                        doc_id, doc.project, pid
+                        "Document {} belongs to project {}, not {}",
+                        doc_id, doc.project_id, pid
                     ));
                 }
             }
@@ -167,7 +167,7 @@ pub async fn delete_documents_batch(
         let mut ids = Vec::new();
         for doc_id in &document_ids {
             let keys = meta.get_vector_keys_by_document_ids(&[*doc_id])?;
-            let oid = meta.insert_deletion_record(*doc_id, project.as_deref(), &keys)?;
+            let oid = meta.insert_deletion_record(*doc_id, project_id, &keys)?;
             ids.push(oid);
         }
         ids
@@ -192,7 +192,7 @@ pub async fn delete_documents_batch(
     // 5. SQLite 删除（仅当索引删除全部成功时执行，否则留给补偿处理）
     let count: u64 = if errors.is_empty() {
         let meta = state.metadata.lock().map_err(|e| e.to_string())?;
-        meta.delete_documents_batch(document_ids, project.as_deref())?
+        meta.delete_documents_batch(document_ids, project_id)?
     } else {
         tracing::warn!("索引删除部分失败，跳过 SQLite 删除，等待补偿处理");
         0
@@ -241,8 +241,8 @@ pub async fn delete_documents_batch(
 #[tauri::command]
 pub async fn get_stats(
     state: State<'_, AppState>,
-    project: Option<String>,
+    project_id: Option<i64>,
 ) -> Result<KnowledgeStats, String> {
     let meta = state.metadata.lock().map_err(|e| e.to_string())?;
-    meta.get_stats(project.as_deref())
+    meta.get_stats(project_id)
 }
