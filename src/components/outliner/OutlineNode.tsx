@@ -322,7 +322,9 @@ export default function OutlineNode({ node, depth }: OutlineNodeProps) {
                 ? "text-amber-400 opacity-100"
                 : "text-neutral-300 opacity-0 group-hover:opacity-100 hover:text-[#1A6BD8]"
           }`}
-          title={isRecording ? "点击停止录音" : status === "transcribing" ? "转录中..." : "语音输入"}
+          title={
+            isRecording ? "点击停止录音" : status === "transcribing" ? "转录中..." : "语音输入"
+          }
         >
           <Mic className="h-3.5 w-3.5" />
         </button>
@@ -340,11 +342,11 @@ export default function OutlineNode({ node, depth }: OutlineNodeProps) {
 
       {/* 子节点递归 */}
       {hasChildren && isExpanded && (
-        <div role="group">
+        <fieldset className="border-0 p-0 m-0 min-w-0">
           {node.children.map((child) => (
             <OutlineNode key={child.id} node={child} depth={depth + 1} />
           ))}
-        </div>
+        </fieldset>
       )}
     </div>
   )
