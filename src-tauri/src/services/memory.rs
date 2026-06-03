@@ -41,7 +41,7 @@ pub async fn save_chat_memory(
     vector_index: &Arc<RwLock<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
     bm25: &Arc<RwLock<BM25Service>>,
-    project: Option<&str>,
+    project_id: i64,
 ) {
     // --- Semantic quality check: skip trivial conversations ---
     // Use LLM to judge whether the conversation contains substantive project
@@ -108,17 +108,16 @@ pub async fn save_chat_memory(
 
     // 4. Check for duplicate by semantic similarity — skip if too similar to recent memory
     let title = format!("记忆: {}", extract_title(conversation));
-    if is_duplicate_memory(&title, &memory_text, embedding, vector_index, metadata) {
+    if is_duplicate_memory(&title, &memory_text, embedding, vector_index, metadata, project_id) {
         info!(target: "memory", title = %title, "[Memory] Skipping — similar memory already exists");
         return;
     }
 
     // 5. Ingest into knowledge base for future RAG search
-    let project_name = project.unwrap_or("记忆库");
     let _ = ingest_text(
         &memory_text,
         &title,
-        project_name,
+        project_id,
         embedding,
         vector_index,
         metadata,
@@ -131,7 +130,7 @@ pub async fn save_chat_memory(
     );
 
     // 6. Cleanup stale memories (vector index + metadata)
-    cleanup_stale_memories(embedding, vector_index, metadata);
+    cleanup_stale_memories(embedding, vector_index, metadata, project_id);
 }
 
 /// Use LLM to determine whether a conversation contains substantive project
@@ -227,6 +226,7 @@ fn is_duplicate_memory(
     embedding: &Arc<RwLock<EmbeddingService>>,
     vector_index: &Arc<RwLock<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
+    project_id: i64,
 ) -> bool {
     // Compute embedding for the new memory
     let new_vec: Vec<f32> = match embedding.write() {
@@ -235,10 +235,10 @@ fn is_duplicate_memory(
             Err(e) => {
                 warn!(target: "memory", error = %e, "[Memory] Embedding failed for dedup check");
                 // Fall back to exact title match
-                return is_duplicate_memory_by_title(title, metadata);
+                return is_duplicate_memory_by_title(title, metadata, project_id);
             }
         },
-        Err(_) => return is_duplicate_memory_by_title(title, metadata),
+        Err(_) => return is_duplicate_memory_by_title(title, metadata, project_id),
     };
 
     // Search the vector index for nearest neighbors
@@ -256,8 +256,8 @@ fn is_duplicate_memory(
         Err(_) => return false,
     };
 
-    // Get all "记忆库" documents
-    let memory_docs = match meta_guard.list_documents(Some("记忆库")) {
+    // 获取已保存的记忆文档。
+    let memory_docs = match meta_guard.list_documents(Some(project_id)) {
         Ok(d) => d,
         Err(_) => return false,
     };
@@ -291,9 +291,13 @@ fn is_duplicate_memory(
 }
 
 /// Fallback: exact title match (used when embedding is unavailable)
-fn is_duplicate_memory_by_title(title: &str, metadata: &Arc<Mutex<MetadataStore>>) -> bool {
+fn is_duplicate_memory_by_title(
+    title: &str,
+    metadata: &Arc<Mutex<MetadataStore>>,
+    project_id: i64,
+) -> bool {
     let docs: Vec<crate::services::metadata::DocumentMeta> = match metadata.lock() {
-        Ok(meta) => match meta.list_documents(Some("记忆库")) {
+        Ok(meta) => match meta.list_documents(Some(project_id)) {
             Ok(d) => d,
             Err(_) => return false,
         },
@@ -308,9 +312,10 @@ fn cleanup_stale_memories(
     _embedding: &Arc<RwLock<EmbeddingService>>,
     vector_index: &Arc<RwLock<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
+    project_id: i64,
 ) {
     let docs: Vec<crate::services::metadata::DocumentMeta> = match metadata.lock() {
-        Ok(meta) => match meta.list_documents(Some("记忆库")) {
+        Ok(meta) => match meta.list_documents(Some(project_id)) {
             Ok(d) => d,
             Err(e) => {
                 error!(target: "memory", error = %e, "[Memory] Failed to list memory docs");
@@ -364,7 +369,7 @@ fn cleanup_stale_memories(
             for chunk in &chunks {
                 let _ = meta.delete_chunk_by_vector_key(chunk.vector_key);
             }
-            let _ = meta.delete_document(doc.id, None);
+            let _ = meta.delete_document(doc.id, Some(project_id));
 
             chunks // return chunks for progress logging
         }; // both locks dropped together
@@ -456,6 +461,22 @@ fn extract_title(conversation: &[ChatMessage]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::metadata::MetadataStore;
+    use crate::services::project_store::ProjectStore;
+    use std::sync::{Arc, Mutex};
+
+    fn init_metadata_with_projects() -> (tempfile::TempDir, Arc<Mutex<MetadataStore>>, i64, i64) {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let project_store = ProjectStore::new(&db_path).unwrap();
+        let default_project_id = project_store.ensure_default_project().unwrap();
+        let other_project_id = project_store
+            .create_project("测试项目 B", "", "")
+            .unwrap();
+        drop(project_store);
+        let store = MetadataStore::new(db_path).unwrap();
+        (tmp, Arc::new(Mutex::new(store)), default_project_id, other_project_id)
+    }
 
     // ── extract_title ─────────────────────────────────────────────────────
 
@@ -513,5 +534,36 @@ mod tests {
             },
         ];
         assert_eq!(extract_title(&msgs), "实际的问题");
+    }
+
+    #[test]
+    fn test_memory_title_dedup_stays_within_project() {
+        let (_tmp, metadata, default_project_id, other_project_id) = init_metadata_with_projects();
+
+        {
+            let store = metadata.lock().unwrap();
+            store
+                .insert_document(
+                    "记忆: 关键事项",
+                    None,
+                    Some("memory-other-project"),
+                    other_project_id,
+                    Some("knowledge"),
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+
+        assert!(!is_duplicate_memory_by_title(
+            "记忆: 关键事项",
+            &metadata,
+            default_project_id
+        ));
+        assert!(is_duplicate_memory_by_title(
+            "记忆: 关键事项",
+            &metadata,
+            other_project_id
+        ));
     }
 }
