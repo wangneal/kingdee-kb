@@ -19,6 +19,7 @@ use crate::services::llm_providers::LLMProviderManager;
 use crate::services::llm_service::LLMService;
 use crate::services::metadata::MetadataStore;
 use crate::services::product_store::ProductStore;
+use crate::services::project_store::ProjectStore;
 use crate::services::question_tool::{self, PendingQuestions};
 use crate::services::rerank::RerankerService;
 use crate::services::raw_source::RawSourceStore;
@@ -54,6 +55,8 @@ pub struct AppState {
     pub vector_index: Arc<RwLock<VectorIndex>>,
     /// 用于分块↔向量映射的 SQLite 元数据存储
     pub metadata: Arc<Mutex<MetadataStore>>,
+    /// 统一项目管理存储（projects / project_phases）
+    pub project_store: Arc<Mutex<ProjectStore>>,
     /// BM25 全文搜索服务（tantivy + jieba）
     pub bm25: Arc<RwLock<BM25Service>>,
     /// 用于 RAG 查询的 LLM 服务（OpenAI 兼容 API）
@@ -134,16 +137,22 @@ impl AppState {
             VectorIndex::new(index_dir)?
         };
 
-        // 初始化 MetadataStore（如果不存在则创建）
+        // 初始化 ProjectStore（共享 metadata.db）
+        let project_store = {
+            let store = ProjectStore::new(&db_path)?;
+            store.ensure_default_project()?;
+            Arc::new(Mutex::new(store))
+        };
+
+        // 初始化 MetadataStore（依赖 projects 表提供 project_id 外键）
         let metadata = MetadataStore::new(db_path.clone())?;
 
         // 初始化 BM25Service（tantivy + jieba 全文索引）
         let bm25_index_dir = data_dir.join("bm25_index");
         let bm25 = BM25Service::new(bm25_index_dir)?;
 
-        // 初始化 ProductStore（如果不存在则创建）
-        let products_db_path = data_dir.join("products.db");
-        let products = ProductStore::new(products_db_path)?;
+        // 初始化 ProductStore（共享 metadata.db）
+        let products = ProductStore::new(db_path.clone())?;
 
         // 初始化 RawSourceStore（共享 metadata.db）
         let raw_source_conn = Connection::open(&db_path)
@@ -265,6 +274,7 @@ impl AppState {
             embedding: Arc::new(RwLock::new(embedding)),
             vector_index: Arc::new(RwLock::new(vector_index)),
             metadata: Arc::new(Mutex::new(metadata)),
+            project_store,
             bm25: Arc::new(RwLock::new(bm25)),
             llm,
             products: Arc::new(Mutex::new(products)),
@@ -301,7 +311,18 @@ impl AppState {
     /// 尝试单独初始化每个服务。如果服务失败，
     /// 使用内存存根以便应用仍可启动（依赖该服务的命令在运行时将返回错误）。
     pub fn minimal(data_dir: &std::path::Path) -> Self {
-        let metadata = MetadataStore::new(data_dir.join("metadata.db"))
+        let db_path = data_dir.join("metadata.db");
+
+        let project_store = {
+            let store = ProjectStore::new(&db_path)
+                .expect("Fatal: cannot create project store");
+            store
+                .ensure_default_project()
+                .expect("Fatal: cannot create default project");
+            Arc::new(Mutex::new(store))
+        };
+
+        let metadata = MetadataStore::new(db_path.clone())
             .expect("Fatal: cannot create metadata DB — app cannot function without it");
 
         let vector_index = VectorIndex::new(data_dir.join("index"))
@@ -310,10 +331,8 @@ impl AppState {
         let bm25 = BM25Service::new(data_dir.join("bm25_index"))
             .expect("Fatal: cannot create BM25 index — app cannot function without it");
 
-        let products = ProductStore::new(data_dir.join("products.db"))
+        let products = ProductStore::new(db_path.clone())
             .expect("Fatal: cannot create product store — app cannot function without it");
-
-        let db_path = data_dir.join("metadata.db");
 
         let edition_config = {
             let conn = Connection::open(&db_path).expect("Fatal: cannot open DB for EditionConfig");
@@ -386,6 +405,7 @@ impl AppState {
             embedding: Arc::new(RwLock::new(EmbeddingService::empty())),
             vector_index: Arc::new(RwLock::new(vector_index)),
             metadata: Arc::new(Mutex::new(metadata)),
+            project_store,
             bm25: Arc::new(RwLock::new(bm25)),
             llm,
             products: Arc::new(Mutex::new(products)),

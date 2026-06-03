@@ -273,6 +273,14 @@ pub fn run() {
             commands::product::delete_product,
             commands::product::export_product,
             commands::product::regenerate_product,
+            // Unified Project Management
+            commands::project::ensure_default_project,
+            commands::project::create_project,
+            commands::project::list_projects,
+            commands::project::get_project,
+            commands::project::get_project_phases,
+            commands::project::archive_project,
+            commands::project::ensure_project_active,
             // Phase 12: Whisper Voice Recognition
             commands::media::load_whisper_model,
             commands::media::get_whisper_status,

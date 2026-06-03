@@ -9,6 +9,7 @@ pub mod knowledge_graph;
 pub mod llm_provider;
 pub mod media;
 pub mod product;
+pub mod project;
 pub mod research;
 pub mod risk_blueprint;
 pub mod search_llm;
