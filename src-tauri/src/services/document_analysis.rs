@@ -652,14 +652,14 @@ impl AnalysisOrchestrator {
     /// 4. 写入 analysis_cache
     pub async fn analyze(
         &self,
-        project: &str,
+        project_id: i64,
         source_identity: &str,
         sha256: &str,
         text: &str,
         enable_kb_compilation: bool,
     ) -> AnalysisResult {
         // 1. 检查缓存
-        if let Some(cached) = self.check_cache(project, source_identity, sha256) {
+        if let Some(cached) = self.check_cache(project_id, source_identity, sha256) {
             info!(
                 "分析缓存命中: source={}, sha256={}",
                 source_identity, sha256
@@ -720,7 +720,7 @@ impl AnalysisOrchestrator {
             match result {
                 Ok(Ok(analysis)) => {
                     info!("LLM 分析成功: source={}", source_identity);
-                            self.write_cache(project, source_identity, sha256, &analysis);
+                    self.write_cache(project_id, source_identity, sha256, &analysis);
                     return AnalysisResult {
                         analysis,
                         engine: EngineType::Llm,
@@ -793,7 +793,7 @@ impl AnalysisOrchestrator {
     /// 从 analysis_cache 读取缓存
     fn check_cache(
         &self,
-        project: &str,
+        project_id: i64,
         source_identity: &str,
         sha256: &str,
     ) -> Option<DocumentAnalysis> {
@@ -805,7 +805,7 @@ impl AnalysisOrchestrator {
             }
         };
 
-        let cached = match store.get_by_key(project, source_identity, sha256) {
+        let cached = match store.get_by_key(project_id, source_identity, sha256) {
             Ok(Some(c)) => c,
             _ => return None,
         };
@@ -826,7 +826,7 @@ impl AnalysisOrchestrator {
     /// 写入 analysis_cache
     fn write_cache(
         &self,
-        project: &str,
+        project_id: i64,
         source_identity: &str,
         sha256: &str,
         analysis: &DocumentAnalysis,
@@ -848,7 +848,7 @@ impl AnalysisOrchestrator {
         };
 
         let input = CreateAnalysisCache {
-            project: project.to_string(),
+            project_id,
             source_identity: source_identity.to_string(),
             sha256: sha256.to_string(),
             analysis_json,

@@ -1,6 +1,6 @@
 //! 摄入缓存管理（ingest_cache 表）
 //!
-//! 缓存源代码文件摄入结果，记录已写入的文件列表，以 project + source_identity + sha256 为唯一键实现去重。
+//! 缓存源代码文件摄入结果，记录已写入的文件列表，以 project_id + source_identity + sha256 为唯一键实现去重。
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestCache {
     pub id: i64,
-    pub project: String,
+    pub project_id: i64,
     pub source_identity: String,
     pub sha256: String,
     pub files_written: String,
@@ -20,7 +20,7 @@ pub struct IngestCache {
 /// 创建摄入缓存时的数据传输对象
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateIngestCache {
-    pub project: String,
+    pub project_id: i64,
     pub source_identity: String,
     pub sha256: String,
     pub files_written: Option<String>,
@@ -45,33 +45,54 @@ impl IngestCacheStore {
                 "
             CREATE TABLE IF NOT EXISTS ingest_cache (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                project          TEXT NOT NULL,
+                project_id       INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 source_identity  TEXT NOT NULL,
                 sha256           TEXT NOT NULL,
                 files_written    TEXT NOT NULL DEFAULT '[]',
                 created_at       TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(project, source_identity, sha256)
+                UNIQUE(project_id, source_identity, sha256)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_ingest_cache_project ON ingest_cache(project);
+            CREATE INDEX IF NOT EXISTS idx_ingest_cache_project_id ON ingest_cache(project_id);
             CREATE INDEX IF NOT EXISTS idx_ingest_cache_source ON ingest_cache(source_identity);
             ",
             )
-            .map_err(|e| format!("创建 ingest_cache 表失败: {}", e))
+            .map_err(|e| format!("创建 ingest_cache 表失败: {}", e))?;
+        self.ensure_column("ingest_cache", "project_id", "INTEGER")?;
+        Ok(())
+    }
+
+    fn ensure_column(&self, table: &str, column: &str, definition: &str) -> Result<(), String> {
+        let mut stmt = self
+            .db
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .map_err(|e| format!("读取表结构失败: {}", e))?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| format!("查询表结构失败: {}", e))?;
+        for col in columns {
+            if col.map_err(|e| format!("读取列名失败: {}", e))? == column {
+                return Ok(());
+            }
+        }
+        self.db
+            .execute_batch(&format!("ALTER TABLE {} ADD COLUMN {} {};", table, column, definition))
+            .map_err(|e| format!("添加列 {}.{} 失败: {}", table, column, e))?;
+        Ok(())
     }
 
     /// 插入或替换摄入缓存记录
     pub fn upsert(&self, input: &CreateIngestCache) -> Result<IngestCache, String> {
         self.db
             .execute(
-                "INSERT INTO ingest_cache (project, source_identity, sha256, files_written)
-                 VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(project, source_identity, sha256) DO UPDATE SET
+                "INSERT INTO ingest_cache (project_id, source_identity, sha256, files_written)
+                  VALUES (?1, ?2, ?3, ?4)
+                  ON CONFLICT(project_id, source_identity, sha256) DO UPDATE SET
                     files_written = excluded.files_written,
                     updated_at = datetime('now')",
                 params![
-                    input.project,
+                    input.project_id,
                     input.source_identity,
                     input.sha256,
                     input.files_written.as_deref().unwrap_or("[]"),
@@ -79,33 +100,33 @@ impl IngestCacheStore {
             )
             .map_err(|e| format!("插入/更新 ingest_cache 失败: {}", e))?;
 
-        self.get_by_key(&input.project, &input.source_identity, &input.sha256)?
+        self.get_by_key(input.project_id, &input.source_identity, &input.sha256)?
             .ok_or_else(|| "插入后未找到 ingest_cache 记录".to_string())
     }
 
     /// 按唯一键获取缓存
     pub fn get_by_key(
         &self,
-        project: &str,
+        project_id: i64,
         source_identity: &str,
         sha256: &str,
     ) -> Result<Option<IngestCache>, String> {
         self.query_one(
-            "SELECT id, project, source_identity, sha256, files_written, created_at, updated_at
-             FROM ingest_cache
-             WHERE project = ?1 AND source_identity = ?2 AND sha256 = ?3",
-            params![project, source_identity, sha256],
+            "SELECT id, project_id, source_identity, sha256, files_written, created_at, updated_at
+              FROM ingest_cache
+              WHERE project_id = ?1 AND source_identity = ?2 AND sha256 = ?3",
+            params![project_id, source_identity, sha256],
         )
     }
 
     /// 列出项目的所有摄入缓存
-    pub fn list_by_project(&self, project: &str) -> Result<Vec<IngestCache>, String> {
+    pub fn list_by_project(&self, project_id: i64) -> Result<Vec<IngestCache>, String> {
         self.query_list(
-            "SELECT id, project, source_identity, sha256, files_written, created_at, updated_at
-             FROM ingest_cache
-             WHERE project = ?1
-             ORDER BY updated_at DESC",
-            params![project],
+            "SELECT id, project_id, source_identity, sha256, files_written, created_at, updated_at
+              FROM ingest_cache
+              WHERE project_id = ?1
+              ORDER BY updated_at DESC",
+            params![project_id],
         )
     }
 
@@ -126,12 +147,12 @@ impl IngestCacheStore {
     }
 
     /// 清空项目的所有摄入缓存
-    pub fn delete_by_project(&self, project: &str) -> Result<usize, String> {
+    pub fn delete_by_project(&self, project_id: i64) -> Result<usize, String> {
         let rows = self
             .db
             .execute(
-                "DELETE FROM ingest_cache WHERE project = ?1",
-                params![project],
+                "DELETE FROM ingest_cache WHERE project_id = ?1",
+                params![project_id],
             )
             .map_err(|e| format!("清空项目 ingest_cache 失败: {}", e))?;
         Ok(rows)
@@ -142,7 +163,7 @@ impl IngestCacheStore {
     fn row_to_cache(row: &rusqlite::Row) -> rusqlite::Result<IngestCache> {
         Ok(IngestCache {
             id: row.get(0)?,
-            project: row.get(1)?,
+            project_id: row.get(1)?,
             source_identity: row.get(2)?,
             sha256: row.get(3)?,
             files_written: row.get(4)?,
