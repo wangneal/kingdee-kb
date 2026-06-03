@@ -401,6 +401,7 @@ mod tests {
                     None,
                     Vec::new(),
                     None,
+                    None, // 会话ID
                 ))
                 .max_tokens(32)
                 .temperature(0.0)

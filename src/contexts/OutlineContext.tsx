@@ -18,6 +18,7 @@ import {
   createOutlineNode,
   deleteOutlineNode,
   getOutlineTree,
+  importMarkdownOutline,
   moveOutlineNode,
   type OutlineNode,
   updateOutlineNode,
@@ -91,6 +92,8 @@ interface OutlineContextValue {
   deleteNode: (id: number) => Promise<void>
   /** 移动节点到新的父节点下 */
   moveNode: (id: number, newParentId: number | null, newSortOrder: number) => Promise<void>
+  /** 从 Markdown 同步导入大纲 */
+  importMarkdown: (markdown: string) => Promise<void>
 
   // ── 选择 ──
   selectNode: (id: number | null) => void
@@ -403,6 +406,23 @@ export function OutlineProvider({ children }: { children: ReactNode }) {
     [nodes, pushUndo, refreshOutline],
   )
 
+  const importMarkdown = useCallback(
+    async (markdown: string) => {
+      const sessionId = currentSessionIdRef.current
+      if (sessionId === null) return
+
+      try {
+        await importMarkdownOutline(sessionId, markdown)
+        await refreshOutline()
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setError(msg)
+        console.error("[OutlineContext] 导入大纲失败:", msg)
+      }
+    },
+    [refreshOutline],
+  )
+
   // ── 选择 ──
 
   const selectNode = useCallback((id: number | null) => {
@@ -679,6 +699,7 @@ export function OutlineProvider({ children }: { children: ReactNode }) {
     updateNode,
     deleteNode,
     moveNode,
+    importMarkdown,
     selectNode,
     toggleExpand,
     expandAll,

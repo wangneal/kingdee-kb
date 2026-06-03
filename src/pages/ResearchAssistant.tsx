@@ -15,19 +15,20 @@ import {
   Mic,
   Network,
   Plus,
-  Send,
   Square,
   Trash2,
 } from "lucide-react"
 import { useCallback, useEffect, useState } from "react"
 import { useParams } from "react-router-dom"
+import MarkdownEditor from "../components/outliner/MarkdownEditor"
 import MindmapView from "../components/outliner/MindmapView"
-import NodeDetailPanel from "../components/outliner/NodeDetailPanel"
 import OutlineTree from "../components/outliner/OutlineTree"
 import { useToast } from "../components/Toast"
 import { DEFAULT_SLOT, useAgent } from "../contexts/AgentContext"
 import { useOutline } from "../contexts/OutlineContext"
 import { useProject } from "../contexts/ProjectContext"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import {
   type AsrConfigStatus,
   type AsrProviderInfo,
@@ -60,7 +61,6 @@ export default function ResearchAssistant() {
   const [detail, setDetail] = useState<SessionDetail | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [initialOutlineTab, setInitialOutlineTab] = useState(false)
 
   // Load sessions on mount
   const refreshList = useCallback(async () => {
@@ -83,7 +83,6 @@ export default function ResearchAssistant() {
     if (urlSessionId && sessions.length > 0 && mode === "list") {
       const id = Number(urlSessionId)
       if (!isNaN(id)) {
-        setInitialOutlineTab(true)
         openSession(id)
       }
     }
@@ -117,7 +116,7 @@ export default function ResearchAssistant() {
   // ── List View ──
   if (mode === "list") {
     return (
-      <div className="flex h-full flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex h-14 items-center justify-between border-b border-neutral-200 px-6">
           <div className="flex items-center gap-2">
             <ClipboardList className="h-5 w-5 text-[#1A6BD8]" />
@@ -224,12 +223,11 @@ export default function ResearchAssistant() {
           setMode("list")
           setDetail(null)
           refreshList()
-          setInitialOutlineTab(false)
         }}
         onUpdated={() => {
           if (detail) getResearchSession(detail.session.id).then(setDetail)
         }}
-        initialTab={initialOutlineTab ? "outline" : "qa"}
+        initialTab="outline"
       />
     )
   }
@@ -275,7 +273,7 @@ function NewSessionForm({
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-14 items-center gap-2 border-b border-neutral-200 px-6">
         <button
           type="button"
@@ -400,31 +398,16 @@ function SessionDetailView({
   const [activeTab, setActiveTab] = useState<"qa" | "outline" | "mindmap">(initialTab)
   const toast = useToast()
 
-  // 大纲上下文
+  // 大纲上下文与文本插入触发器
   const outline = useOutline()
-  const outlineSelectedNode = outline.nodes.find((n) => n.id === outline.selectedNodeId) ?? null
-  // 将 OutlineNode 转换为 TreeNode（需要 children 字段）
-  const outlineSelectedTreeNode = (() => {
-    if (!outlineSelectedNode) return null
-    const findInTree = (
-      nodes: typeof outline.tree,
-    ): (typeof outlineSelectedNode & { children: typeof outline.tree }) | null => {
-      for (const n of nodes) {
-        if (n.id === outlineSelectedNode.id) return n
-        const found = findInTree(n.children)
-        if (found) return found
-      }
-      return null
-    }
-    return findInTree(outline.tree)
-  })()
+  const [insertTextTrigger, setInsertTextTrigger] = useState<{ text: string; timestamp: number } | null>(null)
 
   // 切换到大纲视图或脑图视图时加载大纲
   useEffect(() => {
     if (activeTab === "outline" || activeTab === "mindmap") {
       outline.loadOutline(session.id)
     }
-  }, [activeTab, session.id, outline])
+  }, [activeTab, session.id])
 
   useEffect(() => {
     getWhisperStatus()
@@ -505,11 +488,212 @@ function SessionDetailView({
         toast.warning("未检测到音频，请检查麦克风权限或输入设备")
         return
       }
-      setNewQuestion(result.text.trim())
+      
+      if (activeTab === "outline") {
+        setInsertTextTrigger({ text: result.text.trim(), timestamp: Date.now() })
+        toast.success("语音转录内容已插入光标所在位置")
+      } else {
+        setNewQuestion(result.text.trim())
+      }
     } catch (err) {
       setRecording(false)
       toast.error("停止录音失败: " + String(err))
     }
+  }
+
+  // 渲染 AI Copilot 工具箱侧边栏
+  const renderCopilotPanel = () => {
+    const selectedNode = outline.nodes.find((n) => n.id === outline.selectedNodeId)
+
+    return (
+      <div className="flex w-80 shrink-0 flex-col border-l border-neutral-200 bg-neutral-50 p-4 overflow-y-auto min-h-0">
+        {/* 语音录音 */}
+        <div className="mb-4 rounded-lg border border-neutral-200 bg-white p-4">
+          <div className="mb-2 flex items-center gap-2">
+            <Mic className="h-4 w-4 text-[#1A6BD8]" />
+            <span className="text-xs font-semibold text-neutral-700">语音录音控制</span>
+          </div>
+          {/* ASR 供应商选择 */}
+          <div className="mb-2">
+            <select
+              value={selectedAsrProvider}
+              onChange={(e) => setSelectedAsrProvider(e.target.value)}
+              className="w-full rounded border border-neutral-200 px-2 py-1 text-[10px] text-neutral-600 outline-none focus:border-[#1A6BD8]"
+            >
+              {asrProviders.map((p) => (
+                <option key={p.type} value={p.type}>
+                  {p.name}{" "}
+                  {p.type === "whisper" ? (whisperStatus?.model_loaded ? "✓" : "⚠") : ""}
+                </option>
+              ))}
+            </select>
+            {/* 供应商描述说明 */}
+            {asrProviders.find((p) => p.type === selectedAsrProvider) && (
+              <p className="text-[10px] text-neutral-400 mt-0.5">
+                {asrProviders.find((p) => p.type === selectedAsrProvider)?.description}
+              </p>
+            )}
+          </div>
+          {whisperStatus &&
+            !whisperStatus.model_loaded &&
+            selectedAsrProvider === "whisper" && (
+              <span className="text-[10px] text-amber-600">（模型未加载）</span>
+            )}
+          {loadingWhisper ? (
+            <div className="flex items-center gap-2 text-xs text-neutral-500">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              加载语音模型...
+            </div>
+          ) : recording ? (
+            <button
+              type="button"
+              onClick={handleStopRecording}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-red-500 px-3 py-2 text-xs font-medium text-white hover:bg-red-600 transition-colors"
+            >
+              <Square className="h-3.5 w-3.5" />
+              停止录音
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleStartRecording}
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#1A6BD8] px-3 py-2 text-xs font-medium text-[#1A6BD8] hover:bg-[#1A6BD8]/5 transition-colors"
+            >
+              <Mic className="h-3.5 w-3.5" />
+              开始录音
+            </button>
+          )}
+          {activeTab === "outline" && (
+            <p className="text-[10px] text-neutral-400 mt-1.5 text-center">
+              录音结束将自动插入中栏编辑器光标位置
+            </p>
+          )}
+        </div>
+
+        {/* AI 提词与辅助 */}
+        <div className="flex-1 flex flex-col min-h-0 space-y-3">
+          <div className="flex items-center gap-2">
+            <Brain className="h-4 w-4 text-amber-600" />
+            <span className="text-xs font-semibold text-neutral-700">AI 智能提词器</span>
+          </div>
+
+          {/* 提词自动触发快捷按钮 */}
+          {activeTab === "outline" && (
+            <div className="space-y-2">
+              {selectedNode ? (
+                <div className="rounded-lg border border-blue-100 bg-blue-50/50 p-3 text-xs space-y-2">
+                  <p className="font-semibold text-neutral-700">当前节点: <span className="text-[#1A6BD8] font-bold">{selectedNode.content}</span></p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewQuestion(`针对大纲节点“${selectedNode.content}”，我应该向客户调研哪些核心业务问题？请从系统配置、业务规则、蓝图规划这几个维度列出具体的提问大纲和要点。`);
+                        setTimeout(handleAIAssist, 50);
+                      }}
+                      disabled={aiLoading}
+                      className="flex-1 rounded bg-[#1A6BD8]/10 px-2 py-1.5 text-[10px] font-medium text-[#1A6BD8] hover:bg-[#1A6BD8]/20 transition-colors text-center"
+                    >
+                      💡 获取调研提词
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewQuestion(`针对大纲节点“${selectedNode.content}”，如果在金蝶云·星空中我应当如何进行功能配置？是使用标准功能配置（如工作流、单据转换）还是需要二次开发？请给出配置路径。`);
+                        setTimeout(handleAIAssist, 50);
+                      }}
+                      disabled={aiLoading}
+                      className="flex-1 rounded bg-amber-50 px-2 py-1.5 text-[10px] font-medium text-amber-700 border border-amber-200 hover:bg-amber-100 transition-colors text-center"
+                    >
+                      🤖 获取金蝶方案
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed border-neutral-200 bg-white p-3 text-center text-[11px] text-neutral-400 italic">
+                  请在大纲树中选中节点以激活智能提词
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* AI 自由提问输入 */}
+          <div className="space-y-2">
+            <textarea
+              value={newQuestion}
+              onChange={(e) => setNewQuestion(e.target.value)}
+              placeholder="输入或语音录入问题进行 AI 辅助..."
+              rows={3}
+              className="w-full resize-none rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20"
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleAIAssist}
+                disabled={!newQuestion.trim() || aiLoading}
+                className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors"
+              >
+                {aiLoading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Brain className="h-3.5 w-3.5" />
+                )}
+                {aiLoading ? "AI 检索中..." : "AI 辅助提词"}
+              </button>
+            </div>
+          </div>
+
+          {/* AI 流式结果渲染区 */}
+          {newAnswer && (
+            <div className="rounded-lg border border-neutral-200 bg-white p-3 space-y-2 flex flex-col flex-1 min-h-[150px] overflow-hidden">
+              <span className="text-[10px] font-bold text-neutral-400 uppercase">AI 助手响应</span>
+              <div className="flex-1 overflow-y-auto text-xs prose prose-sm leading-relaxed max-w-none text-neutral-700 bg-neutral-50 p-2 rounded border border-neutral-100">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{newAnswer}</ReactMarkdown>
+              </div>
+              <div className="flex gap-1.5 pt-1 border-t border-neutral-100">
+                {activeTab === "outline" ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInsertTextTrigger({ text: `\n\n${newAnswer}`, timestamp: Date.now() })
+                      toast.success("内容已插入到编辑器当前光标处")
+                    }}
+                    className="flex-1 text-center bg-[#1A6BD8] text-white rounded py-1 text-[10px] font-medium hover:bg-[#1558B0] transition-colors"
+                  >
+                    插入中栏光标
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleAddRecord}
+                    disabled={!newQuestion.trim()}
+                    className="flex-1 text-center bg-[#1A6BD8] text-white rounded py-1 text-[10px] font-medium hover:bg-[#1558B0] transition-colors"
+                  >
+                    保存为问答记录
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(newAnswer);
+                    toast.success("已复制到剪贴板");
+                  }}
+                  className="rounded border border-neutral-200 px-2 py-1 text-[10px] text-neutral-600 hover:bg-neutral-50 transition-colors"
+                >
+                  复制
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNewAnswer("")}
+                  className="rounded border border-neutral-200 px-2 py-1 text-[10px] text-red-500 hover:bg-red-50 transition-colors hover:border-red-200"
+                >
+                  清空
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    )
   }
 
   const handleAddRecord = async () => {
@@ -591,7 +775,7 @@ function SessionDetailView({
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       {/* Header */}
       <div className="flex h-14 items-center justify-between border-b border-neutral-200 px-6">
         <div className="flex items-center gap-2">
@@ -644,18 +828,6 @@ function SessionDetailView({
       <div className="flex border-b border-neutral-200 px-6">
         <button
           type="button"
-          onClick={() => setActiveTab("qa")}
-          className={`flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-xs font-medium transition-colors ${
-            activeTab === "qa"
-              ? "border-[#1A6BD8] text-[#1A6BD8]"
-              : "border-transparent text-neutral-500 hover:text-neutral-700"
-          }`}
-        >
-          <MessageSquare className="h-3.5 w-3.5" />
-          问答记录
-        </button>
-        <button
-          type="button"
           onClick={() => setActiveTab("outline")}
           className={`flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-xs font-medium transition-colors ${
             activeTab === "outline"
@@ -677,6 +849,18 @@ function SessionDetailView({
         >
           <Network className="h-3.5 w-3.5" />
           脑图视图
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("qa")}
+          className={`flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-xs font-medium transition-colors ${
+            activeTab === "qa"
+              ? "border-[#1A6BD8] text-[#1A6BD8]"
+              : "border-transparent text-neutral-500 hover:text-neutral-700"
+          }`}
+        >
+          <MessageSquare className="h-3.5 w-3.5" />
+          问答记录
         </button>
       </div>
 
@@ -754,140 +938,28 @@ function SessionDetailView({
               </div>
             )}
           </div>
-
-          {/* Input Panel */}
-          <div className="flex w-80 flex-col border-l border-neutral-200 bg-neutral-50 p-4">
-            {/* Voice Recording */}
-            <div className="mb-4 rounded-lg border border-neutral-200 bg-white p-4">
-              <div className="mb-2 flex items-center gap-2">
-                <Mic className="h-4 w-4 text-[#1A6BD8]" />
-                <span className="text-xs font-semibold text-neutral-700">语音输入</span>
-              </div>
-              {/* ASR Provider selector */}
-              <div className="mb-2">
-                <select
-                  value={selectedAsrProvider}
-                  onChange={(e) => setSelectedAsrProvider(e.target.value)}
-                  className="w-full rounded border border-neutral-200 px-2 py-1 text-[10px] text-neutral-600 outline-none focus:border-[#1A6BD8]"
-                >
-                  {asrProviders.map((p) => (
-                    <option key={p.type} value={p.type}>
-                      {p.name}{" "}
-                      {p.type === "whisper" ? (whisperStatus?.model_loaded ? "✓" : "⚠") : ""}
-                    </option>
-                  ))}
-                </select>
-                {/* Provider description */}
-                {asrProviders.find((p) => p.type === selectedAsrProvider) && (
-                  <p className="text-[10px] text-neutral-400 mt-0.5">
-                    {asrProviders.find((p) => p.type === selectedAsrProvider)?.description}
-                  </p>
-                )}
-              </div>
-              {whisperStatus &&
-                !whisperStatus.model_loaded &&
-                selectedAsrProvider === "whisper" && (
-                  <span className="text-[10px] text-amber-600">（模型未加载）</span>
-                )}
-              {loadingWhisper ? (
-                <div className="flex items-center gap-2 text-xs text-neutral-500">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  加载语音模型...
-                </div>
-              ) : recording ? (
-                <button
-                  type="button"
-                  onClick={handleStopRecording}
-                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-red-500 px-3 py-2 text-xs font-medium text-white hover:bg-red-600 transition-colors"
-                >
-                  <Square className="h-3.5 w-3.5" />
-                  停止录音
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={handleStartRecording}
-                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#1A6BD8] px-3 py-2 text-xs font-medium text-[#1A6BD8] hover:bg-[#1A6BD8]/5 transition-colors"
-                >
-                  <Mic className="h-3.5 w-3.5" />
-                  开始录音
-                </button>
-              )}
-            </div>
-
-            {/* Manual Input */}
-            <div className="flex-1 space-y-2">
-              <span className="text-xs font-semibold text-neutral-700">添加问题</span>
-              <textarea
-                value={newQuestion}
-                onChange={(e) => setNewQuestion(e.target.value)}
-                placeholder="输入或通过语音录入问题..."
-                rows={3}
-                className="w-full resize-none rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20"
-              />
-              <textarea
-                value={newAnswer}
-                onChange={(e) => setNewAnswer(e.target.value)}
-                placeholder="回答内容..."
-                rows={2}
-                className="w-full resize-none rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs outline-none focus:border-[#1A6BD8] focus:ring-2 focus:ring-[#1A6BD8]/20"
-              />
-              <button
-                type="button"
-                onClick={handleAddRecord}
-                disabled={!newQuestion.trim()}
-                className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#1A6BD8] px-3 py-2 text-xs font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
-              >
-                <Send className="h-3.5 w-3.5" />
-                添加记录
-              </button>
-              <button
-                type="button"
-                onClick={handleAIAssist}
-                disabled={!newQuestion.trim() || aiLoading}
-                className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors"
-              >
-                {aiLoading ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Brain className="h-3.5 w-3.5" />
-                )}
-                {aiLoading ? "搜索知识库..." : "AI 辅助"}
-              </button>
-            </div>
-          </div>
         </div>
       ) : activeTab === "outline" ? (
-        /* 大纲视图 */
+        /* 大纲视图：左树只读 + 中栏 Markdown 编辑 + 右栏 AI Copilot */
         <div className="flex flex-1 overflow-hidden">
-          {/* 大纲树 */}
+          {/* 大纲树（左侧，只读） */}
+          <div className="w-72 shrink-0 overflow-y-auto border-r border-neutral-200 bg-white p-2">
+            <OutlineTree sessionId={session.id} />
+          </div>
+
+          {/* Markdown 编辑区（中栏） */}
           <div className="flex flex-1 flex-col overflow-hidden">
-            {/* 工具栏 */}
-            <div className="flex items-center gap-2 border-b border-neutral-200 px-4 py-2">
-              <button
-                type="button"
-                onClick={() => outline.createNode(null, "")}
-                className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#1558B0] transition-colors"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                添加根节点
-              </button>
-              <span className="text-[10px] text-neutral-400">{outline.nodes.length} 个节点</span>
-            </div>
-            {/* 树内容 */}
-            <div className="flex-1 overflow-y-auto p-2">
-              <OutlineTree sessionId={session.id} />
+            <div className="flex-1 overflow-hidden">
+              <MarkdownEditor sessionId={session.id} insertTextTrigger={insertTextTrigger} />
             </div>
           </div>
 
-          {/* 节点详情面板 */}
-          <div className="w-72 shrink-0 border-l border-neutral-200 bg-white">
-            <NodeDetailPanel node={outlineSelectedTreeNode} sessionId={session.id} />
-          </div>
+          {/* 右侧 Copilot 面板 */}
+          {renderCopilotPanel()}
         </div>
       ) : (
         /* 脑图视图 */
-        <div className="flex flex-1 overflow-hidden">
+        <div className="relative flex-1 overflow-hidden">
           <MindmapView sessionId={session.id} />
         </div>
       )}

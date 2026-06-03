@@ -9,6 +9,7 @@ import { ProjectProvider } from "./contexts/ProjectContext"
 import Browse from "./pages/Browse"
 import Chat from "./pages/Chat"
 import Home from "./pages/Home"
+import KnowledgeGraph from "./pages/KnowledgeGraph"
 import Import from "./pages/Import"
 import Products from "./pages/Products"
 import ResearchAssistant from "./pages/ResearchAssistant"
@@ -51,6 +52,7 @@ function App() {
                     </OutlineProvider>
                   }
                 />
+                <Route path="graph" element={<KnowledgeGraph />} />
                 <Route path="risk" element={<RiskControl />} />
                 <Route path="skills" element={<Skills />} />
                 <Route path="import" element={<Import />} />

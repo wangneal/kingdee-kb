@@ -526,6 +526,254 @@ impl OutlineStore {
         }))
     }
 
+    /// 从 Markdown 字符串导入/同步大纲。
+    /// 解析标题行作为大纲节点，非标题行作为上一标题节点的 notes。
+    /// 并在数据库中执行增量 Diff 更新。
+    pub fn import_markdown_outline(&self, session_id: i64, markdown: &str) -> Result<(), String> {
+        // 1. 解析 Markdown
+        struct ParsedNode {
+            content: String,
+            level: usize,
+            notes: String,
+            matched_id: Option<i64>,
+            matched_question_id: Option<i64>, // 保存已匹配到的旧 Q&A 记录 ID
+        }
+
+        let mut parsed_nodes: Vec<ParsedNode> = Vec::new();
+        let mut current_heading_idx: Option<usize> = None;
+        let lines: Vec<&str> = markdown.lines().collect();
+
+        // 查找最小的 # 数量作为 base_depth
+        let mut min_hashes = 999;
+        for line in &lines {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') {
+                let hash_count = trimmed.chars().take_while(|&c| c == '#').count();
+                if hash_count > 0 && trimmed[hash_count..].starts_with(' ') {
+                    if hash_count < min_hashes {
+                        min_hashes = hash_count;
+                    }
+                }
+            }
+        }
+        if min_hashes == 999 {
+            min_hashes = 2; // 默认以 ## (二级标题) 为第一层
+        }
+
+        for line in lines {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') {
+                let hash_count = trimmed.chars().take_while(|&c| c == '#').count();
+                if hash_count > 0 && trimmed[hash_count..].starts_with(' ') {
+                    let content = trimmed[hash_count..].trim().to_string();
+                    let level = if hash_count >= min_hashes {
+                        hash_count - min_hashes
+                    } else {
+                        0
+                    };
+                    parsed_nodes.push(ParsedNode {
+                        content,
+                        level,
+                        notes: String::new(),
+                        matched_id: None,
+                        matched_question_id: None,
+                    });
+                    current_heading_idx = Some(parsed_nodes.len() - 1);
+                    continue;
+                }
+            }
+
+            if let Some(idx) = current_heading_idx {
+                if !parsed_nodes[idx].notes.is_empty() {
+                    parsed_nodes[idx].notes.push('\n');
+                }
+                parsed_nodes[idx].notes.push_str(line);
+            }
+        }
+
+        // 去除 notes 的首尾空白
+        for node in &mut parsed_nodes {
+            node.notes = node.notes.trim().to_string();
+        }
+
+        // 获取旧节点
+        let old_nodes = self.get_tree(session_id)?;
+        let mut old_nodes_pool = old_nodes.clone();
+
+        // 两轮匹配
+        // 第一轮：精确匹配 content 和 notes 相同
+        for parsed_node in &mut parsed_nodes {
+            if let Some(pos) = old_nodes_pool.iter().position(|o| o.content == parsed_node.content && o.notes == parsed_node.notes) {
+                let matched = old_nodes_pool.remove(pos);
+                parsed_node.matched_id = Some(matched.id);
+                parsed_node.matched_question_id = matched.question_id;
+            }
+        }
+        // 第二轮：模糊匹配 content 相同
+        for parsed_node in &mut parsed_nodes {
+            if parsed_node.matched_id.is_none() {
+                if let Some(pos) = old_nodes_pool.iter().position(|o| o.content == parsed_node.content) {
+                    let matched = old_nodes_pool.remove(pos);
+                    parsed_node.matched_id = Some(matched.id);
+                    parsed_node.matched_question_id = matched.question_id;
+                }
+            }
+        }
+
+        // 计算每个 parsed_node 的 parent_idx
+        // 改为支持跨级标题（例如从 level 0 直接到 level 2），挂载到离它最近且层级小于它的上一个节点
+        let mut parent_indices: Vec<Option<usize>> = vec![None; parsed_nodes.len()];
+        for i in 0..parsed_nodes.len() {
+            let current_level = parsed_nodes[i].level;
+            if current_level > 0 {
+                for j in (0..i).rev() {
+                    if parsed_nodes[j].level < current_level {
+                        parent_indices[i] = Some(j);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 执行数据库更新
+        let conn = self.conn.lock().map_err(|e| format!("加锁失败: {}", e))?;
+        
+        let do_update = || -> Result<(), String> {
+            conn.execute_batch("BEGIN").map_err(|e| format!("开始事务失败: {}", e))?;
+
+            // 存储每一项插入或更新后的真正 db_id
+            let mut db_ids: Vec<Option<i64>> = vec![None; parsed_nodes.len()];
+
+            for i in 0..parsed_nodes.len() {
+                let parsed_node = &parsed_nodes[i];
+                let parent_db_id = parent_indices[i]
+                    .and_then(|p_idx| db_ids[p_idx]);
+
+                let sort_order = (i + 1) as f64;
+                let mut question_id = parsed_node.matched_question_id;
+
+                // 标题即 Q，正文即 A。如果正文不为空，则自动同步到问答记录中
+                if !parsed_node.notes.trim().is_empty() {
+                    match question_id {
+                        Some(qid) => {
+                            // 更新已有问答
+                            conn.execute(
+                                "UPDATE session_qa_records SET
+                                    question_text = ?1,
+                                    answer_text = ?2,
+                                    updated_at = datetime('now')
+                                 WHERE id = ?3",
+                                params![parsed_node.content, parsed_node.notes, qid],
+                            ).map_err(|e| format!("更新问答记录失败: {}", e))?;
+                        }
+                        None => {
+                            // 插入新问答（标记为 auto 自动提取）
+                            conn.execute(
+                                "INSERT INTO session_qa_records (session_id, question_text, answer_text, sort_order, source)
+                                 VALUES (?1, ?2, ?3, ?4, 'auto')",
+                                params![session_id, parsed_node.content, parsed_node.notes, sort_order],
+                            ).map_err(|e| format!("创建问答记录失败: {}", e))?;
+                            question_id = Some(conn.last_insert_rowid());
+                        }
+                    }
+                } else {
+                    // 如果正文为空，清空关联的问答（如果没有其他节点引用此问答，执行清理）
+                    if let Some(qid) = question_id {
+                        let ref_count: i64 = conn
+                            .query_row(
+                                "SELECT COUNT(*) FROM outline_nodes WHERE question_id = ?1 AND id != ?2",
+                                params![qid, parsed_node.matched_id.unwrap_or(0)],
+                                |row| row.get(0),
+                            )
+                            .map_err(|e| format!("查询 question 引用失败: {}", e))?;
+                        if ref_count == 0 {
+                            conn.execute(
+                                "DELETE FROM session_qa_records WHERE id = ?1
+                                 AND (source != 'manual' OR source IS NULL) AND (is_bookmarked = 0 OR is_bookmarked IS NULL)",
+                                params![qid],
+                            )
+                            .map_err(|e| format!("清理空闲问答记录失败: {}", e))?;
+                        }
+                        question_id = None;
+                    }
+                }
+
+                let db_id = match parsed_node.matched_id {
+                    Some(id) => {
+                        // 更新节点，添加对 question_id 的更新
+                        conn.execute(
+                            "UPDATE outline_nodes SET
+                                parent_id = ?1,
+                                content = ?2,
+                                notes = ?3,
+                                sort_order = ?4,
+                                question_id = ?5,
+                                updated_at = datetime('now')
+                             WHERE id = ?6",
+                            params![parent_db_id, parsed_node.content, parsed_node.notes, sort_order, question_id, id],
+                        ).map_err(|e| format!("更新大纲节点失败: {}", e))?;
+                        id
+                    }
+                    None => {
+                        // 插入新节点，包含 question_id 字段
+                        conn.execute(
+                            "INSERT INTO outline_nodes (session_id, parent_id, content, notes, sort_order, question_id)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            params![session_id, parent_db_id, parsed_node.content, parsed_node.notes, sort_order, question_id],
+                        ).map_err(|e| format!("插入大纲节点失败: {}", e))?;
+                        conn.last_insert_rowid()
+                    }
+                };
+
+                db_ids[i] = Some(db_id);
+            }
+
+            // 先将所有待删除节点的 parent_id 置为 NULL，以避免自引用外键约束失败（FOREIGN KEY constraint failed）
+            for old_node in &old_nodes_pool {
+                conn.execute(
+                    "UPDATE outline_nodes SET parent_id = NULL WHERE id = ?1",
+                    params![old_node.id],
+                ).map_err(|e| format!("解除旧大纲节点父级关联失败: {}", e))?;
+            }
+
+            // 清理已删除的旧节点以及关联 of QA
+            for old_node in old_nodes_pool {
+                // 清理关联的 question
+                if let Some(qid) = old_node.question_id {
+                    let ref_count: i64 = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM outline_nodes WHERE question_id = ?1 AND id != ?2",
+                            params![qid, old_node.id],
+                            |row| row.get(0),
+                        )
+                        .map_err(|e| format!("查询 question 引用失败: {}", e))?;
+                    if ref_count == 0 {
+                        conn.execute(
+                            "DELETE FROM session_qa_records WHERE id = ?1
+                             AND (source != 'manual' OR source IS NULL) AND (is_bookmarked = 0 OR is_bookmarked IS NULL)",
+                            params![qid],
+                        )
+                        .map_err(|e| format!("清理孤立问答记录失败: {}", e))?;
+                    }
+                }
+
+                conn.execute("DELETE FROM outline_nodes WHERE id = ?1", params![old_node.id])
+                    .map_err(|e| format!("删除被移除的大纲节点失败: {}", e))?;
+            }
+
+            conn.execute_batch("COMMIT").map_err(|e| format!("提交事务失败: {}", e))?;
+            Ok(())
+        };
+
+        match do_update() {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                conn.execute_batch("ROLLBACK").ok();
+                Err(e)
+            }
+        }
+    }
+
     // ─── 私有辅助方法 ───
 
     /// 在已持锁的情况下按 ID 查询节点（避免重复加锁）。
@@ -880,5 +1128,60 @@ mod tests {
         assert_eq!(stats["total_nodes"], 4);
         assert_eq!(stats["depth"], 3); // 根→子→孙
         assert_eq!(stats["max_children"], 2); // 根有2个子节点
+    }
+
+    #[test]
+    fn test_import_markdown_outline() {
+        let store = new_store();
+        let markdown = "\
+## 一级节点A
+这是A的备注。
+第一行。
+第二行。
+
+### 二级节点A1
+这是A1的备注。
+
+## 一级节点B
+这是B的备注。
+";
+        store.import_markdown_outline(1, markdown).unwrap();
+        let tree = store.get_tree(1).unwrap();
+        assert_eq!(tree.len(), 3);
+
+        // 验证节点 A
+        let node_a = tree.iter().find(|n| n.content == "一级节点A").unwrap();
+        assert_eq!(node_a.parent_id, None);
+        assert_eq!(node_a.notes, "这是A的备注。\n第一行。\n第二行。");
+
+        // 验证节点 A1
+        let node_a1 = tree.iter().find(|n| n.content == "二级节点A1").unwrap();
+        assert_eq!(node_a1.parent_id, Some(node_a.id));
+        assert_eq!(node_a1.notes, "这是A1的备注。");
+
+        // 验证节点 B
+        let node_b = tree.iter().find(|n| n.content == "一级节点B").unwrap();
+        assert_eq!(node_b.parent_id, None);
+        assert_eq!(node_b.notes, "这是B的备注。");
+
+        // 测试增量 Diff 同步：修改、添加、删除
+        let new_markdown = "\
+## 一级节点A
+这是A的修改后备注。
+
+## 一级节点C
+";
+        store.import_markdown_outline(1, new_markdown).unwrap();
+        let new_tree = store.get_tree(1).unwrap();
+        
+        // 旧的 A1 和 B 应该被删除了，只剩下 A 和新加的 C
+        assert_eq!(new_tree.len(), 2);
+        let updated_a = new_tree.iter().find(|n| n.content == "一级节点A").unwrap();
+        // A 的 ID 应该保持不变以验证重用
+        assert_eq!(updated_a.id, node_a.id);
+        assert_eq!(updated_a.notes, "这是A的修改后备注。");
+
+        let node_c = new_tree.iter().find(|n| n.content == "一级节点C").unwrap();
+        assert_eq!(node_c.parent_id, None);
     }
 }

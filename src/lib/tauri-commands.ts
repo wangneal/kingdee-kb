@@ -1260,16 +1260,37 @@ export interface VerificationReport {
 export async function runVerification(
   generatedText: string,
   scenario: string,
+  sessionId?: string,
 ): Promise<{ report: VerificationReport }> {
-  return invoke("run_verification", { request: { generated_text: generatedText, scenario } })
+  return invoke("run_verification", {
+    request: {
+      generated_text: generatedText,
+      scenario,
+      session_id: sessionId,
+    },
+  })
 }
 
 // ── 知识图谱 ──────────────────────────────────────────────────────
 
+/** 图统计信息（匹配 Rust GraphStats） */
+export interface GraphStats {
+  total_edges: number
+  total_nodes: number
+  signal_breakdown: Record<string, number>
+  avg_degree: number
+}
+
+/** 图邻居（匹配 Rust GraphNeighbor） */
+export interface GraphNeighbor {
+  slug: string
+  title: string
+  signal: string
+  weight: number
+}
+
 /** 知识图谱统计 */
-export async function getGraphStats(
-  project: string,
-): Promise<{ node_count: number; edge_count: number }> {
+export async function getGraphStats(project: string): Promise<GraphStats> {
   return invoke("get_graph_stats", { project })
 }
 
@@ -1277,6 +1298,11 @@ export async function getGraphStats(
 export async function getGraphNeighbors(
   project: string,
   slug: string,
-): Promise<{ slug: string; title: string; relation: string; weight: number }[]> {
+): Promise<GraphNeighbor[]> {
   return invoke("get_graph_neighbors", { project, slug })
+}
+
+/** 构建/重建知识图谱（返回插入边数） */
+export async function buildKnowledgeGraph(project: string): Promise<number> {
+  return invoke("build_knowledge_graph", { project })
 }

@@ -4,6 +4,7 @@ pub mod document;
 pub mod embedding;
 pub mod ingestion;
 pub mod ingestion_queue;
+pub mod kb_compilation;
 pub mod knowledge_graph;
 pub mod llm_provider;
 pub mod media;

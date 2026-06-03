@@ -4,6 +4,7 @@ import {
   FileEdit,
   LayoutDashboard,
   MessageSquare,
+  Network,
   Package,
   Search,
   Settings,
@@ -37,6 +38,7 @@ const navItems = [
   { to: "/products", icon: Package, label: "产物管理" },
   { to: "/import", icon: Upload, label: "导入" },
   { to: "/skills", icon: Zap, label: "技能体系" },
+  { to: "/graph", icon: Network, label: "知识图谱" },
   { to: "/settings", icon: Settings, label: "设置" },
 ]
 
@@ -246,7 +248,7 @@ export default function Layout() {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto">
+      <main className="flex min-h-0 flex-1 flex-col overflow-auto">
         <Outlet />
       </main>
 

@@ -124,6 +124,13 @@ export async function exportOutline(sessionId: number, format: string): Promise<
 }
 
 /**
+ * 从 Markdown 字符串导入/同步大纲
+ */
+export async function importMarkdownOutline(sessionId: number, markdown: string): Promise<void> {
+  return invoke("import_markdown_outline", { sessionId, markdown })
+}
+
+/**
  * 获取大纲统计信息
  */
 export async function getOutlineStats(sessionId: number): Promise<OutlineStats> {

@@ -75,7 +75,7 @@ fn dir_has_entries(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn seed_skills_dir(app: &AppHandle, data_dir: &Path) -> Result<PathBuf, String> {
+fn seed_skills_dir(_app: &AppHandle, data_dir: &Path) -> Result<PathBuf, String> {
     let skills_dir = data_dir.join("skills");
     fs::create_dir_all(&skills_dir).map_err(|e| {
         format!(
@@ -84,34 +84,6 @@ fn seed_skills_dir(app: &AppHandle, data_dir: &Path) -> Result<PathBuf, String> 
             e
         )
     })?;
-
-    if dir_has_entries(&skills_dir) {
-        return Ok(skills_dir);
-    }
-
-    let mut candidates = Vec::new();
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        candidates.push(resource_dir.join("skills"));
-    }
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            candidates.push(exe_dir.join("skills"));
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("skills"));
-        candidates.push(cwd.join("..").join("skills"));
-    }
-
-    if let Some(source) = candidates.into_iter().find(|path| path.exists()) {
-        match copy_dir_recursive(&source, &skills_dir) {
-            Ok(_) => println!(
-                "Copied built-in skills from {:?} to {:?}",
-                source, skills_dir
-            ),
-            Err(e) => eprintln!("Warning: failed to seed built-in skills: {}", e),
-        }
-    }
 
     Ok(skills_dir)
 }
@@ -251,6 +223,37 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
     let app_state = app.state::<AppState>();
     let data_dir = &app_state.data_dir;
 
+    // 后台异步复制内置技能（首次运行），防止阻塞 UI 主线程
+    let skills_dir = data_dir.join("skills");
+    if !dir_has_entries(&skills_dir) {
+        let mut candidates = Vec::new();
+        if let Ok(resource_dir) = app.path().resource_dir() {
+            candidates.push(resource_dir.join("skills"));
+        }
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                candidates.push(exe_dir.join("skills"));
+            }
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            candidates.push(cwd.join("skills"));
+            candidates.push(cwd.join("..").join("skills"));
+        }
+
+        if let Some(source) = candidates.into_iter().find(|path| path.exists()) {
+            match copy_dir_recursive(&source, &skills_dir) {
+                Ok(_) => {
+                    println!("Copied built-in skills in background from {:?} to {:?}", source, &skills_dir);
+                    if let Ok(mut sm) = app_state.skill_manager.lock() {
+                        sm.scan();
+                        println!("Skill manager background scan complete. Loaded {} skills", sm.count());
+                    }
+                }
+                Err(e) => eprintln!("Warning: failed to seed built-in skills in background: {}", e),
+            }
+        }
+    }
+
     // 启动时补偿 pending 删除
     crate::compensate_pending_deletions(&app_state);
 
@@ -265,49 +268,58 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
     // 确保模板目录存在，如果为空则同步内置模板
     let template_dir = data_dir.join("templates");
     if !template_dir.exists() {
-        std::fs::create_dir_all(&template_dir)
-            .map_err(|e| format!("Failed to create templates directory: {}", e))?;
-        println!("Created templates directory at: {:?}", template_dir);
+        if let Err(e) = std::fs::create_dir_all(&template_dir) {
+            eprintln!("Failed to create templates directory: {}", e);
+        } else {
+            println!("Created templates directory at: {:?}", template_dir);
+        }
     }
 
     // 如果模板目录为空，从应用包中复制内置模板
-    if std::fs::read_dir(&template_dir)
-        .map_err(|e| format!("Failed to read templates directory: {}", e))?
-        .next()
-        .is_none()
-    {
-        if let Ok(exe_path) = std::env::current_exe() {
-            if let Some(exe_dir) = exe_path.parent() {
-                let resource_dir = exe_dir.join("templates");
-                if resource_dir.exists() {
-                    match copy_dir_recursive(&resource_dir, &template_dir) {
-                        Ok(_) => println!("Copied built-in templates to {:?}", template_dir),
-                        Err(e) => eprintln!("Warning: Failed to copy built-in templates: {}", e),
+    if template_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&template_dir) {
+            let is_empty = entries.filter_map(|e| e.ok()).next().is_none();
+            if is_empty {
+                if let Ok(exe_path) = std::env::current_exe() {
+                    if let Some(exe_dir) = exe_path.parent() {
+                        let resource_dir = exe_dir.join("templates");
+                        if resource_dir.exists() {
+                            if let Err(e) = copy_dir_recursive(&resource_dir, &template_dir) {
+                                eprintln!("Warning: Failed to copy built-in templates: {}", e);
+                            } else {
+                                println!("Copied built-in templates to {:?}", template_dir);
+                            }
+                        }
+                    }
+                }
+                let dev_template_dir = std::path::PathBuf::from("../templates");
+                if dev_template_dir.exists() {
+                    if let Err(e) = copy_dir_recursive(&dev_template_dir, &template_dir) {
+                        eprintln!("Warning: Failed to copy dev templates: {}", e);
+                    } else {
+                        println!("Copied dev templates to {:?}", template_dir);
                     }
                 }
             }
         }
-        let dev_template_dir = std::path::PathBuf::from("../templates");
-        if template_dir
-            .read_dir()
-            .map_err(|e| format!("Failed to read templates directory: {}", e))?
-            .next()
-            .is_none()
-            && dev_template_dir.exists()
-        {
-            match copy_dir_recursive(&dev_template_dir, &template_dir) {
-                Ok(_) => println!("Copied dev templates to {:?}", template_dir),
-                Err(e) => eprintln!("Warning: Failed to copy dev templates: {}", e),
-            }
-        }
     }
 
+    // 无论后台异步同步任务是否发生非致命错误，都必须调用 set_complete，以防前端白屏挂死
     let _ = set_complete(
         app.clone(),
         app.state::<Mutex<SetupState>>(),
         "backend".to_string(),
     )
     .await;
+
+    // 异步预加载 Reranker 模型，避免首次检索时因下载模型导致卡顿
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(state) = app_clone.try_state::<AppState>() {
+            println!("后台异步预加载 Reranker 模型中...");
+            let _ = state.get_or_init_reranker();
+        }
+    });
 
     Ok(())
 }

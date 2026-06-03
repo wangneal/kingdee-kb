@@ -131,6 +131,7 @@ pub struct SearchKnowledgeTool {
     pub project_id: Option<String>,
     pub extra_project_ids: Vec<String>,
     pub wiki_pages: Option<Arc<Mutex<WikiPageStore>>>,
+    pub session_id: Option<String>, // 新增：会话ID，用于缓存检索结果进行防幻觉验证
 }
 
 #[derive(Deserialize)]
@@ -147,6 +148,7 @@ impl SearchKnowledgeTool {
         bm25: Arc<RwLock<BM25Service>>,
         metadata: Arc<Mutex<MetadataStore>>,
         wiki_pages: Option<Arc<Mutex<WikiPageStore>>>,
+        session_id: Option<String>, // 新增入参
     ) -> Self {
         Self {
             project_id,
@@ -156,6 +158,7 @@ impl SearchKnowledgeTool {
             bm25,
             metadata,
             wiki_pages,
+            session_id,
         }
     }
 }
@@ -187,6 +190,25 @@ impl Tool for SearchKnowledgeTool {
                 if let Ok(pages) = store.search_pages(self.project_id.as_deref(), &args.query, 5) {
                     if let Some(top) = pages.first() {
                         if top.score > 0.5 {
+                            // 转换为 HybridSearchResult 并存入防幻觉验证缓存
+                            if let Some(ref sid) = self.session_id {
+                                use crate::services::hybrid_search::HybridSearchResult;
+                                let mut results = Vec::new();
+                                for (i, r) in pages.iter().enumerate() {
+                                    results.push(HybridSearchResult {
+                                        chunk_id: (i as i64) + 99999000, // 虚拟ID
+                                        title: r.title.clone(),
+                                        content: r.content.clone(),
+                                        score: r.score,
+                                        source: r.source.clone(),
+                                        document_id: 0,
+                                        section_path: None,
+                                        project: self.project_id.clone().unwrap_or_default(),
+                                    });
+                                }
+                                crate::services::verification::append_session_rag_results(sid, &results);
+                            }
+
                             let mut output = String::new();
                             output.push_str(&format!("找到 {} 条相关结果（来自 Wiki）：\n\n", pages.len()));
                             for (i, r) in pages.iter().enumerate() {
@@ -220,6 +242,11 @@ impl Tool for SearchKnowledgeTool {
             None,
         )
         .map_err(ToolError::msg)?;
+
+        // 缓存检索到的 chunks 用于后续的防幻觉验证
+        if let Some(ref sid) = self.session_id {
+            crate::services::verification::append_session_rag_results(sid, &results);
+        }
 
         if results.is_empty() {
             return Ok(
@@ -2512,14 +2539,15 @@ pub fn all_rig_tools(
     risk_project_id: Option<i64>,
     extra_search_project_ids: Vec<String>,
     wiki_pages: Option<Arc<Mutex<WikiPageStore>>>,
+    session_id: Option<String>, // 新增：会话ID，用于缓存 RAG 检索结果
 ) -> Vec<Box<dyn rig_core::tool::ToolDyn>> {
-    // Risk tools use numeric risk project ids. Non-numeric KB project names stay on the global scope.
+    // 风险工具使用数值型风险项目ID。非数值型知识库项目名称保留在全局范围。
     let risk_project_id = risk_project_id
         .or_else(|| project_id.and_then(|s| s.parse::<i64>().ok()))
         .unwrap_or(0);
 
     vec![
-        // Safe tools — wrapped with retry (exponential backoff)
+        // 安全工具 — 包装重试机制 (指数退避)
         Box::new(RetryToolWrapper::new(SearchKnowledgeTool::new(
             project_id.map(|s| s.to_string()),
             extra_search_project_ids,
@@ -2528,6 +2556,7 @@ pub fn all_rig_tools(
             bm25.clone(),
             metadata.clone(),
             wiki_pages.clone(),
+            session_id, // 传递会话ID
         ))),
         // GenerateDocTool writes files — side effect, no retry
         Box::new(GenerateDocTool::new(

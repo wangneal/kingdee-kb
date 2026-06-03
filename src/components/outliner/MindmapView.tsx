@@ -135,7 +135,7 @@ export default function MindmapView({ sessionId }: MindmapViewProps) {
   }, [])
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className="absolute inset-0 flex flex-col overflow-hidden">
       {/* 工具栏 */}
       <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-2">
         <div className="flex items-center gap-2">

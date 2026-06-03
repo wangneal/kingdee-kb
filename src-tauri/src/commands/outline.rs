@@ -121,6 +121,23 @@ pub async fn export_outline(
     store.export_outline(session_id, &format)
 }
 
+/// 从 Markdown 导入/同步大纲。
+#[tauri::command]
+pub async fn import_markdown_outline(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: i64,
+    markdown: String,
+) -> Result<(), String> {
+    let store = state
+        .outline_store
+        .lock()
+        .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+    store.import_markdown_outline(session_id, &markdown)?;
+    app.emit("outline:changed", session_id).ok();
+    Ok(())
+}
+
 /// 获取大纲统计信息。
 #[tauri::command]
 pub async fn get_outline_stats(

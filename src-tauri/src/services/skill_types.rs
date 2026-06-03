@@ -348,17 +348,51 @@ pub fn extract_triggers_from_body(body: &str) -> Vec<String> {
 
         // 提取触发词
         if in_trigger_section && trimmed.starts_with('-') {
-            let trigger = trimmed
-                .trim_start_matches('-')
-                .trim()
-                .trim_matches('\u{201c}') // "
-                .trim_matches('\u{201d}') // "
-                .trim_matches('"');
-            if !trigger.is_empty() {
-                triggers.push(trigger.to_string());
+            let content = trimmed.trim_start_matches('-').trim();
+            if content.is_empty() {
+                continue;
+            }
+
+            let mut extracted = Vec::new();
+            let mut current_phrase = String::new();
+            let mut in_quote = false;
+
+            // 1. 优先提取中英文引号包裹的短语
+            for ch in content.chars() {
+                if ch == '"' || ch == '“' || ch == '”' || ch == '「' || ch == '」' {
+                    if in_quote {
+                        let val = current_phrase.trim().to_string();
+                        if !val.is_empty() {
+                            extracted.push(val);
+                        }
+                        current_phrase.clear();
+                        in_quote = false;
+                    } else {
+                        in_quote = true;
+                    }
+                } else if in_quote {
+                    current_phrase.push(ch);
+                }
+            }
+
+            // 2. 若没有提取出引号包裹短语，则按常见分隔符（逗号、顿号、空格）切分
+            if extracted.is_empty() {
+                for part in content.split(|c| c == ',' || c == '，' || c == '、' || c == ' ' || c == '\t') {
+                    let val = part.trim().to_string();
+                    if !val.is_empty() {
+                        extracted.push(val);
+                    }
+                }
+            }
+
+            for trigger in extracted {
+                if !triggers.contains(&trigger) {
+                    triggers.push(trigger);
+                }
             }
         }
     }
 
     triggers
 }
+

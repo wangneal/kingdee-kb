@@ -548,7 +548,9 @@ impl RigAgent {
                         risk_project_id,
                         attachment_search_projects.clone(),
                         wiki_pages.clone(),
+                        Some(sid.to_string()), // 传入会话 ID 用于 RAG 缓存
                     );
+
                     tools.extend(runtime_rig_tools(
                         pending.clone(),
                         sender.clone(),
@@ -604,7 +606,9 @@ impl RigAgent {
                         risk_project_id,
                         attachment_search_projects.clone(),
                         wiki_pages.clone(),
+                        Some(sid.to_string()), // 传入会话 ID 用于 RAG 缓存
                     );
+
                     tools.extend(runtime_rig_tools(
                         pending.clone(),
                         sender.clone(),

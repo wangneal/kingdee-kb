@@ -16,12 +16,15 @@ export default function Browse() {
   const [wikiPages, setWikiPages] = useState<WikiPageBrief[]>([])
   const [selectedWiki, setSelectedWiki] = useState<WikiPage | null>(null)
   const [neighbors, setNeighbors] = useState<
-    { slug: string; title: string; relation: string; weight: number }[]
+    { slug: string; title: string; signal: string; weight: number }[]
   >([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (!projectId) return
+    if (!projectId) {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     listWikiPages(projectId)
       .then(setWikiPages)
@@ -124,7 +127,7 @@ export default function Browse() {
                 </button>
               )}
             </div>
-            <div className="prose prose-sm max-w-none prose-headings:text-neutral-800 prose-a:text-amber-600 prose-code:bg-neutral-100 prose-pre:bg-neutral-900 prose-pre:text-neutral-100">
+            <div className="prose prose-sm max-w-none prose-headings:text-neutral-800 prose-a:text-amber-600 prose-code:bg-neutral-100 prose-pre:bg-neutral-900 prose-pre:text-neutral-100 [&_pre_code]:bg-transparent [&_pre_code]:text-inherit">
               <pre className="whitespace-pre-wrap text-sm leading-relaxed">
                 {selectedWiki.content}
               </pre>

@@ -7,7 +7,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
+use crate::services::embedding::EmbeddingService;
 use crate::services::prompt_assembler::PromptAssembler;
 use crate::services::skill_loader::SkillLoader;
 use crate::services::skill_trigger::{SkillMatch, SkillTriggerEngine, TriggerContext};
@@ -15,6 +17,7 @@ use crate::services::skill_types::{
     parse_skill_md, SharedResource, Skill, SkillCategory, SkillFile, SkillFull, SkillMetadata,
     SkillPhase,
 };
+
 
 /// 技能管理器 — 扫描、加载、缓存、触发匹配
 pub struct SkillManager {
@@ -215,14 +218,14 @@ impl SkillManager {
     /// 根据用户输入匹配最相关的技能
     ///
     /// 委托给触发引擎进行统一的匹配逻辑。
-    pub fn match_best(&self, user_input: &str) -> Option<Skill> {
+    pub fn match_best(&self, user_input: &str, embedding: &RwLock<EmbeddingService>) -> Option<Skill> {
         let engine = self.trigger_engine.as_ref()?;
 
-        let matches = engine.match_by_input(user_input);
+        let matches = engine.match_by_input(user_input, embedding);
         let best = matches.first()?;
 
-        // 返回分数足够高的匹配
-        if best.score >= 2.0 {
+        // 返回语义向量相近度足够高的匹配（得分 >= 3.5）
+        if best.score >= 3.5 {
             self.skills.get(&best.skill_id).cloned()
         } else {
             None
@@ -268,10 +271,10 @@ impl SkillManager {
     }
 
     /// 根据用户输入匹配最佳技能（使用触发引擎）
-    pub fn match_best_skill(&self, context: &TriggerContext) -> Option<SkillMatch> {
+    pub fn match_best_skill(&self, context: &TriggerContext, embedding: &RwLock<EmbeddingService>) -> Option<SkillMatch> {
         let engine = self.trigger_engine.as_ref()?;
 
-        let mut all_matches = engine.match_by_input(&context.user_input);
+        let mut all_matches = engine.match_by_input(&context.user_input, embedding);
 
         // 合并路径匹配
         let path_matches = engine.match_by_paths(&context.accessed_files);
@@ -284,16 +287,17 @@ impl SkillManager {
     }
 
     /// 匹配多个候选技能
-    pub fn match_candidates(&self, user_input: &str, limit: usize) -> Vec<SkillMatch> {
+    pub fn match_candidates(&self, user_input: &str, limit: usize, embedding: &RwLock<EmbeddingService>) -> Vec<SkillMatch> {
         let engine = match &self.trigger_engine {
             Some(e) => e,
             None => return Vec::new(),
         };
 
-        let mut matches = engine.match_by_input(user_input);
+        let mut matches = engine.match_by_input(user_input, embedding);
         matches.truncate(limit);
         matches
     }
+
 
     /// 生成技能列表系统提示
     pub fn build_skill_list_prompt(&self) -> String {
@@ -556,8 +560,10 @@ description: "在任何创造性工作之前..."
         let mut matched = 0;
         let mut partial = 0;
         let mut missed = 0;
+        let emb = RwLock::new(EmbeddingService::empty());
         for (input, expected) in &test_cases {
-            match mgr.match_best(input) {
+            match mgr.match_best(input, &emb) {
+
                 Some(s) => {
                     let hit = s.name.contains(expected);
                     if hit {

@@ -461,10 +461,10 @@ export function AgentProvider({ children }: { children: ReactNode }) {
               plannerTimeoutMessage: null,
             }
 
-            // 验证层：对最后一条 assistant 消息执行验证
+            // 验证层：对最后一条 assistant 消息执行验证，传入当前会话 ID (slotId) 用于拉取检索缓存
             const lastMsg = slot.messages[slot.messages.length - 1]
             if (lastMsg && lastMsg.role === "assistant" && lastMsg.content) {
-              runVerification(lastMsg.content, "chat")
+              runVerification(lastMsg.content, "chat", slotId)
                 .then((res) => {
                   updateMessages(slotId, (prev) =>
                     prev.map((m) =>
@@ -474,6 +474,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
                 })
                 .catch(() => {})
             }
+
             break
           }
 

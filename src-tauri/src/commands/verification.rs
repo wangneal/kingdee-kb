@@ -14,6 +14,7 @@ use crate::services::verification::types::{
 pub struct VerifyRequest {
     pub generated_text: String,
     pub scenario: String, // "chat" | "search" | "doc_gen" | "research"
+    pub session_id: Option<String>, // 新增：会话ID，用于获取缓存的检索片段
 }
 
 /// 前端收到的验证结果
@@ -35,12 +36,27 @@ pub async fn run_verification(
         _ => ScenarioType::Chat,
     };
 
+    // 如果提供了会话 ID，拉取缓存的检索片段并清除缓存
+    let (retrieved_chunks, chunk_titles, available_chunk_ids) = if let Some(ref sid) = request.session_id {
+        let results = crate::services::verification::get_session_rag_results(sid);
+        let chunks: Vec<String> = results.iter().map(|r| r.content.clone()).collect();
+        let titles: Vec<String> = results.iter().map(|r| r.title.clone()).collect();
+        let ids: Vec<i64> = results.iter().map(|r| r.chunk_id).collect();
+
+        // 验证完成后清空该会话缓存
+        crate::services::verification::clear_session_rag_results(sid);
+
+        (chunks, titles, ids)
+    } else {
+        (vec![], vec![], vec![])
+    };
+
     let pipeline = VerificationPipeline::default_with_all();
     let input = VerificationInput {
         generated_text: request.generated_text,
-        retrieved_chunks: vec![],
-        chunk_titles: vec![],
-        available_chunk_ids: vec![],
+        retrieved_chunks,
+        chunk_titles,
+        available_chunk_ids,
         query: String::new(),
         scenario,
     };
@@ -48,3 +64,4 @@ pub async fn run_verification(
     let report = pipeline.verify(&input).await;
     Ok(VerifyResponse { report })
 }
+

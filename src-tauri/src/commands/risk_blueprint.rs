@@ -357,7 +357,8 @@ pub async fn agent_chat(
                 return Err(format!("技能管理器不可用: {}", e));
             }
         };
-        let matched_skill = mgr.match_best(&message);
+        let matched_skill = mgr.match_best(&message, &embedding);
+
         let catalog = mgr.build_skill_list_prompt();
         if catalog.is_empty() {
             String::new()

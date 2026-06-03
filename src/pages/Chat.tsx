@@ -259,21 +259,48 @@ export default function Chat() {
       })
   }, [])
 
-  // Auto-scroll（rAF 节流 + 仅接近底部时跟随）
+  // 自动滚动（rAF 节流 + 首次无条件置底 + 仅接近底部时跟随）
   const scrollRafRef = useRef<number | null>(null)
+  const isInitialScrollRef = useRef(true)
+
+  // 当清空消息时，重置首次滚动标志
+  useEffect(() => {
+    if (messages.length === 0) {
+      isInitialScrollRef.current = true
+    }
+  }, [messages.length])
+
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    // 距离底部 < 100px 才自动跟随
-    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100
-    if (!isNearBottom) return
-    if (scrollRafRef.current) return
-    scrollRafRef.current = requestAnimationFrame(() => {
-      scrollRafRef.current = null
+
+    const scroll = () => {
       if (scrollRef.current) {
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight
       }
+    }
+
+    // 首次加载且消息不为空时，无条件强制置底
+    if (isInitialScrollRef.current && messages.length > 0) {
+      isInitialScrollRef.current = false
+      if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current)
+      scrollRafRef.current = requestAnimationFrame(() => {
+        scrollRafRef.current = null
+        scroll()
+      })
+      return
+    }
+
+    // 距离底部 < 100px 才自动跟随
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100
+    if (!isNearBottom) return
+
+    if (scrollRafRef.current) return
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null
+      scroll()
     })
+
     return () => {
       if (scrollRafRef.current) {
         cancelAnimationFrame(scrollRafRef.current)
@@ -1240,7 +1267,7 @@ const MessageBubble = memo(function MessageBubble({
             </div>
           ) : (
             /* 完成后：Markdown 渲染（含本地图片自动转 Tauri URL） */
-            <div className="prose prose-sm max-w-none prose-headings:text-neutral-800 prose-a:text-amber-600 prose-code:bg-neutral-100 prose-code:px-1 prose-code:rounded prose-pre:bg-neutral-900 prose-pre:text-neutral-100">
+            <div className="prose prose-sm max-w-none prose-headings:text-neutral-800 prose-a:text-amber-600 prose-code:bg-neutral-100 prose-code:px-1 prose-code:rounded prose-pre:bg-neutral-900 prose-pre:text-neutral-100 [&_pre_code]:bg-transparent [&_pre_code]:text-inherit">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{

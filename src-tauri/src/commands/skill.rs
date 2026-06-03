@@ -69,8 +69,9 @@ pub async fn match_skill(
     input: String,
 ) -> Result<Option<Skill>, String> {
     let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
-    Ok(manager.match_best(&input))
+    Ok(manager.match_best(&input, &state.embedding))
 }
+
 
 /// 从一个 ZIP 技能包导入新技能，解压到 skills/<skill-name>/ 目录
 #[tauri::command]
@@ -245,12 +246,13 @@ pub async fn trigger_skill_match(
     let mut matches = Vec::new();
 
     // 使用触发引擎匹配
-    if let Some(best) = manager.match_best_skill(&context) {
+    if let Some(best) = manager.match_best_skill(&context, &state.embedding) {
         matches.push(best);
     }
 
     // 补充：匹配多个候选
-    let candidates = manager.match_candidates(&context.user_input, 5);
+    let candidates = manager.match_candidates(&context.user_input, 5, &state.embedding);
+
     for candidate in candidates {
         if !matches.iter().any(|m| m.skill_id == candidate.skill_id) {
             matches.push(candidate);
@@ -281,7 +283,8 @@ pub async fn match_skill_candidates(
     limit: Option<usize>,
 ) -> Result<Vec<SkillMatch>, String> {
     let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
-    Ok(manager.match_candidates(&input, limit.unwrap_or(5)))
+    Ok(manager.match_candidates(&input, limit.unwrap_or(5), &state.embedding))
+
 }
 
 /// 生成技能列表系统提示

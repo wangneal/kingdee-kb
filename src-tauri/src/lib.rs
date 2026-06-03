@@ -157,6 +157,11 @@ pub fn run() {
                 }
                 Err(e) => {
                     eprintln!("Fatal error during app state initialization: {}", e);
+                    // 降级兜底：即便 init_app_state 返回 Err（例如 home_dir 缺失），我们也至少要 manage 一个 minimal 的 AppState 保证应用能启动！
+                    let fallback_dir = std::env::temp_dir().join("kingdee-kb-fallback");
+                    let _ = std::fs::create_dir_all(&fallback_dir);
+                    let app_state = AppState::minimal(&fallback_dir);
+                    app.manage(app_state);
                 }
             }
 
@@ -227,10 +232,14 @@ pub fn run() {
             commands::ingestion::ingest_file,
             commands::ingestion::extract_file_text,
             commands::ingestion::ingest_directory,
+            // KB Compilation Config
+            commands::kb_compilation::get_kb_compilation_enabled,
+            commands::kb_compilation::set_kb_compilation_enabled,
             // Phase 2: 持久化摄入队列
             commands::ingestion_queue::enqueue_ingestion,
             commands::ingestion_queue::list_ingestion_queue,
             commands::ingestion_queue::retry_failed_ingestions,
+            commands::ingestion_queue::process_ingestion_queue,
             // Document Management
             commands::document::list_documents,
             commands::document::get_document_chunks,
@@ -407,6 +416,7 @@ pub fn run() {
             commands::outline::move_outline_node,
             commands::outline::get_outline_tree,
             commands::outline::export_outline,
+            commands::outline::import_markdown_outline,
             commands::outline::get_outline_stats,
             // Phase 5: 知识图谱
             commands::knowledge_graph::build_knowledge_graph,

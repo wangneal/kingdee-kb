@@ -108,8 +108,8 @@ pub struct AppState {
     pub ingest_queue: Mutex<IngestionQueue>,
     /// Agent 会话取消标志（session_id → cancel flag）
     pub cancel_flags: Arc<RwLock<HashMap<String, Arc<AtomicBool>>>>,
-    /// Cross-Encoder Reranker（精排服务，加载失败时返回 None）
-    pub reranker: Option<RerankerService>,
+    /// Cross-Encoder Reranker（精排服务，延迟懒加载）
+    pub reranker: RwLock<Option<Arc<RerankerService>>>,
 }
 
 impl AppState {
@@ -292,7 +292,7 @@ impl AppState {
             llm_providers,
             ingest_queue,
             cancel_flags: Arc::new(RwLock::new(HashMap::new())),
-            reranker: RerankerService::try_new(10).ok(),
+            reranker: RwLock::new(None),
         })
     }
 
@@ -456,12 +456,37 @@ impl AppState {
             llm_providers,
             ingest_queue,
             cancel_flags: Arc::new(RwLock::new(HashMap::new())),
-            reranker: RerankerService::try_new(10).ok(),
+            reranker: RwLock::new(None),
         }
     }
 }
 
 impl AppState {
+    /// 获取或异步懒加载 Reranker 服务
+    pub fn get_or_init_reranker(&self) -> Option<Arc<RerankerService>> {
+        {
+            let read = self.reranker.read().ok()?;
+            if let Some(ref r) = *read {
+                return Some(r.clone());
+            }
+        }
+
+        let mut write = self.reranker.write().ok()?;
+        if write.is_none() {
+            println!("开始后台懒加载 Reranker 模型 (BAAI/bge-reranker-v2-m3)...");
+            match RerankerService::try_new(10) {
+                Ok(r) => {
+                    *write = Some(Arc::new(r));
+                    println!("Reranker 模型加载成功！");
+                }
+                Err(e) => {
+                    eprintln!("Reranker 模型懒加载失败: {}", e);
+                }
+            }
+        }
+        write.clone()
+    }
+
     /// 注册一个取消标志，返回共享的 AtomicBool 传入 agent 循环。
     pub fn register_cancel_flag(&self, session_id: &str) -> Arc<AtomicBool> {
         let flag = Arc::new(AtomicBool::new(false));

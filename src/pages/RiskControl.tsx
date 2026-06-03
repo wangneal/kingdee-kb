@@ -14,7 +14,6 @@ import {
   Shield,
   ShieldAlert,
   Trash2,
-  Upload,
 } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useToast } from "../components/Toast"
@@ -31,14 +30,11 @@ import {
   deleteRiskProject,
   deleteScopeItem,
   desensitizeText,
-  exportDatabase,
   exportReport,
   extractScopeFromDocument,
   generateDefenseScript,
   generateRiskReport,
   getProjectHealth,
-  type ImportDbResult,
-  importDatabase,
   listRiskProjects,
   listScopeItems,
   type ProjectHealthScore,
@@ -46,7 +42,7 @@ import {
   type ScopeCreepResult,
 } from "../lib/tauri-commands"
 
-type Tab = "scope" | "health" | "scripts" | "analysis" | "backup"
+type Tab = "scope" | "health" | "scripts" | "analysis"
 
 export default function RiskControl() {
   const [tab, setTab] = useState<Tab>("scope")
@@ -64,7 +60,6 @@ export default function RiskControl() {
     { key: "health", label: "项目健康度", icon: Shield },
     { key: "scripts", label: "防身话术库", icon: BookOpen },
     { key: "analysis", label: "AI 深度分析", icon: Brain },
-    { key: "backup", label: "备份恢复", icon: Download },
   ]
 
   const refreshProjects = useCallback(async () => {
@@ -238,7 +233,6 @@ export default function RiskControl() {
         {tab === "analysis" && (
           <AnalysisTab projectId={selectedProjectId} kbProject={selectedKbProject} />
         )}
-        {tab === "backup" && <BackupTab />}
       </div>
     </div>
   )
@@ -887,143 +881,6 @@ function ScriptsTab({ projectId }: { projectId: number | null }) {
               </button>
             </div>
           )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ─── Backup Tab: 整库备份恢复 ────────────────────────────────────────────
-
-function BackupTab() {
-  const [exporting, setExporting] = useState(false)
-  const [importing, setImporting] = useState(false)
-  const [importResult, setImportResult] = useState<ImportDbResult | null>(null)
-  const toast = useToast()
-
-  const handleExport = async () => {
-    setExporting(true)
-    try {
-      const { save } = await import("@tauri-apps/plugin-dialog")
-      const path = await save({
-        defaultPath: "kingdee-backup.db",
-        filters: [{ name: "数据库备份", extensions: ["db"] }],
-      })
-      if (path) {
-        await exportDatabase(path)
-        toast.success("备份导出成功！")
-      }
-    } catch (e) {
-      toast.error("导出失败: " + String(e))
-    }
-    setExporting(false)
-  }
-
-  const handleImport = async () => {
-    setImporting(true)
-    setImportResult(null)
-    try {
-      const { open } = await import("@tauri-apps/plugin-dialog")
-      const selected = await open({
-        multiple: false,
-        filters: [{ name: "数据库备份", extensions: ["db"] }],
-      })
-      if (selected) {
-        const result = await importDatabase(selected as string)
-        setImportResult(result)
-      }
-    } catch (e) {
-      toast.error("导入失败: " + String(e))
-    }
-    setImporting(false)
-  }
-
-  const formatBytes = (bytes: number) => {
-    if (bytes < 1024) return bytes + " B"
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB"
-    return (bytes / (1024 * 1024)).toFixed(1) + " MB"
-  }
-
-  return (
-    <div className="space-y-6">
-      <div className="rounded-lg border border-neutral-200 bg-white p-4">
-        <h2 className="mb-4 text-sm font-semibold text-neutral-700">整库备份与恢复</h2>
-        <div className="flex gap-4">
-          <div className="flex-1 rounded-lg border border-neutral-100 p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <Download className="h-4 w-4 text-amber-600" />
-              <span className="text-xs font-medium text-neutral-700">导出备份</span>
-            </div>
-            <p className="mb-3 text-[10px] text-neutral-400">
-              将当前数据库完整导出为 .db 文件，可用于迁移或灾难恢复。
-            </p>
-            <button
-              type="button"
-              onClick={handleExport}
-              disabled={exporting}
-              className="flex w-full items-center justify-center gap-1 rounded-lg bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors"
-            >
-              {exporting ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <Download className="h-3 w-3" />
-              )}
-              {exporting ? "导出中..." : "导出整库备份"}
-            </button>
-          </div>
-          <div className="flex-1 rounded-lg border border-neutral-100 p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <Upload className="h-4 w-4 text-amber-600" />
-              <span className="text-xs font-medium text-neutral-700">导入备份</span>
-            </div>
-            <p className="mb-3 text-[10px] text-neutral-400">
-              从 .db 备份文件恢复数据库。注意：此操作将覆盖当前数据。
-            </p>
-            <button
-              type="button"
-              onClick={handleImport}
-              disabled={importing}
-              className="flex w-full items-center justify-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-50 transition-colors"
-            >
-              {importing ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <Upload className="h-3 w-3" />
-              )}
-              {importing ? "导入中..." : "导入整库备份"}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {importResult && (
-        <div className="rounded-lg border border-green-200 bg-green-50 p-4">
-          <div className="mb-2 flex items-center gap-2">
-            <CheckCircle className="h-4 w-4 text-green-600" />
-            <span className="text-xs font-semibold text-green-700">导入成功</span>
-          </div>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div className="rounded border border-green-100 bg-white p-2 text-center">
-              <p className="text-[10px] text-neutral-400">文件大小</p>
-              <p className="text-xs font-bold text-neutral-700">
-                {formatBytes(importResult.db_size_bytes)}
-              </p>
-            </div>
-            <div className="rounded border border-green-100 bg-white p-2 text-center">
-              <p className="text-[10px] text-neutral-400">风控项目</p>
-              <p className="text-xs font-bold text-neutral-700">
-                {importResult.risk_project_count}
-              </p>
-            </div>
-            <div className="rounded border border-green-100 bg-white p-2 text-center">
-              <p className="text-[10px] text-neutral-400">范围条目</p>
-              <p className="text-xs font-bold text-neutral-700">{importResult.scope_item_count}</p>
-            </div>
-            <div className="rounded border border-green-100 bg-white p-2 text-center">
-              <p className="text-[10px] text-neutral-400">健康指标</p>
-              <p className="text-xs font-bold text-neutral-700">{importResult.metric_count}</p>
-            </div>
-          </div>
         </div>
       )}
     </div>
