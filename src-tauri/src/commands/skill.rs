@@ -19,14 +19,14 @@ use crate::services::template_manager::TemplateManifest;
 /// 列出所有技能
 #[tauri::command]
 pub async fn list_skills(state: State<'_, AppState>) -> Result<Vec<Skill>, String> {
-    let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.skill_manager.lock().await;
     Ok(manager.list_all())
 }
 
 /// 按名称获取技能详情
 #[tauri::command]
 pub async fn get_skill(state: State<'_, AppState>, name: String) -> Result<Option<Skill>, String> {
-    let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.skill_manager.lock().await;
     Ok(manager.get(&name))
 }
 
@@ -36,14 +36,14 @@ pub async fn search_skills(
     state: State<'_, AppState>,
     query: String,
 ) -> Result<Vec<Skill>, String> {
-    let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.skill_manager.lock().await;
     Ok(manager.search(&query))
 }
 
 /// 获取技能统计
 #[tauri::command]
 pub async fn get_skill_stats(state: State<'_, AppState>) -> Result<SkillStatsResponse, String> {
-    let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.skill_manager.lock().await;
     let by_category = manager.stats().into_iter().collect();
     Ok(SkillStatsResponse {
         total: manager.count(),
@@ -54,7 +54,7 @@ pub async fn get_skill_stats(state: State<'_, AppState>) -> Result<SkillStatsRes
 /// 重新扫描技能目录
 #[tauri::command]
 pub async fn rescan_skills(state: State<'_, AppState>) -> Result<SkillScanResult, String> {
-    let mut manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.skill_manager.lock().await;
     manager.scan();
     Ok(SkillScanResult {
         total: manager.count(),
@@ -68,8 +68,8 @@ pub async fn match_skill(
     state: State<'_, AppState>,
     input: String,
 ) -> Result<Option<Skill>, String> {
-    let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
-    Ok(manager.match_best(&input, &state.embedding))
+    let manager = state.skill_manager.lock().await;
+    Ok(manager.match_best(&input, &state.embedding).await)
 }
 
 
@@ -136,7 +136,7 @@ pub async fn import_skill(state: State<'_, AppState>, file_path: String) -> Resu
         ));
     }
 
-    let mut manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
+    let mut manager = state.skill_manager.lock().await;
     let dest_dir = manager.get_skills_dir().join(&skill_name);
     std::fs::create_dir_all(&dest_dir).map_err(|e| format!("创建技能目录失败: {}", e))?;
 
@@ -200,7 +200,7 @@ pub async fn get_skill_full(
     state: State<'_, AppState>,
     name: String,
 ) -> Result<Option<SkillFull>, String> {
-    let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.skill_manager.lock().await;
     Ok(manager.get_skill_full(&name))
 }
 
@@ -209,7 +209,7 @@ pub async fn get_skill_full(
 pub async fn list_shared_resources(
     state: State<'_, AppState>,
 ) -> Result<Vec<SharedResource>, String> {
-    let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.skill_manager.lock().await;
     Ok(manager.get_shared_resources())
 }
 
@@ -220,7 +220,7 @@ pub async fn read_skill_file(
     skill_name: String,
     relative_path: String,
 ) -> Result<String, String> {
-    let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.skill_manager.lock().await;
     manager.read_skill_file(&skill_name, &relative_path)
 }
 
@@ -230,7 +230,7 @@ pub async fn list_skill_files(
     state: State<'_, AppState>,
     name: String,
 ) -> Result<Vec<SkillFile>, String> {
-    let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.skill_manager.lock().await;
     Ok(manager.get_skill_files(&name))
 }
 
@@ -242,16 +242,16 @@ pub async fn trigger_skill_match(
     state: State<'_, AppState>,
     context: TriggerContext,
 ) -> Result<Vec<SkillMatch>, String> {
-    let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.skill_manager.lock().await;
     let mut matches = Vec::new();
 
     // 使用触发引擎匹配
-    if let Some(best) = manager.match_best_skill(&context, &state.embedding) {
+    if let Some(best) = manager.match_best_skill(&context, &state.embedding).await {
         matches.push(best);
     }
 
     // 补充：匹配多个候选
-    let candidates = manager.match_candidates(&context.user_input, 5, &state.embedding);
+    let candidates = manager.match_candidates(&context.user_input, 5, &state.embedding).await;
 
     for candidate in candidates {
         if !matches.iter().any(|m| m.skill_id == candidate.skill_id) {
@@ -282,15 +282,15 @@ pub async fn match_skill_candidates(
     input: String,
     limit: Option<usize>,
 ) -> Result<Vec<SkillMatch>, String> {
-    let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
-    Ok(manager.match_candidates(&input, limit.unwrap_or(5), &state.embedding))
+    let manager = state.skill_manager.lock().await;
+    Ok(manager.match_candidates(&input, limit.unwrap_or(5), &state.embedding).await)
 
 }
 
 /// 生成技能列表系统提示
 #[tauri::command]
 pub async fn get_skill_list_prompt(state: State<'_, AppState>) -> Result<String, String> {
-    let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.skill_manager.lock().await;
     Ok(manager.build_skill_list_prompt())
 }
 
@@ -299,7 +299,7 @@ pub async fn get_skill_list_prompt(state: State<'_, AppState>) -> Result<String,
 pub async fn get_skill_prompt_entries(
     state: State<'_, AppState>,
 ) -> Result<Vec<SkillPromptEntry>, String> {
-    let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
+    let manager = state.skill_manager.lock().await;
     Ok(manager.get_skill_prompt_entries())
 }
 
@@ -315,7 +315,7 @@ pub async fn execute_skill_script(
 ) -> Result<ExecutionResult, String> {
     // 提取所需数据，避免在 await 时持有 MutexGuard
     let (skill_dir, skills_dir, script_content) = {
-        let manager = state.skill_manager.lock().map_err(|e| e.to_string())?;
+        let manager = state.skill_manager.lock().await;
         let skill_dir = manager.get_skill_dir(&skill_id);
         let skills_dir = manager.get_skills_dir();
         let script_content = manager.read_skill_file(&skill_id, &script_path)?;

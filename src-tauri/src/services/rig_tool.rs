@@ -1164,7 +1164,7 @@ impl Tool for RigQuestionTool {
 // ─── 10. UseSkillTool ───
 
 pub struct UseSkillTool {
-    pub skill_manager: Arc<Mutex<crate::services::skill_manager::SkillManager>>,
+    pub skill_manager: Arc<tokio::sync::Mutex<crate::services::skill_manager::SkillManager>>,
 }
 
 #[derive(Deserialize)]
@@ -1198,7 +1198,7 @@ impl Tool for UseSkillTool {
         let mgr = self
             .skill_manager
             .lock()
-            .map_err(|e| ToolError::msg(e.to_string()))?;
+            .await;
         match args.action.as_str() {
             "list" => {
                 let skills = mgr.list_all();
@@ -1268,7 +1268,7 @@ impl Tool for UseSkillTool {
 // ─── 11. RunSkillScriptTool ───
 
 pub struct RunSkillScriptTool {
-    pub skill_manager: Arc<Mutex<crate::services::skill_manager::SkillManager>>,
+    pub skill_manager: Arc<tokio::sync::Mutex<crate::services::skill_manager::SkillManager>>,
     pub data_dir: PathBuf,
     pub pending: PendingQuestions,
     pub sender: mpsc::UnboundedSender<ReActEvent>,
@@ -1340,7 +1340,7 @@ impl Tool for RunSkillScriptTool {
             let mgr = self
                 .skill_manager
                 .lock()
-                .map_err(|e| ToolError::msg(e.to_string()))?;
+                .await;
             mgr.get(&args.skill_name)
                 .ok_or_else(|| ToolError::msg(format!("技能 '{}' 不存在", args.skill_name)))?
         };
@@ -1814,7 +1814,7 @@ async fn ask_skill_script_approval(
 }
 
 pub struct SetupSkillEnvTool {
-    pub skill_manager: Arc<Mutex<crate::services::skill_manager::SkillManager>>,
+    pub skill_manager: Arc<tokio::sync::Mutex<crate::services::skill_manager::SkillManager>>,
     pub pending: PendingQuestions,
     pub sender: mpsc::UnboundedSender<ReActEvent>,
     pub session_id: String,
@@ -1852,7 +1852,7 @@ impl Tool for SetupSkillEnvTool {
             let mgr = self
                 .skill_manager
                 .lock()
-                .map_err(|e| ToolError::msg(e.to_string()))?;
+                .await;
             mgr.get(&args.skill_name)
                 .ok_or_else(|| ToolError::msg(format!("技能 '{}' 不存在", args.skill_name)))?
         };
@@ -2535,7 +2535,7 @@ pub fn all_rig_tools(
     metadata: Arc<Mutex<MetadataStore>>,
     products: Arc<Mutex<ProductStore>>,
     risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
-    skill_manager: Arc<Mutex<crate::services::skill_manager::SkillManager>>,
+    skill_manager: Arc<tokio::sync::Mutex<crate::services::skill_manager::SkillManager>>,
     risk_project_id: Option<i64>,
     extra_search_project_ids: Vec<String>,
     wiki_pages: Option<Arc<Mutex<WikiPageStore>>>,
@@ -2596,7 +2596,7 @@ pub fn runtime_rig_tools(
     pending: PendingQuestions,
     sender: mpsc::UnboundedSender<ReActEvent>,
     session_id: String,
-    skill_manager: Arc<Mutex<crate::services::skill_manager::SkillManager>>,
+    skill_manager: Arc<tokio::sync::Mutex<crate::services::skill_manager::SkillManager>>,
     data_dir: PathBuf,
 ) -> Vec<Box<dyn rig_core::tool::ToolDyn>> {
     vec![

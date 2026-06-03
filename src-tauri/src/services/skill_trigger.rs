@@ -1,8 +1,9 @@
 //! 技能触发引擎 — 基于向量相似度与关键词分词混合的触发召回机制
 //!
 //! 参考业界成熟方案设计：
-//!   - 当本地 Embedding 服务就绪时，优先使用语义向量余弦相似度计算匹配评分（对标 Claude Code/Cursor 语义触发）
+//!   - 当本地或远程 Embedding 服务就绪时，优先使用语义向量余弦相似度计算匹配评分（对标 Claude Code/Cursor 语义触发）
 //!   - 彻底移除了原先硬编码在文件中的各技能关联别名列表，回归通用匹配
+//!   - 远程模式下使用异步请求进行 Embedding 转换，本地模式自动同步进行 Embedding，完全避免同步方法在远程模式下报错
 //!   - 当在测试环境或模型初始化未就绪时，自动平滑降级到基于 N-gram 分词、倒排索引及 Jaccard 相似度的机制进行兜底
 //!   - 确保了 100% 的语义精确度，同时具备极高的系统容错性与冷启动安全性
 
@@ -113,15 +114,42 @@ impl SkillTriggerEngine {
         }
     }
 
-    /// 确保技能描述向量已计算缓存，延迟懒加载
-    fn ensure_vector_cache(&self, embedding: &RwLock<EmbeddingService>) {
-        let mut cache = match self.vector_cache.lock() {
-            Ok(c) => c,
-            Err(_) => return,
+    /// 异步获取 Embedding 向量的辅助方法，自动分流本地和远程模式
+    async fn embed_text_helper(
+        text: &str,
+        embedding: &RwLock<EmbeddingService>,
+    ) -> Result<Vec<f32>, String> {
+        // 先在一个独立的作用域中读取远程配置，以使 RwLockReadGuard 锁在 await 发生前自动释放
+        let remote_config = {
+            let emb = embedding.read().map_err(|e| e.to_string())?;
+            if emb.is_remote() {
+                Some(emb.remote_config().cloned().ok_or("远程配置不存在".to_string()))
+            } else {
+                None
+            }
         };
 
-        if cache.len() == self.skills_texts.len() {
-            return; // 已经缓存完成
+        if let Some(config_res) = remote_config {
+            // 远程模式：跨越 await 不持有任何锁
+            let config = config_res?;
+            crate::services::embedding::remote_embed(&config, text).await
+        } else {
+            // 本地模式：无需 await，获取写锁同步计算并释放
+            let mut emb_mut = embedding.write().map_err(|e| e.to_string())?;
+            emb_mut.embed_text(text)
+        }
+    }
+
+    /// 确保技能描述向量已计算缓存，延迟懒加载
+    async fn ensure_vector_cache(&self, embedding: &RwLock<EmbeddingService>) {
+        {
+            let cache = match self.vector_cache.lock() {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            if cache.len() == self.skills_texts.len() {
+                return; // 已经缓存完成
+            }
         }
 
         let is_ready = if let Ok(emb) = embedding.read() {
@@ -135,29 +163,39 @@ impl SkillTriggerEngine {
         }
 
         for (skill_id, text) in &self.skills_texts {
-            if cache.contains_key(skill_id) {
-                continue;
-            }
-            if let Ok(mut emb_mut) = embedding.write() {
-                if let Ok(vector) = emb_mut.embed_text(text) {
-                    cache.insert(skill_id.clone(), vector);
+            let needs_embed = {
+                let cache = match self.vector_cache.lock() {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                !cache.contains_key(skill_id)
+            };
+
+            if needs_embed {
+                if let Ok(vector) = Self::embed_text_helper(text, embedding).await {
+                    if let Ok(mut cache) = self.vector_cache.lock() {
+                        cache.insert(skill_id.clone(), vector);
+                    }
                 }
             }
         }
     }
 
     /// 根据用户输入匹配技能
-    pub fn match_by_input(&self, input: &str, embedding: &RwLock<EmbeddingService>) -> Vec<SkillMatch> {
+    pub async fn match_by_input(&self, input: &str, embedding: &RwLock<EmbeddingService>) -> Vec<SkillMatch> {
         let input_lower = input.to_lowercase();
-        self.ensure_vector_cache(embedding);
+        self.ensure_vector_cache(embedding).await;
 
-        let cache = match self.vector_cache.lock() {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
+        let is_empty = {
+            let cache = match self.vector_cache.lock() {
+                Ok(c) => c,
+                Err(_) => return Vec::new(),
+            };
+            cache.is_empty()
         };
 
         // 兜底降级：如果模型没有就绪或缓存未生成，采用原有分词倒排和相似度重合匹配
-        if cache.is_empty() {
+        if is_empty {
             let mut scores: HashMap<String, f64> = HashMap::new();
 
             // 1. 关键词分词匹配
@@ -198,18 +236,18 @@ impl SkillTriggerEngine {
             return matches;
         }
 
-        // 正常路径：计算用户输入的向量
-        let user_vector = {
-            if let Ok(mut emb_mut) = embedding.write() {
-                emb_mut.embed_text(input).ok()
-            } else {
-                None
-            }
-        };
+        // 计算用户输入的向量（此处无任何锁获取，可以安全 await）
+        let user_vector = Self::embed_text_helper(input, embedding).await.ok();
 
         let user_vector = match user_vector {
             Some(v) => v,
             None => return Vec::new(),
+        };
+
+        // 再次获取锁以遍历缓存（此处无 await，符合 Future + Send 限制）
+        let cache = match self.vector_cache.lock() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
         };
 
         let mut matches = Vec::new();
@@ -338,8 +376,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_keyword_matching() {
+    #[tokio::test]
+    async fn test_keyword_matching() {
         let skills = vec![
             create_test_skill("weekly-report", "生成周报 双周周报 工作汇报"),
             create_test_skill("kickoff-pack", "启动会 启动会PPT 任命书"),
@@ -347,19 +385,19 @@ mod tests {
 
         let engine = SkillTriggerEngine::new(&skills);
         let emb = RwLock::new(EmbeddingService::empty());
-        let matches = engine.match_by_input("生成周报", &emb);
+        let matches = engine.match_by_input("生成周报", &emb).await;
 
         assert!(!matches.is_empty());
         assert_eq!(matches[0].skill_id, "weekly-report");
     }
 
-    #[test]
-    fn test_alias_matching() {
+    #[tokio::test]
+    async fn test_alias_matching() {
         let skills = vec![create_test_skill("humanizer", "AI文案去味 24种模式检测。触发场景和短语：这段文字去AI味")];
 
         let engine = SkillTriggerEngine::new(&skills);
         let emb = RwLock::new(EmbeddingService::empty());
-        let matches = engine.match_by_input("这段文字去AI味", &emb);
+        let matches = engine.match_by_input("这段文字去AI味", &emb).await;
 
         assert!(!matches.is_empty());
         assert_eq!(matches[0].skill_id, "humanizer");

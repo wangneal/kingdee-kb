@@ -95,7 +95,7 @@ pub struct AppState {
     /// 在线 ASR 配置（腾讯/讯飞）
     pub asr_config: Arc<RwLock<AsrConfigStore>>,
     /// 技能管理器（SKILL.md 加载/搜索/匹配）
-    pub skill_manager: Arc<Mutex<SkillManager>>,
+    pub skill_manager: Arc<tokio::sync::Mutex<SkillManager>>,
     /// 信号写入器（技能系统事件记录）
     pub signal_writer: Arc<RwLock<SignalWriter>>,
     /// 模板管理器（Gitee 模板下载和缓存）
@@ -285,7 +285,7 @@ impl AppState {
             asr_config: Arc::new(RwLock::new(asr_config)),
             rig_agent: RigAgent,
             pending_questions,
-            skill_manager: Arc::new(Mutex::new(skill_manager)),
+            skill_manager: Arc::new(tokio::sync::Mutex::new(skill_manager)),
             signal_writer: Arc::new(RwLock::new(signal_writer)),
             template_manager: Arc::new(Mutex::new(template_manager)),
             image_processor: Arc::new(RwLock::new(image_processor)),
@@ -436,7 +436,7 @@ impl AppState {
             whisper_service: Arc::new(RwLock::new(whisper_service)),
             audio_capture: Arc::new(RwLock::new(audio_capture)),
             asr_config: Arc::new(RwLock::new(AsrConfigStore::new(&db_path))),
-            skill_manager: Arc::new(Mutex::new(SkillManager::new(data_dir.join("skills")))),
+            skill_manager: Arc::new(tokio::sync::Mutex::new(SkillManager::new(data_dir.join("skills")))),
             signal_writer: Arc::new(RwLock::new(
                 SignalWriter::new(data_dir.join("signals.jsonl")).unwrap_or_else(|_| {
                     // 降级到临时目录

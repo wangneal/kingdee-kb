@@ -225,7 +225,7 @@ mod tests {
 Step 1: ..."#;
 
         let triggers = extract_triggers_from_body(body);
-        assert_eq!(triggers.len(), 2);
+        assert_eq!(triggers.len(), 4);
         assert!(triggers[0].contains("生成周报"));
     }
 }

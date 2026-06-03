@@ -218,10 +218,10 @@ impl SkillManager {
     /// 根据用户输入匹配最相关的技能
     ///
     /// 委托给触发引擎进行统一的匹配逻辑。
-    pub fn match_best(&self, user_input: &str, embedding: &RwLock<EmbeddingService>) -> Option<Skill> {
+    pub async fn match_best(&self, user_input: &str, embedding: &RwLock<EmbeddingService>) -> Option<Skill> {
         let engine = self.trigger_engine.as_ref()?;
 
-        let matches = engine.match_by_input(user_input, embedding);
+        let matches = engine.match_by_input(user_input, embedding).await;
         let best = matches.first()?;
 
         // 返回语义向量相近度足够高的匹配（得分 >= 3.5）
@@ -271,10 +271,10 @@ impl SkillManager {
     }
 
     /// 根据用户输入匹配最佳技能（使用触发引擎）
-    pub fn match_best_skill(&self, context: &TriggerContext, embedding: &RwLock<EmbeddingService>) -> Option<SkillMatch> {
+    pub async fn match_best_skill(&self, context: &TriggerContext, embedding: &RwLock<EmbeddingService>) -> Option<SkillMatch> {
         let engine = self.trigger_engine.as_ref()?;
 
-        let mut all_matches = engine.match_by_input(&context.user_input, embedding);
+        let mut all_matches = engine.match_by_input(&context.user_input, embedding).await;
 
         // 合并路径匹配
         let path_matches = engine.match_by_paths(&context.accessed_files);
@@ -287,13 +287,13 @@ impl SkillManager {
     }
 
     /// 匹配多个候选技能
-    pub fn match_candidates(&self, user_input: &str, limit: usize, embedding: &RwLock<EmbeddingService>) -> Vec<SkillMatch> {
+    pub async fn match_candidates(&self, user_input: &str, limit: usize, embedding: &RwLock<EmbeddingService>) -> Vec<SkillMatch> {
         let engine = match &self.trigger_engine {
             Some(e) => e,
             None => return Vec::new(),
         };
 
-        let mut matches = engine.match_by_input(user_input, embedding);
+        let mut matches = engine.match_by_input(user_input, embedding).await;
         matches.truncate(limit);
         matches
     }
@@ -457,8 +457,8 @@ description: "在任何创造性工作之前..."
         assert!(count >= 20, "至少加载 20 个技能，实际: {}", count);
     }
 
-    #[test]
-    fn integration_match_user_queries() {
+    #[tokio::test]
+    async fn integration_match_user_queries() {
         let skills_dir = std::path::PathBuf::from("../skills");
         if !skills_dir.exists() {
             eprintln!("test_integration_match: skills dir not found, skipping");
@@ -562,7 +562,7 @@ description: "在任何创造性工作之前..."
         let mut missed = 0;
         let emb = RwLock::new(EmbeddingService::empty());
         for (input, expected) in &test_cases {
-            match mgr.match_best(input, &emb) {
+            match mgr.match_best(input, &emb).await {
 
                 Some(s) => {
                     let hit = s.name.contains(expected);

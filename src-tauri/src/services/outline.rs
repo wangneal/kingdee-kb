@@ -641,6 +641,15 @@ impl OutlineStore {
         let do_update = || -> Result<(), String> {
             conn.execute_batch("BEGIN").map_err(|e| format!("开始事务失败: {}", e))?;
 
+            // 检查问答记录表是否存在，以容忍内存测试数据库等未启用问答模块的情况
+            let has_qa_table: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_qa_records')",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+
             // 存储每一项插入或更新后的真正 db_id
             let mut db_ids: Vec<Option<i64>> = vec![None; parsed_nodes.len()];
 
@@ -652,51 +661,54 @@ impl OutlineStore {
                 let sort_order = (i + 1) as f64;
                 let mut question_id = parsed_node.matched_question_id;
 
-                // 标题即 Q，正文即 A。如果正文不为空，则自动同步到问答记录中
-                if !parsed_node.notes.trim().is_empty() {
-                    match question_id {
-                        Some(qid) => {
-                            // 更新已有问答
-                            conn.execute(
-                                "UPDATE session_qa_records SET
-                                    question_text = ?1,
-                                    answer_text = ?2,
-                                    updated_at = datetime('now')
-                                 WHERE id = ?3",
-                                params![parsed_node.content, parsed_node.notes, qid],
-                            ).map_err(|e| format!("更新问答记录失败: {}", e))?;
+                // 标题即 Q，正文即 A。当且仅当问答记录表存在时，自动同步到问答中
+                if has_qa_table {
+                    if !parsed_node.notes.trim().is_empty() {
+                        match question_id {
+                            Some(qid) => {
+                                // 更新已有问答
+                                conn.execute(
+                                    "UPDATE session_qa_records SET
+                                        question_text = ?1,
+                                        answer_text = ?2,
+                                        updated_at = datetime('now')
+                                     WHERE id = ?3",
+                                    params![parsed_node.content, parsed_node.notes, qid],
+                                ).map_err(|e| format!("更新问答记录失败: {}", e))?;
+                            }
+                            None => {
+                                // 插入新问答（标记为 auto 自动提取）
+                                conn.execute(
+                                    "INSERT INTO session_qa_records (session_id, question_text, answer_text, sort_order, source)
+                                     VALUES (?1, ?2, ?3, ?4, 'auto')",
+                                    params![session_id, parsed_node.content, parsed_node.notes, sort_order],
+                                ).map_err(|e| format!("创建问答记录失败: {}", e))?;
+                                question_id = Some(conn.last_insert_rowid());
+                            }
                         }
-                        None => {
-                            // 插入新问答（标记为 auto 自动提取）
-                            conn.execute(
-                                "INSERT INTO session_qa_records (session_id, question_text, answer_text, sort_order, source)
-                                 VALUES (?1, ?2, ?3, ?4, 'auto')",
-                                params![session_id, parsed_node.content, parsed_node.notes, sort_order],
-                            ).map_err(|e| format!("创建问答记录失败: {}", e))?;
-                            question_id = Some(conn.last_insert_rowid());
+                    } else {
+                        // 如果正文为空，清空关联的问答（如果没有其他节点引用此问答，执行清理）
+                        if let Some(qid) = question_id {
+                            let ref_count: i64 = conn
+                                .query_row(
+                                    "SELECT COUNT(*) FROM outline_nodes WHERE question_id = ?1 AND id != ?2",
+                                    params![qid, parsed_node.matched_id.unwrap_or(0)],
+                                    |row| row.get(0),
+                                )
+                                .map_err(|e| format!("查询 question 引用失败: {}", e))?;
+                            if ref_count == 0 {
+                                conn.execute(
+                                    "DELETE FROM session_qa_records WHERE id = ?1
+                                     AND (source != 'manual' OR source IS NULL) AND (is_bookmarked = 0 OR is_bookmarked IS NULL)",
+                                    params![qid],
+                                )
+                                .map_err(|e| format!("清理空闲问答记录失败: {}", e))?;
+                            }
+                            question_id = None;
                         }
-                    }
-                } else {
-                    // 如果正文为空，清空关联的问答（如果没有其他节点引用此问答，执行清理）
-                    if let Some(qid) = question_id {
-                        let ref_count: i64 = conn
-                            .query_row(
-                                "SELECT COUNT(*) FROM outline_nodes WHERE question_id = ?1 AND id != ?2",
-                                params![qid, parsed_node.matched_id.unwrap_or(0)],
-                                |row| row.get(0),
-                            )
-                            .map_err(|e| format!("查询 question 引用失败: {}", e))?;
-                        if ref_count == 0 {
-                            conn.execute(
-                                "DELETE FROM session_qa_records WHERE id = ?1
-                                 AND (source != 'manual' OR source IS NULL) AND (is_bookmarked = 0 OR is_bookmarked IS NULL)",
-                                params![qid],
-                            )
-                            .map_err(|e| format!("清理空闲问答记录失败: {}", e))?;
-                        }
-                        question_id = None;
                     }
                 }
+
 
                 let db_id = match parsed_node.matched_id {
                     Some(id) => {

@@ -351,13 +351,8 @@ pub async fn agent_chat(
 
     // 技能清单注入 system prompt（通过 PromptAssembler 统一管理）
     let skill_catalog = {
-        let mgr = match state.skill_manager.lock() {
-            Ok(m) => m,
-            Err(e) => {
-                return Err(format!("技能管理器不可用: {}", e));
-            }
-        };
-        let matched_skill = mgr.match_best(&message, &embedding);
+        let mgr = state.skill_manager.lock().await;
+        let matched_skill = mgr.match_best(&message, &embedding).await;
 
         let catalog = mgr.build_skill_list_prompt();
         if catalog.is_empty() {

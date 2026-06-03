@@ -143,7 +143,7 @@ impl RigAgent {
         data_dir: std::path::PathBuf,
         products: Arc<Mutex<ProductStore>>,
         risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
-        skill_manager: Arc<Mutex<crate::services::skill_manager::SkillManager>>,
+        skill_manager: Arc<tokio::sync::Mutex<crate::services::skill_manager::SkillManager>>,
         cancel_flag: Option<Arc<AtomicBool>>,
         provider_id: Option<&str>,
         attachments: Option<Vec<AttachmentInfo>>,
@@ -894,7 +894,7 @@ impl RigAgent {
         _data_dir: std::path::PathBuf,
         _products: Arc<Mutex<ProductStore>>,
         _risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
-        _skill_manager: Arc<Mutex<crate::services::skill_manager::SkillManager>>,
+        _skill_manager: Arc<tokio::sync::Mutex<crate::services::skill_manager::SkillManager>>,
         _cancel_flag: Option<Arc<AtomicBool>>,
         provider_id: Option<&str>,
     ) -> Result<(), String> {

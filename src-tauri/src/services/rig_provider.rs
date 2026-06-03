@@ -381,7 +381,7 @@ mod tests {
                 &tmp.path().to_path_buf(),
             )));
             let llm = LLMService::new(providers);
-            let skill_manager = Arc::new(std::sync::Mutex::new(SkillManager::new(
+            let skill_manager = Arc::new(tokio::sync::Mutex::new(SkillManager::new(
                 tmp.path().join("skills"),
             )));
 

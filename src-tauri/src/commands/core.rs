@@ -244,10 +244,9 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
             match copy_dir_recursive(&source, &skills_dir) {
                 Ok(_) => {
                     println!("Copied built-in skills in background from {:?} to {:?}", source, &skills_dir);
-                    if let Ok(mut sm) = app_state.skill_manager.lock() {
-                        sm.scan();
-                        println!("Skill manager background scan complete. Loaded {} skills", sm.count());
-                    }
+                    let mut sm = app_state.skill_manager.lock().await;
+                    sm.scan();
+                    println!("Skill manager background scan complete. Loaded {} skills", sm.count());
                 }
                 Err(e) => eprintln!("Warning: failed to seed built-in skills in background: {}", e),
             }
