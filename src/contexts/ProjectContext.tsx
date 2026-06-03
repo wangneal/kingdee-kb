@@ -1,35 +1,119 @@
-import { createContext, type ReactNode, useCallback, useContext, useState } from "react"
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react"
+import {
+  ensureDefaultProject,
+  listProjects,
+  type ProjectSummary,
+} from "../lib/project-commands"
 
 const STORAGE_KEY = "kingdee_kb_active_project"
 
 interface ProjectContextValue {
   projectId: string | undefined
   setProjectId: (id: string | undefined) => void
+  currentProjectId: number | null
+  setCurrentProjectId: (id: number | null) => void
+  currentProject: ProjectSummary | null
+  projects: ProjectSummary[]
+  loading: boolean
+  error: string | null
+  refreshProjects: () => Promise<void>
 }
 
 const ProjectContext = createContext<ProjectContextValue | null>(null)
 
 export function ProjectProvider({ children }: { children: ReactNode }) {
-  const [projectId, setProjectIdState] = useState<string | undefined>(() => {
+  const [currentProjectId, setCurrentProjectIdState] = useState<number | null>(() => {
     try {
-      return localStorage.getItem(STORAGE_KEY) || undefined
+      const raw = localStorage.getItem(STORAGE_KEY)
+      if (!raw) return null
+      const parsed = Number(raw)
+      return Number.isFinite(parsed) ? parsed : null
     } catch {
-      return undefined
+      return null
     }
   })
+  const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const projectId = currentProjectId == null ? undefined : String(currentProjectId)
+
+  const currentProject = useMemo(
+    () => projects.find((project) => project.id === currentProjectId) ?? null,
+    [currentProjectId, projects],
+  )
 
   const setProjectId = useCallback((id: string | undefined) => {
-    setProjectIdState(id)
+    const parsed = id == null ? null : Number(id)
+    setCurrentProjectIdState(Number.isFinite(parsed) ? parsed : null)
+  }, [])
+
+  const setCurrentProjectId = useCallback((id: number | null) => {
+    setCurrentProjectIdState(id)
     try {
-      if (id) localStorage.setItem(STORAGE_KEY, id)
+      if (id != null) localStorage.setItem(STORAGE_KEY, String(id))
       else localStorage.removeItem(STORAGE_KEY)
-    } catch {
-      /* ignore */
+    } catch (storageError) {
+      console.warn("保存当前项目失败", storageError)
     }
   }, [])
 
+  const refreshProjects = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const defaultId = await ensureDefaultProject()
+      const nextProjects = await listProjects()
+      setProjects(nextProjects)
+      setCurrentProjectIdState((previousId) => {
+        if (previousId != null && nextProjects.some((project) => project.id === previousId)) {
+          return previousId
+        }
+        return defaultId
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    refreshProjects()
+  }, [refreshProjects])
+
+  useEffect(() => {
+    try {
+      if (currentProjectId != null) localStorage.setItem(STORAGE_KEY, String(currentProjectId))
+      else localStorage.removeItem(STORAGE_KEY)
+    } catch (storageError) {
+      console.warn("同步当前项目失败", storageError)
+    }
+  }, [currentProjectId])
+
   return (
-    <ProjectContext.Provider value={{ projectId, setProjectId }}>
+    <ProjectContext.Provider
+      value={{
+        projectId,
+        setProjectId,
+        currentProjectId,
+        setCurrentProjectId,
+        currentProject,
+        projects,
+        loading,
+        error,
+        refreshProjects,
+      }}
+    >
       {children}
     </ProjectContext.Provider>
   )
