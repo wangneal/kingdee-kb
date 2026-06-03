@@ -25,7 +25,7 @@ import {
 } from "../lib/tauri-commands"
 
 export default function Home() {
-  const { projectId } = useProject()
+  const { currentProjectId, currentProject } = useProject()
   const navigate = useNavigate()
   const [stats, setStats] = useState<KnowledgeStats | null>(null)
   const [products, setProducts] = useState<ProductMeta[]>([])
@@ -36,8 +36,8 @@ export default function Home() {
     ;(async () => {
       try {
         const [statsData, productsData, templatesData] = await Promise.all([
-          getStats(projectId).catch(() => null),
-          listProducts(projectId).catch(() => []),
+          getStats(currentProjectId).catch(() => null),
+          listProducts(currentProjectId).catch(() => []),
           scanTemplates().catch(() => []),
         ])
         setStats(statsData)
@@ -49,7 +49,7 @@ export default function Home() {
         setLoading(false)
       }
     })()
-  }, [projectId])
+  }, [currentProjectId])
 
   const recentProducts = products
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
@@ -248,7 +248,7 @@ export default function Home() {
                   <p className="text-xs text-neutral-400 flex items-center gap-2">
                     <span className="flex items-center gap-1">
                       <FolderOpen className="h-2.5 w-2.5" />
-                      {product.project}
+                      {currentProject?.name ?? `项目 #${product.project_id}`}
                     </span>
                     <span className="flex items-center gap-1">
                       <Calendar className="h-2.5 w-2.5" />

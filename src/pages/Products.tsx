@@ -19,14 +19,15 @@ import { useProject } from "../contexts/ProjectContext"
 import { deleteProduct, exportProduct, listProducts, type ProductMeta } from "../lib/tauri-commands"
 
 interface ProjectGroup {
-  project: string
+  projectId: number
+  projectName: string
   products: ProductMeta[]
 }
 
 export default function Products() {
-  const { projectId } = useProject()
+  const { currentProjectId, projects } = useProject()
   const [products, setProducts] = useState<ProductMeta[]>([])
-  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set())
+  const [expandedProjects, setExpandedProjects] = useState<Set<number>>(new Set())
   const [expandedProduct, setExpandedProduct] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState<number | null>(null)
@@ -37,31 +38,33 @@ export default function Products() {
 
   // Group products by project
   const projectGroups = useMemo<ProjectGroup[]>(() => {
-    const map = new Map<string, ProductMeta[]>()
+    const projectNameById = new Map(projects.map((project) => [project.id, project.name]))
+    const map = new Map<number, ProductMeta[]>()
     for (const product of products) {
-      const list = map.get(product.project) ?? []
+      const list = map.get(product.project_id) ?? []
       list.push(product)
-      map.set(product.project, list)
+      map.set(product.project_id, list)
     }
     return Array.from(map.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([project, prods]) => ({
-        project,
+      .sort(([a], [b]) => a - b)
+      .map(([projectId, prods]) => ({
+        projectId,
+        projectName: projectNameById.get(projectId) ?? `项目 #${projectId}`,
         products: prods.sort(
           (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
         ),
       }))
-  }, [products])
+  }, [products, projects])
 
   // Load products on mount
   useEffect(() => {
     ;(async () => {
       try {
-        const prods = await listProducts(projectId)
+        const prods = await listProducts(currentProjectId)
         setProducts(prods)
         // Auto-expand first project
         if (prods.length > 0) {
-          setExpandedProjects(new Set([prods[0].project]))
+          setExpandedProjects(new Set([prods[0].project_id]))
         }
       } catch (e) {
         console.error("Failed to load products:", e)
@@ -69,13 +72,13 @@ export default function Products() {
         setLoading(false)
       }
     })()
-  }, [projectId])
+  }, [currentProjectId])
 
-  const toggleProject = (project: string) => {
+  const toggleProject = (projectId: number) => {
     setExpandedProjects((prev) => {
       const next = new Set(prev)
-      if (next.has(project)) next.delete(project)
-      else next.add(project)
+      if (next.has(projectId)) next.delete(projectId)
+      else next.add(projectId)
       return next
     })
   }
@@ -85,7 +88,7 @@ export default function Products() {
     setExporting(exportDialog.id)
     setExportResult(null)
     try {
-      const result = await exportProduct(exportDialog.id, exportDir.trim(), exportDialog.project)
+      const result = await exportProduct(exportDialog.id, exportDir.trim(), exportDialog.project_id)
       setExportResult(result)
     } catch (e) {
       console.error("Export failed:", e)
@@ -100,7 +103,7 @@ export default function Products() {
       return
     setDeleting(product.id)
     try {
-      await deleteProduct(product.id, product.project)
+      await deleteProduct(product.id, product.project_id)
       setProducts((prev) => prev.filter((p) => p.id !== product.id))
       if (expandedProduct === product.id) setExpandedProduct(null)
     } catch (e) {
@@ -182,26 +185,26 @@ export default function Products() {
           </div>
         ) : (
           <div className="py-1">
-            {projectGroups.map(({ project, products: prods }) => (
-              <div key={project}>
+            {projectGroups.map(({ projectId, projectName, products: prods }) => (
+              <div key={projectId}>
                 {/* Project header */}
                 <button
                   type="button"
-                  onClick={() => toggleProject(project)}
+                  onClick={() => toggleProject(projectId)}
                   className="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-50"
                 >
-                  {expandedProjects.has(project) ? (
+                  {expandedProjects.has(projectId) ? (
                     <ChevronDown className="h-3 w-3" />
                   ) : (
                     <ChevronRight className="h-3 w-3" />
                   )}
                   <FolderOpen className="h-3.5 w-3.5 text-amber-500" />
-                  <span className="truncate flex-1 text-left">{project}</span>
+                  <span className="truncate flex-1 text-left">{projectName}</span>
                   <span className="text-neutral-400">{prods.length}</span>
                 </button>
 
                 {/* Products */}
-                {expandedProjects.has(project) && (
+                {expandedProjects.has(projectId) && (
                   <div className="ml-3">
                     {prods.map((product) => (
                       <button
@@ -252,9 +255,13 @@ export default function Products() {
           (() => {
             const selected = products.find((p) => p.id === expandedProduct)
             if (!selected) return null
+            const selectedProjectName =
+              projects.find((project) => project.id === selected.project_id)?.name ??
+              `项目 #${selected.project_id}`
             return (
               <ProductPreview
                 product={selected}
+                projectName={selectedProjectName}
                 onExport={(p) => setExportDialog(p)}
                 onDelete={handleDelete}
                 deleting={deleting}
@@ -349,6 +356,7 @@ export default function Products() {
 
 function ProductPreview({
   product,
+  projectName,
   onExport,
   onDelete,
   deleting,
@@ -356,6 +364,7 @@ function ProductPreview({
   getStatusBadge,
 }: {
   product: ProductMeta
+  projectName: string
   onExport: (p: ProductMeta) => void
   onDelete: (p: ProductMeta) => void
   deleting: number | null
@@ -377,7 +386,7 @@ function ProductPreview({
             <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-neutral-500">
               <span className="flex items-center gap-1">
                 <FolderOpen className="h-3 w-3" />
-                {product.project}
+                {projectName}
               </span>
               <span className="flex items-center gap-1">
                 <Calendar className="h-3 w-3" />

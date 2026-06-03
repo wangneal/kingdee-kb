@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
+import { useProject } from "../contexts/ProjectContext"
 import {
   getKbCompilationEnabled,
   getWhisperStatus,
@@ -55,6 +56,7 @@ function formatImportSuccess(result: IngestionResult): string {
 }
 
 export default function Import() {
+  const { currentProjectId } = useProject()
   // 文本导入状态
   const [textTitle, setTextTitle] = useState("")
   const [textContent, setTextContent] = useState("")
@@ -150,18 +152,13 @@ export default function Import() {
     { value: "custom", label: "自定义..." },
   ]
 
-  const getProjectName = (project: string, custom: string) => {
-    if (project === "custom") return custom.trim() || "default"
-    return project
-  }
-
   // 文本导入
   const handleTextImport = useCallback(async () => {
     if (!textContent.trim() || !textTitle.trim()) return
     setTextFeedback({ status: "loading", message: "正在导入文本…" })
     try {
-      const project = getProjectName(textProject, textCustomProject)
-      const result = await ingestText(textContent, textTitle, project, kbCompilationEnabled)
+      if (currentProjectId == null) throw new Error("当前项目未就绪")
+      const result = await ingestText(textContent, textTitle, currentProjectId, kbCompilationEnabled)
       setTextFeedback({
         status: "success",
         message: formatImportSuccess(result),
@@ -175,7 +172,7 @@ export default function Import() {
         message: `导入失败：${e}`,
       })
     }
-  }, [textContent, textTitle, textProject, textCustomProject, kbCompilationEnabled])
+  }, [currentProjectId, textContent, textTitle, kbCompilationEnabled])
 
   // 通过对话框导入文件
   const handleFileImport = useCallback(async () => {
@@ -199,12 +196,12 @@ export default function Import() {
         status: "loading",
         message: `正在导入 ${paths.length} 个文件…`,
       })
-      const project = getProjectName(fileProject, fileCustomProject)
+      if (currentProjectId == null) throw new Error("当前项目未就绪")
       const results: IngestionResult[] = []
       const errors: string[] = []
       for (const path of paths) {
         try {
-          const result = await ingestFile(path, project, kbCompilationEnabled)
+          const result = await ingestFile(path, currentProjectId, kbCompilationEnabled)
           results.push(result)
         } catch (err) {
           const filename = path.split(/[\\/]/).pop() || path
@@ -235,7 +232,7 @@ export default function Import() {
         message: `导入失败：${e}`,
       })
     }
-  }, [fileProject, fileCustomProject, kbCompilationEnabled])
+  }, [currentProjectId, kbCompilationEnabled])
 
   // 通过对话框导入文件夹
   const handleFolderImport = useCallback(async () => {
@@ -252,8 +249,8 @@ export default function Import() {
         status: "loading",
         message: `正在导入文件夹：${selected}…`,
       })
-      const project = getProjectName(fileProject, fileCustomProject)
-      const result = await ingestDirectory(selected, project, kbCompilationEnabled)
+      if (currentProjectId == null) throw new Error("当前项目未就绪")
+      const result = await ingestDirectory(selected, currentProjectId, kbCompilationEnabled)
       const { imported, errors } = result
       if (imported.length > 0) {
         setFileFeedback({
@@ -283,7 +280,7 @@ export default function Import() {
         message: `导入失败：${e}`,
       })
     }
-  }, [fileProject, fileCustomProject, kbCompilationEnabled])
+  }, [currentProjectId, kbCompilationEnabled])
 
   const handleFilesDrop = useCallback(
     async (paths: string[]) => {
@@ -292,12 +289,15 @@ export default function Import() {
         message: `正在导入 ${paths.length} 个文件…`,
       })
 
-      const project = getProjectName(fileProject, fileCustomProject)
+      if (currentProjectId == null) {
+        setFileFeedback({ status: "error", message: "当前项目未就绪" })
+        return
+      }
       const results: IngestionResult[] = []
       const errors: string[] = []
       for (const path of paths) {
         try {
-          const result = await ingestFile(path, project, kbCompilationEnabled)
+          const result = await ingestFile(path, currentProjectId, kbCompilationEnabled)
           results.push(result)
         } catch (err) {
           const filename = path.split(/[\\/]/).pop() || path
@@ -321,7 +321,7 @@ export default function Import() {
         })
       }
     },
-    [fileProject, fileCustomProject, kbCompilationEnabled],
+    [currentProjectId, kbCompilationEnabled],
   )
 
   // Tauri 原生拖拽导入
@@ -375,7 +375,10 @@ export default function Import() {
     })
     if (!filePath) return
 
-    const proj = getProjectName(videoProject, videoCustomProject)
+    if (currentProjectId == null) {
+      setVideoFeedback({ status: "error", message: "当前项目未就绪" })
+      return
+    }
     setVideoFeedback({ status: "loading", message: "正在准备..." })
     setVideoResult(null)
     setVideoProgress(null)
@@ -383,7 +386,7 @@ export default function Import() {
     try {
       const result = await transcribeAndIngestVideo(
         filePath as string,
-        proj,
+        currentProjectId,
         videoGeneratingMinutes,
       )
       setVideoFeedback({
@@ -397,7 +400,7 @@ export default function Import() {
         message: String(err),
       })
     }
-  }, [videoProject, videoCustomProject, videoGeneratingMinutes])
+  }, [currentProjectId, videoGeneratingMinutes])
 
   // 复制文本
   const copyToClipboard = useCallback(async (text: string, label: string) => {
