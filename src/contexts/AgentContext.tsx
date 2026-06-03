@@ -108,7 +108,7 @@ export function createDefaultSlot(): AgentSlot {
 export const DEFAULT_SLOT: AgentSlot = createDefaultSlot()
 
 export interface SendMessageOptions {
-  projectId?: string
+  projectId?: number | null
   riskProjectId?: number | null
   providerId?: string
   history?: ChatMessage[]

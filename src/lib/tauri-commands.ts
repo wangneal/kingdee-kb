@@ -66,7 +66,9 @@ export interface DocumentMeta {
   source_path?: string
   sha256?: string
   created_at: string
-  project: string
+  project_id: number
+  document_scope: string
+  chat_session_id?: string | null
 }
 
 export interface ChunkMeta {
@@ -124,7 +126,7 @@ export async function isLLMConfigured(): Promise<boolean> {
 
 export async function hybridSearch(
   query: string,
-  projectId?: string,
+  projectId?: number | null,
   topK?: number,
 ): Promise<HybridSearchResult[]> {
   return invoke("hybrid_search", {
@@ -136,7 +138,7 @@ export async function hybridSearch(
 
 export async function bm25Search(
   query: string,
-  projectId?: string,
+  projectId?: number | null,
   topK?: number,
 ): Promise<BM25SearchResult[]> {
   return invoke("bm25_search", {
@@ -149,25 +151,25 @@ export async function bm25Search(
 export async function ingestText(
   text: string,
   title: string,
-  project: string,
+  projectId: number,
   enableKbCompilation?: boolean,
 ): Promise<IngestionResult> {
   return invoke("ingest_text", {
     text,
     title,
-    project,
+    projectId,
     enableKbCompilation: enableKbCompilation ?? null,
   })
 }
 
 export async function ingestFile(
   filePath: string,
-  project: string,
+  projectId: number,
   enableKbCompilation?: boolean,
 ): Promise<IngestionResult> {
   return invoke("ingest_file", {
     filePath,
-    project,
+    projectId,
     enableKbCompilation: enableKbCompilation ?? null,
   })
 }
@@ -178,12 +180,12 @@ export async function extractFileText(filePath: string): Promise<ExtractedFileTe
 
 export async function ingestDirectory(
   dirPath: string,
-  project: string,
+  projectId: number,
   enableKbCompilation?: boolean,
 ): Promise<DirectoryIngestionResult> {
   return invoke("ingest_directory", {
     dirPath,
-    project,
+    projectId,
     enableKbCompilation: enableKbCompilation ?? null,
   })
 }
@@ -196,28 +198,28 @@ export async function setKbCompilationEnabled(enabled: boolean): Promise<void> {
   return invoke("set_kb_compilation_enabled", { enabled })
 }
 
-export async function listDocuments(project?: string): Promise<DocumentMeta[]> {
-  return invoke("list_documents", { project: project ?? null })
+export async function listDocuments(projectId?: number | null): Promise<DocumentMeta[]> {
+  return invoke("list_documents", { projectId: projectId ?? null })
 }
 
 export async function getDocumentChunks(documentId: number): Promise<ChunkMeta[]> {
   return invoke("get_document_chunks", { documentId })
 }
 
-export async function getStats(project?: string): Promise<KnowledgeStats> {
-  return invoke("get_stats", { project: project ?? null })
+export async function getStats(projectId?: number | null): Promise<KnowledgeStats> {
+  return invoke("get_stats", { projectId: projectId ?? null })
 }
 
-export async function deleteDocument(documentId: number, project?: string): Promise<void> {
-  return invoke("delete_document", { documentId, project: project ?? null })
+export async function deleteDocument(documentId: number, projectId?: number | null): Promise<void> {
+  return invoke("delete_document", { documentId, projectId: projectId ?? null })
 }
 
 /** Batch-delete multiple documents (and their chunks) in a single transaction */
 export async function deleteDocumentsBatch(
   documentIds: number[],
-  project?: string,
+  projectId?: number | null,
 ): Promise<number> {
-  return invoke("delete_documents_batch", { documentIds, project: project ?? null })
+  return invoke("delete_documents_batch", { documentIds, projectId: projectId ?? null })
 }
 
 // ── Embedding model commands ──────────────────────────────────────────────────
@@ -269,7 +271,7 @@ export async function setEmbeddingModelConfig(customModelDir?: string | null): P
 
 export async function ragQuery(
   query: string,
-  projectId?: string,
+  projectId?: number | null,
   conversationHistory?: ChatMessage[],
 ): Promise<RAGResponse> {
   return invoke("rag_query", {
@@ -281,7 +283,7 @@ export async function ragQuery(
 
 export async function ragQueryStream(
   query: string,
-  projectId?: string,
+  projectId?: number | null,
   conversationHistory?: ChatMessage[],
 ): Promise<StreamChunk[]> {
   return invoke("rag_query_stream", {
@@ -305,7 +307,7 @@ export async function countTokens(text: string): Promise<number> {
  */
 export async function startChatStream(
   query: string,
-  projectId?: string,
+  projectId?: number | null,
   conversationHistory?: ChatMessage[],
 ): Promise<void> {
   return invoke("start_chat_stream", {
@@ -336,8 +338,11 @@ export function listenChatEvents(handler: (event: ChatStreamEvent) => void): Pro
 // ── Chat Memory ───────────────────────────────────────────────────────────
 
 /** Save chat conversation to memory: archive + extract → ingest into KB. */
-export async function saveChatMemory(conversation: ChatMessage[], project?: string): Promise<void> {
-  return invoke("save_chat_memory", { conversation, project: project ?? null })
+export async function saveChatMemory(
+  conversation: ChatMessage[],
+  projectId?: number | null,
+): Promise<void> {
+  return invoke("save_chat_memory", { conversation, projectId: projectId ?? null })
 }
 
 // ── Phase 9/10/11/12/13: Template & Wizard Types ────────────────────────────
@@ -440,7 +445,7 @@ export interface ProductMeta {
   id: number
   template_id: string
   template_name: string
-  project: string
+  project_id: number
   status: string
   output_path: string
   field_count: number
@@ -486,20 +491,20 @@ export async function getDeliverableRecipe(templateId: string): Promise<Delivera
   return invoke("get_deliverable_recipe", { templateId })
 }
 
-export async function listProducts(project?: string): Promise<ProductMeta[]> {
-  return invoke("list_products", { project: project ?? null })
+export async function listProducts(projectId?: number | null): Promise<ProductMeta[]> {
+  return invoke("list_products", { projectId: projectId ?? null })
 }
 
 export async function exportProduct(
   id: number,
   targetDir: string,
-  project?: string,
+  projectId?: number | null,
 ): Promise<string> {
-  return invoke("export_product", { id, targetDir, project: project ?? null })
+  return invoke("export_product", { id, targetDir, projectId: projectId ?? null })
 }
 
-export async function deleteProduct(id: number, project?: string): Promise<void> {
-  return invoke("delete_product", { id, project: project ?? null })
+export async function deleteProduct(id: number, projectId?: number | null): Promise<void> {
+  return invoke("delete_product", { id, projectId: projectId ?? null })
 }
 
 // ── Phase 13: Research Session Management ─────────────────────────────────
@@ -512,7 +517,7 @@ export interface ResearchSession {
   interviewee: string
   session_date: string
   status: string
-  project: string
+  project_id: number
   created_at: string
   updated_at: string
 }
@@ -539,7 +544,7 @@ export async function createResearchSession(
   moduleCode: string,
   interviewee: string,
   sessionDate: string,
-  project?: string,
+  projectId?: number | null,
 ): Promise<number> {
   return invoke("create_research_session", {
     title,
@@ -547,12 +552,12 @@ export async function createResearchSession(
     moduleCode,
     interviewee,
     sessionDate,
-    project: project ?? null,
+    projectId: projectId ?? null,
   })
 }
 
-export async function listResearchSessions(project?: string): Promise<ResearchSession[]> {
-  return invoke("list_research_sessions", { project: project ?? null })
+export async function listResearchSessions(projectId?: number | null): Promise<ResearchSession[]> {
+  return invoke("list_research_sessions", { projectId: projectId ?? null })
 }
 
 export async function getResearchSession(sessionId: number): Promise<SessionDetail | null> {
@@ -785,7 +790,7 @@ const MAX_RETRIES = 2
 export async function agentChat(
   message: string,
   sessionId?: string,
-  projectId?: string,
+  projectId?: number | null,
   riskProjectId?: number | null,
   history?: ChatMessage[],
   providerId?: string,
@@ -838,7 +843,7 @@ export async function agentChat(
 export async function answerQuestion(
   questionId: string,
   answer: string,
-  projectId?: string,
+  projectId?: number | null,
 ): Promise<void> {
   return invoke("answer_question", {
     questionId,
@@ -914,12 +919,12 @@ export async function transcribeVideoFile(videoPath: string): Promise<VideoTrans
 /** Full video pipeline: transcribe → ingest into KB → optional meeting minutes. */
 export async function transcribeAndIngestVideo(
   videoPath: string,
-  project: string,
+  projectId: number,
   generateMinutes: boolean,
 ): Promise<VideoPipelineResult> {
   return invoke("transcribe_and_ingest_video", {
     videoPath,
-    project,
+    projectId,
     generateMinutes,
   })
 }
@@ -951,7 +956,7 @@ export interface RiskProject {
   id: number
   name: string
   client_name: string
-  kb_project: string
+  kb_project_id: number | null
   contract_doc_id: number | null
   sow_doc_id: number | null
   created_at: string
@@ -995,12 +1000,12 @@ export interface ImportDbResult {
 export async function createRiskProject(
   name: string,
   clientName?: string,
-  kbProject?: string,
+  kbProjectId?: number | null,
 ): Promise<number> {
   return invoke("create_risk_project", {
     name,
     clientName: clientName ?? "",
-    kbProject: kbProject ?? "",
+    kbProjectId: kbProjectId ?? null,
   })
 }
 
@@ -1139,7 +1144,7 @@ export async function getAsrConfigStatus(): Promise<AsrConfigStatus> {
 /** Wiki 页面 */
 export interface WikiPage {
   id: number
-  project: string
+  project_id: number
   slug: string
   title: string
   page_type: string
@@ -1160,7 +1165,7 @@ export interface WikiPage {
 
 /** 创建 Wiki 页面参数 */
 export interface CreateWikiPage {
-  project: string
+  project_id: number
   slug: string
   title: string
   page_type: string
@@ -1190,8 +1195,8 @@ export interface WikiLinkTarget {
 }
 
 /** 列出所有 Wiki 页面 */
-export async function listWikiPages(project: string): Promise<WikiPageBrief[]> {
-  return invoke("list_wiki_pages", { project })
+export async function listWikiPages(projectId: number): Promise<WikiPageBrief[]> {
+  return invoke("list_wiki_pages", { projectId })
 }
 
 /** 获取 Wiki 页面详情 */
@@ -1200,8 +1205,8 @@ export async function getWikiPage(id: number): Promise<WikiPage> {
 }
 
 /** 根据 slug 获取 Wiki 页面 */
-export async function getWikiPageBySlug(project: string, slug: string): Promise<WikiPage | null> {
-  return invoke("get_wiki_page_by_slug", { project, slug })
+export async function getWikiPageBySlug(projectId: number, slug: string): Promise<WikiPage | null> {
+  return invoke("get_wiki_page_by_slug", { projectId, slug })
 }
 
 /** 创建 Wiki 页面 */
@@ -1226,18 +1231,18 @@ export async function approveWikiPage(id: number): Promise<WikiPage> {
 
 /** 搜索 Wiki 页面（用于 wikilink 候选） */
 export async function searchWikilinkCandidates(
-  project: string,
+  projectId: number,
   query: string,
 ): Promise<WikiPageBrief[]> {
-  return invoke("search_wikilink_candidates", { project, query })
+  return invoke("search_wikilink_candidates", { projectId, query })
 }
 
 /** 获取反向链接 */
 export async function getBacklinks(
   slug: string,
-  project: string,
+  projectId: number,
 ): Promise<{ slug: string; title: string; page_type: string }[]> {
-  return invoke("get_backlinks", { slug, project })
+  return invoke("get_backlinks", { slug, projectId })
 }
 
 /** 验证报告（与 backend VerificationReport 对应） */
@@ -1290,19 +1295,19 @@ export interface GraphNeighbor {
 }
 
 /** 知识图谱统计 */
-export async function getGraphStats(project: string): Promise<GraphStats> {
-  return invoke("get_graph_stats", { project })
+export async function getGraphStats(projectId: number): Promise<GraphStats> {
+  return invoke("get_graph_stats", { projectId })
 }
 
 /** 获取节点邻居（关联页面） */
 export async function getGraphNeighbors(
-  project: string,
+  projectId: number,
   slug: string,
 ): Promise<GraphNeighbor[]> {
-  return invoke("get_graph_neighbors", { project, slug })
+  return invoke("get_graph_neighbors", { projectId, slug })
 }
 
 /** 构建/重建知识图谱（返回插入边数） */
-export async function buildKnowledgeGraph(project: string): Promise<number> {
-  return invoke("build_knowledge_graph", { project })
+export async function buildKnowledgeGraph(projectId: number): Promise<number> {
+  return invoke("build_knowledge_graph", { projectId })
 }

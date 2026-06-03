@@ -10,7 +10,7 @@ import { invoke } from "@tauri-apps/api/core"
 /** 维基页面完整记录 */
 export interface WikiPage {
   id: number
-  project: string
+  project_id: number
   slug: string
   title: string
   page_type: string
@@ -52,13 +52,13 @@ export interface WikiLinkTarget {
  * 搜索 wikilink 候选页面（按标题模糊搜索，排除自身）
  */
 export async function searchWikilinkCandidates(
-  project: string,
+  projectId: number,
   query: string,
   excludeSlug: string,
   limit?: number,
 ): Promise<WikiPageBrief[]> {
   return invoke("search_wikilink_candidates", {
-    project,
+    projectId,
     query,
     excludeSlug,
     limit: limit ?? 20,
@@ -83,17 +83,17 @@ export async function removeWikilink(pageId: number, targetSlug: string): Promis
  * 获取 wikilink 目标页面详情（按项目过滤，批量查询被引页面的标题/slug/type/status）
  */
 export async function getWikilinkTargets(
-  project: string,
+  projectId: number,
   slugs: string[],
 ): Promise<WikiLinkTarget[]> {
-  return invoke("get_wikilink_targets", { project, slugs })
+  return invoke("get_wikilink_targets", { projectId, slugs })
 }
 
 /**
  * 获取反向链接（哪些页面引用了当前页面）
  */
-export async function getBacklinks(project: string, slug: string): Promise<WikiPageBrief[]> {
-  return invoke("get_backlinks", { project, slug })
+export async function getBacklinks(projectId: number, slug: string): Promise<WikiPageBrief[]> {
+  return invoke("get_backlinks", { projectId, slug })
 }
 
 // ── 知识图谱命令 ──────────────────────────────────────────────────────────
@@ -114,14 +114,14 @@ export interface GraphRecommendation {
  * 使用递归遍历获取多跳邻居，按组合权重排序，返回 top K。
  */
 export async function graphExpandSearch(
-  project: string,
+  projectId: number,
   slug: string,
   maxDepth?: number,
   maxResults?: number,
   minWeight?: number,
 ): Promise<GraphRecommendation[]> {
   return invoke("graph_expand_search", {
-    project,
+    projectId,
     slug,
     maxDepth,
     maxResults,
