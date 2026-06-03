@@ -8,14 +8,14 @@ use crate::services::ingestion_queue::QueueItem;
 #[tauri::command]
 pub async fn enqueue_ingestion(
     state: State<'_, AppState>,
-    project: String,
+    project_id: i64,
     source_identity: String,
 ) -> Result<String, String> {
     let mut queue = state
         .ingest_queue
         .lock()
         .map_err(|e| format!("获取队列锁失败: {}", e))?;
-    Ok(queue.enqueue(&project, &source_identity))
+    Ok(queue.enqueue(project_id, &source_identity))
 }
 
 /// 获取摄入队列中所有任务
@@ -96,11 +96,11 @@ fn process_one_queue_item(state: &AppState, item: &QueueItem) -> Result<(), Stri
             .lock()
             .map_err(|e| format!("获取 raw_sources 锁失败: {}", e))?;
         store
-            .find_by_identity(&item.project, &item.source_identity)?
+            .find_by_identity(item.project_id, &item.source_identity)?
             .ok_or_else(|| {
                 format!(
-                    "未找到原始资料: project={}, identity={}",
-                    item.project, item.source_identity
+                    "未找到原始资料: project_id={}, identity={}",
+                    item.project_id, item.source_identity
                 )
             })?
     };
@@ -111,7 +111,7 @@ fn process_one_queue_item(state: &AppState, item: &QueueItem) -> Result<(), Stri
 
     let result = ingest_file_fn(
         std::path::Path::new(&raw_source.storage_path),
-        &item.project,
+        item.project_id,
         &state.embedding,
         &state.vector_index,
         &state.metadata,

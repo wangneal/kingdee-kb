@@ -12,7 +12,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueueItem {
     pub id: String,
-    pub project: String,
+    pub project_id: i64,
     pub source_identity: String,
     pub status: String,
     pub retry_count: u32,
@@ -41,11 +41,11 @@ impl IngestionQueue {
     /// 将任务加入队列末尾
     ///
     /// 返回生成的唯一任务 ID。
-    pub fn enqueue(&mut self, project: &str, source_identity: &str) -> String {
+    pub fn enqueue(&mut self, project_id: i64, source_identity: &str) -> String {
         let id = format!("{}", chrono::Utc::now().timestamp_millis());
         let item = QueueItem {
             id: id.clone(),
-            project: project.to_string(),
+            project_id,
             source_identity: source_identity.to_string(),
             status: "pending".to_string(),
             retry_count: 0,

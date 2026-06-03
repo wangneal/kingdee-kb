@@ -1,7 +1,7 @@
 //! 两步摄入集成管道 — Step 1 分析 + Step 2 LLM 编译
 //!
 //! 将文档分析（AnalysisOrchestrator）与知识库编译（LLM 生成 wiki_pages）串联，
-//! 并通过 ingest_cache 实现增量缓存（project + source_identity + sha256 三元组）。
+//! 并通过 ingest_cache 实现增量缓存（project_id + source_identity + sha256 三元组）。
 
 use regex::Regex;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
@@ -49,7 +49,7 @@ pub struct KbCompilationResult {
 /// 执行两步摄入流水线
 ///
 /// 流程：
-/// 1. 检查 ingest_cache（project + source_identity + sha256）→ 命中则跳过
+/// 1. 检查 ingest_cache（project_id + source_identity + sha256）→ 命中则跳过
 /// 2. 通过 AnalysisOrchestrator 执行 Step 1 文档分析
 /// 3. 若 enable_kb_compilation 为 true，执行 Step 2 LLM 编译生成 wiki_pages
 /// 4. 将生成的 wiki 页面 slug 列表写入 ingest_cache
@@ -57,7 +57,7 @@ pub async fn process_with_kb_compilation(
     text: &str,
     source_identity: &str,
     sha256: &str,
-    project: &str,
+    project_id: i64,
     title: &str,
     enable_kb_compilation: bool,
     cache_store: Arc<Mutex<AnalysisCacheStore>>,
@@ -66,7 +66,7 @@ pub async fn process_with_kb_compilation(
     ingest_cache_store: Arc<Mutex<IngestCacheStore>>,
 ) -> Result<KbCompilationResult, String> {
     // Step 0: 检查 ingest_cache
-    if let Some(cached) = check_ingest_cache(&ingest_cache_store, project, source_identity, sha256)? {
+    if let Some(cached) = check_ingest_cache(&ingest_cache_store, project_id, source_identity, sha256)? {
         info!("ingest_cache 命中: source={}", source_identity);
         return Ok(KbCompilationResult {
             analysis: DocumentAnalysis {
@@ -93,7 +93,7 @@ pub async fn process_with_kb_compilation(
     // Step 1: 文档分析（同时用于双引擎降级 + analysis_cache）
     let orchestrator = AnalysisOrchestrator::new(cache_store, provider_manager.clone());
     let analysis_result = orchestrator
-        .analyze(project, source_identity, sha256, text, enable_kb_compilation)
+        .analyze(project_id, source_identity, sha256, text, enable_kb_compilation)
         .await;
 
     let engine_label = match analysis_result.engine {
@@ -108,7 +108,7 @@ pub async fn process_with_kb_compilation(
     if enable_kb_compilation {
         match run_llm_compilation(
             &analysis_result.analysis,
-            project,
+            project_id,
             &[],
             &wiki_pages,
             &provider_manager,
@@ -134,7 +134,7 @@ pub async fn process_with_kb_compilation(
         let verifier = VerificationPipeline::default_with_all();
         for slug in &generated_pages {
             if let Ok(Some(page)) = wiki_pages.lock().map_err(|e| e.to_string()).and_then(|store| {
-                store.get_by_slug(project, slug).map_err(|e| e.to_string())
+                store.get_by_slug(project_id, slug).map_err(|e| e.to_string())
             }) {
                 let input = VerificationInput {
                     generated_text: page.content_candidate.clone().unwrap_or_default(),
@@ -160,7 +160,7 @@ pub async fn process_with_kb_compilation(
     if compilation_done {
         update_ingest_cache(
             &ingest_cache_store,
-            project,
+            project_id,
             source_identity,
             sha256,
             &generated_pages,
@@ -183,7 +183,7 @@ pub async fn process_with_kb_compilation(
 /// 根据文档分析结果，通过 LLM 生成 wiki 页面内容并写入 content_candidate
 async fn run_llm_compilation(
     analysis: &DocumentAnalysis,
-    project: &str,
+    project_id: i64,
     chunk_ids: &[i64],
     wiki_pages: &Arc<Mutex<WikiPageStore>>,
     provider_manager: &Arc<RwLock<LLMProviderManager>>,
@@ -213,7 +213,7 @@ async fn run_llm_compilation(
 
     let slug = write_or_update_wiki_page(
         wiki_pages,
-        project,
+        project_id,
         &page_slug,
         &page_title,
         &generated_content,
@@ -407,7 +407,7 @@ fn parse_compilation_response(text: &str) -> (String, String) {
 /// 创建或更新 wiki 页面（写入 content_candidate，不直接修改 content）
 fn write_or_update_wiki_page(
     wiki_pages: &Arc<Mutex<WikiPageStore>>,
-    project: &str,
+    project_id: i64,
     slug: &str,
     title: &str,
     content: &str,
@@ -419,7 +419,7 @@ fn write_or_update_wiki_page(
         .map_err(|e| format!("wiki_pages 锁失败: {}", e))?;
 
     // 检查页面是否已存在
-    let existing = store.get_by_slug(project, slug)?;
+    let existing = store.get_by_slug(project_id, slug)?;
 
     let final_slug = slug.to_string();
 
@@ -460,7 +460,7 @@ fn write_or_update_wiki_page(
     } else {
         // 新页面：创建并设置 content_candidate + candidate_status
         store.create(&CreateWikiPage {
-            project: project.to_string(),
+            project_id,
             slug: slug.to_string(),
             title: title.to_string(),
             page_type: "summary".to_string(),
@@ -475,7 +475,7 @@ fn write_or_update_wiki_page(
 
         // 创建后立即更新 content_candidate
         // candidate_version 必须为 version + 1（满足 CHECK 约束）
-        if let Some(new_page) = store.get_by_slug(project, slug)? {
+        if let Some(new_page) = store.get_by_slug(project_id, slug)? {
             store.update(
                 new_page.id,
                 &UpdateWikiPage {
@@ -593,7 +593,7 @@ fn slugify(text: &str) -> String {
 /// 检查 ingest_cache，若命中返回已写入的文件列表
 fn check_ingest_cache(
     store: &Arc<Mutex<IngestCacheStore>>,
-    project: &str,
+    project_id: i64,
     source_identity: &str,
     sha256: &str,
 ) -> Result<Option<Vec<String>>, String> {
@@ -601,7 +601,7 @@ fn check_ingest_cache(
         .lock()
         .map_err(|e| format!("ingest_cache 锁失败: {}", e))?;
 
-    match cache.get_by_key(project, source_identity, sha256)? {
+    match cache.get_by_key(project_id, source_identity, sha256)? {
         Some(entry) if !entry.files_written.is_empty() => {
             let files: Vec<String> =
                 serde_json::from_str(&entry.files_written).unwrap_or_default();
@@ -618,7 +618,7 @@ fn check_ingest_cache(
 /// 更新 ingest_cache 记录
 fn update_ingest_cache(
     store: &Arc<Mutex<IngestCacheStore>>,
-    project: &str,
+    project_id: i64,
     source_identity: &str,
     sha256: &str,
     files: &[String],
@@ -630,7 +630,7 @@ fn update_ingest_cache(
         .map_err(|e| format!("ingest_cache 锁失败: {}", e))?;
 
     let input = CreateIngestCache {
-        project: project.to_string(),
+        project_id,
         source_identity: source_identity.to_string(),
         sha256: sha256.to_string(),
         files_written: Some(files_json),
