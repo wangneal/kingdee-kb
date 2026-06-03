@@ -205,10 +205,10 @@ pub async fn get_index_stats(state: State<'_, AppState>) -> Result<serde_json::V
 #[tauri::command]
 pub async fn get_knowledge_stats(
     state: State<'_, AppState>,
-    project: Option<String>,
+    project_id: Option<i64>,
 ) -> Result<KnowledgeStats, String> {
     let meta = state.metadata.lock().map_err(|e| e.to_string())?;
-    meta.get_stats(project.as_deref())
+    meta.get_stats(project_id)
 }
 
 /// 获取所有可用的 Embedding 提供商列表
