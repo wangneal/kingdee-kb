@@ -124,12 +124,12 @@ pub async fn create_risk_project(
     state: State<'_, AppState>,
     name: String,
     client_name: Option<String>,
-    kb_project: Option<String>,
+    kb_project_id: Option<i64>,
 ) -> Result<i64, String> {
     state.risk_control_store.lock().await.create_risk_project(
         &name,
         &client_name.unwrap_or_default(),
-        &kb_project.unwrap_or_default(),
+        kb_project_id,
     )
 }
 
@@ -312,7 +312,7 @@ pub async fn agent_chat(
     message: String,
     _system_extra: Option<String>,
     session_id: String,
-    project_id: Option<String>,
+    project_id: Option<i64>,
     risk_project_id: Option<i64>,
     history: Option<Vec<crate::services::llm_service::ChatMessage>>,
     provider_id: Option<String>,
@@ -340,6 +340,7 @@ pub async fn agent_chat(
     let metadata = state.metadata.clone();
     let data_dir = state.data_dir.clone();
     let products = state.products.clone();
+    let project_store = state.project_store.clone();
     let risk_store = state.risk_control_store.clone();
     let skill_manager = state.skill_manager.clone();
     let image_processor = state.image_processor.clone();
@@ -382,7 +383,7 @@ pub async fn agent_chat(
             tx,
             &sid,
             pending,
-            pid.as_deref(),
+            pid,
             risk_project_id,
             embedding,
             vector_index,
@@ -390,6 +391,7 @@ pub async fn agent_chat(
             metadata,
             data_dir,
             products,
+            project_store,
             risk_store,
             skill_manager,
             Some(cancel_flag),
@@ -429,7 +431,7 @@ pub async fn answer_question(
     app_handle: tauri::AppHandle,
     question_id: String,
     answer: String,
-    _project_id: Option<String>,
+    _project_id: Option<i64>,
 ) -> Result<(), String> {
     use tauri::Manager;
     let state = app_handle

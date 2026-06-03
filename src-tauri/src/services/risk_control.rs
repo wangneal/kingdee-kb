@@ -101,7 +101,7 @@ pub struct RiskProject {
     pub id: i64,
     pub name: String,
     pub client_name: String,
-    pub kb_project: String,
+    pub kb_project_id: Option<i64>,
     pub contract_doc_id: Option<i64>,
     pub sow_doc_id: Option<i64>,
     pub created_at: String,
@@ -185,7 +185,7 @@ impl RiskControlStore {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 client_name TEXT DEFAULT '',
-                kb_project TEXT DEFAULT '',
+                kb_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
                 contract_doc_id INTEGER DEFAULT NULL,
                 sow_doc_id INTEGER DEFAULT NULL,
                 created_at TEXT DEFAULT (datetime('now'))
@@ -201,6 +201,7 @@ impl RiskControlStore {
         let alter_tables = [
             "ALTER TABLE contract_scope_items ADD COLUMN project_id INTEGER NOT NULL DEFAULT -1",
             "ALTER TABLE project_health_metrics ADD COLUMN project_id INTEGER NOT NULL DEFAULT -1",
+            "ALTER TABLE risk_projects ADD COLUMN kb_project_id INTEGER",
         ];
         for sql in &alter_tables {
             let _ = conn.execute(sql, []);
@@ -585,12 +586,12 @@ impl RiskControlStore {
         &self,
         name: &str,
         client_name: &str,
-        kb_project: &str,
+        kb_project_id: Option<i64>,
     ) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         conn.execute(
-            "INSERT INTO risk_projects (name, client_name, kb_project) VALUES (?1, ?2, ?3)",
-            params![name, client_name, kb_project],
+            "INSERT INTO risk_projects (name, client_name, kb_project_id) VALUES (?1, ?2, ?3)",
+            params![name, client_name, kb_project_id],
         )
         .map_err(|e| format!("Failed to create project: {}", e))?;
         Ok(conn.last_insert_rowid())
@@ -599,7 +600,7 @@ impl RiskControlStore {
     pub fn list_risk_projects(&self) -> Result<Vec<RiskProject>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         let mut stmt = conn.prepare(
-            "SELECT id, name, client_name, kb_project, contract_doc_id, sow_doc_id, created_at FROM risk_projects ORDER BY created_at DESC"
+            "SELECT id, name, client_name, kb_project_id, contract_doc_id, sow_doc_id, created_at FROM risk_projects ORDER BY created_at DESC"
         ).map_err(|e| format!("Failed to prepare: {}", e))?;
         let rows = stmt
             .query_map([], |row| {
@@ -607,7 +608,7 @@ impl RiskControlStore {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     client_name: row.get(2)?,
-                    kb_project: row.get(3)?,
+                    kb_project_id: row.get(3)?,
                     contract_doc_id: row.get(4)?,
                     sow_doc_id: row.get(5)?,
                     created_at: row.get(6)?,
@@ -835,14 +836,34 @@ mod tests {
     use super::*;
 
     fn new_store() -> RiskControlStore {
-        RiskControlStore::new(Path::new(":memory:")).unwrap()
+        let store = RiskControlStore::new(Path::new(":memory:")).unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    client_name TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    current_phase TEXT NOT NULL DEFAULT 'survey',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    CHECK (status IN ('active', 'archived'))
+                );
+                INSERT INTO projects (id, name, client_name) VALUES (1, '项目A', '客户A');
+                INSERT INTO projects (id, name, client_name) VALUES (2, '项目B', '客户B');",
+            )
+            .unwrap();
+        }
+        store
     }
 
     #[test]
     fn test_add_and_list_scope_items() {
         let store = new_store();
         let pid = store
-            .create_risk_project("测试项目", "测试客户", "kb_test")
+            .create_risk_project("测试项目", "测试客户", Some(1))
             .unwrap();
         let id = store
             .add_scope_item(pid, "FI", "总账模块实施", true, "合同第3.1条")
@@ -862,7 +883,7 @@ mod tests {
     fn test_record_and_calculate_health() {
         let store = new_store();
         let pid = store
-            .create_risk_project("测试项目", "测试客户", "kb_test")
+            .create_risk_project("测试项目", "测试客户", Some(1))
             .unwrap();
         store
             .record_health_metric(pid, "attendance", 80.0, "项目经理连续2周缺席")
@@ -880,7 +901,7 @@ mod tests {
     fn test_delete_scope_item() {
         let store = new_store();
         let pid = store
-            .create_risk_project("测试项目", "测试客户", "kb_test")
+            .create_risk_project("测试项目", "测试客户", Some(1))
             .unwrap();
         let id = store
             .add_scope_item(pid, "MM", "采购模块", true, "")
@@ -893,7 +914,7 @@ mod tests {
     fn test_health_empty_returns_default() {
         let store = new_store();
         let pid = store
-            .create_risk_project("测试项目", "测试客户", "kb_test")
+            .create_risk_project("测试项目", "测试客户", Some(1))
             .unwrap();
         let score = store.calculate_health_score(pid).unwrap();
         // 空数据默认返回30分
@@ -904,7 +925,7 @@ mod tests {
     fn test_get_recent_metrics() {
         let store = new_store();
         let pid = store
-            .create_risk_project("测试项目", "测试客户", "kb_test")
+            .create_risk_project("测试项目", "测试客户", Some(1))
             .unwrap();
         store
             .record_health_metric(pid, "attendance", 50.0, "测试")
@@ -926,8 +947,8 @@ mod tests {
         let store = new_store();
 
         // 创建 2 个项目
-        let pid1 = store.create_risk_project("项目A", "客户A", "kb_a").unwrap();
-        let pid2 = store.create_risk_project("项目B", "客户B", "kb_b").unwrap();
+        let pid1 = store.create_risk_project("项目A", "客户A", Some(1)).unwrap();
+        let pid2 = store.create_risk_project("项目B", "客户B", Some(2)).unwrap();
         assert!(pid1 > 0);
         assert!(pid2 > 0);
 
@@ -951,7 +972,7 @@ mod tests {
     fn test_confirm_scope_items() {
         let store = new_store();
         let pid = store
-            .create_risk_project("确认测试", "客户C", "kb_c")
+            .create_risk_project("确认测试", "客户C", Some(1))
             .unwrap();
 
         // 构造候选范围项
@@ -998,7 +1019,7 @@ mod tests {
     fn test_export_import_database() {
         let store = new_store();
         let pid = store
-            .create_risk_project("导出测试", "客户D", "kb_d")
+            .create_risk_project("导出测试", "客户D", Some(1))
             .unwrap();
         store
             .add_scope_item(pid, "FI", "总账", true, "测试")
