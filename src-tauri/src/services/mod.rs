@@ -32,6 +32,7 @@ pub mod model_downloader;
 pub mod model_metadata;
 pub mod planner;
 pub mod product_store;
+pub mod project_store;
 pub mod prompt_assembler;
 pub mod prompts;
 pub mod query_decomposition;
