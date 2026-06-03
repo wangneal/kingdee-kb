@@ -15,18 +15,9 @@ use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument};
 
 use jieba_rs::Jieba;
 
-const CHAT_ATTACHMENT_PROJECT_PREFIX: &str = "chat-attachments:";
-
-fn is_chat_attachment_project(project: &str) -> bool {
-    project.starts_with(CHAT_ATTACHMENT_PROJECT_PREFIX)
-}
-
 fn project_allowed(project: &str, project_id: Option<&str>, extra_project_ids: &[String]) -> bool {
     if extra_project_ids.iter().any(|p| p == project) {
         return true;
-    }
-    if is_chat_attachment_project(project) {
-        return false;
     }
     project_id.map_or(true, |pid| project == pid)
 }
@@ -665,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn test_chat_attachment_projects_are_session_scoped() {
+    fn test_extra_project_ids_are_explicitly_allowed() {
         let tmp = tempfile::tempdir().unwrap();
         let index_dir = tmp.path().join("bm25");
         let service = BM25Service::new(index_dir).unwrap();
@@ -673,37 +664,34 @@ mod tests {
         service
             .add_chunk(
                 1,
-                "当前会话附件",
-                "临时附件关键词",
+                "项目一资料",
+                "项目关键词",
                 None,
-                "chat-attachments:session-a",
+                "1",
             )
             .unwrap();
         service
             .add_chunk(
                 2,
-                "其他会话附件",
-                "临时附件关键词",
+                "项目二资料",
+                "项目关键词",
                 None,
-                "chat-attachments:session-b",
+                "2",
             )
             .unwrap();
         service.commit().unwrap();
 
         let unrestricted = service
-            .search("临时附件关键词", None, &[], 10, &[])
+            .search("项目关键词", None, &[], 10, &[])
             .unwrap();
-        assert!(
-            unrestricted.is_empty(),
-            "chat attachments should not leak into global searches"
-        );
+        assert_eq!(unrestricted.len(), 2);
 
-        let scoped_project = "chat-attachments:session-a".to_string();
+        let scoped_project = "1".to_string();
         let scoped = service
-            .search("临时附件关键词", None, &[scoped_project], 10, &[])
+            .search("项目关键词", Some("999"), &[scoped_project], 10, &[])
             .unwrap();
         assert_eq!(scoped.len(), 1);
-        assert_eq!(scoped[0].project, "chat-attachments:session-a");
+        assert_eq!(scoped[0].project, "1");
     }
 
     #[test]

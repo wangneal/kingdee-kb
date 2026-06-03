@@ -26,20 +26,12 @@ const VECTOR_WEIGHT: f32 = 2.0;
 const BM25_WEIGHT: f32 = 1.0;
 
 /// Number of candidates to fetch from each retriever before fusion.
-/// Increased from 30 to absorb `chat-attachments:` exclusion headroom.
+/// Increased from 30 to absorb attachment exclusion headroom.
 const TOP_N: usize = 200;
-const CHAT_ATTACHMENT_PROJECT_PREFIX: &str = "chat-attachments:";
-
-fn is_chat_attachment_project(project: &str) -> bool {
-    project.starts_with(CHAT_ATTACHMENT_PROJECT_PREFIX)
-}
 
 fn project_allowed(project: &str, project_id: Option<&str>, extra_project_ids: &[String]) -> bool {
     if extra_project_ids.iter().any(|p| p == project) {
         return true;
-    }
-    if is_chat_attachment_project(project) {
-        return false;
     }
     project_id.map_or(true, |pid| project == pid)
 }
@@ -132,7 +124,8 @@ pub fn hybrid_search(
     // ── Step 0: wiki_pages 优先搜索 ──
     if let Some(wiki_store) = wiki_pages {
         if let Ok(store) = wiki_store.lock() {
-            if let Ok(mut wiki_results) = store.search_pages(project_id, query, top_k) {
+            let wiki_project_id = project_id.and_then(|pid| pid.parse::<i64>().ok());
+            if let Ok(mut wiki_results) = store.search_pages(wiki_project_id, query, top_k) {
                 wiki_results.retain(|r| project_allowed(&r.project, project_id, extra_project_ids));
                 if wiki_results.first().map(|r| r.score).unwrap_or(0.0) > 0.5 {
                     return Ok(wiki_results);
@@ -141,7 +134,7 @@ pub fn hybrid_search(
         }
     }
 
-    // ── Step 0.5: 前置过滤——收集 chat-attachments 的 chunk_id 供排除 ──
+    // ── Step 0.5: 前置过滤——收集聊天附件 chunk_id 供排除 ──
     let exclude_chunk_ids: Vec<i64> = {
         let meta = metadata.lock().map_err(|e| e.to_string())?;
         meta.get_chat_attachment_chunk_ids()?
@@ -176,13 +169,13 @@ pub fn hybrid_search(
             chunks
                 .into_iter()
                 .filter_map(|c| {
-                    // 前置过滤：排除 chat-attachments 的 chunk
+                    // 前置过滤：排除聊天附件 chunk
                     if exclude_chunk_ids.contains(&c.id) {
                         return None;
                     }
                     let (title, project) = doc_map
                         .get(&c.document_id)
-                        .map(|d| (d.title.clone(), d.project.clone()))
+                        .map(|d| (d.title.clone(), d.project_id.to_string()))
                         .unwrap_or_else(|| (String::new(), "default".to_string()));
 
                     if !project_allowed(&project, project_id, extra_project_ids) {
@@ -205,7 +198,7 @@ pub fn hybrid_search(
         }
     }; // drop all locks
 
-    // ── Step 4: BM25 search（前置过滤已排除 chat-attachments chunk）──
+    // ── Step 4: BM25 search（前置过滤已排除聊天附件 chunk）──
     let bm25_raw = {
         let service = bm25.read().map_err(|e| e.to_string())?;
         service.search(

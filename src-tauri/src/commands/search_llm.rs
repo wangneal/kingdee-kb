@@ -13,10 +13,11 @@ use crate::services::memory;
 pub async fn bm25_search(
     state: State<'_, AppState>,
     query: String,
-    project_id: Option<String>,
+    project_id: Option<i64>,
     top_k: Option<u32>,
 ) -> Result<Vec<BM25SearchResult>, String> {
     let bm25 = state.bm25.read().map_err(|e| e.to_string())?;
+    let project_id = project_id.map(|id| id.to_string());
     bm25.search(&query, project_id.as_deref(), &[], top_k.unwrap_or(10), &[])
 }
 
@@ -27,10 +28,11 @@ pub async fn bm25_search(
 pub async fn hybrid_search(
     state: State<'_, AppState>,
     query: String,
-    project_id: Option<String>,
+    project_id: Option<i64>,
     top_k: Option<usize>,
 ) -> Result<Vec<HybridSearchResult>, String> {
     state.ensure_embedding_ready();
+    let project_id = project_id.map(|id| id.to_string());
 
     crate::services::hybrid_search::hybrid_search(
         &query,
@@ -51,7 +53,7 @@ pub async fn hybrid_search(
 pub async fn save_chat_memory(
     state: State<'_, AppState>,
     conversation: Vec<ChatMessage>,
-    project: Option<String>,
+    project_id: Option<i64>,
 ) -> Result<(), String> {
     let data_dir = dirs::home_dir()
         .ok_or("Cannot find home directory")?
@@ -63,6 +65,13 @@ pub async fn save_chat_memory(
     let metadata = state.metadata.clone();
 
     let bm25 = state.bm25.clone();
+    let resolved_project_id = match project_id {
+        Some(id) => id,
+        None => {
+            let store = state.project_store.lock().map_err(|e| e.to_string())?;
+            store.ensure_default_project()?
+        }
+    };
 
     tokio::spawn(async move {
         memory::save_chat_memory(
@@ -73,7 +82,7 @@ pub async fn save_chat_memory(
             &vector_index,
             &metadata,
             &bm25,
-            project.as_deref(),
+            resolved_project_id,
         )
         .await;
     });
