@@ -15,13 +15,13 @@ use crate::services::knowledge_graph::{GraphNeighbor, GraphPath, GraphRecommenda
 #[tauri::command]
 pub async fn build_knowledge_graph(
     state: State<'_, AppState>,
-    project: String,
+    project_id: i64,
 ) -> Result<usize, String> {
     let store = state
         .graph_store
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.build_knowledge_graph(&project)
+    store.build_knowledge_graph(project_id)
 }
 
 /// 递归图遍历：从 seed 页面出发，沿边展开 N 层。
@@ -30,7 +30,7 @@ pub async fn build_knowledge_graph(
 #[tauri::command]
 pub async fn traverse_graph(
     state: State<'_, AppState>,
-    project: String,
+    project_id: i64,
     slug: String,
     max_depth: Option<i64>,
     min_weight: Option<f64>,
@@ -39,7 +39,7 @@ pub async fn traverse_graph(
         .graph_store
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.traverse_graph(&project, &slug, max_depth.unwrap_or(2), min_weight.unwrap_or(0.1))
+    store.traverse_graph(project_id, &slug, max_depth.unwrap_or(2), min_weight.unwrap_or(0.1))
 }
 
 /// 获取某页面的直接邻居（1 跳）。
@@ -48,14 +48,14 @@ pub async fn traverse_graph(
 #[tauri::command]
 pub async fn get_graph_neighbors(
     state: State<'_, AppState>,
-    project: String,
+    project_id: i64,
     slug: String,
 ) -> Result<Vec<GraphNeighbor>, String> {
     let store = state
         .graph_store
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.get_neighbors(&project, &slug)
+    store.get_neighbors(project_id, &slug)
 }
 
 /// 获取项目知识图谱统计信息（边数、节点数、信号分布、平均度数）。
@@ -64,13 +64,13 @@ pub async fn get_graph_neighbors(
 #[tauri::command]
 pub async fn get_graph_stats(
     state: State<'_, AppState>,
-    project: String,
+    project_id: i64,
 ) -> Result<GraphStats, String> {
     let store = state
         .graph_store
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.get_graph_stats(&project)
+    store.get_graph_stats(project_id)
 }
 
 /// 图扩展检索：给定页面，推荐相关页面。
@@ -80,7 +80,7 @@ pub async fn get_graph_stats(
 #[tauri::command]
 pub async fn graph_expand_search(
     state: State<'_, AppState>,
-    project: String,
+    project_id: i64,
     slug: String,
     max_depth: Option<i64>,
     max_results: Option<i64>,
@@ -91,7 +91,7 @@ pub async fn graph_expand_search(
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
     store.graph_expand_search(
-        &project,
+        project_id,
         &slug,
         max_depth.unwrap_or(2),
         max_results.unwrap_or(10),
