@@ -1,9 +1,9 @@
 # KingdeeKB 整体技术规格书
 
-> **版本**: v1.0  
-> **日期**: 2026-06-01  
-> **范围**: 涵盖全项目架构、所有子系统、数据流、命令注册表、数据库 schema  
-> **前置文档**: 各子系统详细设计见 `docs/superpowers/plans/` 下对应文档  
+> **版本**: v1.1
+> **日期**: 2026-06-03
+> **范围**: 涵盖全项目架构、所有子系统、数据流、命令注册表、数据库 schema
+> **前置文档**: 各子系统详细设计见 `docs/superpowers/plans/` 下对应文档
 
 ---
 
@@ -76,11 +76,19 @@ KingdeeKB/
 │   │   ├── Layout.tsx              # 布局 + 侧边栏
 │   │   ├── Spotlight.tsx           # 全局搜索覆盖层
 │   │   ├── Toast.tsx               # 消息提示
-│   │   └── ErrorBoundary.tsx       # 错误边界
+│   │   ├── ErrorBoundary.tsx       # 错误边界
+│   │   ├── ContextMenu.tsx         # 通用右键菜单组件
+│   │   ├── ImportModal.tsx         # 轻量导入弹窗
+│   │   │
+│   │   └── outliner/               # 大纲组件
+│   │       └── OutlineTree.tsx     # 大纲树组件
 │   │
 │   ├── contexts/                   # React Context 状态管理
 │   │   ├── AgentContext.tsx         # AI Agent 会话管理
 │   │   └── ProjectContext.tsx       # 当前项目上下文
+│   │
+│   ├── hooks/                      # 自定义 Hooks
+│   │   └── useImport.ts            # 可复用文档导入 Hook
 │   │
 │   └── lib/                        # 工具库
 │       ├── tauri-commands.ts        # Tauri 命令封装（~1120 行）
@@ -320,6 +328,7 @@ lib.rs 中注册了约 **130+** 命令，按子系统分组：
 | Core (数据目录/凭据/文件) | 8 | `commands::core::*` |
 | Embedding | 9 | `commands::embedding::*` |
 | Ingestion | 4 | `commands::ingestion::*` |
+| KB Compilation | 2 | `commands::kb_compilation::*` |
 | Document | 5 | `commands::document::*` |
 | Search | 3 | `commands::search_llm::*` |
 | Template/DocGen | 9 | `commands::template_doc::*` |
@@ -430,3 +439,17 @@ cargo test                # Rust 单元测试
 | KB 重构 + 大纲设计决策 | `2026-06-01-kb-refactor-design-decisions.md` |
 | 规格概要（快速导航） | `2026-06-01-kb-refactor-research-outliner-spec.md` |
 | 项目规则 | `AGENTS.md` |
+
+---
+
+## 13. 最近变更
+
+**v1.1 (2026-06-03)**
+
+- 新增：ContextMenu 通用组件（Portal 渲染、视口边界检测、Esc 关闭）
+- 新增：ImportModal 轻量导入弹窗（文本/文件/文件夹三 Tab）
+- 新增：useImport hook（自动读取知识编译配置，封装 ingest 函数）
+- 新增：kb_compilation 命令（get/set_kb_compilation_enabled）
+- 修改：OutlineNode 添加 onContextMenu 事件
+- 修改：OutlineTree 空状态添加"导入文档"按钮、面板空白区域右键支持
+- 修复：Markdown 代码块样式冲突（pre>code 白底白字问题）
