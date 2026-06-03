@@ -9,7 +9,6 @@ import {
   Search,
   Settings,
   ShieldAlert,
-  Upload,
   Zap,
 } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
@@ -37,7 +36,7 @@ const navItems = [
   { to: "/risk", icon: ShieldAlert, label: "风险把控" },
   { to: "/templates", icon: FileEdit, label: "文档生成" },
   { to: "/products", icon: Package, label: "产物管理" },
-  { to: "/import", icon: Upload, label: "导入" },
+  // { to: "/import", icon: Upload, label: "导入" }, // 入口已移至知识库右键菜单，配置在设置页
   { to: "/skills", icon: Zap, label: "技能体系" },
   { to: "/graph", icon: Network, label: "知识图谱" },
   { to: "/settings", icon: Settings, label: "设置" },
@@ -160,7 +159,7 @@ export default function Layout() {
 
     listenReActEvents((event) => {
       // Support both snake_case and camelCase (Tauri v2 may convert)
-      const eventSessionId = event.session_id || (event as any).sessionId
+      const eventSessionId = event.session_id || event.sessionId
       if (eventSessionId !== sideSessionRef.current) return
       if (event.type === "text_delta") {
         sideAnswerRef.current += event.content
@@ -173,7 +172,7 @@ export default function Layout() {
             const q = JSON.parse(raw)
             localStorage.setItem(LS_KEY_ANSWER, JSON.stringify({ id: q.id, text: answer }))
           }
-        } catch (e) {
+        } catch {
           /* localStorage unavailable */
         }
         sideAnswerRef.current = ""
@@ -199,7 +198,7 @@ export default function Layout() {
         const sid = `layout_${Date.now()}`
         sideSessionRef.current = sid
         agentChat(q.text, sid, currentProjectId)
-      } catch (e) {
+      } catch {
         /* poll error */
       }
     }, 2000)
