@@ -96,7 +96,7 @@ pub struct IngestionResult {
 pub fn ingest_text(
     text: &str,
     title: &str,
-    project: &str,
+    project_id: i64,
     embedding: &Arc<RwLock<EmbeddingService>>,
     vector_index: &Arc<RwLock<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
@@ -191,18 +191,26 @@ pub fn ingest_text(
     // 先插入文档记录
     let doc_id = {
         let meta = metadata.lock().map_err(|e| format!("Lock error: {}", e))?;
-        meta.insert_document(title, None, Some(&sha256), Some(project), raw_source_identity)?
+        meta.insert_document(
+            title,
+            None,
+            Some(&sha256),
+            project_id,
+            Some("knowledge"),
+            None,
+            raw_source_identity,
+        )?
     };
 
     // 创建 raw_source 记录（含文件复制，复制失败则跳过记录创建）
     if let (Some(raw_store), Some(identity)) = (raw_sources, raw_source_identity) {
-        // 计算 storage_path：若有源文件和数据目录，则复制到 raw/{project}/sources/{identity}
+        // 计算 storage_path：若有源文件和数据目录，则复制到 raw/{project_id}/sources/{identity}
         let mut storage_path = String::new();
         let mut file_size: Option<i64> = None;
         if let (Some(src), Some(dir)) = (source_path, data_dir) {
             let src_path = Path::new(src);
             if src_path.exists() {
-                let project_dir = safe_path_segment(project)?;
+                let project_dir = safe_path_segment(&project_id.to_string())?;
                 let identity_path = safe_relative_path(identity)?;
                 let dest_dir = dir.join("raw").join(project_dir).join("sources");
                 if let Err(e) = std::fs::create_dir_all(&dest_dir) {
@@ -224,7 +232,7 @@ pub fn ingest_text(
         // 仅在成功复制文件后才写入 raw_sources 记录
         if !storage_path.is_empty() {
             let insert = InsertRawSource {
-                project: project.to_string(),
+                project_id,
                 identity: identity.to_string(),
                 original_path: source_path.unwrap_or("").to_string(),
                 storage_path,
@@ -304,7 +312,7 @@ pub fn ingest_text(
                     title.to_string(),
                     chunk.content.clone(),
                     chunk.metadata.section_path.clone(),
-                    project.to_string(),
+                    project_id.to_string(),
                 ));
 
                 vector_count += 1;
@@ -401,7 +409,7 @@ fn safe_relative_path(value: &str) -> Result<PathBuf, String> {
 /// 再走现有 ingest 流程，并让 documents.raw_source_identity 关联源文件。
 pub fn ingest_file(
     file_path: &Path,
-    project: &str,
+    project_id: i64,
     embedding: &Arc<RwLock<EmbeddingService>>,
     vector_index: &Arc<RwLock<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
@@ -449,7 +457,7 @@ pub fn ingest_file(
     let mut result = ingest_text(
         &content,
         &title,
-        project,
+        project_id,
         embedding,
         vector_index,
         metadata,
@@ -468,7 +476,7 @@ pub fn ingest_file(
 /// 摄入目录中的所有支持文件（递归子目录）
 pub fn ingest_directory(
     dir_path: &Path,
-    project: &str,
+    project_id: i64,
     embedding: &Arc<RwLock<EmbeddingService>>,
     vector_index: &Arc<RwLock<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
@@ -487,7 +495,7 @@ pub fn ingest_directory(
     // 递归遍历目录树
     ingest_dir_recursive(
         dir_path,
-        project,
+        project_id,
         embedding,
         vector_index,
         metadata,
@@ -509,7 +517,7 @@ pub fn ingest_directory(
 /// 递归辅助函数：深度优先遍历目录并摄入所有支持的文件
 fn ingest_dir_recursive(
     dir_path: &Path,
-    project: &str,
+    project_id: i64,
     embedding: &Arc<RwLock<EmbeddingService>>,
     vector_index: &Arc<RwLock<VectorIndex>>,
     metadata: &Arc<Mutex<MetadataStore>>,
@@ -531,7 +539,7 @@ fn ingest_dir_recursive(
             // 递归进入子目录
             ingest_dir_recursive(
                 &path,
-                project,
+                project_id,
                 embedding,
                 vector_index,
                 metadata,
@@ -548,7 +556,7 @@ fn ingest_dir_recursive(
         } else if file_extractor::is_supported(&path) {
             match ingest_file(
                 &path,
-                project,
+                project_id,
                 embedding,
                 vector_index,
                 metadata,
@@ -595,7 +603,19 @@ fn emit_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::project_store::ProjectStore;
     use tempfile::tempdir;
+
+    fn init_metadata(data_dir: &Path) -> (Arc<Mutex<MetadataStore>>, i64) {
+        let db_path = data_dir.join("meta.db");
+        let project_store = ProjectStore::new(&db_path).unwrap();
+        let project_id = project_store.ensure_default_project().unwrap();
+        drop(project_store);
+        (
+            Arc::new(Mutex::new(MetadataStore::new(db_path).unwrap())),
+            project_id,
+        )
+    }
 
     #[test]
     fn test_ingest_text_basic() {
@@ -607,9 +627,7 @@ mod tests {
         let vector_index = Arc::new(RwLock::new(
             VectorIndex::new(data_dir.join("index")).unwrap(),
         ));
-        let metadata = Arc::new(Mutex::new(
-            MetadataStore::new(data_dir.join("meta.db")).unwrap(),
-        ));
+        let (metadata, project_id) = init_metadata(data_dir);
         let bm25 = Arc::new(RwLock::new(
             BM25Service::new(data_dir.join("bm25_index")).unwrap(),
         ));
@@ -618,7 +636,7 @@ mod tests {
         let result = ingest_text(
             "这是一段测试文本。",
             "测试文档",
-            "default",
+            project_id,
             &embedding,
             &vector_index,
             &metadata,
@@ -643,9 +661,7 @@ mod tests {
         let vector_index = Arc::new(RwLock::new(
             VectorIndex::new(data_dir.join("index")).unwrap(),
         ));
-        let metadata = Arc::new(Mutex::new(
-            MetadataStore::new(data_dir.join("meta.db")).unwrap(),
-        ));
+        let (metadata, project_id) = init_metadata(data_dir);
         let bm25 = Arc::new(RwLock::new(
             BM25Service::new(data_dir.join("bm25_index")).unwrap(),
         ));
@@ -654,7 +670,7 @@ mod tests {
         let _ = ingest_text(
             "测试文本",
             "文档1",
-            "default",
+            project_id,
             &embedding,
             &vector_index,
             &metadata,
@@ -670,7 +686,7 @@ mod tests {
         let result = ingest_text(
             "测试文本",
             "文档2",
-            "default",
+            project_id,
             &embedding,
             &vector_index,
             &metadata,
@@ -697,16 +713,14 @@ mod tests {
         let vector_index = Arc::new(RwLock::new(
             VectorIndex::new(data_dir.join("index")).unwrap(),
         ));
-        let metadata = Arc::new(Mutex::new(
-            MetadataStore::new(data_dir.join("meta.db")).unwrap(),
-        ));
+        let (metadata, project_id) = init_metadata(data_dir);
         let bm25 = Arc::new(RwLock::new(
             BM25Service::new(data_dir.join("bm25_index")).unwrap(),
         ));
 
         let result = ingest_file(
             Path::new("/nonexistent/file.txt"),
-            "default",
+            project_id,
             &embedding,
             &vector_index,
             &metadata,
@@ -728,16 +742,14 @@ mod tests {
         let vector_index = Arc::new(RwLock::new(
             VectorIndex::new(data_dir.join("index")).unwrap(),
         ));
-        let metadata = Arc::new(Mutex::new(
-            MetadataStore::new(data_dir.join("meta.db")).unwrap(),
-        ));
+        let (metadata, project_id) = init_metadata(data_dir);
         let bm25 = Arc::new(RwLock::new(
             BM25Service::new(data_dir.join("bm25_index")).unwrap(),
         ));
 
         let result = ingest_directory(
             Path::new("/nonexistent/dir"),
-            "default",
+            project_id,
             &embedding,
             &vector_index,
             &metadata,

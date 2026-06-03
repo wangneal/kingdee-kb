@@ -39,7 +39,7 @@ pub async fn ingest_text(
     app: AppHandle,
     text: String,
     title: String,
-    project: String,
+    project_id: i64,
     enable_kb_compilation: Option<bool>,
 ) -> Result<IngestionResult, String> {
     state.ensure_embedding_ready();
@@ -50,7 +50,7 @@ pub async fn ingest_text(
     let mut result = ingest_text_fn(
         &text,
         &title,
-        &project,
+        project_id,
         &state.embedding,
         &state.vector_index,
         &state.metadata,
@@ -74,7 +74,7 @@ pub async fn ingest_text(
             &text,
             &source_identity,
             &result.sha256,
-            &project,
+            project_id,
             &title,
             true,
             cache_store,
@@ -106,14 +106,14 @@ pub async fn ingest_file(
     state: State<'_, AppState>,
     app: AppHandle,
     file_path: String,
-    project: String,
+    project_id: i64,
     enable_kb_compilation: Option<bool>,
 ) -> Result<IngestionResult, String> {
     state.ensure_embedding_ready();
 
     let mut result = ingest_file_fn(
         PathBuf::from(&file_path).as_path(),
-        &project,
+        project_id,
         &state.embedding,
         &state.vector_index,
         &state.metadata,
@@ -144,7 +144,7 @@ pub async fn ingest_file(
             &text,
             &source_identity,
             &sha256,
-            &project,
+            project_id,
             &title,
             true,
             cache_store,
@@ -195,14 +195,14 @@ pub async fn ingest_directory(
     state: State<'_, AppState>,
     app: AppHandle,
     dir_path: String,
-    project: String,
+    project_id: i64,
     enable_kb_compilation: Option<bool>,
 ) -> Result<DirectoryIngestionResult, String> {
     state.ensure_embedding_ready();
 
     let mut result = ingest_directory_fn(
         PathBuf::from(&dir_path).as_path(),
-        &project,
+        project_id,
         &state.embedding,
         &state.vector_index,
         &state.metadata,
@@ -235,7 +235,7 @@ pub async fn ingest_directory(
                             &text,
                             &source_identity,
                             &sha256,
-                            &project,
+                            project_id,
                             &title,
                             true,
                             cache_store.clone(),

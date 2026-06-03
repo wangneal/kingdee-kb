@@ -242,7 +242,7 @@ pub async fn transcribe_video_file(
 pub async fn transcribe_and_ingest_video(
     state: State<'_, AppState>,
     video_path: String,
-    project: String,
+    project_id: i64,
     generate_minutes: bool,
     app_handle: AppHandle,
 ) -> Result<VideoPipelineResult, String> {
@@ -268,7 +268,7 @@ pub async fn transcribe_and_ingest_video(
     let ingestion_result = crate::services::ingestion::ingest_text(
         &transcription.text,
         &format!("[视频转写] {}", title),
-        &project,
+        project_id,
         &state.embedding,
         &state.vector_index,
         &state.metadata,
