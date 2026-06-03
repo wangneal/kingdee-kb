@@ -18,6 +18,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useToast } from "../components/Toast"
 import { DEFAULT_SLOT, useAgent } from "../contexts/AgentContext"
+import { useProject } from "../contexts/ProjectContext"
 import {
   addScopeItem,
   analyzeFitGap,
@@ -45,6 +46,7 @@ import {
 type Tab = "scope" | "health" | "scripts" | "analysis"
 
 export default function RiskControl() {
+  const { currentProjectId } = useProject()
   const [tab, setTab] = useState<Tab>("scope")
   const [projects, setProjects] = useState<RiskProject[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null)
@@ -52,7 +54,7 @@ export default function RiskControl() {
   const [newProjectName, setNewProjectName] = useState("")
   const [newClientName, setNewClientName] = useState("")
   const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? null
-  const selectedKbProject = selectedProject?.kb_project || selectedProject?.name
+  const selectedKbProjectId = selectedProject?.kb_project_id ?? currentProjectId
   const toast = useToast()
 
   const tabs: { key: Tab; label: string; icon: typeof Shield }[] = [
@@ -89,7 +91,7 @@ export default function RiskControl() {
       const id = await createRiskProject(
         newProjectName.trim(),
         safeClientName || undefined,
-        newProjectName.trim(),
+        currentProjectId,
       )
       setNewProjectName("")
       setNewClientName("")
@@ -231,7 +233,7 @@ export default function RiskControl() {
         {tab === "health" && <HealthTab projectId={selectedProjectId} />}
         {tab === "scripts" && <ScriptsTab projectId={selectedProjectId} />}
         {tab === "analysis" && (
-          <AnalysisTab projectId={selectedProjectId} kbProject={selectedKbProject} />
+          <AnalysisTab projectId={selectedProjectId} kbProjectId={selectedKbProjectId} />
         )}
       </div>
     </div>
@@ -889,7 +891,7 @@ function ScriptsTab({ projectId }: { projectId: number | null }) {
 
 // ─── Analysis Tab: ReAct 深度分析对话 ──────────────────────────────────
 
-function AnalysisTab({ projectId, kbProject }: { projectId: number | null; kbProject?: string }) {
+function AnalysisTab({ projectId, kbProjectId }: { projectId: number | null; kbProjectId?: number | null }) {
   const agent = useAgent()
   const slot = agent.slots.get("risk-analysis") ?? DEFAULT_SLOT
   const { messages, loading, currentTrace } = slot
@@ -910,10 +912,10 @@ function AnalysisTab({ projectId, kbProject }: { projectId: number | null; kbPro
       "请作为 KingdeeKB 双轨风险把控舱中的风控专家分析以下问题，必要时使用知识库搜索、范围蔓延检查、项目健康评分、差异分析或防身话术工具，并给出专业、简洁、可执行的回答。\n\n问题：" +
       text
     await agent.sendMessage("risk-analysis", prompt, {
-      projectId: kbProject,
+      projectId: kbProjectId ?? null,
       riskProjectId: projectId,
     })
-  }, [input, loading, projectId, kbProject, agent])
+  }, [input, loading, projectId, kbProjectId, agent])
 
   return (
     <div className="flex flex-col" style={{ height: "calc(100vh - 12rem)" }}>

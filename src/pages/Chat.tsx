@@ -197,7 +197,7 @@ function PlanTimeline({ trace }: { trace: ReActTrace }) {
 }
 
 export default function Chat() {
-  const { projectId } = useProject()
+  const { currentProjectId } = useProject()
   const agent = useAgent()
   const navigate = useNavigate()
   const slot = agent.slots.get("chat") ?? DEFAULT_SLOT
@@ -377,12 +377,12 @@ export default function Chat() {
     await agent.sendMessage("chat", outboundText, {
       displayText: visibleText,
       history,
-      projectId,
+      projectId: currentProjectId,
       providerId: selectedProviderId || undefined,
       attachments: attachmentInfos,
       fileAttachments,
     })
-  }, [input, attachments, loading, attaching, messages, agent, selectedProviderId, llmReady])
+  }, [input, attachments, loading, attaching, messages, agent, currentProjectId, selectedProviderId, llmReady])
 
   // 重试最后失败的消息
   const handleRetry = useCallback(async () => {
@@ -553,13 +553,13 @@ export default function Chat() {
         const conversation = messages
           .filter((m) => !m.error)
           .map((m) => ({ role: m.role, content: m.content }))
-        saveChatMemory(conversation, projectId).catch((e) =>
+        saveChatMemory(conversation, currentProjectId).catch((e) =>
           console.warn("[Chat] Failed to save chat memory:", e),
         )
       }
     }
     prevLoadingRef2.current = loading
-  }, [loading, messages])
+  }, [currentProjectId, loading, messages])
 
   const handleClear = useCallback(() => {
     agent.clearSlot("chat")

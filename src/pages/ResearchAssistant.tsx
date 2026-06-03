@@ -54,7 +54,7 @@ import {
 } from "../lib/tauri-commands"
 
 export default function ResearchAssistant() {
-  const { projectId } = useProject()
+  const { currentProjectId } = useProject()
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>()
   const [mode, setMode] = useState<"list" | "detail" | "new">("list")
   const [sessions, setSessions] = useState<ResearchSession[]>([])
@@ -66,13 +66,13 @@ export default function ResearchAssistant() {
   const refreshList = useCallback(async () => {
     setLoading(true)
     try {
-      const list = await listResearchSessions(projectId)
+      const list = await listResearchSessions(currentProjectId)
       setSessions(list)
     } catch (err) {
       setError(String(err))
     }
     setLoading(false)
-  }, [projectId])
+  }, [currentProjectId])
 
   useEffect(() => {
     refreshList()
@@ -251,7 +251,7 @@ function NewSessionForm({
   const [sessionDate, setSessionDate] = useState(new Date().toISOString().slice(0, 10))
   const [saving, setSaving] = useState(false)
   const toast = useToast()
-  const { projectId } = useProject()
+  const { currentProjectId } = useProject()
 
   const handleSubmit = async () => {
     if (!title.trim()) return
@@ -263,7 +263,7 @@ function NewSessionForm({
         moduleCode.trim(),
         interviewee.trim(),
         sessionDate,
-        projectId,
+        currentProjectId,
       )
       onCreated(id)
     } catch (err) {
@@ -384,7 +384,7 @@ function SessionDetailView({
   const agent = useAgent()
   const slot = agent.slots.get("research") ?? DEFAULT_SLOT
   const aiLoading = slot.loading
-  const { projectId } = useProject()
+  const { currentProjectId } = useProject()
   const [recording, setRecording] = useState(false)
   const [whisperStatus, setWhisperStatus] = useState<WhisperStatus | null>(null)
   const [loadingWhisper, setLoadingWhisper] = useState(false)
@@ -441,7 +441,7 @@ function SessionDetailView({
     setNewAnswer("")
     const context = `当前调研：${session.title}（${session.edition}/${session.module_code}）\n已有记录：${records.map((r) => `Q: ${r.question_text}`).join("\n")}`
     const prompt = `请回答以下调研问题，基于知识库中的金蝶ERP实施经验。回答要具体、可操作，包含系统配置路径或单据类型；不确定的写[待确认]。\n\n问题：${newQuestion}\n\n背景：${context}`
-    await agent.sendMessage("research", prompt, { projectId: projectId })
+    await agent.sendMessage("research", prompt, { projectId: currentProjectId })
   }
 
   const handleStartRecording = async () => {

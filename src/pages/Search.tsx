@@ -8,7 +8,6 @@ import {
   Tag,
 } from "lucide-react"
 import { useCallback, useMemo, useState } from "react"
-import { useProject } from "../contexts/ProjectContext"
 import { type HybridSearchResult, hybridSearch } from "../lib/tauri-commands"
 
 function highlightText(text: string, query: string): React.ReactNode {
@@ -32,7 +31,6 @@ function highlightText(text: string, query: string): React.ReactNode {
 }
 
 export default function Search() {
-  const { projectId } = useProject()
   const [query, setQuery] = useState("")
   const [results, setResults] = useState<HybridSearchResult[]>([])
   const [loading, setLoading] = useState(false)
@@ -48,7 +46,7 @@ export default function Search() {
       setSearched(true)
       setSearchError(null)
       try {
-        const res = await hybridSearch(query.trim(), projectId, 30)
+        const res = await hybridSearch(query.trim(), null, 30)
         setResults(res)
         setSearchError(null)
       } catch (err) {
