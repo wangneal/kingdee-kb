@@ -23,6 +23,7 @@ import {
   listenReActEvents,
 } from "../lib/tauri-commands"
 import Spotlight from "./Spotlight"
+import ProjectSwitcher from "./ProjectSwitcher"
 
 const LS_KEY_QUESTION = "kb_sidebar_question"
 const LS_KEY_ANSWER = "kb_sidebar_answer"
@@ -52,7 +53,7 @@ interface StatusItem {
 }
 
 function StatusBar({ onNavigate }: { onNavigate: (path: string) => void }) {
-  const { projectId } = useProject()
+  const { currentProjectId } = useProject()
   const [items, setItems] = useState<StatusItem[]>([
     { label: "LLM", level: "loading", section: "llm" },
     { label: "Embedding", level: "loading", section: "embedding" },
@@ -98,7 +99,7 @@ function StatusBar({ onNavigate }: { onNavigate: (path: string) => void }) {
 
       // KB status
       try {
-        const stats = await getStats(projectId)
+        const stats = await getStats(currentProjectId)
         results.push({
           label: "知识库",
           level: stats.document_count > 0 ? "ok" : "warn",
@@ -118,7 +119,7 @@ function StatusBar({ onNavigate }: { onNavigate: (path: string) => void }) {
       cancelled = true
       clearInterval(interval)
     }
-  }, [projectId])
+  }, [currentProjectId])
 
   const dotColor: Record<StatusLevel, string> = {
     ok: "bg-green-500",
@@ -147,7 +148,7 @@ function StatusBar({ onNavigate }: { onNavigate: (path: string) => void }) {
 }
 
 export default function Layout() {
-  const { projectId } = useProject()
+  const { currentProjectId } = useProject()
   const sideAnswerRef = useRef("")
   const sideSessionRef = useRef<string | null>(null)
   const navigate = useNavigate()
@@ -197,7 +198,7 @@ export default function Layout() {
         // Generate session ID first before calling agentChat
         const sid = `layout_${Date.now()}`
         sideSessionRef.current = sid
-        agentChat(q.text, sid, projectId)
+        agentChat(q.text, sid, currentProjectId)
       } catch (e) {
         /* poll error */
       }
@@ -208,7 +209,7 @@ export default function Layout() {
       unsub?.()
       clearInterval(interval)
     }
-  }, [projectId])
+  }, [currentProjectId])
 
   return (
     <div className="flex h-screen bg-neutral-50">
@@ -221,6 +222,8 @@ export default function Layout() {
           </div>
           <span className="text-sm font-semibold text-neutral-800">实施顾问AI助手</span>
         </div>
+
+        <ProjectSwitcher />
 
         {/* Navigation */}
         <nav className="flex-1 space-y-1 p-3">
