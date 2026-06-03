@@ -109,8 +109,8 @@ pub struct RecipeDocRequest {
     pub project_name: Option<String>,
     /// Additional context for LLM generation
     pub context: Option<String>,
-    /// Project ID for KB filtering (optional, uses project_name if not set)
-    pub project_id: Option<String>,
+    /// 项目 ID，用于限定知识库检索范围。
+    pub project_id: Option<i64>,
 }
 
 /// Result of recipe-aware document generation.
@@ -495,12 +495,10 @@ pub async fn generate_recipe_doc(
         let search_query =
             build_kb_search_query(&kb_fields, &request.project_name, &request.context);
 
+        let project_filter = request.project_id.map(|id| id.to_string());
         let search_results = hybrid_search::hybrid_search(
             &search_query,
-            request
-                .project_id
-                .as_deref()
-                .or(request.project_name.as_deref()),
+            project_filter.as_deref(),
             &[],
             RECIPE_KB_TOP_K,
             embedding,
@@ -941,7 +939,7 @@ mod tests {
             schema_fields: vec![],
             project_name: Some("测试项目".to_string()),
             context: Some("调研背景信息".to_string()),
-            project_id: Some("proj_001".to_string()),
+            project_id: Some(1),
         };
 
         // Round-trip through serde JSON
@@ -953,7 +951,7 @@ mod tests {
         assert_eq!(deserialized.template_path, "/tmp/template.docx");
         assert_eq!(deserialized.fields.get("项目名称").unwrap(), "测试项目");
         assert_eq!(deserialized.project_name, Some("测试项目".to_string()));
-        assert_eq!(deserialized.project_id, Some("proj_001".to_string()));
+        assert_eq!(deserialized.project_id, Some(1));
     }
 
     #[test]

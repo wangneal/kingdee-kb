@@ -2,6 +2,18 @@ use std::path::PathBuf;
 use tauri::State;
 
 use crate::app_state::AppState;
+
+fn resolve_product_project_id(
+    state: &AppState,
+    project_id: Option<i64>,
+) -> Result<i64, String> {
+    if let Some(project_id) = project_id {
+        return Ok(project_id);
+    }
+
+    let store = state.project_store.lock().map_err(|e| e.to_string())?;
+    store.ensure_default_project()
+}
 use crate::services::deliverable_recipes::DeliverableRecipe;
 use crate::services::doc_generator::{
     GenerateDocRequest, GeneratedDoc, RecipeDocRequest, RecipeDocResult,
@@ -138,10 +150,7 @@ pub async fn generate_doc(
     request: GenerateDocRequest,
 ) -> Result<GeneratedDoc, String> {
     let template_path = request.template_path.clone();
-    let project = request
-        .project_name
-        .clone()
-        .unwrap_or_else(|| "default".to_string());
+    let product_project_id = resolve_product_project_id(state.inner(), None)?;
     let user_field_count = request.fields.len() as i64;
     let schema_field_count = request
         .schema_fields
@@ -164,7 +173,7 @@ pub async fn generate_doc(
         store.create(
             &template_path,
             template_name,
-            &project,
+            product_project_id,
             &result.output_path,
             user_field_count.max(schema_field_count),
             result.ai_fields.len() as i64,
@@ -183,6 +192,7 @@ pub async fn generate_recipe_doc_cmd(
 ) -> Result<RecipeDocResult, String> {
     let recipe_id = request.recipe_id.clone();
     let project = request.project_name.clone().unwrap_or_default();
+    let product_project_id = resolve_product_project_id(state.inner(), request.project_id)?;
     let user_field_count = request.fields.len() as i64;
     let schema_fields_json: String =
         serde_json::to_string(&request.schema_fields).unwrap_or_else(|_| "[]".to_string());
@@ -212,7 +222,7 @@ pub async fn generate_recipe_doc_cmd(
         let _ = store.create(
             &recipe_id,
             &result.recipe_name,
-            &project,
+            product_project_id,
             &result.doc.output_path,
             user_field_count,
             result.doc.ai_fields.len() as i64,
@@ -234,7 +244,7 @@ pub async fn generate_from_research(
     schema_fields: Option<Vec<crate::services::template_schema::SchemaField>>,
     project_name: Option<String>,
     research_notes: String,
-    project_id: Option<String>,
+    project_id: Option<i64>,
 ) -> Result<RecipeDocResult, String> {
     let request = RecipeDocRequest {
         recipe_id,
@@ -268,7 +278,7 @@ pub async fn generate_from_meeting(
     schema_fields: Option<Vec<crate::services::template_schema::SchemaField>>,
     project_name: Option<String>,
     meeting_transcript: String,
-    project_id: Option<String>,
+    project_id: Option<i64>,
 ) -> Result<RecipeDocResult, String> {
     let request = RecipeDocRequest {
         recipe_id,
