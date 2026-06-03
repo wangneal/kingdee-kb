@@ -215,6 +215,18 @@ impl SkillManager {
             .collect()
     }
 
+    /// 克隆触发引擎（轻量克隆，向量缓存通过 Arc 共享）
+    ///
+    /// 用于在释放 SkillManager 锁后独立执行异步匹配，避免持锁期间 await 远程 embedding。
+    pub fn clone_trigger_engine(&self) -> Option<SkillTriggerEngine> {
+        self.trigger_engine.clone()
+    }
+
+    /// 获取技能映射表的快照（用于在释放锁后查找技能详情）
+    pub fn get_skills_map(&self) -> HashMap<String, Skill> {
+        self.skills.clone()
+    }
+
     /// 根据用户输入匹配最相关的技能
     ///
     /// 委托给触发引擎进行统一的匹配逻辑。
@@ -270,32 +282,16 @@ impl SkillManager {
         self.trigger_engine = Some(SkillTriggerEngine::new(&skills));
     }
 
-    /// 根据用户输入匹配最佳技能（使用触发引擎）
-    pub async fn match_best_skill(&self, context: &TriggerContext, embedding: &RwLock<EmbeddingService>) -> Option<SkillMatch> {
-        let engine = self.trigger_engine.as_ref()?;
-
-        let mut all_matches = engine.match_by_input(&context.user_input, embedding).await;
-
-        // 合并路径匹配
-        let path_matches = engine.match_by_paths(&context.accessed_files);
-        all_matches.extend(path_matches);
-
-        // 按分数排序
-        all_matches.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-
-        all_matches.into_iter().next()
+    /// 已弃用：命令层已改为直接 clone engine 后调用，请勿使用此方法
+    #[deprecated(note = "命令层直接使用 SkillTriggerEngine，此入口已废弃")]
+    pub async fn match_best_skill(&self, _context: &TriggerContext, _embedding: &RwLock<EmbeddingService>) -> Option<SkillMatch> {
+        None
     }
 
-    /// 匹配多个候选技能
-    pub async fn match_candidates(&self, user_input: &str, limit: usize, embedding: &RwLock<EmbeddingService>) -> Vec<SkillMatch> {
-        let engine = match &self.trigger_engine {
-            Some(e) => e,
-            None => return Vec::new(),
-        };
-
-        let mut matches = engine.match_by_input(user_input, embedding).await;
-        matches.truncate(limit);
-        matches
+    /// 已弃用：命令层已改为直接 clone engine 后调用，请勿使用此方法
+    #[deprecated(note = "命令层直接使用 SkillTriggerEngine，此入口已废弃")]
+    pub async fn match_candidates(&self, _user_input: &str, _limit: usize, _embedding: &RwLock<EmbeddingService>) -> Vec<SkillMatch> {
+        Vec::new()
     }
 
 

@@ -68,8 +68,28 @@ pub async fn match_skill(
     state: State<'_, AppState>,
     input: String,
 ) -> Result<Option<Skill>, String> {
-    let manager = state.skill_manager.lock().await;
-    Ok(manager.match_best(&input, &state.embedding).await)
+    // 短暂持锁提取触发引擎和技能映射，避免持锁期间 await 远程 embedding
+    let (engine_clone, skills_snapshot) = {
+        let manager = state.skill_manager.lock().await;
+        let engine = manager.clone_trigger_engine();
+        let skills = manager.get_skills_map();
+        (engine, skills)
+    };
+
+    let engine = match engine_clone {
+        Some(e) => e,
+        None => return Ok(None),
+    };
+
+    let matches = engine.match_by_input(&input, &state.embedding).await;
+    let best = matches.first();
+
+    if let Some(best) = best {
+        if best.score >= 3.5 {
+            return Ok(skills_snapshot.get(&best.skill_id).cloned());
+        }
+    }
+    Ok(None)
 }
 
 
@@ -242,20 +262,33 @@ pub async fn trigger_skill_match(
     state: State<'_, AppState>,
     context: TriggerContext,
 ) -> Result<Vec<SkillMatch>, String> {
-    let manager = state.skill_manager.lock().await;
+    // 短暂持锁提取触发引擎，避免持锁期间 await 远程 embedding
+    let engine_clone = {
+        let manager = state.skill_manager.lock().await;
+        manager.clone_trigger_engine()
+    };
+
     let mut matches = Vec::new();
 
-    // 使用触发引擎匹配
-    if let Some(best) = manager.match_best_skill(&context, &state.embedding).await {
-        matches.push(best);
-    }
+    if let Some(ref engine) = engine_clone {
+        // 使用触发引擎匹配（仅调用一次 match_by_input，避免重复 embedding 请求）
+        let mut all_matches = engine.match_by_input(&context.user_input, &state.embedding).await;
+        // 合并路径匹配
+        let path_matches = engine.match_by_paths(&context.accessed_files);
+        all_matches.extend(path_matches);
+        // 使用 total_cmp 避免 NaN 导致 panic
+        all_matches.sort_by(|a, b| b.score.total_cmp(&a.score));
 
-    // 补充：匹配多个候选
-    let candidates = manager.match_candidates(&context.user_input, 5, &state.embedding).await;
+        // 取最佳匹配
+        if let Some(m) = all_matches.first() {
+            matches.push(m.clone());
+        }
 
-    for candidate in candidates {
-        if !matches.iter().any(|m| m.skill_id == candidate.skill_id) {
-            matches.push(candidate);
+        // 补充候选（排除已选中的最佳匹配）
+        for candidate in all_matches.iter().take(6).skip(1) {
+            if !matches.iter().any(|m| m.skill_id == candidate.skill_id) {
+                matches.push(candidate.clone());
+            }
         }
     }
 
@@ -282,9 +315,20 @@ pub async fn match_skill_candidates(
     input: String,
     limit: Option<usize>,
 ) -> Result<Vec<SkillMatch>, String> {
-    let manager = state.skill_manager.lock().await;
-    Ok(manager.match_candidates(&input, limit.unwrap_or(5), &state.embedding).await)
+    // 短暂持锁提取触发引擎，避免持锁期间 await 远程 embedding
+    let engine_clone = {
+        let manager = state.skill_manager.lock().await;
+        manager.clone_trigger_engine()
+    };
 
+    let engine = match engine_clone {
+        Some(e) => e,
+        None => return Ok(Vec::new()),
+    };
+
+    let mut matches = engine.match_by_input(&input, &state.embedding).await;
+    matches.truncate(limit.unwrap_or(5));
+    Ok(matches)
 }
 
 /// 生成技能列表系统提示

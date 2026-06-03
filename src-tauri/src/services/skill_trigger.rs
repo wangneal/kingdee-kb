@@ -8,7 +8,7 @@
 //!   - 确保了 100% 的语义精确度，同时具备极高的系统容错性与冷启动安全性
 
 use std::collections::HashMap;
-use std::sync::{Mutex, RwLock, OnceLock};
+use std::sync::{Arc, Mutex, RwLock, OnceLock};
 
 use crate::services::embedding::EmbeddingService;
 use crate::services::skill_types::Skill;
@@ -44,11 +44,14 @@ pub struct TriggerContext {
 }
 
 /// 技能触发引擎
+///
+/// vector_cache 使用 Arc<Mutex> 以支持轻量克隆，
+/// 使命令层可以 clone 引擎后释放 SkillManager 锁，再执行异步 embedding。
 pub struct SkillTriggerEngine {
     /// 技能 ID → 融合后的语义描述文本（包含 frontmatter description 和 body 内的触发词）
     skills_texts: HashMap<String, String>,
-    /// 技能 ID → 已计算的向量缓存
-    vector_cache: Mutex<HashMap<String, Vec<f32>>>,
+    /// 技能 ID → 已计算的向量缓存（Arc 共享，克隆后共享同一缓存）
+    vector_cache: Arc<Mutex<HashMap<String, Vec<f32>>>>,
     /// 路径模式 → 技能 ID 列表（条件匹配）
     path_map: HashMap<String, Vec<String>>,
 
@@ -57,6 +60,19 @@ pub struct SkillTriggerEngine {
     when_to_use_map: HashMap<String, String>,
     /// 关键词 → 技能 ID 列表
     keyword_map: HashMap<String, Vec<String>>,
+}
+
+impl Clone for SkillTriggerEngine {
+    fn clone(&self) -> Self {
+        Self {
+            skills_texts: self.skills_texts.clone(),
+            // Arc 克隆：共享同一向量缓存，避免重复计算
+            vector_cache: Arc::clone(&self.vector_cache),
+            path_map: self.path_map.clone(),
+            when_to_use_map: self.when_to_use_map.clone(),
+            keyword_map: self.keyword_map.clone(),
+        }
+    }
 }
 
 impl SkillTriggerEngine {
@@ -107,7 +123,7 @@ impl SkillTriggerEngine {
 
         Self {
             skills_texts,
-            vector_cache: Mutex::new(HashMap::new()),
+            vector_cache: Arc::new(Mutex::new(HashMap::new())),
             path_map,
             when_to_use_map,
             keyword_map,
@@ -181,6 +197,48 @@ impl SkillTriggerEngine {
         }
     }
 
+    /// 兜底降级匹配：关键词分词 + 相似度重合 + 描述包含
+    fn keyword_fallback(&self, input_lower: &str) -> Vec<SkillMatch> {
+        let mut scores: HashMap<String, f64> = HashMap::new();
+
+        // 1. 关键词分词匹配
+        let input_keywords = Self::extract_keywords(input_lower);
+        for keyword in &input_keywords {
+            if let Some(skill_ids) = self.keyword_map.get(keyword) {
+                for skill_id in skill_ids {
+                    *scores.entry(skill_id.clone()).or_insert(0.0) += 1.0;
+                }
+            }
+        }
+
+        // 2. 相似度重合匹配
+        for (trigger_text, skill_id) in &self.when_to_use_map {
+            let similarity = Self::compute_similarity(input_lower, &trigger_text.to_lowercase());
+            if similarity > 0.3 {
+                *scores.entry(skill_id.clone()).or_insert(0.0) += similarity * 3.0;
+            }
+        }
+
+        // 3. 描述文本包含匹配
+        for (skill_id, desc) in &self.skills_texts {
+            let desc_lower = desc.to_lowercase();
+            if desc_lower.contains(input_lower) || input_lower.contains(&desc_lower) {
+                *scores.entry(skill_id.clone()).or_insert(0.0) += 5.0;
+            }
+        }
+
+        let mut matches: Vec<SkillMatch> = scores
+            .into_iter()
+            .map(|(id, score)| SkillMatch {
+                skill_id: id,
+                score,
+                match_type: MatchType::Keyword,
+            })
+            .collect();
+        matches.sort_by(|a, b| b.score.total_cmp(&a.score));
+        matches
+    }
+
     /// 根据用户输入匹配技能
     pub async fn match_by_input(&self, input: &str, embedding: &RwLock<EmbeddingService>) -> Vec<SkillMatch> {
         let input_lower = input.to_lowercase();
@@ -194,46 +252,9 @@ impl SkillTriggerEngine {
             cache.is_empty()
         };
 
-        // 兜底降级：如果模型没有就绪或缓存未生成，采用原有分词倒排和相似度重合匹配
+        // 兜底降级：如果模型没有就绪或缓存未生成，采用关键词匹配
         if is_empty {
-            let mut scores: HashMap<String, f64> = HashMap::new();
-
-            // 1. 关键词分词匹配
-            let input_keywords = Self::extract_keywords(&input_lower);
-            for keyword in &input_keywords {
-                if let Some(skill_ids) = self.keyword_map.get(keyword) {
-                    for skill_id in skill_ids {
-                        *scores.entry(skill_id.clone()).or_insert(0.0) += 1.0;
-                    }
-                }
-            }
-
-            // 2. 相似度重合匹配
-            for (trigger_text, skill_id) in &self.when_to_use_map {
-                let similarity = Self::compute_similarity(&input_lower, &trigger_text.to_lowercase());
-                if similarity > 0.3 {
-                    *scores.entry(skill_id.clone()).or_insert(0.0) += similarity * 3.0;
-                }
-            }
-
-            // 3. 描述文本包含匹配
-            for (skill_id, desc) in &self.skills_texts {
-                let desc_lower = desc.to_lowercase();
-                if desc_lower.contains(&input_lower) || input_lower.contains(&desc_lower) {
-                    *scores.entry(skill_id.clone()).or_insert(0.0) += 5.0;
-                }
-            }
-
-            let mut matches: Vec<SkillMatch> = scores
-                .into_iter()
-                .map(|(id, score)| SkillMatch {
-                    skill_id: id,
-                    score,
-                    match_type: MatchType::Keyword,
-                })
-                .collect();
-            matches.sort_by(|a, b| b.score.total_cmp(&a.score));
-            return matches;
+            return self.keyword_fallback(&input_lower);
         }
 
         // 计算用户输入的向量（此处无任何锁获取，可以安全 await）
@@ -241,7 +262,11 @@ impl SkillTriggerEngine {
 
         let user_vector = match user_vector {
             Some(v) => v,
-            None => return Vec::new(),
+            // 远程 embedding 失败时降级到关键词匹配，而非返回空
+            None => {
+                tracing::warn!("用户输入 embedding 失败，降级到关键词匹配");
+                return self.keyword_fallback(&input_lower);
+            }
         };
 
         // 再次获取锁以遍历缓存（此处无 await，符合 Future + Send 限制）
