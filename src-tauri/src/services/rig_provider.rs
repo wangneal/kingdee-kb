@@ -287,6 +287,7 @@ mod tests {
     use crate::services::llm_service::LLMService;
     use crate::services::metadata::MetadataStore;
     use crate::services::product_store::ProductStore;
+    use crate::services::project_store::ProjectStore;
     use crate::services::rig_tool::all_rig_tools;
     use crate::services::risk_control::RiskControlStore;
     use crate::services::skill_manager::SkillManager;
@@ -306,8 +307,14 @@ mod tests {
         Arc<std::sync::RwLock<BM25Service>>,
         Arc<std::sync::Mutex<MetadataStore>>,
         Arc<std::sync::Mutex<ProductStore>>,
+        Arc<std::sync::Mutex<ProjectStore>>,
         Arc<tokio::sync::Mutex<RiskControlStore>>,
     ) {
+        let db_path = root.join("metadata.db");
+        let project_store = ProjectStore::new(&db_path).expect("project store");
+        project_store
+            .ensure_default_project()
+            .expect("default project");
         (
             Arc::new(std::sync::RwLock::new(EmbeddingService::empty())),
             Arc::new(std::sync::RwLock::new(
@@ -317,10 +324,13 @@ mod tests {
                 BM25Service::new(root.join("bm25")).expect("bm25 index"),
             )),
             Arc::new(std::sync::Mutex::new(
-                MetadataStore::new(root.join("metadata.db")).expect("metadata store"),
+                MetadataStore::new(db_path.clone()).expect("metadata store"),
             )),
             Arc::new(std::sync::Mutex::new(
-                ProductStore::new(root.join("products.db")).expect("product store"),
+                ProductStore::new(db_path).expect("product store"),
+            )),
+            Arc::new(std::sync::Mutex::new(
+                project_store,
             )),
             Arc::new(tokio::sync::Mutex::new(
                 RiskControlStore::new(&root.join("metadata.db")).expect("risk control store"),
@@ -375,7 +385,7 @@ mod tests {
                 .completions_api();
 
             let tmp = tempfile::tempdir().expect("tempdir");
-            let (embedding, vector_index, bm25, metadata, products, risk_store) =
+            let (embedding, vector_index, bm25, metadata, products, project_store, risk_store) =
                 test_tool_deps(tmp.path());
             let providers = Arc::new(std::sync::RwLock::new(LLMProviderManager::new(
                 &tmp.path().to_path_buf(),
@@ -396,6 +406,7 @@ mod tests {
                     bm25,
                     metadata,
                     products,
+                    project_store,
                     risk_store,
                     skill_manager,
                     None,

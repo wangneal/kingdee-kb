@@ -25,6 +25,7 @@ use crate::services::llm_service::{ChatMessage, LLMService};
 use crate::services::metadata::MetadataStore;
 use crate::services::planner::{self, PlanState, PlanStateMachine};
 use crate::services::product_store::ProductStore;
+use crate::services::project_store::ProjectStore;
 use crate::services::question_tool::PendingQuestions;
 use crate::services::react_agent::ReActEvent;
 use crate::services::rig_provider::{build_anthropic_client, build_openai_client};
@@ -35,8 +36,6 @@ use crate::services::types::{AgentMode, AttachmentInfo};
 use crate::services::vector_index::VectorIndex;
 use rig_core::client::CompletionClient;
 use rig_core::streaming::StreamingPrompt;
-
-const CHAT_ATTACHMENT_PROJECT_PREFIX: &str = "chat-attachments:";
 
 /// Agent 会话取消标志
 ///
@@ -134,7 +133,7 @@ impl RigAgent {
         sender: mpsc::UnboundedSender<ReActEvent>,
         session_id: &str,
         pending: PendingQuestions,
-        project_id: Option<&str>,
+        project_id: Option<i64>,
         risk_project_id: Option<i64>,
         embedding: Arc<RwLock<EmbeddingService>>,
         vector_index: Arc<RwLock<VectorIndex>>,
@@ -142,6 +141,7 @@ impl RigAgent {
         metadata: Arc<Mutex<MetadataStore>>,
         data_dir: std::path::PathBuf,
         products: Arc<Mutex<ProductStore>>,
+        project_store: Arc<Mutex<ProjectStore>>,
         risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
         skill_manager: Arc<tokio::sync::Mutex<crate::services::skill_manager::SkillManager>>,
         cancel_flag: Option<Arc<AtomicBool>>,
@@ -153,7 +153,29 @@ impl RigAgent {
     ) {
         let sid = session_id.to_string();
         let started_at = Instant::now();
-        let attachment_project_id = format!("{}{}", CHAT_ATTACHMENT_PROJECT_PREFIX, session_id);
+        let active_project_id = match project_id {
+            Some(pid) => pid,
+            None => match project_store.lock() {
+                Ok(store) => match store.ensure_default_project() {
+                    Ok(pid) => pid,
+                    Err(e) => {
+                        let _ = sender.send(ReActEvent::Error {
+                            session_id: sid.clone(),
+                            message: format!("获取默认项目失败: {}", e),
+                        });
+                        return;
+                    }
+                },
+                Err(e) => {
+                    let _ = sender.send(ReActEvent::Error {
+                        session_id: sid.clone(),
+                        message: format!("获取项目锁失败: {}", e),
+                    });
+                    return;
+                }
+            },
+        };
+        let attachment_project_id = active_project_id.to_string();
         let attachment_search_projects = attachments
             .as_ref()
             .filter(|list| !list.is_empty())
@@ -279,7 +301,7 @@ impl RigAgent {
                     "document" => {
                         // 文档入库后台化，不阻塞首 token
                         let ingest_path = std::path::PathBuf::from(&attachment.path);
-                        let ingest_project = attachment_project_id.clone();
+                        let ingest_project_id = active_project_id;
                         let doc_name = attachment.name.clone();
                         let emb = embedding.clone();
                         let vidx = vector_index.clone();
@@ -288,7 +310,7 @@ impl RigAgent {
                         tokio::task::spawn_blocking(move || {
                             let res = crate::services::ingestion::ingest_file(
                                 &ingest_path,
-                                &ingest_project,
+                                ingest_project_id,
                                 &emb,
                                 &vidx,
                                 &meta,
@@ -543,6 +565,7 @@ impl RigAgent {
                         bm25.clone(),
                         metadata.clone(),
                         products.clone(),
+                        project_store.clone(),
                         risk_store.clone(),
                         skill_manager.clone(),
                         risk_project_id,
@@ -601,6 +624,7 @@ impl RigAgent {
                         bm25.clone(),
                         metadata.clone(),
                         products.clone(),
+                        project_store.clone(),
                         risk_store.clone(),
                         skill_manager.clone(),
                         risk_project_id,
@@ -885,7 +909,7 @@ impl RigAgent {
         sender: &mpsc::UnboundedSender<ReActEvent>,
         session_id: &str,
         _pending: PendingQuestions,
-        project_id: Option<&str>,
+        project_id: Option<i64>,
         _risk_project_id: Option<i64>,
         _embedding: Arc<RwLock<EmbeddingService>>,
         _vector_index: Arc<RwLock<VectorIndex>>,
@@ -911,7 +935,7 @@ impl RigAgent {
             planner::Planner::plan(
                 user_message,
                 system_extra,
-                project_id.unwrap_or(""),
+                &project_id.map(|id| id.to_string()).unwrap_or_default(),
                 llm,
                 plan_budget,
             ),

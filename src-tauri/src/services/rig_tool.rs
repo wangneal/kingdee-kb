@@ -105,6 +105,7 @@ use crate::services::hybrid_search;
 use crate::services::llm_service::LLMService;
 use crate::services::metadata::MetadataStore;
 use crate::services::product_store::ProductStore;
+use crate::services::project_store::ProjectStore;
 use crate::services::question_tool::{ClarificationPayload, PendingQuestions};
 use crate::services::react_agent::ReActEvent;
 use crate::services::risk_control::RiskControlStore;
@@ -128,7 +129,7 @@ pub struct SearchKnowledgeTool {
     pub vector_index: Arc<RwLock<VectorIndex>>,
     pub bm25: Arc<RwLock<BM25Service>>,
     pub metadata: Arc<Mutex<MetadataStore>>,
-    pub project_id: Option<String>,
+    pub project_id: Option<i64>,
     pub extra_project_ids: Vec<String>,
     pub wiki_pages: Option<Arc<Mutex<WikiPageStore>>>,
     pub session_id: Option<String>, // 新增：会话ID，用于缓存检索结果进行防幻觉验证
@@ -141,7 +142,7 @@ pub struct SearchKnowledgeToolArgs {
 
 impl SearchKnowledgeTool {
     pub fn new(
-        project_id: Option<String>,
+        project_id: Option<i64>,
         extra_project_ids: Vec<String>,
         embedding: Arc<RwLock<EmbeddingService>>,
         vector_index: Arc<RwLock<VectorIndex>>,
@@ -187,7 +188,8 @@ impl Tool for SearchKnowledgeTool {
         // 优先从 wiki_pages 搜索
         if let Some(wiki_store) = &self.wiki_pages {
             if let Ok(store) = wiki_store.lock() {
-                if let Ok(pages) = store.search_pages(self.project_id.as_deref(), &args.query, 5) {
+                let wiki_project_id = self.project_id;
+                if let Ok(pages) = store.search_pages(wiki_project_id, &args.query, 5) {
                     if let Some(top) = pages.first() {
                         if top.score > 0.5 {
                             // 转换为 HybridSearchResult 并存入防幻觉验证缓存
@@ -203,7 +205,10 @@ impl Tool for SearchKnowledgeTool {
                                         source: r.source.clone(),
                                         document_id: 0,
                                         section_path: None,
-                                        project: self.project_id.clone().unwrap_or_default(),
+                                        project: self
+                                            .project_id
+                                            .map(|id| id.to_string())
+                                            .unwrap_or_default(),
                                     });
                                 }
                                 crate::services::verification::append_session_rag_results(sid, &results);
@@ -229,9 +234,10 @@ impl Tool for SearchKnowledgeTool {
         }
 
         // 回退到 chunks hybrid_search
+        let project_filter = self.project_id.map(|id| id.to_string());
         let results = hybrid_search::hybrid_search(
             &args.query,
-            self.project_id.as_deref(),
+            project_filter.as_deref(),
             &self.extra_project_ids,
             5,
             &self.embedding,
@@ -291,7 +297,8 @@ pub struct GenerateDocTool {
     pub bm25: Arc<RwLock<BM25Service>>,
     pub metadata: Arc<Mutex<MetadataStore>>,
     pub products: Arc<Mutex<ProductStore>>,
-    pub project_id: Option<String>,
+    pub project_store: Arc<Mutex<ProjectStore>>,
+    pub project_id: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -307,12 +314,13 @@ impl GenerateDocTool {
     pub fn new(
         data_dir: PathBuf,
         llm: LLMService,
-        project_id: Option<String>,
+        project_id: Option<i64>,
         embedding: Arc<RwLock<EmbeddingService>>,
         vector_index: Arc<RwLock<VectorIndex>>,
         bm25: Arc<RwLock<BM25Service>>,
         metadata: Arc<Mutex<MetadataStore>>,
         products: Arc<Mutex<ProductStore>>,
+        project_store: Arc<Mutex<ProjectStore>>,
     ) -> Self {
         Self {
             data_dir,
@@ -322,6 +330,7 @@ impl GenerateDocTool {
             bm25,
             metadata,
             products,
+            project_store,
             project_id,
         }
     }
@@ -363,7 +372,7 @@ impl Tool for GenerateDocTool {
         let project = args
             .project_name
             .clone()
-            .or_else(|| self.project_id.clone())
+            .or_else(|| self.project_id.map(|id| id.to_string()))
             .unwrap_or_else(|| "default".to_string());
 
         let recipe =
@@ -414,7 +423,7 @@ impl Tool for GenerateDocTool {
             schema_fields,
             project_name: Some(project.clone()),
             context,
-            project_id: self.project_id.clone().or_else(|| Some(project.clone())),
+            project_id: self.project_id,
         };
 
         let user_field_count = request.fields.len() as i64;
@@ -433,6 +442,16 @@ impl Tool for GenerateDocTool {
         .map_err(ToolError::msg)?;
 
         let product_id = {
+            let product_project_id = self
+                .project_id
+                .map(Ok)
+                .unwrap_or_else(|| {
+                    self.project_store
+                        .lock()
+                        .map_err(|e| ToolError::msg(e.to_string()))?
+                        .ensure_default_project()
+                        .map_err(ToolError::msg)
+                })?;
             let store = self
                 .products
                 .lock()
@@ -441,7 +460,7 @@ impl Tool for GenerateDocTool {
                 .create(
                     &args.template_id,
                     &result.recipe_name,
-                    &project,
+                    product_project_id,
                     &result.doc.output_path,
                     user_field_count.max(schema_field_count),
                     result.doc.ai_fields.len() as i64,
@@ -2526,7 +2545,7 @@ fn truncate_tool_output(s: &str) -> String {
 ///
 /// 所有工具都连接到真正的后端服务，返回真实结果。
 pub fn all_rig_tools(
-    project_id: Option<&str>,
+    project_id: Option<i64>,
     data_dir: PathBuf,
     llm: LLMService,
     embedding: Arc<RwLock<EmbeddingService>>,
@@ -2534,6 +2553,7 @@ pub fn all_rig_tools(
     bm25: Arc<RwLock<BM25Service>>,
     metadata: Arc<Mutex<MetadataStore>>,
     products: Arc<Mutex<ProductStore>>,
+    project_store: Arc<Mutex<ProjectStore>>,
     risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
     skill_manager: Arc<tokio::sync::Mutex<crate::services::skill_manager::SkillManager>>,
     risk_project_id: Option<i64>,
@@ -2542,14 +2562,12 @@ pub fn all_rig_tools(
     session_id: Option<String>, // 新增：会话ID，用于缓存 RAG 检索结果
 ) -> Vec<Box<dyn rig_core::tool::ToolDyn>> {
     // 风险工具使用数值型风险项目ID。非数值型知识库项目名称保留在全局范围。
-    let risk_project_id = risk_project_id
-        .or_else(|| project_id.and_then(|s| s.parse::<i64>().ok()))
-        .unwrap_or(0);
+    let risk_project_id = risk_project_id.or(project_id).unwrap_or(0);
 
     vec![
         // 安全工具 — 包装重试机制 (指数退避)
         Box::new(RetryToolWrapper::new(SearchKnowledgeTool::new(
-            project_id.map(|s| s.to_string()),
+            project_id,
             extra_search_project_ids,
             embedding.clone(),
             vector_index.clone(),
@@ -2562,12 +2580,13 @@ pub fn all_rig_tools(
         Box::new(GenerateDocTool::new(
             data_dir.clone(),
             llm.clone(),
-            project_id.map(|s| s.to_string()),
+            project_id,
             embedding,
             vector_index,
             bm25,
             metadata,
             products,
+            project_store,
         )),
         Box::new(RetryToolWrapper::new(CheckScopeCreepTool::new(
             risk_project_id,
