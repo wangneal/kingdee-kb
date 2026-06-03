@@ -11,7 +11,7 @@ import { type GraphRecommendation, graphExpandSearch } from "../../lib/wiki-comm
 
 interface GraphRecommendationsProps {
   /** 当前项目标识 */
-  project: string
+  project: number
   /** 当前页面 slug */
   slug: string
 }

@@ -11,7 +11,7 @@ import { searchWikilinkCandidates, type WikiPageBrief } from "../../lib/wiki-com
 
 interface WikiLinkSearchProps {
   /** 当前项目标识 */
-  project: string
+  project: number
   /** 排除的页面 slug（避免自引用） */
   excludeSlug: string
   /** 选中候选页面后的回调 */

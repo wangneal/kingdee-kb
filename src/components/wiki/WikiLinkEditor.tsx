@@ -18,7 +18,7 @@ import WikiLinkSearch from "./WikiLinkSearch"
 
 interface WikiLinkEditorProps {
   /** 当前项目标识 */
-  project: string
+  project: number
   /** 当前页面 ID */
   pageId: number
   /** 当前页面 slug（用于排除自引用和查询反向链接） */
@@ -47,7 +47,7 @@ function linksKey(slugs: string[]): string {
   return normalizeSlugs(slugs).join("\u0001")
 }
 
-function requestKey(project: string, pageSlug: string, slugs: string[]): string {
+function requestKey(project: number, pageSlug: string, slugs: string[]): string {
   return `${project}\u0001${pageSlug}\u0001${linksKey(slugs)}`
 }
 
