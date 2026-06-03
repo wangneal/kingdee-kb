@@ -12,7 +12,7 @@ import {
 } from "../lib/tauri-commands"
 
 export default function Browse() {
-  const { projectId } = useProject()
+  const { currentProjectId } = useProject()
   const [wikiPages, setWikiPages] = useState<WikiPageBrief[]>([])
   const [selectedWiki, setSelectedWiki] = useState<WikiPage | null>(null)
   const [neighbors, setNeighbors] = useState<
@@ -21,16 +21,16 @@ export default function Browse() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (!projectId) {
+    if (currentProjectId == null) {
       setLoading(false)
       return
     }
     setLoading(true)
-    listWikiPages(projectId)
+    listWikiPages(currentProjectId)
       .then(setWikiPages)
       .catch(() => setWikiPages([]))
       .finally(() => setLoading(false))
-  }, [projectId])
+  }, [currentProjectId])
 
   const pageTypeLabel = (t: string) => {
     if (t === "entity") return "实体"
@@ -75,7 +75,8 @@ export default function Browse() {
                 onClick={async () => {
                   const page = await getWikiPage(wp.id)
                   setSelectedWiki(page)
-                  getGraphNeighbors(projectId ?? "", page.slug)
+                  if (currentProjectId == null) return
+                  getGraphNeighbors(currentProjectId, page.slug)
                     .then(setNeighbors)
                     .catch(() => setNeighbors([]))
                 }}
@@ -135,7 +136,7 @@ export default function Browse() {
 
             <div className="mt-6">
               <WikiLinkEditor
-                project={projectId ?? ""}
+                project={currentProjectId ?? 0}
                 pageId={selectedWiki.id}
                 pageSlug={selectedWiki.slug}
                 initialWikilinks={selectedWiki.wikilinks}
@@ -145,7 +146,8 @@ export default function Browse() {
                       ? { ...current, wikilinks: JSON.stringify(slugs) }
                       : current,
                   )
-                  getGraphNeighbors(projectId ?? "", selectedWiki.slug)
+                  if (currentProjectId == null) return
+                  getGraphNeighbors(currentProjectId, selectedWiki.slug)
                     .then(setNeighbors)
                     .catch(() => setNeighbors([]))
                 }}
@@ -163,12 +165,13 @@ export default function Browse() {
                       type="button"
                       onClick={async () => {
                         try {
-                          const pages = await listWikiPages(projectId ?? "")
+                          if (currentProjectId == null) return
+                          const pages = await listWikiPages(currentProjectId)
                           const found = pages.find((p) => p.slug === n.slug)
                           if (found) {
                             const page = await getWikiPage(found.id)
                             setSelectedWiki(page)
-                            getGraphNeighbors(projectId ?? "", page.slug)
+                            getGraphNeighbors(currentProjectId, page.slug)
                               .then(setNeighbors)
                               .catch(() => setNeighbors([]))
                           }

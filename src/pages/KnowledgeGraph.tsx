@@ -35,7 +35,7 @@ const PAGE_TYPE_LABELS: Record<string, string> = {
 }
 
 export default function KnowledgeGraph() {
-  const { projectId } = useProject()
+  const { currentProjectId } = useProject()
   const toast = useToast()
   const [stats, setStats] = useState<GraphStats | null>(null)
   const [pages, setPages] = useState<WikiPageBrief[]>([])
@@ -45,28 +45,28 @@ export default function KnowledgeGraph() {
 
   // 加载统计和页面列表
   useEffect(() => {
-    if (!projectId) {
+    if (currentProjectId == null) {
       setLoading(false)
       return
     }
     Promise.all([
-      getGraphStats(projectId)
+      getGraphStats(currentProjectId)
         .then(setStats)
         .catch(() => setStats(null)),
-      listWikiPages(projectId)
+      listWikiPages(currentProjectId)
         .then(setPages)
         .catch(() => setPages([])),
     ]).finally(() => setLoading(false))
-  }, [projectId])
+  }, [currentProjectId])
 
   // 构建图谱
   const handleBuild = async () => {
-    if (!projectId) return
+    if (currentProjectId == null) return
     setBuilding(true)
     try {
-      const edges = await buildKnowledgeGraph(projectId)
+      const edges = await buildKnowledgeGraph(currentProjectId)
       toast.success(`知识图谱构建完成，共 ${edges} 条边`)
-      const s = await getGraphStats(projectId)
+      const s = await getGraphStats(currentProjectId)
       setStats(s)
     } catch (err) {
       toast.error("构建失败: " + String(err))
@@ -100,7 +100,7 @@ export default function KnowledgeGraph() {
         <button
           type="button"
           onClick={handleBuild}
-          disabled={building || !projectId}
+          disabled={building || currentProjectId == null}
           className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
         >
           {building ? (
@@ -203,8 +203,8 @@ export default function KnowledgeGraph() {
 
         {/* 右侧：关联推荐 */}
         <div className="flex-1 overflow-y-auto p-6">
-          {selectedSlug && projectId ? (
-            <GraphRecommendations project={projectId} slug={selectedSlug} />
+          {selectedSlug && currentProjectId != null ? (
+            <GraphRecommendations project={currentProjectId} slug={selectedSlug} />
           ) : (
             <div className="flex h-full items-center justify-center">
               <div className="text-center">
