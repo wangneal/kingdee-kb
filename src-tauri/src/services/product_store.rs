@@ -13,7 +13,7 @@ pub struct ProductMeta {
     pub id: i64,
     pub template_id: String,
     pub template_name: String,
-    pub project: String,
+    pub project_id: i64,
     pub status: String,
     pub output_path: String,
     pub field_count: i64,
@@ -77,7 +77,7 @@ impl ProductStore {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 template_id TEXT NOT NULL,
                 template_name TEXT NOT NULL,
-                project TEXT NOT NULL DEFAULT 'default',
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 status TEXT NOT NULL DEFAULT 'completed',
                 output_path TEXT NOT NULL,
                 field_count INTEGER NOT NULL DEFAULT 0,
@@ -94,7 +94,7 @@ impl ProductStore {
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
-            CREATE INDEX IF NOT EXISTS idx_products_project ON products(project);
+            CREATE INDEX IF NOT EXISTS idx_products_project_id ON products(project_id);
             CREATE INDEX IF NOT EXISTS idx_products_created_at ON products(created_at);
             CREATE INDEX IF NOT EXISTS idx_products_template_id ON products(template_id);
             CREATE INDEX IF NOT EXISTS idx_product_versions_product_id ON product_versions(product_id);
@@ -110,7 +110,7 @@ impl ProductStore {
         &self,
         template_id: &str,
         template_name: &str,
-        project: &str,
+        project_id: i64,
         output_path: &str,
         field_count: i64,
         llm_fields_count: i64,
@@ -118,9 +118,9 @@ impl ProductStore {
     ) -> Result<i64, String> {
         self.db
             .execute(
-                "INSERT INTO products (template_id, template_name, project, status, output_path, field_count, llm_fields_count)
+                "INSERT INTO products (template_id, template_name, project_id, status, output_path, field_count, llm_fields_count)
                  VALUES (?1, ?2, ?3, 'completed', ?4, ?5, ?6)",
-                params![template_id, template_name, project, output_path, field_count, llm_fields_count],
+                params![template_id, template_name, project_id, output_path, field_count, llm_fields_count],
             )
             .map_err(|e| format!("Failed to insert product: {}", e))?;
 
@@ -141,7 +141,7 @@ impl ProductStore {
     /// Get a product by its ID
     pub fn get(&self, id: i64) -> Result<Option<ProductMeta>, String> {
         self.query_one_product(
-            "SELECT id, template_id, template_name, project, status, output_path, field_count, llm_fields_count, created_at
+            "SELECT id, template_id, template_name, project_id, status, output_path, field_count, llm_fields_count, created_at
              FROM products WHERE id = ?1",
             params![id],
         )
@@ -150,19 +150,19 @@ impl ProductStore {
     /// List products, optionally filtered by project. Ordered by created_at DESC.
     pub fn list(
         &self,
-        project: Option<&str>,
+        project_id: Option<i64>,
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<Vec<ProductMeta>, String> {
-        if let Some(proj) = project {
+        if let Some(pid) = project_id {
             self.query_products(
-                "SELECT id, template_id, template_name, project, status, output_path, field_count, llm_fields_count, created_at
-                 FROM products WHERE project = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
-                params![proj, limit.unwrap_or(-1), offset.unwrap_or(0)],
+                "SELECT id, template_id, template_name, project_id, status, output_path, field_count, llm_fields_count, created_at
+                 FROM products WHERE project_id = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
+                params![pid, limit.unwrap_or(-1), offset.unwrap_or(0)],
             )
         } else {
             self.query_products(
-                "SELECT id, template_id, template_name, project, status, output_path, field_count, llm_fields_count, created_at
+                "SELECT id, template_id, template_name, project_id, status, output_path, field_count, llm_fields_count, created_at
                  FROM products ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
                 params![limit.unwrap_or(-1), offset.unwrap_or(0)],
             )
@@ -171,16 +171,16 @@ impl ProductStore {
 
     /// Delete a product and its versions
     /// If project is specified, verify the product belongs to that project before deleting
-    pub fn delete(&self, id: i64, project: Option<&str>) -> Result<(), String> {
+    pub fn delete(&self, id: i64, project_id: Option<i64>) -> Result<(), String> {
         // Verify project ownership if project is specified
-        if let Some(pid) = project {
+        if let Some(pid) = project_id {
             let product = self
                 .get(id)?
                 .ok_or_else(|| format!("Product not found: {}", id))?;
-            if product.project != pid {
+            if product.project_id != pid {
                 return Err(format!(
                     "Product {} belongs to project '{}', not '{}'",
-                    id, product.project, pid
+                    id, product.project_id, pid
                 ));
             }
         }
@@ -271,18 +271,18 @@ impl ProductStore {
         &self,
         product_id: i64,
         target_dir: &str,
-        project: Option<&str>,
+        project_id: Option<i64>,
     ) -> Result<String, String> {
         let product = self
             .get(product_id)?
             .ok_or_else(|| format!("Product not found: {}", product_id))?;
 
         // Verify project ownership if project is specified
-        if let Some(pid) = project {
-            if product.project != pid {
+        if let Some(pid) = project_id {
+            if product.project_id != pid {
                 return Err(format!(
                     "Product {} belongs to project '{}', not '{}'",
-                    product_id, product.project, pid
+                    product_id, product.project_id, pid
                 ));
             }
         }
@@ -308,12 +308,12 @@ impl ProductStore {
 
     /// Export all products for a project to a target directory.
     /// Returns the paths of all exported files.
-    pub fn export_all(&self, project: &str, target_dir: &str) -> Result<Vec<String>, String> {
-        let products = self.list(Some(project), None, None)?;
+    pub fn export_all(&self, project_id: i64, target_dir: &str) -> Result<Vec<String>, String> {
+        let products = self.list(Some(project_id), None, None)?;
         let mut exported = Vec::new();
 
         for product in products {
-            match self.export_product(product.id, target_dir, Some(project)) {
+            match self.export_product(product.id, target_dir, Some(project_id)) {
                 Ok(path) => exported.push(path),
                 Err(e) => {
                     eprintln!(
@@ -334,7 +334,7 @@ impl ProductStore {
             id: row.get(0)?,
             template_id: row.get(1)?,
             template_name: row.get(2)?,
-            project: row.get(3)?,
+            project_id: row.get(3)?,
             status: row.get(4)?,
             output_path: row.get(5)?,
             field_count: row.get(6)?,
@@ -442,13 +442,18 @@ impl ProductStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::project_store::ProjectStore;
     use std::io::Write;
 
-    fn create_test_store() -> (tempfile::TempDir, ProductStore) {
+    fn create_test_store() -> (tempfile::TempDir, ProductStore, i64, i64, i64) {
         let tmp = tempfile::tempdir().unwrap();
-        let db_path = tmp.path().join("products.db");
+        let db_path = tmp.path().join("metadata.db");
+        let project_store = ProjectStore::new(&db_path).unwrap();
+        let project_a_id = project_store.create_project("project_a", "", "").unwrap();
+        let project_b_id = project_store.create_project("project_b", "", "").unwrap();
+        let project_batch_id = project_store.create_project("proj_batch", "", "").unwrap();
         let store = ProductStore::new(db_path).unwrap();
-        (tmp, store)
+        (tmp, store, project_a_id, project_b_id, project_batch_id)
     }
 
     fn create_dummy_output(dir: &std::path::Path, name: &str) -> String {
@@ -460,14 +465,14 @@ mod tests {
 
     #[test]
     fn test_create_and_get() {
-        let (tmp, store) = create_test_store();
+        let (tmp, store, project_a_id, _, _) = create_test_store();
         let output = create_dummy_output(tmp.path(), "test_output.docx");
 
         let id = store
             .create(
                 "tmpl_001",
                 "调研报告模板",
-                "project_a",
+                project_a_id,
                 &output,
                 10,
                 3,
@@ -479,7 +484,7 @@ mod tests {
         let product = store.get(id).unwrap().unwrap();
         assert_eq!(product.template_id, "tmpl_001");
         assert_eq!(product.template_name, "调研报告模板");
-        assert_eq!(product.project, "project_a");
+        assert_eq!(product.project_id, project_a_id);
         assert_eq!(product.status, "completed");
         assert_eq!(product.field_count, 10);
         assert_eq!(product.llm_fields_count, 3);
@@ -487,36 +492,36 @@ mod tests {
 
     #[test]
     fn test_list_with_project_filter() {
-        let (tmp, store) = create_test_store();
+        let (tmp, store, project_a_id, project_b_id, _) = create_test_store();
         let out1 = create_dummy_output(tmp.path(), "out1.docx");
         let out2 = create_dummy_output(tmp.path(), "out2.docx");
 
         store
-            .create("t1", "模板A", "project_a", &out1, 5, 1, "{}")
+            .create("t1", "模板A", project_a_id, &out1, 5, 1, "{}")
             .unwrap();
         store
-            .create("t2", "模板B", "project_b", &out2, 8, 2, "{}")
+            .create("t2", "模板B", project_b_id, &out2, 8, 2, "{}")
             .unwrap();
 
         let all = store.list(None, None, None).unwrap();
         assert_eq!(all.len(), 2);
 
-        let proj_a = store.list(Some("project_a"), None, None).unwrap();
+        let proj_a = store.list(Some(project_a_id), None, None).unwrap();
         assert_eq!(proj_a.len(), 1);
         assert_eq!(proj_a[0].template_name, "模板A");
 
-        let proj_b = store.list(Some("project_b"), None, None).unwrap();
+        let proj_b = store.list(Some(project_b_id), None, None).unwrap();
         assert_eq!(proj_b.len(), 1);
         assert_eq!(proj_b[0].template_name, "模板B");
     }
 
     #[test]
     fn test_delete() {
-        let (tmp, store) = create_test_store();
+        let (tmp, store, project_a_id, _, _) = create_test_store();
         let output = create_dummy_output(tmp.path(), "del_test.docx");
 
         let id = store
-            .create("t1", "待删除", "p1", &output, 3, 0, "{}")
+            .create("t1", "待删除", project_a_id, &output, 3, 0, "{}")
             .unwrap();
         assert!(store.get(id).unwrap().is_some());
 
@@ -526,12 +531,12 @@ mod tests {
 
     #[test]
     fn test_versions() {
-        let (tmp, store) = create_test_store();
+        let (tmp, store, project_a_id, _, _) = create_test_store();
         let out1 = create_dummy_output(tmp.path(), "v1.docx");
         let out2 = create_dummy_output(tmp.path(), "v2.docx");
 
         let id = store
-            .create("t1", "版本测试", "p1", &out1, 5, 1, r#"{"v": "1"}"#)
+            .create("t1", "版本测试", project_a_id, &out1, 5, 1, r#"{"v": "1"}"#)
             .unwrap();
 
         // Add a second version
@@ -550,11 +555,11 @@ mod tests {
 
     #[test]
     fn test_export_product() {
-        let (tmp, store) = create_test_store();
+        let (tmp, store, project_a_id, _, _) = create_test_store();
         let output = create_dummy_output(tmp.path(), "export_me.docx");
 
         let id = store
-            .create("t1", "导出测试", "p1", &output, 5, 0, "{}")
+            .create("t1", "导出测试", project_a_id, &output, 5, 0, "{}")
             .unwrap();
 
         let export_dir = tmp.path().join("exported");
@@ -568,20 +573,20 @@ mod tests {
 
     #[test]
     fn test_export_all() {
-        let (tmp, store) = create_test_store();
+        let (tmp, store, _, _, project_batch_id) = create_test_store();
         let out1 = create_dummy_output(tmp.path(), "batch1.docx");
         let out2 = create_dummy_output(tmp.path(), "batch2.docx");
 
         store
-            .create("t1", "批量A", "proj_batch", &out1, 3, 0, "{}")
+            .create("t1", "批量A", project_batch_id, &out1, 3, 0, "{}")
             .unwrap();
         store
-            .create("t2", "批量B", "proj_batch", &out2, 4, 1, "{}")
+            .create("t2", "批量B", project_batch_id, &out2, 4, 1, "{}")
             .unwrap();
 
         let export_dir = tmp.path().join("batch_export");
         let exported = store
-            .export_all("proj_batch", export_dir.to_str().unwrap())
+            .export_all(project_batch_id, export_dir.to_str().unwrap())
             .unwrap();
 
         assert_eq!(exported.len(), 2);
