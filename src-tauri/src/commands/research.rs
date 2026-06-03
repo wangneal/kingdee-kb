@@ -124,27 +124,33 @@ pub fn create_research_session(
     module_code: String,
     interviewee: String,
     session_date: String,
-    project: Option<String>,
+    project_id: Option<i64>,
 ) -> Result<i64, String> {
-    let project = project.unwrap_or_else(|| "default".to_string());
+    let project_id = match project_id {
+        Some(id) => id,
+        None => {
+            let store = state.project_store.lock().map_err(|e| e.to_string())?;
+            store.ensure_default_project()?
+        }
+    };
     state.research_session_store.create_session(
         &title,
         &edition,
         &module_code,
         &interviewee,
         &session_date,
-        &project,
+        project_id,
     )
 }
 
 #[tauri::command]
 pub fn list_research_sessions(
     state: State<'_, AppState>,
-    project: Option<String>,
+    project_id: Option<i64>,
 ) -> Result<Vec<ResearchSession>, String> {
     state
         .research_session_store
-        .list_sessions(project.as_deref())
+        .list_sessions(project_id)
 }
 
 #[tauri::command]
