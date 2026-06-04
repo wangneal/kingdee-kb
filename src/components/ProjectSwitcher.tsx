@@ -1,7 +1,15 @@
-import { Check, ChevronsUpDown, FolderKanban, Plus, RefreshCw } from "lucide-react"
+import {
+  Archive,
+  Check,
+  ChevronsUpDown,
+  FolderKanban,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+} from "lucide-react"
 import { useMemo, useState } from "react"
 import { useProject } from "../contexts/ProjectContext"
-import { createProject } from "../lib/project-commands"
+import { archiveProject, createProject, restoreProject } from "../lib/project-commands"
 
 export default function ProjectSwitcher() {
   const {
@@ -21,6 +29,10 @@ export default function ProjectSwitcher() {
     () => projects.filter((project) => project.status === "active"),
     [projects],
   )
+  const archivedProjects = useMemo(
+    () => projects.filter((project) => project.status === "archived"),
+    [projects],
+  )
 
   async function handleCreateProject() {
     const trimmedName = name.trim()
@@ -35,6 +47,19 @@ export default function ProjectSwitcher() {
     } finally {
       setCreating(false)
     }
+  }
+
+  async function handleArchiveProject(projectId: number, projectName: string) {
+    if (!window.confirm(`确认归档项目“${projectName}”吗？归档后将不再显示在项目切换列表中。`)) {
+      return
+    }
+    await archiveProject(projectId)
+    await refreshProjects()
+  }
+
+  async function handleRestoreProject(projectId: number) {
+    await restoreProject(projectId)
+    await refreshProjects()
   }
 
   return (
@@ -55,19 +80,55 @@ export default function ProjectSwitcher() {
       {open && (
         <div className="mt-2 rounded-lg border border-neutral-200 bg-white p-1 shadow-sm">
           {activeProjects.map((project) => (
-            <button
-              key={project.id}
-              type="button"
-              onClick={() => {
-                setCurrentProjectId(project.id)
-                setOpen(false)
-              }}
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-neutral-700 hover:bg-neutral-50"
-            >
-              <span className="min-w-0 flex-1 truncate">{project.name}</span>
-              {project.id === currentProjectId && <Check className="h-4 w-4 text-[#1A6BD8]" />}
-            </button>
+            <div key={project.id} className="group flex items-center rounded-md hover:bg-neutral-50">
+              <button
+                type="button"
+                onClick={() => {
+                  setCurrentProjectId(project.id)
+                  setOpen(false)
+                }}
+                className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm text-neutral-700"
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{project.name}</span>
+                  <span className="block truncate text-[10px] text-neutral-400">
+                    {project.document_count} 篇资料 · {project.product_count} 个产物
+                  </span>
+                </span>
+                {project.id === currentProjectId && <Check className="h-4 w-4 text-[#1A6BD8]" />}
+              </button>
+              {activeProjects.length > 1 && project.name !== "默认项目" && (
+                <button
+                  type="button"
+                  onClick={() => void handleArchiveProject(project.id, project.name)}
+                  className="mr-1 rounded p-1 text-neutral-300 opacity-0 transition-opacity hover:bg-neutral-100 hover:text-red-500 group-hover:opacity-100"
+                  title={`归档项目“${project.name}”`}
+                >
+                  <Archive className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
           ))}
+
+          {archivedProjects.length > 0 && (
+            <>
+              <div className="my-1 border-t border-neutral-100" />
+              <p className="px-2 py-1 text-[10px] font-medium text-neutral-400">已归档项目</p>
+              {archivedProjects.map((project) => (
+                <div key={project.id} className="flex items-center rounded-md px-2 py-1 text-xs">
+                  <span className="min-w-0 flex-1 truncate text-neutral-400">{project.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => void handleRestoreProject(project.id)}
+                    className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-[#1A6BD8]"
+                    title={`恢复项目“${project.name}”`}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </>
+          )}
 
           <div className="my-1 border-t border-neutral-100" />
 

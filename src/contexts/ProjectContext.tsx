@@ -74,10 +74,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       const nextProjects = await listProjects()
       setProjects(nextProjects)
       setCurrentProjectIdState((previousId) => {
-        if (previousId != null && nextProjects.some((project) => project.id === previousId)) {
+        if (
+          previousId != null &&
+          nextProjects.some((project) => project.id === previousId && project.status === "active")
+        ) {
           return previousId
         }
-        return defaultId
+        return nextProjects.find((project) => project.status === "active")?.id ?? defaultId
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)

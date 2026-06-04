@@ -2,6 +2,7 @@ import {
   ArrowRight,
   BookOpen,
   Calendar,
+  Check,
   ClipboardList,
   FileEdit,
   FileText,
@@ -15,6 +16,11 @@ import {
 import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useProject } from "../contexts/ProjectContext"
+import {
+  getProjectPhases,
+  setCurrentProjectPhase,
+  type ProjectPhase,
+} from "../lib/project-commands"
 import {
   getStats,
   type KnowledgeStats,
@@ -30,19 +36,25 @@ export default function Home() {
   const [stats, setStats] = useState<KnowledgeStats | null>(null)
   const [products, setProducts] = useState<ProductMeta[]>([])
   const [templates, setTemplates] = useState<TemplateInfo[]>([])
+  const [projectPhases, setProjectPhases] = useState<ProjectPhase[]>([])
+  const [updatingPhase, setUpdatingPhase] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     ;(async () => {
       try {
-        const [statsData, productsData, templatesData] = await Promise.all([
+        const [statsData, productsData, templatesData, phasesData] = await Promise.all([
           getStats(currentProjectId).catch(() => null),
           listProducts(currentProjectId).catch(() => []),
           scanTemplates().catch(() => []),
+          currentProjectId == null
+            ? Promise.resolve([])
+            : getProjectPhases(currentProjectId).catch(() => []),
         ])
         setStats(statsData)
         setProducts(productsData)
         setTemplates(templatesData)
+        setProjectPhases(phasesData)
       } catch (e) {
         console.error("Failed to load dashboard data:", e)
       } finally {
@@ -54,6 +66,26 @@ export default function Home() {
   const recentProducts = products
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
     .slice(0, 5)
+
+  const currentPhase =
+    projectPhases.find((phase) => phase.status === "current") ??
+    projectPhases.find((phase) => phase.phase_key === currentProject?.current_phase)
+  const completedPhaseCount = projectPhases.filter((phase) => phase.status === "completed").length
+  const progressPercent =
+    projectPhases.length === 0 ? 0 : Math.round((completedPhaseCount / projectPhases.length) * 100)
+
+  async function handlePhaseChange(phase: ProjectPhase) {
+    if (currentProjectId == null || phase.status === "current") return
+    const confirmed = window.confirm(`确认将当前项目阶段切换为“${phase.phase_name}”吗？`)
+    if (!confirmed) return
+    setUpdatingPhase(phase.phase_key)
+    try {
+      await setCurrentProjectPhase(currentProjectId, phase.phase_key)
+      setProjectPhases(await getProjectPhases(currentProjectId))
+    } finally {
+      setUpdatingPhase(null)
+    }
+  }
 
   const formatDate = (dateStr: string) => {
     try {
@@ -170,6 +202,71 @@ export default function Home() {
               <p className="text-xs text-neutral-500">知识库文档</p>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* 项目进度 */}
+      <div className="mb-8 rounded-lg border border-neutral-200 bg-white p-5">
+        <div className="mb-5 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-sm font-semibold text-neutral-700">项目进度</h2>
+            <p className="mt-1 text-xs text-neutral-400">
+              {currentProject?.name ?? "当前项目"} · 当前阶段：
+              <span className="font-medium text-[#1A6BD8]">
+                {currentPhase?.phase_name ?? "尚未设置"}
+              </span>
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="text-2xl font-semibold text-neutral-800">{progressPercent}%</p>
+            <p className="text-xs text-neutral-400">
+              已完成 {completedPhaseCount}/{projectPhases.length || 7} 个阶段
+            </p>
+          </div>
+        </div>
+
+        <div className="mb-5 h-2 overflow-hidden rounded-full bg-neutral-100">
+          <div
+            className="h-full rounded-full bg-[#1A6BD8] transition-all"
+            style={{ width: `${progressPercent}%` }}
+          />
+        </div>
+
+        <div className="grid grid-cols-7 gap-2">
+          {projectPhases.map((phase) => {
+            const isCompleted = phase.status === "completed"
+            const isCurrent = phase.status === "current"
+            return (
+              <button
+                key={phase.id}
+                type="button"
+                onClick={() => void handlePhaseChange(phase)}
+                disabled={updatingPhase !== null || isCurrent}
+                className="min-w-0 rounded-md py-1 text-center transition-colors hover:bg-neutral-50 disabled:cursor-default disabled:hover:bg-transparent"
+                title={isCurrent ? `当前阶段：${phase.phase_name}` : `切换到${phase.phase_name}阶段`}
+              >
+                <div
+                  className={`mx-auto flex h-7 w-7 items-center justify-center rounded-full border text-xs ${
+                    isCompleted
+                      ? "border-[#1A6BD8] bg-[#1A6BD8] text-white"
+                      : isCurrent
+                        ? "border-[#1A6BD8] bg-[#1A6BD8]/10 text-[#1A6BD8]"
+                        : "border-neutral-200 bg-white text-neutral-400"
+                  }`}
+                >
+                  {isCompleted ? <Check className="h-3.5 w-3.5" /> : phase.phase_index + 1}
+                </div>
+                <p
+                  className={`mt-2 truncate text-xs ${
+                    isCurrent ? "font-medium text-[#1A6BD8]" : "text-neutral-500"
+                  }`}
+                  title={phase.phase_name}
+                >
+                  {phase.phase_name}
+                </p>
+              </button>
+            )
+          })}
         </div>
       </div>
 
