@@ -31,8 +31,10 @@ pub struct SmartFillRequest {
     pub manual_fields: HashMap<String, String>,
     /// Schema fields with fill_strategy info
     pub schema_fields: Vec<SchemaField>,
-    /// Optional project name for KB filtering
+    /// 提示词上下文中的可选项目名称
     pub project_name: Option<String>,
+    /// 用于知识库过滤的可选统一项目ID
+    pub project_id: Option<i64>,
 }
 
 /// Result of smart completion
@@ -110,9 +112,10 @@ pub async fn smart_fill(
 
     // ── Step 2: Search KB for context ──
     let search_query = build_search_query(&request.user_input, &request.project_name, &llm_fields);
+    let project_filter = request.project_id.map(|id| id.to_string());
     let search_results = hybrid_search::hybrid_search(
         &search_query,
-        request.project_name.as_deref(),
+        project_filter.as_deref(),
         &[],
         KB_TOP_K,
         embedding,

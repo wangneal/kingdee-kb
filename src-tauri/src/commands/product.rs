@@ -153,6 +153,7 @@ pub async fn regenerate_product(
         fields: updated_fields.clone(),
         schema_fields,
         project_name,
+        project_id,
         context,
     };
 
@@ -167,6 +168,7 @@ pub async fn regenerate_product(
         "fields": updated_fields,
         "schema_fields": original_input.get("schema_fields"),
         "project_name": original_input.get("project_name"),
+        "project_id": project_id,
         "context": original_input.get("context"),
     }))
     .unwrap_or_else(|_| "{}".to_string());

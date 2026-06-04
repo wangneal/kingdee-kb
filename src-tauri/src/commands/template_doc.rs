@@ -3,10 +3,7 @@ use tauri::State;
 
 use crate::app_state::AppState;
 
-fn resolve_product_project_id(
-    state: &AppState,
-    project_id: Option<i64>,
-) -> Result<i64, String> {
+fn resolve_product_project_id(state: &AppState, project_id: Option<i64>) -> Result<i64, String> {
     if let Some(project_id) = project_id {
         return Ok(project_id);
     }
@@ -150,7 +147,7 @@ pub async fn generate_doc(
     request: GenerateDocRequest,
 ) -> Result<GeneratedDoc, String> {
     let template_path = request.template_path.clone();
-    let product_project_id = resolve_product_project_id(state.inner(), None)?;
+    let product_project_id = resolve_product_project_id(state.inner(), request.project_id)?;
     let user_field_count = request.fields.len() as i64;
     let schema_field_count = request
         .schema_fields
@@ -211,6 +208,7 @@ pub async fn generate_recipe_doc_cmd(
         "recipe_id": recipe_id,
         "schema_fields": schema_fields_json,
         "project_name": project,
+        "project_id": product_project_id,
     }))
     .unwrap_or_else(|_| "{}".to_string());
 
