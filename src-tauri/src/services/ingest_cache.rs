@@ -40,6 +40,9 @@ impl IngestCacheStore {
 
     /// 创建 ingest_cache 表（幂等）
     pub fn ensure_table(&self) -> Result<(), String> {
+        if self.has_column("ingest_cache", "project")? {
+            self.migrate_legacy_table()?;
+        }
         self.db
             .execute_batch(
                 "
@@ -54,12 +57,21 @@ impl IngestCacheStore {
                 UNIQUE(project_id, source_identity, sha256)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_ingest_cache_project_id ON ingest_cache(project_id);
-            CREATE INDEX IF NOT EXISTS idx_ingest_cache_source ON ingest_cache(source_identity);
             ",
             )
             .map_err(|e| format!("创建 ingest_cache 表失败: {}", e))?;
         self.ensure_column("ingest_cache", "project_id", "INTEGER")?;
+        self.backfill_project_id("ingest_cache")?;
+        self.db
+            .execute_batch(
+                "
+            CREATE INDEX IF NOT EXISTS idx_ingest_cache_project_id ON ingest_cache(project_id);
+            CREATE INDEX IF NOT EXISTS idx_ingest_cache_source ON ingest_cache(source_identity);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ingest_cache_project_source_sha
+                ON ingest_cache(project_id, source_identity, sha256);
+            ",
+            )
+            .map_err(|e| format!("创建 ingest_cache 索引失败: {}", e))?;
         Ok(())
     }
 
@@ -80,6 +92,82 @@ impl IngestCacheStore {
             .execute_batch(&format!("ALTER TABLE {} ADD COLUMN {} {};", table, column, definition))
             .map_err(|e| format!("添加列 {}.{} 失败: {}", table, column, e))?;
         Ok(())
+    }
+
+    fn migrate_legacy_table(&self) -> Result<(), String> {
+        let sql = "
+            BEGIN IMMEDIATE;
+            CREATE TABLE ingest_cache_new (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id       INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                source_identity  TEXT NOT NULL,
+                sha256           TEXT NOT NULL,
+                files_written    TEXT NOT NULL DEFAULT '[]',
+                created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(project_id, source_identity, sha256)
+            );
+            INSERT INTO ingest_cache_new (
+                id, project_id, source_identity, sha256, files_written, created_at, updated_at
+            )
+            SELECT id,
+                   COALESCE(
+                       (SELECT id FROM projects WHERE name = ingest_cache.project LIMIT 1),
+                       (SELECT id FROM projects WHERE name = '默认项目' LIMIT 1),
+                       (SELECT id FROM projects WHERE status = 'active' ORDER BY id ASC LIMIT 1)
+                   ),
+                   source_identity, sha256, files_written, created_at, updated_at
+            FROM ingest_cache;
+            DROP TABLE ingest_cache;
+            ALTER TABLE ingest_cache_new RENAME TO ingest_cache;
+            COMMIT;
+        ";
+        if let Err(e) = self.db.execute_batch(sql) {
+            let _ = self.db.execute_batch("ROLLBACK;");
+            return Err(format!("迁移旧版 ingest_cache 表失败: {}", e));
+        }
+        Ok(())
+    }
+
+    fn backfill_project_id(&self, table: &str) -> Result<(), String> {
+        let legacy_project = if self.has_column(table, "project")? {
+            format!(
+                "(SELECT id FROM projects WHERE name = {}.project LIMIT 1),",
+                table
+            )
+        } else {
+            "NULL,".to_string()
+        };
+        self.db
+            .execute(
+                &format!(
+                    "UPDATE {} SET project_id = COALESCE(
+                        {}
+                        (SELECT id FROM projects WHERE name = '默认项目' LIMIT 1),
+                        (SELECT id FROM projects WHERE status = 'active' ORDER BY id ASC LIMIT 1)
+                    ) WHERE project_id IS NULL",
+                    table, legacy_project
+                ),
+                [],
+            )
+            .map_err(|e| format!("回填 {}.project_id 失败: {}", table, e))?;
+        Ok(())
+    }
+
+    fn has_column(&self, table: &str, column: &str) -> Result<bool, String> {
+        let mut stmt = self
+            .db
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .map_err(|e| format!("读取表结构失败: {}", e))?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| format!("查询表结构失败: {}", e))?;
+        for col in columns {
+            if col.map_err(|e| format!("读取列名失败: {}", e))? == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// 插入或替换摄入缓存记录

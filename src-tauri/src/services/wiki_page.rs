@@ -92,6 +92,9 @@ impl WikiPageStore {
 
     /// 创建 wiki_pages 表及其索引（幂等）
     pub fn ensure_table(&self) -> Result<(), String> {
+        if self.has_column("wiki_pages", "project")? {
+            self.migrate_legacy_table()?;
+        }
         self.db.execute_batch(
             "CREATE TABLE IF NOT EXISTS wiki_pages (
                 id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,13 +118,18 @@ impl WikiPageStore {
                 CHECK((content_candidate IS NULL AND candidate_status IS NULL AND candidate_version IS NULL)
                    OR (content_candidate IS NOT NULL AND candidate_status IS NOT NULL AND candidate_version IS NOT NULL AND candidate_version = version + 1))
             );
+        ").map_err(|e| format!("创建 wiki_pages 表失败: {}", e))?;
+
+        self.ensure_column("wiki_pages", "project_id", "INTEGER")?;
+        self.backfill_project_id("wiki_pages")?;
+        self.db.execute_batch(
+            "
             CREATE UNIQUE INDEX IF NOT EXISTS idx_wiki_pages_slug ON wiki_pages(project_id, slug);
             CREATE INDEX IF NOT EXISTS idx_wiki_pages_project_id ON wiki_pages(project_id);
             CREATE INDEX IF NOT EXISTS idx_wiki_pages_status ON wiki_pages(page_status);
             CREATE INDEX IF NOT EXISTS idx_wiki_pages_type ON wiki_pages(page_type);
-        ").map_err(|e| format!("创建 wiki_pages 表失败: {}", e))?;
-
-        self.ensure_column("wiki_pages", "project_id", "INTEGER")?;
+            ",
+        ).map_err(|e| format!("创建 wiki_pages 索引失败: {}", e))?;
         Ok(())
     }
 
@@ -142,6 +150,99 @@ impl WikiPageStore {
             .execute_batch(&format!("ALTER TABLE {} ADD COLUMN {} {};", table, column, definition))
             .map_err(|e| format!("添加列 {}.{} 失败: {}", table, column, e))?;
         Ok(())
+    }
+
+    fn migrate_legacy_table(&self) -> Result<(), String> {
+        let sql = "
+            BEGIN IMMEDIATE;
+            CREATE TABLE wiki_pages_new (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id         INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                slug               TEXT NOT NULL,
+                title              TEXT NOT NULL,
+                page_type          TEXT NOT NULL CHECK(page_type IN ('summary','blueprint','fitgap','decision','config')),
+                content            TEXT NOT NULL,
+                content_candidate  TEXT,
+                candidate_status   TEXT CHECK(candidate_status IN ('auto','conflict','pending')),
+                frontmatter        TEXT NOT NULL DEFAULT '{}',
+                sources            TEXT NOT NULL DEFAULT '[]',
+                wikilinks          TEXT NOT NULL DEFAULT '[]',
+                tags               TEXT NOT NULL DEFAULT '[]',
+                page_metadata      TEXT NOT NULL DEFAULT '{}',
+                candidate_version  INTEGER,
+                page_status        TEXT NOT NULL DEFAULT 'draft' CHECK(page_status IN ('draft','published')),
+                version            INTEGER NOT NULL DEFAULT 1,
+                created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(project_id, slug),
+                CHECK((content_candidate IS NULL AND candidate_status IS NULL AND candidate_version IS NULL)
+                   OR (content_candidate IS NOT NULL AND candidate_status IS NOT NULL AND candidate_version IS NOT NULL AND candidate_version = version + 1))
+            );
+            INSERT INTO wiki_pages_new (
+                id, project_id, slug, title, page_type, content, content_candidate,
+                candidate_status, frontmatter, sources, wikilinks, tags, page_metadata,
+                candidate_version, page_status, version, created_at, updated_at
+            )
+            SELECT id,
+                   COALESCE(
+                       (SELECT id FROM projects WHERE name = wiki_pages.project LIMIT 1),
+                       (SELECT id FROM projects WHERE name = '默认项目' LIMIT 1),
+                       (SELECT id FROM projects WHERE status = 'active' ORDER BY id ASC LIMIT 1)
+                   ),
+                   slug, title, page_type, content, content_candidate,
+                   candidate_status, frontmatter, sources, wikilinks, tags, page_metadata,
+                   candidate_version, page_status, version, created_at, updated_at
+            FROM wiki_pages;
+            DROP TABLE wiki_pages;
+            ALTER TABLE wiki_pages_new RENAME TO wiki_pages;
+            COMMIT;
+        ";
+        if let Err(e) = self.db.execute_batch(sql) {
+            let _ = self.db.execute_batch("ROLLBACK;");
+            return Err(format!("迁移旧版 wiki_pages 表失败: {}", e));
+        }
+        Ok(())
+    }
+
+    fn backfill_project_id(&self, table: &str) -> Result<(), String> {
+        let legacy_project = if self.has_column(table, "project")? {
+            format!(
+                "(SELECT id FROM projects WHERE name = {}.project LIMIT 1),",
+                table
+            )
+        } else {
+            "NULL,".to_string()
+        };
+        self.db
+            .execute(
+                &format!(
+                    "UPDATE {} SET project_id = COALESCE(
+                        {}
+                        (SELECT id FROM projects WHERE name = '默认项目' LIMIT 1),
+                        (SELECT id FROM projects WHERE status = 'active' ORDER BY id ASC LIMIT 1)
+                    ) WHERE project_id IS NULL",
+                    table, legacy_project
+                ),
+                [],
+            )
+            .map_err(|e| format!("回填 {}.project_id 失败: {}", table, e))?;
+        Ok(())
+    }
+
+    fn has_column(&self, table: &str, column: &str) -> Result<bool, String> {
+        let mut stmt = self
+            .db
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .map_err(|e| format!("读取表结构失败: {}", e))?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| format!("查询表结构失败: {}", e))?;
+        for col in columns {
+            if col.map_err(|e| format!("读取列名失败: {}", e))? == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// 创建一条维基页面，返回完整记录
