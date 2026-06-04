@@ -105,13 +105,6 @@ impl MetadataStore {
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
-            CREATE INDEX IF NOT EXISTS idx_chunks_vector_key ON chunks(vector_key);
-            CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
-            CREATE INDEX IF NOT EXISTS idx_documents_sha256 ON documents(sha256);
-            CREATE INDEX IF NOT EXISTS idx_documents_project_id ON documents(project_id);
-            CREATE INDEX IF NOT EXISTS idx_documents_scope ON documents(document_scope);
-            CREATE INDEX IF NOT EXISTS idx_documents_chat_session_id ON documents(chat_session_id);
-
             CREATE TABLE IF NOT EXISTS vector_key_seq (
                 id INTEGER PRIMARY KEY AUTOINCREMENT
             );
@@ -130,12 +123,31 @@ impl MetadataStore {
             )
             .map_err(|e| format!("Failed to initialize schema: {}", e))?;
 
-        // 兼容已有数据库：只扩展 schema，不迁移旧 project 字符串值。
+        // 兼容已有数据库：先补齐列，再创建依赖这些列的索引。
         self.ensure_column("documents", "raw_source_identity", "TEXT DEFAULT NULL")?;
         self.ensure_column("documents", "project_id", "INTEGER")?;
-        self.ensure_column("documents", "document_scope", "TEXT NOT NULL DEFAULT 'knowledge'")?;
+        self.ensure_column(
+            "documents",
+            "document_scope",
+            "TEXT NOT NULL DEFAULT 'knowledge'",
+        )?;
         self.ensure_column("documents", "chat_session_id", "TEXT")?;
+        self.ensure_column("chunks", "line_no", "INTEGER")?;
         self.ensure_column("deletion_outbox", "project_id", "INTEGER")?;
+        self.backfill_document_project_id()?;
+
+        self.db
+            .execute_batch(
+                "
+            CREATE INDEX IF NOT EXISTS idx_chunks_vector_key ON chunks(vector_key);
+            CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
+            CREATE INDEX IF NOT EXISTS idx_documents_sha256 ON documents(sha256);
+            CREATE INDEX IF NOT EXISTS idx_documents_project_id ON documents(project_id);
+            CREATE INDEX IF NOT EXISTS idx_documents_scope ON documents(document_scope);
+            CREATE INDEX IF NOT EXISTS idx_documents_chat_session_id ON documents(chat_session_id);
+            ",
+            )
+            .map_err(|e| format!("Failed to initialize schema indexes: {}", e))?;
 
         // Seed vector_key_seq with current max + 1 if empty
         let count: i64 = self
@@ -162,7 +174,6 @@ impl MetadataStore {
         }
 
         Ok(())
-
     }
 
     fn ensure_column(&self, table: &str, column: &str, definition: &str) -> Result<(), String> {
@@ -179,8 +190,31 @@ impl MetadataStore {
             }
         }
         self.db
-            .execute_batch(&format!("ALTER TABLE {} ADD COLUMN {} {};", table, column, definition))
+            .execute_batch(&format!(
+                "ALTER TABLE {} ADD COLUMN {} {};",
+                table, column, definition
+            ))
             .map_err(|e| format!("添加列 {}.{} 失败: {}", table, column, e))?;
+        Ok(())
+    }
+
+    fn backfill_document_project_id(&self) -> Result<(), String> {
+        let default_project_id = match self.db.query_row(
+            "SELECT id FROM projects WHERE status = 'active' ORDER BY id ASC LIMIT 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        ) {
+            Ok(id) => id,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
+            Err(e) => return Err(format!("读取默认项目失败: {}", e)),
+        };
+
+        self.db
+            .execute(
+                "UPDATE documents SET project_id = ?1 WHERE project_id IS NULL",
+                params![default_project_id],
+            )
+            .map_err(|e| format!("回填文档默认项目失败: {}", e))?;
         Ok(())
     }
 
@@ -649,7 +683,7 @@ impl MetadataStore {
         let mut stmt = self
             .db
             .prepare(
-                 "SELECT c.id FROM chunks c
+                "SELECT c.id FROM chunks c
                  JOIN documents d ON c.document_id = d.id
                  WHERE d.document_scope = 'chat_attachment'",
             )
@@ -869,12 +903,58 @@ mod tests {
         let db_path = tmp.path().join("test.db");
         let project_store = ProjectStore::new(&db_path).unwrap();
         let default_project_id = project_store.ensure_default_project().unwrap();
-        let other_project_id = project_store
-            .create_project("测试项目 B", "", "")
-            .unwrap();
+        let other_project_id = project_store.create_project("测试项目 B", "", "").unwrap();
         drop(project_store);
         let store = MetadataStore::new(db_path).unwrap();
         (tmp, store, default_project_id, other_project_id)
+    }
+
+    #[test]
+    fn migrates_legacy_documents_table_before_creating_indexes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+
+        {
+            let db = Connection::open(&db_path).unwrap();
+            db.execute_batch(
+                "
+                CREATE TABLE documents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    source_path TEXT,
+                    sha256 TEXT UNIQUE,
+                    project TEXT,
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE TABLE chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    vector_key INTEGER UNIQUE,
+                    document_id INTEGER REFERENCES documents(id),
+                    content TEXT NOT NULL,
+                    section_path TEXT,
+                    tags TEXT,
+                    line_no INTEGER,
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+                INSERT INTO documents (title, source_path, sha256, project)
+                VALUES ('旧文档', '/legacy.md', 'legacy-sha', '默认项目');
+                ",
+            )
+            .unwrap();
+        }
+
+        let project_store = ProjectStore::new(&db_path).unwrap();
+        let default_project_id = project_store.ensure_default_project().unwrap();
+        drop(project_store);
+
+        let store = MetadataStore::new(db_path).unwrap();
+        let docs = store.list_documents(None).unwrap();
+
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].title, "旧文档");
+        assert_eq!(docs[0].project_id, default_project_id);
+        assert_eq!(docs[0].document_scope, "knowledge");
+        assert_eq!(docs[0].chat_session_id, None);
     }
 
     #[test]
@@ -955,10 +1035,26 @@ mod tests {
         let (_tmp, store, default_project_id, _) = init_store_with_projects();
 
         let id1 = store
-            .insert_document("Doc A", None, Some("sha256_hash_xyz"), default_project_id, Some("knowledge"), None, None)
+            .insert_document(
+                "Doc A",
+                None,
+                Some("sha256_hash_xyz"),
+                default_project_id,
+                Some("knowledge"),
+                None,
+                None,
+            )
             .unwrap();
         let id2 = store
-            .insert_document("Doc B", None, Some("sha256_hash_xyz"), default_project_id, Some("knowledge"), None, None)
+            .insert_document(
+                "Doc B",
+                None,
+                Some("sha256_hash_xyz"),
+                default_project_id,
+                Some("knowledge"),
+                None,
+                None,
+            )
             .unwrap();
 
         assert_eq!(id1, id2);
@@ -970,10 +1066,26 @@ mod tests {
         let (_tmp, store, default_project_id, other_project_id) = init_store_with_projects();
 
         store
-            .insert_document("Project A doc", None, Some("hash1"), default_project_id, Some("knowledge"), None, None)
+            .insert_document(
+                "Project A doc",
+                None,
+                Some("hash1"),
+                default_project_id,
+                Some("knowledge"),
+                None,
+                None,
+            )
             .unwrap();
         store
-            .insert_document("Project B doc", None, Some("hash2"), other_project_id, Some("knowledge"), None, None)
+            .insert_document(
+                "Project B doc",
+                None,
+                Some("hash2"),
+                other_project_id,
+                Some("knowledge"),
+                None,
+                None,
+            )
             .unwrap();
         let attachment_id = store
             .insert_document(
