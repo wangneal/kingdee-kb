@@ -37,6 +37,30 @@ export interface ProjectSummary {
   created_at: string
 }
 
+export interface RawSource {
+  id: number
+  project_id: number
+  identity: string
+  original_path: string
+  storage_path: string
+  sha256: string
+  file_size: number | null
+  mime_type: string | null
+  status: string
+  created_at: string
+  deleted_at: string | null
+}
+
+export interface IngestionQueueItem {
+  id: string
+  project_id: number
+  source_identity: string
+  status: string
+  retry_count: number
+  error_message: string | null
+  created_at: string
+}
+
 export async function ensureDefaultProject(): Promise<number> {
   return invoke("ensure_default_project")
 }
@@ -65,8 +89,66 @@ export async function getProjectPhases(projectId: number): Promise<ProjectPhase[
   return invoke("get_project_phases", { projectId })
 }
 
+export async function updateProject(
+  projectId: number,
+  name: string,
+  clientName: string,
+  description: string,
+): Promise<void> {
+  return invoke("update_project", { projectId, name, clientName, description })
+}
+
+export async function updateProjectPhasePlan(
+  projectId: number,
+  phaseKey: string,
+  plannedStart: string | null,
+  plannedEnd: string | null,
+): Promise<void> {
+  return invoke("update_project_phase_plan", { projectId, phaseKey, plannedStart, plannedEnd })
+}
+
+export async function createRawSource(
+  projectId: number,
+  identity: string,
+  sourcePath: string,
+): Promise<RawSource> {
+  return invoke("create_raw_source", { projectId, identity, sourcePath, mimeType: null })
+}
+
+export async function listRawSources(projectId: number): Promise<RawSource[]> {
+  return invoke("list_raw_sources", { projectId })
+}
+
+export async function softDeleteRawSource(id: number): Promise<void> {
+  return invoke("soft_delete_raw_source", { id })
+}
+
+export async function enqueueIngestion(projectId: number, sourceIdentity: string): Promise<string> {
+  return invoke("enqueue_ingestion", { projectId, sourceIdentity })
+}
+
+export async function listIngestionQueue(): Promise<IngestionQueueItem[]> {
+  return invoke("list_ingestion_queue")
+}
+
+export async function retryFailedIngestions(projectId: number): Promise<void> {
+  return invoke("retry_project_failed_ingestions", { projectId })
+}
+
+export async function processIngestionQueue(projectId: number): Promise<string[]> {
+  return invoke("process_project_ingestion_queue", { projectId })
+}
+
 export async function archiveProject(projectId: number): Promise<void> {
   return invoke("archive_project", { projectId })
+}
+
+export async function restoreProject(projectId: number): Promise<void> {
+  return invoke("restore_project", { projectId })
+}
+
+export async function setCurrentProjectPhase(projectId: number, phaseKey: string): Promise<void> {
+  return invoke("set_current_project_phase", { projectId, phaseKey })
 }
 
 export async function ensureProjectActive(projectId: number): Promise<void> {

@@ -235,11 +235,14 @@ pub fn run() {
             // KB Compilation Config
             commands::kb_compilation::get_kb_compilation_enabled,
             commands::kb_compilation::set_kb_compilation_enabled,
+            commands::kb_compilation::recompile_failed_kb_sources,
             // Phase 2: 持久化摄入队列
             commands::ingestion_queue::enqueue_ingestion,
             commands::ingestion_queue::list_ingestion_queue,
             commands::ingestion_queue::retry_failed_ingestions,
+            commands::ingestion_queue::retry_project_failed_ingestions,
             commands::ingestion_queue::process_ingestion_queue,
+            commands::ingestion_queue::process_project_ingestion_queue,
             // Document Management
             commands::document::list_documents,
             commands::document::get_document_chunks,
@@ -279,7 +282,11 @@ pub fn run() {
             commands::project::list_projects,
             commands::project::get_project,
             commands::project::get_project_phases,
+            commands::project::update_project,
+            commands::project::update_project_phase_plan,
             commands::project::archive_project,
+            commands::project::restore_project,
+            commands::project::set_current_project_phase,
             commands::project::ensure_project_active,
             // Phase 12: Whisper Voice Recognition
             commands::media::load_whisper_model,
