@@ -39,4 +39,16 @@ test.describe("Search page", () => {
     await page.getByRole("button", { name: "搜索" }).click();
     await expect(page.getByText("未找到相关结果")).toBeVisible();
   });
+
+  test("should search across all projects from the search page", async ({ page }) => {
+    await page.goto("/search");
+    await page.getByPlaceholder("输入关键词或自然语言问题…").fill("测试搜索");
+    await page.getByRole("button", { name: "搜索" }).click();
+
+    await expect.poll(async () => {
+      const calls = await page.evaluate(() => Reflect.get(globalThis, "__TAURI_MOCK_CALLS__"));
+      const hybridSearchCalls = Reflect.get(calls, "hybrid_search") as Record<string, unknown>[] | undefined;
+      return hybridSearchCalls?.at(-1)?.projectId;
+    }).toBe(null);
+  });
 });

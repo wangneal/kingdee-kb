@@ -33,7 +33,7 @@ const STEPS: { key: Step; label: string }[] = [
 ]
 
 export default function Wizard() {
-  const { projectId } = useProject()
+  const { currentProject, currentProjectId } = useProject()
   const { templateId } = useParams<{ templateId: string }>()
   const navigate = useNavigate()
 
@@ -109,7 +109,8 @@ export default function Wizard() {
         user_input: userInput,
         manual_fields: fieldValues,
         schema_fields: schema.fields,
-        project_name: projectId,
+        project_name: currentProject?.name,
+        project_id: currentProjectId ?? undefined,
       })
       setFillResult(result)
       // Merge AI-filled values
@@ -120,7 +121,7 @@ export default function Wizard() {
     } finally {
       setFilling(false)
     }
-  }, [template, schema, userInput, fieldValues])
+  }, [template, schema, userInput, fieldValues, currentProject?.name, currentProjectId])
 
   const handleGenerate = useCallback(async () => {
     if (!template || !schema) return
@@ -133,7 +134,8 @@ export default function Wizard() {
         output_path: outputPath,
         fields: fieldValues,
         schema_fields: schema.fields,
-        project_name: projectId,
+        project_name: currentProject?.name,
+        project_id: currentProjectId ?? undefined,
       })
       setGeneratedDoc(result)
     } catch (e) {
@@ -142,7 +144,7 @@ export default function Wizard() {
     } finally {
       setGenerating(false)
     }
-  }, [template, schema, fieldValues])
+  }, [template, schema, fieldValues, currentProject?.name, currentProjectId])
 
   const stepIndex = STEPS.findIndex((s) => s.key === currentStep)
 

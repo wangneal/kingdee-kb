@@ -198,6 +198,24 @@ export async function setKbCompilationEnabled(enabled: boolean): Promise<void> {
   return invoke("set_kb_compilation_enabled", { enabled })
 }
 
+export interface RecompileFailedSourceError {
+  source_id: number
+  title: string
+  error: string
+}
+
+export interface RecompileFailedSourcesResult {
+  retried: number
+  succeeded: number
+  failed: RecompileFailedSourceError[]
+}
+
+export async function recompileFailedKbSources(
+  projectId: number,
+): Promise<RecompileFailedSourcesResult> {
+  return invoke("recompile_failed_kb_sources", { projectId })
+}
+
 export async function listDocuments(projectId?: number | null): Promise<DocumentMeta[]> {
   return invoke("list_documents", { projectId: projectId ?? null })
 }
@@ -392,6 +410,7 @@ export interface SmartFillRequest {
   manual_fields: Record<string, string>
   schema_fields: SchemaField[]
   project_name?: string
+  project_id?: number
 }
 
 export interface KBSource {
@@ -414,6 +433,7 @@ export interface GenerateDocRequest {
   fields: Record<string, string>
   schema_fields?: SchemaField[]
   project_name?: string
+  project_id?: number
   context?: string
 }
 

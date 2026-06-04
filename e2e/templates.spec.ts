@@ -55,4 +55,33 @@ test.describe("Templates page", () => {
     await page.getByText("项目章程").click();
     await expect(page).toHaveURL(/\/wizard\/tpl_charter/);
   });
+
+  test("wizard should generate document under current project", async ({ page }) => {
+    await page.goto("/wizard/tpl_charter");
+    await page.getByRole("button", { name: "下一步" }).click();
+    await page.getByRole("button", { name: "下一步" }).click();
+    await page.getByRole("button", { name: "生成文档" }).last().click();
+
+    await expect.poll(async () => {
+      const calls = await page.evaluate(() => Reflect.get(globalThis, "__TAURI_MOCK_CALLS__"));
+      const generateDocCalls = Reflect.get(calls, "generate_doc") as Record<string, unknown>[] | undefined;
+      const lastCall = generateDocCalls?.at(-1);
+      const request = Reflect.get(lastCall ?? {}, "request") as Record<string, unknown> | undefined;
+      return request?.project_id;
+    }).toBe(1);
+  });
+
+  test("wizard should smart fill with current project id", async ({ page }) => {
+    await page.goto("/wizard/tpl_charter");
+    await page.getByRole("button", { name: "下一步" }).click();
+    await page.getByRole("button", { name: "AI 智能填充" }).click();
+
+    await expect.poll(async () => {
+      const calls = await page.evaluate(() => Reflect.get(globalThis, "__TAURI_MOCK_CALLS__"));
+      const smartFillCalls = Reflect.get(calls, "smart_fill") as Record<string, unknown>[] | undefined;
+      const lastCall = smartFillCalls?.at(-1);
+      const request = Reflect.get(lastCall ?? {}, "request") as Record<string, unknown> | undefined;
+      return request?.project_id;
+    }).toBe(1);
+  });
 });
