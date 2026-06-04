@@ -17,6 +17,7 @@ import {
 } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useProject } from "../contexts/ProjectContext"
+import { getImportDialogDefaultPath } from "../lib/dialog-options"
 import {
   getKbCompilationEnabled,
   getWhisperStatus,
@@ -47,11 +48,8 @@ interface FileError {
 }
 
 function formatImportSuccess(result: IngestionResult): string {
-  const engineSuffix =
-    result.kb_analysis_engine === "rust" ? "，快速分析模式（非 LLM）" : ""
-  const suffix = result.kb_compilation_error
-    ? `，知识编译失败：${result.kb_compilation_error}`
-    : ""
+  const engineSuffix = result.kb_analysis_engine === "rust" ? "，快速分析模式（非 LLM）" : ""
+  const suffix = result.kb_compilation_error ? `，知识编译失败：${result.kb_compilation_error}` : ""
   return `导入成功：${result.title}，共 ${result.chunk_count} 个片段${engineSuffix}${suffix}`
 }
 
@@ -158,7 +156,12 @@ export default function Import() {
     setTextFeedback({ status: "loading", message: "正在导入文本…" })
     try {
       if (currentProjectId == null) throw new Error("当前项目未就绪")
-      const result = await ingestText(textContent, textTitle, currentProjectId, kbCompilationEnabled)
+      const result = await ingestText(
+        textContent,
+        textTitle,
+        currentProjectId,
+        kbCompilationEnabled,
+      )
       setTextFeedback({
         status: "success",
         message: formatImportSuccess(result),
@@ -178,7 +181,10 @@ export default function Import() {
   const handleFileImport = useCallback(async () => {
     setFileFeedback({ status: "loading", message: "正在选择文件…" })
     try {
+      const defaultPath = await getImportDialogDefaultPath()
       const selected = await open({
+        title: "选择要导入的文件",
+        defaultPath,
         multiple: true,
         filters: [
           {
@@ -238,7 +244,10 @@ export default function Import() {
   const handleFolderImport = useCallback(async () => {
     setFileFeedback({ status: "loading", message: "正在选择文件夹…" })
     try {
+      const defaultPath = await getImportDialogDefaultPath()
       const selected = await open({
+        title: "选择要导入的文件夹",
+        defaultPath,
         directory: true,
       })
       if (!selected) {
@@ -364,7 +373,10 @@ export default function Import() {
 
   // 视频转写导入
   const handleVideoImport = useCallback(async () => {
+    const defaultPath = await getImportDialogDefaultPath()
     const filePath = await open({
+      title: "选择要转写的视频或音频文件",
+      defaultPath,
       multiple: false,
       filters: [
         {
@@ -426,6 +438,8 @@ export default function Import() {
       console.error("导出失败:", err)
     }
   }, [])
+
+  const meetingMinutes = videoResult?.meeting_minutes ?? null
 
   return (
     <div className="p-6">
@@ -662,8 +676,8 @@ export default function Import() {
             {fileFeedback.errors && fileFeedback.errors.length > 0 && (
               <div className="mt-2 space-y-1 text-xs text-red-600">
                 <p className="font-medium">导入失败的文件：</p>
-                {fileFeedback.errors.slice(0, 10).map((e, i) => (
-                  <p key={i} className="truncate">
+                {fileFeedback.errors.slice(0, 10).map((e) => (
+                  <p key={`${e.path}:${e.error}`} className="truncate">
                     ⚠ {e.path}: {e.error}
                   </p>
                 ))}
@@ -691,7 +705,7 @@ export default function Import() {
 
         {/* Whisper 模型状态 */}
         <div className="mb-3">
-          <label className="block text-xs text-neutral-500 mb-1">语音识别引擎</label>
+          <span className="block text-xs text-neutral-500 mb-1">语音识别引擎</span>
           <div className="flex items-center gap-2">
             <span className="rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 bg-neutral-50">
               Whisper (本地) {whisperReady ? "✓" : "⚠ 未加载"}
@@ -818,7 +832,7 @@ export default function Import() {
         )}
 
         {/* 转写结果：可编辑、复制、导出 */}
-        {videoResult && videoResult.transcription.text && (
+        {videoResult?.transcription.text && (
           <div className="mt-4">
             <div className="flex items-center justify-between mb-1">
               <span className="text-xs font-medium text-neutral-600">
@@ -861,17 +875,17 @@ export default function Import() {
         )}
 
         {/* 会议纪要：可编辑、复制、导出 */}
-        {videoResult?.meeting_minutes && (
+        {meetingMinutes && (
           <div className="mt-3">
             <div className="flex items-center justify-between mb-1">
               <span className="text-xs font-medium text-neutral-600">
-                会议纪要（耗时 {(videoResult.meeting_minutes.generation_time_ms / 1000).toFixed(1)}
+                会议纪要（耗时 {(meetingMinutes.generation_time_ms / 1000).toFixed(1)}
                 s）
               </span>
               <div className="flex gap-1">
                 <button
                   type="button"
-                  onClick={() => copyToClipboard(videoResult.meeting_minutes!.minutes, "minutes")}
+                  onClick={() => copyToClipboard(meetingMinutes.minutes, "minutes")}
                   className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700 transition-colors"
                   title="复制会议纪要"
                 >
@@ -880,9 +894,7 @@ export default function Import() {
                 </button>
                 <button
                   type="button"
-                  onClick={() =>
-                    exportToFile(videoResult.meeting_minutes!.minutes, "meeting-minutes.md")
-                  }
+                  onClick={() => exportToFile(meetingMinutes.minutes, "meeting-minutes.md")}
                   className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700 transition-colors"
                   title="导出会议纪要"
                 >
@@ -893,7 +905,7 @@ export default function Import() {
             </div>
             <textarea
               readOnly
-              value={videoResult.meeting_minutes.minutes}
+              value={meetingMinutes.minutes}
               rows={10}
               className="w-full rounded-md bg-neutral-50 p-3 text-xs text-neutral-600 border border-neutral-200 outline-none resize-y focus:border-purple-300"
             />
