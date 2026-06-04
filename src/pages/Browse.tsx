@@ -1,4 +1,4 @@
-import { AlertCircle, BookOpen, CheckCircle, FileUp } from "lucide-react"
+import { AlertCircle, BookOpen, CheckCircle, FileUp, RefreshCw } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import ContextMenu, { type ContextMenuItem } from "../components/ContextMenu"
 import ImportModal from "../components/ImportModal"
@@ -9,6 +9,7 @@ import {
   getGraphNeighbors,
   getWikiPage,
   listWikiPages,
+  recompileFailedKbSources,
   type WikiPage,
   type WikiPageBrief,
 } from "../lib/tauri-commands"
@@ -24,6 +25,28 @@ export default function Browse() {
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [importModalOpen, setImportModalOpen] = useState(false)
+  const [recompiling, setRecompiling] = useState(false)
+  const [recompileMessage, setRecompileMessage] = useState<string | null>(null)
+
+  const refreshWikiPages = useCallback(async () => {
+    if (currentProjectId == null) {
+      setWikiPages([])
+      setSelectedWiki(null)
+      setNeighbors([])
+      setLoading(false)
+      return
+    }
+
+    setLoading(true)
+    try {
+      const pages = await listWikiPages(currentProjectId)
+      setWikiPages(pages)
+    } catch {
+      setWikiPages([])
+    } finally {
+      setLoading(false)
+    }
+  }, [currentProjectId])
 
   const contextMenuItems: ContextMenuItem[] = useMemo(
     () => [
@@ -40,20 +63,8 @@ export default function Browse() {
   )
 
   useEffect(() => {
-    if (currentProjectId == null) {
-      setWikiPages([])
-      setSelectedWiki(null)
-      setNeighbors([])
-      setLoading(false)
-      return
-    }
-
-    setLoading(true)
-    listWikiPages(currentProjectId)
-      .then(setWikiPages)
-      .catch(() => setWikiPages([]))
-      .finally(() => setLoading(false))
-  }, [currentProjectId])
+    void refreshWikiPages()
+  }, [refreshWikiPages])
 
   const handleContextMenu = useCallback((event: React.MouseEvent) => {
     const target = event.target as HTMLElement
@@ -73,6 +84,25 @@ export default function Browse() {
     },
     [currentProjectId],
   )
+
+  const handleRecompileFailed = useCallback(async () => {
+    if (currentProjectId == null) return
+    setRecompiling(true)
+    setRecompileMessage(null)
+    try {
+      const result = await recompileFailedKbSources(currentProjectId)
+      setRecompileMessage(
+        result.failed.length > 0
+          ? `重编译完成：成功 ${result.succeeded}/${result.retried} 项，失败 ${result.failed.length} 项`
+          : `重编译完成：成功 ${result.succeeded}/${result.retried} 项`,
+      )
+      await refreshWikiPages()
+    } catch (error) {
+      setRecompileMessage(`重编译失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setRecompiling(false)
+    }
+  }, [currentProjectId, refreshWikiPages])
 
   const pageTypeLabel = (type: string) => {
     if (type === "entity") return "实体"
@@ -97,10 +127,27 @@ export default function Browse() {
       {/* biome-ignore lint/a11y/noStaticElementInteractions: 面板右键菜单是标准交互模式 */}
       <div className="flex h-full gap-4 p-6" onContextMenu={handleContextMenu}>
         <div className="w-72 shrink-0 border-r border-neutral-200 pr-4">
-          <div className="mb-3 flex items-center justify-between">
+          <div className="mb-3 flex items-center justify-between gap-2">
             <h3 className="text-sm font-medium text-neutral-600">知识页面</h3>
-            <span className="text-xs text-neutral-400">{wikiPages.length} 页</span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-neutral-400">{wikiPages.length} 页</span>
+              <button
+                type="button"
+                onClick={handleRecompileFailed}
+                disabled={currentProjectId == null || recompiling}
+                className="inline-flex items-center gap-1 rounded-md border border-neutral-200 px-2 py-1 text-xs text-neutral-500 transition-colors hover:border-amber-200 hover:bg-amber-50 hover:text-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3 w-3 ${recompiling ? "animate-spin" : ""}`} />
+                重编译失败项
+              </button>
+            </div>
           </div>
+
+          {recompileMessage && (
+            <div className="mb-3 rounded-md border border-amber-100 bg-amber-50 px-2 py-1.5 text-xs text-amber-700">
+              {recompileMessage}
+            </div>
+          )}
 
           {loading ? (
             <div className="py-8 text-center text-sm text-neutral-400">加载中...</div>
@@ -157,6 +204,7 @@ export default function Browse() {
                     onClick={async () => {
                       const updated = await approveWikiPage(selectedWiki.id)
                       setSelectedWiki(updated)
+                      await refreshWikiPages()
                     }}
                     className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs text-white hover:bg-amber-600"
                   >
@@ -243,6 +291,7 @@ export default function Browse() {
       <ImportModal
         open={importModalOpen}
         onClose={() => setImportModalOpen(false)}
+        onImported={refreshWikiPages}
         project={currentProjectId ?? undefined}
       />
     </>

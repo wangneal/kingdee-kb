@@ -18,6 +18,8 @@ import {
 } from "lucide-react"
 import { useCallback, useEffect, useState } from "react"
 import { useImport } from "../hooks/useImport"
+import { getImportDialogDefaultPath } from "../lib/dialog-options"
+import type { IngestionResult } from "../lib/tauri-commands"
 
 type ImportStatus = "idle" | "loading" | "success" | "error"
 
@@ -38,14 +40,16 @@ const TABS: { key: TabKey; label: string; icon: typeof ClipboardPaste }[] = [
 export default function ImportModal({
   open: isOpen,
   onClose,
+  onImported,
   project,
 }: {
   open: boolean
   onClose: () => void
+  onImported?: () => void | Promise<void>
   /** 项目 ID，不传则使用默认项目 */
   project?: number
 }) {
-  const { importFile, importDirectory, importText } = useImport()
+  const { kbCompilationEnabled, importFile, importDirectory, importText } = useImport()
 
   // 当前激活的 Tab
   const [activeTab, setActiveTab] = useState<TabKey>("text")
@@ -56,6 +60,22 @@ export default function ImportModal({
 
   // 反馈状态
   const [feedback, setFeedback] = useState<Feedback | null>(null)
+
+  const notifyImported = useCallback(() => {
+    void onImported?.()
+  }, [onImported])
+
+  const buildSuccessMessage = useCallback(
+    (result: IngestionResult) => {
+      const base = `导入成功：${result.title}，共 ${result.chunk_count} 个片段`
+      if (!kbCompilationEnabled) return `${base}。知识编译未开启，Wiki 页面不会自动生成`
+      if (result.kb_compilation_error)
+        return `${base}。Wiki 编译失败：${result.kb_compilation_error}`
+      if (result.kb_analysis_engine) return `${base}。Wiki 页面已生成，等待审核`
+      return base
+    },
+    [kbCompilationEnabled],
+  )
 
   // 打开弹窗时重置状态
   useEffect(() => {
@@ -88,8 +108,9 @@ export default function ImportModal({
       const result = await importText(trimmedContent, trimmedTitle, project)
       setFeedback({
         status: "success",
-        message: `导入成功：${result.title}，共 ${result.chunk_count} 个片段`,
+        message: buildSuccessMessage(result),
       })
+      notifyImported()
       setTitle("")
       setTextContent("")
     } catch (e) {
@@ -98,13 +119,16 @@ export default function ImportModal({
         message: `导入失败：${e}`,
       })
     }
-  }, [title, textContent, importText, project])
+  }, [title, textContent, importText, project, buildSuccessMessage, notifyImported])
 
   // 文件导入
   const handleFileImport = useCallback(async () => {
     setFeedback({ status: "loading", message: "正在选择文件..." })
     try {
+      const defaultPath = await getImportDialogDefaultPath()
       const selected = await open({
+        title: "选择要导入的文件",
+        defaultPath,
         multiple: true,
         filters: [
           {
@@ -137,8 +161,11 @@ export default function ImportModal({
           message:
             failCount > 0
               ? `成功导入 ${successCount} 个文件，${failCount} 个失败`
-              : `成功导入 ${successCount} 个文件`,
+              : kbCompilationEnabled
+                ? `成功导入 ${successCount} 个文件，Wiki 页面已生成或等待审核`
+                : `成功导入 ${successCount} 个文件。知识编译未开启，Wiki 页面不会自动生成`,
         })
+        notifyImported()
       } else {
         setFeedback({
           status: "error",
@@ -148,13 +175,18 @@ export default function ImportModal({
     } catch (e) {
       setFeedback({ status: "error", message: `导入失败：${e}` })
     }
-  }, [importFile, project])
+  }, [importFile, project, kbCompilationEnabled, notifyImported])
 
   // 文件夹导入
   const handleFolderImport = useCallback(async () => {
     setFeedback({ status: "loading", message: "正在选择文件夹..." })
     try {
-      const selected = await open({ directory: true })
+      const defaultPath = await getImportDialogDefaultPath()
+      const selected = await open({
+        title: "选择要导入的文件夹",
+        defaultPath,
+        directory: true,
+      })
       if (!selected) {
         setFeedback(null)
         return
@@ -169,8 +201,11 @@ export default function ImportModal({
           message:
             errors.length > 0
               ? `成功导入 ${imported.length} 个文件，${errors.length} 个失败`
-              : `成功导入 ${imported.length} 个文件`,
+              : kbCompilationEnabled
+                ? `成功导入 ${imported.length} 个文件，Wiki 页面已生成或等待审核`
+                : `成功导入 ${imported.length} 个文件。知识编译未开启，Wiki 页面不会自动生成`,
         })
+        notifyImported()
       } else if (errors.length > 0) {
         setFeedback({
           status: "error",
@@ -182,7 +217,7 @@ export default function ImportModal({
     } catch (e) {
       setFeedback({ status: "error", message: `导入失败：${e}` })
     }
-  }, [importDirectory, project])
+  }, [importDirectory, project, kbCompilationEnabled, notifyImported])
 
   // 点击遮罩关闭
   const handleBackdropClick = useCallback(

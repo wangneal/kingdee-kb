@@ -6,7 +6,12 @@
  * instead of trying to reach the Rust backend.
  */
 
-import type { Page } from "@playwright/test";
+import type { Page } from "@playwright/test"
+
+interface MockOptions {
+  responses?: Record<string, unknown>
+  sequences?: Record<string, unknown[]>
+}
 
 /** Map of Tauri command name → mock return value */
 const MOCK_RESPONSES: Record<string, unknown> = {
@@ -16,6 +21,32 @@ const MOCK_RESPONSES: Record<string, unknown> = {
   get_document_chunks: [],
   delete_document: null,
   delete_documents_batch: 0,
+  list_wiki_pages: [],
+  get_wiki_page: null,
+  approve_wiki_page: null,
+  get_graph_neighbors: [],
+  get_kb_compilation_enabled: false,
+  recompile_failed_kb_sources: { retried: 0, succeeded: 0, failed: [] },
+  "plugin:path|resolve_directory": "C:\\Users\\Test\\Documents",
+
+  // Projects
+  ensure_default_project: 1,
+  list_projects: [
+    {
+      id: 1,
+      name: "默认项目",
+      client_name: "",
+      description: "",
+      current_phase: "startup",
+      status: "active",
+      document_count: 0,
+      product_count: 0,
+      created_at: "2026-01-01 00:00:00",
+    },
+  ],
+  create_project: 2,
+  archive_project: null,
+  restore_project: null,
 
   // Products
   list_products: [],
@@ -186,7 +217,10 @@ const MOCK_RESPONSES: Record<string, unknown> = {
     ingestion_document_id: 1,
     meeting_minutes: null,
   },
-  generate_meeting_minutes_from_transcript: { minutes: "# 会议纪要\n\n测试内容", generation_time_ms: 100 },
+  generate_meeting_minutes_from_transcript: {
+    minutes: "# 会议纪要\n\n测试内容",
+    generation_time_ms: 100,
+  },
 
   // Risk control
   list_risk_projects: [],
@@ -243,44 +277,93 @@ const MOCK_RESPONSES: Record<string, unknown> = {
 
   // ASR
   list_asr_providers: [],
-  recognize_audio_with_provider: { text: "", is_final: true, confidence: 0, processing_time_ms: 0, segments: null },
+  recognize_audio_with_provider: {
+    text: "",
+    is_final: true,
+    confidence: 0,
+    processing_time_ms: 0,
+    segments: null,
+  },
   save_asr_config: null,
   get_asr_config_status: { tencent_configured: false, xfyun_configured: false },
-};
+}
 
 /**
  * Inject Tauri mocks into a Playwright page.
  * Must be called BEFORE `page.goto()`.
  */
-export async function mockTauriApis(page: Page): Promise<void> {
-  await page.addInitScript((mocks) => {
-    // Mock __TAURI_INTERNALS__ which is used by @tauri-apps/api/core's invoke()
-    (window as any).__TAURI_INTERNALS__ = {
-      invoke: (cmd: string, _args?: Record<string, unknown>) => {
-        if (cmd in mocks) {
-          return Promise.resolve(mocks[cmd]);
-        }
-        console.warn(`[Tauri Mock] Unhandled command: ${cmd}`);
-        return Promise.resolve(null);
-      },
-      transformCallback: (_cb?: Function) => {
-        return `callback_${Date.now()}`;
-      },
-      plugins: {
-        dialog: {
-          open: () => Promise.resolve(null),
-          save: () => Promise.resolve(null),
-        },
-        opener: {},
-        globalShortcut: {},
-      },
-    };
+export async function mockTauriApis(page: Page, options: MockOptions = {}): Promise<void> {
+  await page.addInitScript(
+    ({ defaults, overrides, sequenceOverrides }) => {
+      const mocks = { ...defaults, ...overrides }
+      const sequences: Record<string, unknown[]> = { ...sequenceOverrides }
+      const calls: Record<string, Record<string, unknown>[]> = {}
 
-    // Mock @tauri-apps/plugin-dialog open/save
-    // These are loaded as separate modules, so we need to intercept at a lower level
-    // The __TAURI_EVENT_PLUGIN_INTERNALS__ pattern handles event listeners
-    (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
-      registerListener: () => Promise.resolve(() => {}),
-    };
-  }, MOCK_RESPONSES);
+      // Mock __TAURI_INTERNALS__ which is used by @tauri-apps/api/core's invoke()
+      const tauriInternals = {
+        invoke: (cmd: string, args?: Record<string, unknown>) => {
+          calls[cmd] = [...(calls[cmd] ?? []), args ?? {}]
+          if (cmd in sequences) {
+            const sequence = sequences[cmd]
+            const value = sequence.length > 1 ? sequence.shift() : sequence[0]
+            return Promise.resolve(value)
+          }
+          if (cmd in mocks) {
+            return Promise.resolve(mocks[cmd])
+          }
+          console.warn(`[Tauri Mock] Unhandled command: ${cmd}`)
+          return Promise.resolve(null)
+        },
+        transformCallback: (_cb?: (...args: unknown[]) => unknown) => {
+          return `callback_${Date.now()}`
+        },
+        plugins: {
+          dialog: {
+            open: () => Promise.resolve(null),
+            save: () => Promise.resolve(null),
+          },
+          opener: {},
+          globalShortcut: {},
+        },
+        metadata: {
+          currentWindow: { label: "main" },
+          currentWebview: { windowLabel: "main", label: "main" },
+        },
+        convertFileSrc: (filePath: string, protocol = "asset") =>
+          `${protocol}://localhost/${filePath}`,
+      }
+
+      Object.defineProperty(window, "__TAURI_INTERNALS__", {
+        value: tauriInternals,
+        configurable: true,
+        writable: true,
+      })
+      Object.defineProperty(globalThis, "__TAURI_INTERNALS__", {
+        value: tauriInternals,
+        configurable: true,
+        writable: true,
+      })
+      Object.defineProperty(globalThis, "__TAURI_MOCK_CALLS__", {
+        value: calls,
+        configurable: true,
+        writable: true,
+      })
+
+      // Mock @tauri-apps/plugin-dialog open/save
+      // These are loaded as separate modules, so we need to intercept at a lower level
+      // The __TAURI_EVENT_PLUGIN_INTERNALS__ pattern handles event listeners
+      Object.defineProperty(window, "__TAURI_EVENT_PLUGIN_INTERNALS__", {
+        value: {
+          registerListener: () => Promise.resolve(() => {}),
+        },
+        configurable: true,
+        writable: true,
+      })
+    },
+    {
+      defaults: MOCK_RESPONSES,
+      overrides: options.responses ?? {},
+      sequenceOverrides: options.sequences ?? {},
+    },
+  )
 }
