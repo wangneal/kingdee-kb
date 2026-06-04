@@ -41,14 +41,43 @@ pub async fn retry_failed_ingestions(state: State<'_, AppState>) -> Result<(), S
     Ok(())
 }
 
+#[tauri::command]
+pub async fn retry_project_failed_ingestions(
+    state: State<'_, AppState>,
+    project_id: i64,
+) -> Result<(), String> {
+    let mut queue = state
+        .ingest_queue
+        .lock()
+        .map_err(|e| format!("获取队列锁失败: {}", e))?;
+    queue.retry_failed_for_project(project_id);
+    Ok(())
+}
+
 /// 处理所有待摄入队列任务。
 #[tauri::command]
 pub async fn process_ingestion_queue(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     process_pending_queue(&state)
 }
 
+#[tauri::command]
+pub async fn process_project_ingestion_queue(
+    state: State<'_, AppState>,
+    project_id: i64,
+) -> Result<Vec<String>, String> {
+    process_pending_queue_for_project(&state, project_id)
+}
+
 /// 串行处理 pending 任务，供启动恢复和命令调用复用。
 pub fn process_pending_queue(state: &AppState) -> Result<Vec<String>, String> {
+    process_pending_queue_inner(state, None)
+}
+
+fn process_pending_queue_for_project(state: &AppState, project_id: i64) -> Result<Vec<String>, String> {
+    process_pending_queue_inner(state, Some(project_id))
+}
+
+fn process_pending_queue_inner(state: &AppState, project_id: Option<i64>) -> Result<Vec<String>, String> {
     let mut processed = Vec::new();
 
     loop {
@@ -57,7 +86,10 @@ pub fn process_pending_queue(state: &AppState) -> Result<Vec<String>, String> {
                 .ingest_queue
                 .lock()
                 .map_err(|e| format!("获取队列锁失败: {}", e))?;
-            queue.dequeue()
+            match project_id {
+                Some(id) => queue.dequeue_for_project(id),
+                None => queue.dequeue(),
+            }
         };
 
         let Some(item) = item else {
