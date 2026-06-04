@@ -12,15 +12,7 @@ pub const PHASE_KEYS: [&str; 7] = [
     "closed",
 ];
 
-const PHASE_NAMES: [&str; 7] = [
-    "调研",
-    "蓝图",
-    "开发",
-    "测试",
-    "上线",
-    "验收",
-    "关闭",
-];
+const PHASE_NAMES: [&str; 7] = ["调研", "蓝图", "开发", "测试", "上线", "验收", "关闭"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
@@ -195,7 +187,12 @@ impl ProjectStore {
     }
 
     fn import_legacy_projects(&self) -> Result<(), String> {
-        for table in ["raw_sources", "wiki_pages", "analysis_cache", "ingest_cache"] {
+        for table in [
+            "raw_sources",
+            "wiki_pages",
+            "analysis_cache",
+            "ingest_cache",
+        ] {
             if !self.table_has_column(table, "project")? {
                 continue;
             }
@@ -224,7 +221,8 @@ impl ProjectStore {
             .query_map([], |row| row.get::<_, String>(1))
             .map_err(|e| format!("查询 {} 表结构失败: {}", table_name, e))?;
         for column in columns {
-            if column.map_err(|e| format!("读取 {} 列名失败: {}", table_name, e))? == column_name {
+            if column.map_err(|e| format!("读取 {} 列名失败: {}", table_name, e))? == column_name
+            {
                 return Ok(true);
             }
         }
@@ -271,8 +269,13 @@ impl ProjectStore {
         } else {
             "0"
         };
-        let risk_count = if self.table_has_column("risk_projects", "kb_project_id")? {
-            "(SELECT COUNT(*) FROM risk_projects r WHERE r.kb_project_id = p.id)"
+        let risk_scope_count = if self.table_has_column("contract_scope_items", "project_id")? {
+            "(SELECT COUNT(*) FROM contract_scope_items s WHERE s.project_id = p.id)"
+        } else {
+            "0"
+        };
+        let risk_metric_count = if self.table_has_column("project_health_metrics", "project_id")? {
+            "(SELECT COUNT(*) FROM project_health_metrics h WHERE h.project_id = p.id)"
         } else {
             "0"
         };
@@ -286,12 +289,11 @@ impl ProjectStore {
                 {},
                 {},
                 {},
-                {},
+                ({} + {}),
                 p.created_at
              FROM projects p
-             ORDER BY p.status ASC, p.updated_at DESC, p.id DESC"
-            ,
-            document_count, wiki_count, product_count, risk_count
+             ORDER BY p.status ASC, p.updated_at DESC, p.id DESC",
+            document_count, wiki_count, product_count, risk_scope_count, risk_metric_count
         );
 
         let mut stmt = self
@@ -480,7 +482,8 @@ impl ProjectStore {
         let phase_index = PHASE_KEYS
             .iter()
             .position(|key| *key == phase_key)
-            .ok_or_else(|| format!("无效项目阶段: {}", phase_key))? as i64;
+            .ok_or_else(|| format!("无效项目阶段: {}", phase_key))?
+            as i64;
 
         self.ensure_project_active(project_id)?;
         let transaction = self
@@ -594,7 +597,9 @@ mod tests {
         let db_path = dir.path().join("metadata.db");
         let store = ProjectStore::new(&db_path).expect("创建项目存储失败");
 
-        let project_id = store.create_project("待归档项目", "", "").expect("创建项目失败");
+        let project_id = store
+            .create_project("待归档项目", "", "")
+            .expect("创建项目失败");
         store.archive_project(project_id).expect("归档项目失败");
 
         let err = store
@@ -608,7 +613,9 @@ mod tests {
         let dir = tempdir().expect("创建临时目录失败");
         let db_path = dir.path().join("metadata.db");
         let store = ProjectStore::new(&db_path).expect("创建项目存储失败");
-        let project_id = store.create_project("可归档项目", "", "").expect("创建项目失败");
+        let project_id = store
+            .create_project("可归档项目", "", "")
+            .expect("创建项目失败");
 
         store.archive_project(project_id).expect("归档项目失败");
         store.restore_project(project_id).expect("恢复项目失败");
@@ -669,7 +676,8 @@ mod tests {
                 CREATE TABLE documents (id INTEGER PRIMARY KEY, project_id INTEGER);
                 CREATE TABLE wiki_pages (id INTEGER PRIMARY KEY, project_id INTEGER);
                 CREATE TABLE products (id INTEGER PRIMARY KEY, project_id INTEGER);
-                CREATE TABLE risk_projects (id INTEGER PRIMARY KEY, kb_project_id INTEGER);
+                CREATE TABLE contract_scope_items (id INTEGER PRIMARY KEY, project_id INTEGER);
+                CREATE TABLE project_health_metrics (id INTEGER PRIMARY KEY, project_id INTEGER);
                 ",
             )
             .expect("创建统计表失败");
@@ -685,16 +693,23 @@ mod tests {
         store
             .db
             .execute(
-                "INSERT INTO risk_projects (kb_project_id) VALUES (?1)",
+                "INSERT INTO contract_scope_items (project_id) VALUES (?1)",
                 params![project_id],
             )
-            .expect("插入风险项目统计数据失败");
+            .expect("插入范围统计数据失败");
+        store
+            .db
+            .execute(
+                "INSERT INTO project_health_metrics (project_id) VALUES (?1)",
+                params![project_id],
+            )
+            .expect("插入健康统计数据失败");
 
         let projects = store.list_projects().expect("读取项目列表失败");
         assert_eq!(projects[0].document_count, 1);
         assert_eq!(projects[0].wiki_count, 1);
         assert_eq!(projects[0].product_count, 1);
-        assert_eq!(projects[0].risk_count, 1);
+        assert_eq!(projects[0].risk_count, 2);
     }
 
     #[test]
@@ -760,12 +775,19 @@ mod tests {
         let dir = tempdir().expect("创建临时目录失败");
         let db_path = dir.path().join("metadata.db");
         let store = ProjectStore::new(&db_path).expect("创建项目存储失败");
-        let project_id = store.create_project("旧名称", "", "").expect("创建项目失败");
+        let project_id = store
+            .create_project("旧名称", "", "")
+            .expect("创建项目失败");
         store
             .update_project(project_id, "新名称", "客户甲", "项目描述")
             .expect("更新项目详情失败");
         store
-            .update_phase_plan(project_id, "blueprint", Some("2026-06-01"), Some("2026-06-30"))
+            .update_phase_plan(
+                project_id,
+                "blueprint",
+                Some("2026-06-01"),
+                Some("2026-06-30"),
+            )
             .expect("更新阶段计划失败");
         let project = store.get_project(project_id).unwrap().unwrap();
         let phases = store.get_project_phases(project_id).unwrap();

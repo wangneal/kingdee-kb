@@ -6,11 +6,11 @@ use std::sync::Mutex;
 use tauri::Manager;
 use tracing_subscriber::EnvFilter;
 
+use crate::app_state::AppState;
 pub use commands::core::{ensure_data_dir, init_app_state, setup_backend_async, SetupState};
 pub use services::template_docx;
 pub use services::template_schema;
 pub use services::template_xlsx;
-use crate::app_state::AppState;
 
 /// 在线 ASR 配置存储（腾讯云）- JSON 文件持久化
 pub struct AsrConfigStore {
@@ -37,8 +37,12 @@ impl AsrConfigStore {
             Err(_) => return,
         };
         if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&content) {
-            self.tencent_secret_id = cfg.get("tencent_secret_id").and_then(|v| v.as_str().map(String::from));
-            self.tencent_secret_key = cfg.get("tencent_secret_key").and_then(|v| v.as_str().map(String::from));
+            self.tencent_secret_id = cfg
+                .get("tencent_secret_id")
+                .and_then(|v| v.as_str().map(String::from));
+            self.tencent_secret_key = cfg
+                .get("tencent_secret_key")
+                .and_then(|v| v.as_str().map(String::from));
         }
     }
 
@@ -47,8 +51,10 @@ impl AsrConfigStore {
             "tencent_secret_id": self.tencent_secret_id,
             "tencent_secret_key": self.tencent_secret_key,
         });
-        let content = serde_json::to_string_pretty(&map).map_err(|e| format!("序列化 ASR 配置失败: {}", e))?;
-        std::fs::write(&self.config_path, content).map_err(|e| format!("写入 ASR 配置失败: {}", e))?;
+        let content = serde_json::to_string_pretty(&map)
+            .map_err(|e| format!("序列化 ASR 配置失败: {}", e))?;
+        std::fs::write(&self.config_path, content)
+            .map_err(|e| format!("写入 ASR 配置失败: {}", e))?;
         Ok(())
     }
 
@@ -112,6 +118,7 @@ pub fn compensate_pending_deletions(state: &AppState) {
             }
         };
 
+        let _ = state.get_or_init_bm25();
         if let Ok(bm25) = state.bm25.write() {
             if let Err(e) = bm25.remove_chunks(&vector_keys) {
                 tracing::warn!("补偿 BM25 删除失败(outbox_id={}): {}", id, e);
@@ -332,10 +339,6 @@ pub fn run() {
             commands::risk_blueprint::get_project_health,
             commands::risk_blueprint::generate_risk_report,
             commands::risk_blueprint::generate_defense_script,
-            // P1.4: 风险项目管理
-            commands::risk_blueprint::create_risk_project,
-            commands::risk_blueprint::list_risk_projects,
-            commands::risk_blueprint::delete_risk_project,
             // P1.5: 合同范围提取
             commands::risk_blueprint::extract_scope_from_document,
             commands::risk_blueprint::confirm_scope_items,

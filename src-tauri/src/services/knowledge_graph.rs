@@ -107,7 +107,10 @@ impl GraphStore {
             .is_err()
         {
             self.db
-                .execute("ALTER TABLE knowledge_graph ADD COLUMN project_id INTEGER", [])
+                .execute(
+                    "ALTER TABLE knowledge_graph ADD COLUMN project_id INTEGER",
+                    [],
+                )
                 .map_err(|e| format!("添加 knowledge_graph.project_id 失败: {}", e))?;
         }
         Ok(())
@@ -162,8 +165,7 @@ impl GraphStore {
 
         let mut insert_err: Option<String> = None;
         for row in rows {
-            let (slug, wikilinks_json) =
-                row.map_err(|e| format!("读取 wikilink 行失败: {}", e))?;
+            let (slug, wikilinks_json) = row.map_err(|e| format!("读取 wikilink 行失败: {}", e))?;
             let targets: Vec<String> = serde_json::from_str(&wikilinks_json).unwrap_or_default();
             for target in targets {
                 if target.is_empty() || target == slug {
@@ -286,8 +288,7 @@ impl GraphStore {
         // target_slug → [source_slug, ...]
         let mut citation_map: HashMap<String, Vec<String>> = HashMap::new();
         for row in rows {
-            let (source, target) =
-                row.map_err(|e| format!("读取 co_citation 行失败: {}", e))?;
+            let (source, target) = row.map_err(|e| format!("读取 co_citation 行失败: {}", e))?;
             citation_map.entry(target).or_default().push(source);
         }
 
@@ -371,14 +372,17 @@ impl GraphStore {
             .map_err(|e| format!("准备遍历查询失败: {}", e))?;
 
         let rows = stmt
-            .query_map(params![project_id, seed_slug, min_weight, max_depth], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, f64>(3)?,
-                ))
-            })
+            .query_map(
+                params![project_id, seed_slug, min_weight, max_depth],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, f64>(3)?,
+                    ))
+                },
+            )
             .map_err(|e| format!("执行遍历查询失败: {}", e))?;
 
         let mut results: Vec<GraphPath> = Vec::new();
@@ -415,11 +419,7 @@ impl GraphStore {
     }
 
     /// 获取某页面的直接邻居（1 跳）
-    pub fn get_neighbors(
-        &self,
-        project_id: i64,
-        slug: &str,
-    ) -> Result<Vec<GraphNeighbor>, String> {
+    pub fn get_neighbors(&self, project_id: i64, slug: &str) -> Result<Vec<GraphNeighbor>, String> {
         let mut stmt = self
             .db
             .prepare(
@@ -442,8 +442,7 @@ impl GraphStore {
         let mut raw_data: Vec<(String, String, f64)> = Vec::new();
         let mut slugs: Vec<String> = Vec::new();
         for row in rows {
-            let (s, signal, weight) =
-                row.map_err(|e| format!("读取邻居行失败: {}", e))?;
+            let (s, signal, weight) = row.map_err(|e| format!("读取邻居行失败: {}", e))?;
             slugs.push(s.clone());
             raw_data.push((s, signal, weight));
         }
@@ -506,8 +505,7 @@ impl GraphStore {
 
         let mut signal_breakdown = HashMap::new();
         for row in rows {
-            let (signal, count) =
-                row.map_err(|e| format!("读取信号统计行失败: {}", e))?;
+            let (signal, count) = row.map_err(|e| format!("读取信号统计行失败: {}", e))?;
             signal_breakdown.insert(signal, count);
         }
 
@@ -561,20 +559,18 @@ impl GraphStore {
         let mut grouped: HashMap<String, GraphRecommendation> = HashMap::new();
 
         for path in &paths {
-            let entry = grouped
-                .entry(path.target_slug.clone())
-                .or_insert_with(|| {
-                    let info = page_info_map.get(&path.target_slug);
-                    GraphRecommendation {
-                        slug: path.target_slug.clone(),
-                        title: info.map(|(t, _)| t.clone()).unwrap_or_default(),
-                        page_type: info.map(|(_, pt)| pt.clone()).unwrap_or_default(),
-                        combined_weight: 0.0,
-                        depth: path.depth,
-                        paths: Vec::new(),
-                        matched_signals: Vec::new(),
-                    }
-                });
+            let entry = grouped.entry(path.target_slug.clone()).or_insert_with(|| {
+                let info = page_info_map.get(&path.target_slug);
+                GraphRecommendation {
+                    slug: path.target_slug.clone(),
+                    title: info.map(|(t, _)| t.clone()).unwrap_or_default(),
+                    page_type: info.map(|(_, pt)| pt.clone()).unwrap_or_default(),
+                    combined_weight: 0.0,
+                    depth: path.depth,
+                    paths: Vec::new(),
+                    matched_signals: Vec::new(),
+                }
+            });
 
             // 取最小跳数（越近越相关）
             if path.depth < entry.depth {
@@ -657,8 +653,7 @@ impl GraphStore {
 
         let mut map: HashMap<String, Vec<String>> = HashMap::new();
         for row in rows {
-            let (slug, json_str) =
-                row.map_err(|e| format!("读取 {} 行失败: {}", field, e))?;
+            let (slug, json_str) = row.map_err(|e| format!("读取 {} 行失败: {}", field, e))?;
             let values: Vec<String> = serde_json::from_str(&json_str).unwrap_or_default();
             for val in values {
                 if !val.is_empty() {
@@ -702,9 +697,8 @@ impl GraphStore {
         if slugs.is_empty() {
             return Ok(map);
         }
-        let placeholders: Vec<String> = (2..=(slugs.len() + 1))
-            .map(|i| format!("?{}", i))
-            .collect();
+        let placeholders: Vec<String> =
+            (2..=(slugs.len() + 1)).map(|i| format!("?{}", i)).collect();
         let sql = format!(
             "SELECT slug, title FROM wiki_pages WHERE project_id = ?1 AND slug IN ({})",
             placeholders.join(", ")
@@ -737,9 +731,8 @@ impl GraphStore {
         if slugs.is_empty() {
             return Ok(map);
         }
-        let placeholders: Vec<String> = (2..=(slugs.len() + 1))
-            .map(|i| format!("?{}", i))
-            .collect();
+        let placeholders: Vec<String> =
+            (2..=(slugs.len() + 1)).map(|i| format!("?{}", i)).collect();
         let sql = format!(
             "SELECT slug, title, page_type FROM wiki_pages WHERE project_id = ?1 AND slug IN ({})",
             placeholders.join(", ")
@@ -760,8 +753,7 @@ impl GraphStore {
             })
             .map_err(|e| format!("执行页面信息查询失败: {}", e))?;
         for row in rows {
-            let (slug, title, page_type) =
-                row.map_err(|e| format!("读取页面信息行失败: {}", e))?;
+            let (slug, title, page_type) = row.map_err(|e| format!("读取页面信息行失败: {}", e))?;
             map.insert(slug, (title, page_type));
         }
         Ok(map)

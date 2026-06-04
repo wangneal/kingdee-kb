@@ -25,8 +25,8 @@ pub async fn create_raw_source(
     let sha256 = compute_sha256(&source_path)?;
 
     // 读取文件大小
-    let metadata = std::fs::metadata(&source_path)
-        .map_err(|e| format!("读取源文件信息失败: {}", e))?;
+    let metadata =
+        std::fs::metadata(&source_path).map_err(|e| format!("读取源文件信息失败: {}", e))?;
     let file_size = Some(metadata.len() as i64);
 
     // 创建目标存储目录
@@ -35,13 +35,11 @@ pub async fn create_raw_source(
         .join("raw")
         .join(&project_dir)
         .join("sources");
-    std::fs::create_dir_all(&storage_dir)
-        .map_err(|e| format!("创建存储目录失败: {}", e))?;
+    std::fs::create_dir_all(&storage_dir).map_err(|e| format!("创建存储目录失败: {}", e))?;
 
     // 目标路径 = raw/{project_id}/sources/{identity}
     let storage_path = storage_dir.join(&identity_path);
-    std::fs::copy(&source_path, &storage_path)
-        .map_err(|e| format!("复制文件失败: {}", e))?;
+    std::fs::copy(&source_path, &storage_path).map_err(|e| format!("复制文件失败: {}", e))?;
 
     let storage_path_str = storage_path.to_string_lossy().to_string();
 
@@ -78,10 +76,7 @@ pub async fn list_raw_sources(
 
 /// 软删除一个原始文件记录（标记为 deleted）。
 #[tauri::command]
-pub async fn soft_delete_raw_source(
-    state: State<'_, AppState>,
-    id: i64,
-) -> Result<(), String> {
+pub async fn soft_delete_raw_source(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let store = state
         .raw_sources
         .lock()
@@ -127,8 +122,7 @@ fn validate_source_identity(identity: &str) -> Result<PathBuf, String> {
 
 /// 计算文件的 SHA256 哈希值
 fn compute_sha256(file_path: &str) -> Result<String, String> {
-    let mut file = std::fs::File::open(file_path)
-        .map_err(|e| format!("打开文件失败: {}", e))?;
+    let mut file = std::fs::File::open(file_path).map_err(|e| format!("打开文件失败: {}", e))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 8192];
     loop {

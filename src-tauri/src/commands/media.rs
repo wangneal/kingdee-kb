@@ -70,16 +70,22 @@ pub async fn stop_whisper_recording(
             "tencent" => {
                 let (secret_id, secret_key) = {
                     let cfg = state.asr_config.read().map_err(|e| e.to_string())?;
-                    let sid = cfg.tencent_secret_id.clone()
+                    let sid = cfg
+                        .tencent_secret_id
+                        .clone()
                         .ok_or_else(|| "请先在设置中配置腾讯云 SecretId".to_string())?;
-                    let sk = cfg.tencent_secret_key.clone()
+                    let sk = cfg
+                        .tencent_secret_key
+                        .clone()
                         .ok_or_else(|| "请先在设置中配置腾讯云 SecretKey".to_string())?;
                     (sid, sk)
                 };
                 let provider = crate::services::tencent_asr::TencentOneShotProvider::new(
                     secret_id, secret_key,
                 );
-                provider.recognize_file(&pcm_data, &config).await
+                provider
+                    .recognize_file(&pcm_data, &config)
+                    .await
                     .map_err(|e| format!("腾讯 ASR 识别失败: {:?}", e))?
             }
             _ => return Err(format!("不支持的 ASR 服务商: {}", asr_provider)),
@@ -258,6 +264,7 @@ pub async fn transcribe_and_ingest_video(
         return Err("转写结果为空，无法入库".to_string());
     }
 
+    state.ensure_bm25_ready();
     emit_video_progress(Some(&app_handle), "ingesting", 0.0, "正在入库知识库...");
     let title = std::path::Path::new(&transcription.video_path)
         .file_stem()

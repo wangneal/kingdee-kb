@@ -1,22 +1,37 @@
-use super::types::{CheckResult, Checker, VerificationInput};
 use super::consistency::FactualConsistencyChecker;
+use super::types::{CheckResult, Checker, VerificationInput};
 
 pub struct UncertaintyMarker;
 
 impl UncertaintyMarker {
     const ASSERTION_WITHOUT_SOURCE: &'static [&'static str] = &[
-        "系统支持", "功能包括", "配置路径", "标准功能",
-        "金蝶", "K/3", "星空", "苍穹",
+        "系统支持",
+        "功能包括",
+        "配置路径",
+        "标准功能",
+        "金蝶",
+        "K/3",
+        "星空",
+        "苍穹",
     ];
 
     const UNCERTAINTY_SIGNALS: &'static [&'static str] = &[
-        "可能", "应该", "一般来说", "通常", "据说",
-        "maybe", "probably", "usually", "generally",
+        "可能",
+        "应该",
+        "一般来说",
+        "通常",
+        "据说",
+        "maybe",
+        "probably",
+        "usually",
+        "generally",
     ];
 
     fn has_citation_marker(sentence: &str) -> bool {
-        sentence.contains("[来源：") || sentence.contains("[src:")
-            || sentence.contains("(来源：") || sentence.contains("（来源：")
+        sentence.contains("[来源：")
+            || sentence.contains("[src:")
+            || sentence.contains("(来源：")
+            || sentence.contains("（来源：")
     }
 }
 
@@ -34,12 +49,16 @@ impl Checker for UncertaintyMarker {
         let mut uncertain_count = 0;
 
         for sentence in &sentences {
-            let has_signal = Self::UNCERTAINTY_SIGNALS.iter().any(|s| sentence.contains(s));
+            let has_signal = Self::UNCERTAINTY_SIGNALS
+                .iter()
+                .any(|s| sentence.contains(s));
             if has_signal {
                 uncertain_count += 1;
             }
 
-            let is_assertion = Self::ASSERTION_WITHOUT_SOURCE.iter().any(|s| sentence.contains(s));
+            let is_assertion = Self::ASSERTION_WITHOUT_SOURCE
+                .iter()
+                .any(|s| sentence.contains(s));
             if is_assertion && !Self::has_citation_marker(sentence) && !has_signal {
                 unmarked_assertions.push(sentence.clone());
             }
@@ -54,16 +73,27 @@ impl Checker for UncertaintyMarker {
 
         let mut evidence = Vec::new();
         if !unmarked_assertions.is_empty() {
-            evidence.push(format!("{} 个事实断言缺少来源引用标记", unmarked_assertions.len()));
-            evidence.extend(unmarked_assertions.iter().take(3).map(|s| format!("  - {}", s)));
+            evidence.push(format!(
+                "{} 个事实断言缺少来源引用标记",
+                unmarked_assertions.len()
+            ));
+            evidence.extend(
+                unmarked_assertions
+                    .iter()
+                    .take(3)
+                    .map(|s| format!("  - {}", s)),
+            );
         }
         if uncertain_count > 0 {
             evidence.push(format!("{} 个句子使用不确定性措辞", uncertain_count));
         }
 
-        CheckResult::fail("uncertainty_marker", format!("检测到 {} 个潜在可信度问题", total_issues))
-            .with_confidence(1.0 - (total_issues as f32 / (sentences.len().max(1) as f32)))
-            .with_evidence(evidence)
+        CheckResult::fail(
+            "uncertainty_marker",
+            format!("检测到 {} 个潜在可信度问题", total_issues),
+        )
+        .with_confidence(1.0 - (total_issues as f32 / (sentences.len().max(1) as f32)))
+        .with_evidence(evidence)
     }
 }
 
@@ -75,7 +105,8 @@ mod tests {
     async fn test_well_sourced_response() {
         let checker = UncertaintyMarker;
         let input = VerificationInput {
-            generated_text: "金蝶云星空支持多组织架构（来源：产品介绍.md）。这是一个集成解决方案。".to_string(),
+            generated_text: "金蝶云星空支持多组织架构（来源：产品介绍.md）。这是一个集成解决方案。"
+                .to_string(),
             retrieved_chunks: vec![],
             chunk_titles: vec![],
             available_chunk_ids: vec![],

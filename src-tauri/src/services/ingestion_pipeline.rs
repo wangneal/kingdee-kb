@@ -20,9 +20,7 @@ static RE_MD_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 use crate::services::analysis_cache::AnalysisCacheStore;
-use crate::services::document_analysis::{
-    AnalysisOrchestrator, DocumentAnalysis, EngineType,
-};
+use crate::services::document_analysis::{AnalysisOrchestrator, DocumentAnalysis, EngineType};
 use crate::services::ingest_cache::{CreateIngestCache, IngestCacheStore};
 use crate::services::llm_providers::LLMProviderManager;
 use crate::services::verification::pipeline::VerificationPipeline;
@@ -66,7 +64,9 @@ pub async fn process_with_kb_compilation(
     ingest_cache_store: Arc<Mutex<IngestCacheStore>>,
 ) -> Result<KbCompilationResult, String> {
     // Step 0: 检查 ingest_cache
-    if let Some(cached) = check_ingest_cache(&ingest_cache_store, project_id, source_identity, sha256)? {
+    if let Some(cached) =
+        check_ingest_cache(&ingest_cache_store, project_id, source_identity, sha256)?
+    {
         info!("ingest_cache 命中: source={}", source_identity);
         return Ok(KbCompilationResult {
             analysis: DocumentAnalysis {
@@ -93,7 +93,13 @@ pub async fn process_with_kb_compilation(
     // Step 1: 文档分析（同时用于双引擎降级 + analysis_cache）
     let orchestrator = AnalysisOrchestrator::new(cache_store, provider_manager.clone());
     let analysis_result = orchestrator
-        .analyze(project_id, source_identity, sha256, text, enable_kb_compilation)
+        .analyze(
+            project_id,
+            source_identity,
+            sha256,
+            text,
+            enable_kb_compilation,
+        )
         .await;
 
     let engine_label = match analysis_result.engine {
@@ -133,9 +139,15 @@ pub async fn process_with_kb_compilation(
     if compilation_done && !generated_pages.is_empty() {
         let verifier = VerificationPipeline::default_with_all();
         for slug in &generated_pages {
-            if let Ok(Some(page)) = wiki_pages.lock().map_err(|e| e.to_string()).and_then(|store| {
-                store.get_by_slug(project_id, slug).map_err(|e| e.to_string())
-            }) {
+            if let Ok(Some(page)) = wiki_pages
+                .lock()
+                .map_err(|e| e.to_string())
+                .and_then(|store| {
+                    store
+                        .get_by_slug(project_id, slug)
+                        .map_err(|e| e.to_string())
+                })
+            {
                 let input = VerificationInput {
                     generated_text: page.content_candidate.clone().unwrap_or_default(),
                     retrieved_chunks: vec![],
@@ -147,10 +159,16 @@ pub async fn process_with_kb_compilation(
                 let report = verifier.verify(&input).await;
                 tracing::info!(
                     "编译验证: slug={}, level={:?}, confidence={}",
-                    slug, report.level, report.overall_confidence
+                    slug,
+                    report.level,
+                    report.overall_confidence
                 );
                 if report.level == crate::services::verification::types::VerificationLevel::Failed {
-                    tracing::warn!("编译验证未通过: slug={}, detail={:?}", slug, report.suggested_labels);
+                    tracing::warn!(
+                        "编译验证未通过: slug={}, detail={:?}",
+                        slug,
+                        report.suggested_labels
+                    );
                 }
             }
         }
@@ -197,12 +215,8 @@ async fn run_llm_compilation(
 
     let prompt = build_compilation_prompt(analysis);
 
-    let (generated_content, generated_tags) = call_llm_for_compilation(
-        &prompt,
-        &page_title,
-        provider_manager,
-    )
-    .await?;
+    let (generated_content, generated_tags) =
+        call_llm_for_compilation(&prompt, &page_title, provider_manager).await?;
 
     let sources_json = serde_json::json!([{
         "source_id": serde_json::Value::Null,
@@ -305,63 +319,51 @@ async fn call_llm_for_compilation(
     _page_title: &str,
     provider_manager: &Arc<RwLock<LLMProviderManager>>,
 ) -> Result<(String, String), String> {
-    // 获取 LLM 供应商配置
-    let (base_url, api_key, model_name) = {
+    // 获取默认的 LLM 供应商配置，避免硬编码直接发起请求
+    let provider_config = {
         let mgr = provider_manager
             .read()
-            .map_err(|e| format!("provider 管理器锁失败: {}", e))?;
+            .map_err(|e| format!("供应商管理器读取失败: {}", e))?;
         let provider = mgr
             .get_default_provider()
-            .ok_or_else(|| "未配置 LLM 供应商".to_string())?;
+            .ok_or_else(|| "未配置默认 LLM 供应商".to_string())?;
         if !provider.is_configured() {
-            return Err("LLM 供应商未完成配置".to_string());
+            return Err("默认 LLM 供应商未完成配置".to_string());
         }
-        (
-            provider.base_url.clone(),
-            provider.get_default_key_value(),
-            provider.get_default_model_name(),
-        )
+        provider.clone()
     };
 
-    let body = serde_json::json!({
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": "你是一个知识库维基页面生成专家。严格按照输出格式生成内容。"},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.3,
-        "max_tokens": 4096
-    });
+    // 使用系统统一封装的大模型服务执行请求
+    // 统一复用协议路由、证书兼容、重试和密钥轮转逻辑
+    let llm_service = crate::services::llm_service::LLMService::new(provider_manager.clone());
 
-    let client = reqwest::Client::new();
-    let chat_url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let messages = vec![
+        crate::services::llm_service::ChatMessage {
+            role: "system".to_string(),
+            content: "你是一个知识库维基页面生成专家。严格按照输出格式生成内容。".to_string(),
+        },
+        crate::services::llm_service::ChatMessage {
+            role: "user".to_string(),
+            content: prompt.to_string(),
+        },
+    ];
 
-    let response = client
-        .post(&chat_url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
+    let content = llm_service
+        .chat_completion(&messages, &provider_config)
         .await
-        .map_err(|e| format!("LLM 编译请求失败: {}", e))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let err_text = response.text().await.unwrap_or_default();
-        return Err(format!("LLM 编译 API 错误 ({}): {}", status, err_text));
-    }
-
-    let response_json: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("解析 LLM 编译响应失败: {}", e))?;
-
-    let content = response_json["choices"][0]["message"]["content"]
-        .as_str()
-        .ok_or_else(|| "LLM 编译响应中未找到 content".to_string())?;
+        .map_err(|e| {
+            format!(
+                "LLM 编译请求失败: provider={}, protocol={:?}, base_url={}, model={}, error={}",
+                provider_config.name,
+                provider_config.protocol,
+                provider_config.base_url,
+                provider_config.get_default_model_name(),
+                e
+            )
+        })?;
 
     // 解析响应：提取 tags 和正文
-    let (tags_str, markdown_body) = parse_compilation_response(content);
+    let (tags_str, markdown_body) = parse_compilation_response(&content);
     let tags_json = if tags_str.is_empty() {
         "[]".to_string()
     } else {
@@ -380,10 +382,7 @@ fn parse_compilation_response(text: &str) -> (String, String) {
         let yaml_block = cap[1].trim();
         // 从 YAML 中提取 tags 行
         if let Some(tags_line) = yaml_block.lines().find(|l| l.trim().starts_with("tags:")) {
-            tags_line
-                .trim_start_matches("tags:")
-                .trim()
-                .to_string()
+            tags_line.trim_start_matches("tags:").trim().to_string()
         } else {
             String::new()
         }
@@ -542,9 +541,9 @@ fn char_levenshtein(a: &[char], b: &[char]) -> usize {
         curr[0] = i;
         for j in 1..=n {
             let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)           // 删除
-                .min(curr[j - 1] + 1)          // 插入
-                .min(prev[j - 1] + cost);      // 替换
+            curr[j] = (prev[j] + 1) // 删除
+                .min(curr[j - 1] + 1) // 插入
+                .min(prev[j - 1] + cost); // 替换
         }
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -603,8 +602,7 @@ fn check_ingest_cache(
 
     match cache.get_by_key(project_id, source_identity, sha256)? {
         Some(entry) if !entry.files_written.is_empty() => {
-            let files: Vec<String> =
-                serde_json::from_str(&entry.files_written).unwrap_or_default();
+            let files: Vec<String> = serde_json::from_str(&entry.files_written).unwrap_or_default();
             if files.is_empty() {
                 Ok(None)
             } else {

@@ -1,6 +1,4 @@
-use super::types::{
-    Checker, VerificationInput, VerificationReport,
-};
+use super::types::{Checker, VerificationInput, VerificationReport};
 
 /// 验证策略配置
 #[derive(Debug, Clone)]
@@ -86,7 +84,9 @@ mod tests {
     async fn test_pipeline_all_checkers() {
         let pipeline = VerificationPipeline::default_with_all();
         let input = VerificationInput {
-            generated_text: "金蝶云星空支持多组织架构（来源：产品介绍.md）。K/3 WISE 适用于中小企业。".to_string(),
+            generated_text:
+                "金蝶云星空支持多组织架构（来源：产品介绍.md）。K/3 WISE 适用于中小企业。"
+                    .to_string(),
             retrieved_chunks: vec![
                 "金蝶云星空支持多组织架构及协同业务".to_string(),
                 "K/3 WISE 适用于中小企业".to_string(),

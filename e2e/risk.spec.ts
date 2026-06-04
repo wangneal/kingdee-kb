@@ -17,30 +17,28 @@ test.describe("Risk Control page", () => {
     await expect(page.getByText("项目健康度")).toBeVisible();
     await expect(page.getByText("防身话术库")).toBeVisible();
     await expect(page.getByText("AI 深度分析")).toBeVisible();
-    await expect(page.getByText("备份恢复")).toBeVisible();
   });
 
-  test("should display project selector", async ({ page }) => {
+  test("should follow the global project instead of showing a risk project selector", async ({ page }) => {
     await page.goto("/risk");
-    const select = page.locator("select");
-    await expect(select).toBeVisible();
+    await expect(page.getByText("当前项目：默认项目")).toBeVisible();
+    await expect(page.locator("select")).toHaveCount(0);
+    await expect(page.getByText("新建")).toHaveCount(0);
+
+    const calls = await page.evaluate(() => globalThis.__TAURI_MOCK_CALLS__);
+    expect(calls.list_risk_projects).toBeUndefined();
+    expect(calls.list_scope_items?.[0]).toEqual({ projectId: 1 });
   });
 
-  test("should display new project button", async ({ page }) => {
+  test("should load scope tab for the current global project", async ({ page }) => {
     await page.goto("/risk");
-    await expect(page.getByText("新建")).toBeVisible();
-  });
-
-  test("should show empty state for scope tab when no project selected", async ({ page }) => {
-    await page.goto("/risk");
-    await expect(page.getByText("请先在顶部选择或创建一个项目")).toBeVisible();
+    await expect(page.getByText("检查新需求是否超范围")).toBeVisible();
   });
 
   test("should switch to health tab", async ({ page }) => {
     await page.goto("/risk");
     await page.getByText("项目健康度").click();
-    // Should still show empty state since no project selected
-    await expect(page.getByText("请先在顶部选择或创建一个项目")).toBeVisible();
+    await expect(page.getByText("75/100")).toBeVisible();
   });
 
   test("should switch to scripts tab", async ({ page }) => {
@@ -50,11 +48,4 @@ test.describe("Risk Control page", () => {
     await expect(page.getByPlaceholder("如：客户要求在合同范围外增加一个全新的报表模块")).toBeVisible();
   });
 
-  test("should switch to backup tab", async ({ page }) => {
-    await page.goto("/risk");
-    await page.getByText("备份恢复").click();
-    await expect(page.getByText("整库备份与恢复")).toBeVisible();
-    await expect(page.getByText("导出整库备份")).toBeVisible();
-    await expect(page.getByText("导入整库备份")).toBeVisible();
-  });
 });

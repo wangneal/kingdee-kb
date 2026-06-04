@@ -54,8 +54,7 @@ pub struct OutlineStore {
 impl OutlineStore {
     /// 使用指定的数据库文件路径创建存储
     pub fn new(db_path: &Path) -> Result<Self, String> {
-        let conn =
-            Connection::open(db_path).map_err(|e| format!("打开大纲数据库失败: {}", e))?;
+        let conn = Connection::open(db_path).map_err(|e| format!("打开大纲数据库失败: {}", e))?;
         conn.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(|e| format!("设置大纲数据库忙超时失败: {}", e))?;
         let store = Self {
@@ -67,8 +66,8 @@ impl OutlineStore {
 
     /// 创建内存数据库（降级兜底）
     pub fn new_in_memory() -> Result<Self, String> {
-        let conn = Connection::open_in_memory()
-            .map_err(|e| format!("创建内存大纲数据库失败: {}", e))?;
+        let conn =
+            Connection::open_in_memory().map_err(|e| format!("创建内存大纲数据库失败: {}", e))?;
         // 内存数据库中禁用外键约束（用于降级和单元测试）
         conn.execute_batch("PRAGMA foreign_keys = OFF")
             .map_err(|e| format!("禁用外键约束失败: {}", e))?;
@@ -288,7 +287,8 @@ impl OutlineStore {
 
         let id = conn.last_insert_rowid();
         drop(conn);
-        self.get_node(id)?.ok_or_else(|| "创建节点后查询失败".to_string())
+        self.get_node(id)?
+            .ok_or_else(|| "创建节点后查询失败".to_string())
     }
 
     /// 更新大纲节点（部分更新，仅更新传入的 Some 字段）。
@@ -325,8 +325,14 @@ impl OutlineStore {
                     updated_at = datetime('now')
                  WHERE id = ?9",
                 params![
-                    new_content, new_notes, new_tags,
-                    new_collapsed as i32, new_completed as i32, new_marker, new_priority, new_note,
+                    new_content,
+                    new_notes,
+                    new_tags,
+                    new_collapsed as i32,
+                    new_completed as i32,
+                    new_marker,
+                    new_priority,
+                    new_note,
                     id,
                 ],
             )
@@ -336,7 +342,8 @@ impl OutlineStore {
         }
 
         drop(conn);
-        self.get_node(id)?.ok_or_else(|| "更新节点后查询失败".to_string())
+        self.get_node(id)?
+            .ok_or_else(|| "更新节点后查询失败".to_string())
     }
 
     /// 递归删除节点及其所有后代（子树删除）。
@@ -347,7 +354,8 @@ impl OutlineStore {
         let conn = self.conn.lock().map_err(|e| format!("加锁失败: {}", e))?;
 
         let do_delete = || -> Result<(), String> {
-            conn.execute_batch("BEGIN").map_err(|e| format!("开始事务失败: {}", e))?;
+            conn.execute_batch("BEGIN")
+                .map_err(|e| format!("开始事务失败: {}", e))?;
 
             // 收集子树中所有节点 ID（含自身）
             let node_ids = self.collect_subtree_ids(&conn, id)?;
@@ -396,7 +404,8 @@ impl OutlineStore {
                 }
             }
 
-            conn.execute_batch("COMMIT").map_err(|e| format!("提交事务失败: {}", e))?;
+            conn.execute_batch("COMMIT")
+                .map_err(|e| format!("提交事务失败: {}", e))?;
             Ok(())
         };
 
@@ -445,7 +454,8 @@ impl OutlineStore {
         }
 
         drop(conn);
-        self.get_node(id)?.ok_or_else(|| "移动节点后查询失败".to_string())
+        self.get_node(id)?
+            .ok_or_else(|| "移动节点后查询失败".to_string())
     }
 
     /// 获取指定 session 的完整大纲（平铺列表，按 parent_id 和 sort_order 排序）。
@@ -603,7 +613,10 @@ impl OutlineStore {
         // 两轮匹配
         // 第一轮：精确匹配 content 和 notes 相同
         for parsed_node in &mut parsed_nodes {
-            if let Some(pos) = old_nodes_pool.iter().position(|o| o.content == parsed_node.content && o.notes == parsed_node.notes) {
+            if let Some(pos) = old_nodes_pool
+                .iter()
+                .position(|o| o.content == parsed_node.content && o.notes == parsed_node.notes)
+            {
                 let matched = old_nodes_pool.remove(pos);
                 parsed_node.matched_id = Some(matched.id);
                 parsed_node.matched_question_id = matched.question_id;
@@ -612,7 +625,10 @@ impl OutlineStore {
         // 第二轮：模糊匹配 content 相同
         for parsed_node in &mut parsed_nodes {
             if parsed_node.matched_id.is_none() {
-                if let Some(pos) = old_nodes_pool.iter().position(|o| o.content == parsed_node.content) {
+                if let Some(pos) = old_nodes_pool
+                    .iter()
+                    .position(|o| o.content == parsed_node.content)
+                {
                     let matched = old_nodes_pool.remove(pos);
                     parsed_node.matched_id = Some(matched.id);
                     parsed_node.matched_question_id = matched.question_id;
@@ -637,9 +653,10 @@ impl OutlineStore {
 
         // 执行数据库更新
         let conn = self.conn.lock().map_err(|e| format!("加锁失败: {}", e))?;
-        
+
         let do_update = || -> Result<(), String> {
-            conn.execute_batch("BEGIN").map_err(|e| format!("开始事务失败: {}", e))?;
+            conn.execute_batch("BEGIN")
+                .map_err(|e| format!("开始事务失败: {}", e))?;
 
             // 检查问答记录表是否存在，以容忍内存测试数据库等未启用问答模块的情况
             let has_qa_table: bool = conn
@@ -655,8 +672,7 @@ impl OutlineStore {
 
             for i in 0..parsed_nodes.len() {
                 let parsed_node = &parsed_nodes[i];
-                let parent_db_id = parent_indices[i]
-                    .and_then(|p_idx| db_ids[p_idx]);
+                let parent_db_id = parent_indices[i].and_then(|p_idx| db_ids[p_idx]);
 
                 let sort_order = (i + 1) as f64;
                 let mut question_id = parsed_node.matched_question_id;
@@ -674,7 +690,8 @@ impl OutlineStore {
                                         updated_at = datetime('now')
                                      WHERE id = ?3",
                                     params![parsed_node.content, parsed_node.notes, qid],
-                                ).map_err(|e| format!("更新问答记录失败: {}", e))?;
+                                )
+                                .map_err(|e| format!("更新问答记录失败: {}", e))?;
                             }
                             None => {
                                 // 插入新问答（标记为 auto 自动提取）
@@ -709,7 +726,6 @@ impl OutlineStore {
                     }
                 }
 
-
                 let db_id = match parsed_node.matched_id {
                     Some(id) => {
                         // 更新节点，添加对 question_id 的更新
@@ -722,8 +738,16 @@ impl OutlineStore {
                                 question_id = ?5,
                                 updated_at = datetime('now')
                              WHERE id = ?6",
-                            params![parent_db_id, parsed_node.content, parsed_node.notes, sort_order, question_id, id],
-                        ).map_err(|e| format!("更新大纲节点失败: {}", e))?;
+                            params![
+                                parent_db_id,
+                                parsed_node.content,
+                                parsed_node.notes,
+                                sort_order,
+                                question_id,
+                                id
+                            ],
+                        )
+                        .map_err(|e| format!("更新大纲节点失败: {}", e))?;
                         id
                     }
                     None => {
@@ -745,7 +769,8 @@ impl OutlineStore {
                 conn.execute(
                     "UPDATE outline_nodes SET parent_id = NULL WHERE id = ?1",
                     params![old_node.id],
-                ).map_err(|e| format!("解除旧大纲节点父级关联失败: {}", e))?;
+                )
+                .map_err(|e| format!("解除旧大纲节点父级关联失败: {}", e))?;
             }
 
             // 清理已删除的旧节点以及关联 of QA
@@ -769,11 +794,15 @@ impl OutlineStore {
                     }
                 }
 
-                conn.execute("DELETE FROM outline_nodes WHERE id = ?1", params![old_node.id])
-                    .map_err(|e| format!("删除被移除的大纲节点失败: {}", e))?;
+                conn.execute(
+                    "DELETE FROM outline_nodes WHERE id = ?1",
+                    params![old_node.id],
+                )
+                .map_err(|e| format!("删除被移除的大纲节点失败: {}", e))?;
             }
 
-            conn.execute_batch("COMMIT").map_err(|e| format!("提交事务失败: {}", e))?;
+            conn.execute_batch("COMMIT")
+                .map_err(|e| format!("提交事务失败: {}", e))?;
             Ok(())
         };
 
@@ -925,10 +954,7 @@ impl OutlineStore {
         // 构建 parent_id → children 映射
         let mut children_map: HashMap<Option<i64>, Vec<i64>> = HashMap::new();
         for n in nodes {
-            children_map
-                .entry(n.parent_id)
-                .or_default()
-                .push(n.id);
+            children_map.entry(n.parent_id).or_default().push(n.id);
         }
 
         // 递归构建树
@@ -938,7 +964,10 @@ impl OutlineStore {
             children_map: &HashMap<Option<i64>, Vec<i64>>,
         ) -> TreeNode {
             let node = map[&node_id].clone();
-            let child_ids = children_map.get(&Some(node_id)).cloned().unwrap_or_default();
+            let child_ids = children_map
+                .get(&Some(node_id))
+                .cloned()
+                .unwrap_or_default();
             let children = child_ids
                 .into_iter()
                 .map(|cid| build_subtree(cid, map, children_map))
@@ -1051,7 +1080,17 @@ mod tests {
         let store = new_store();
         let node = store.create_node(1, None, "原始内容").unwrap();
         let updated = store
-            .update_node(node.id, Some("新内容"), None, Some("[\"tag1\"]"), None, None, None, None, None)
+            .update_node(
+                node.id,
+                Some("新内容"),
+                None,
+                Some("[\"tag1\"]"),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(updated.content, "新内容");
         assert_eq!(updated.notes, ""); // 未修改
@@ -1185,7 +1224,7 @@ mod tests {
 ";
         store.import_markdown_outline(1, new_markdown).unwrap();
         let new_tree = store.get_tree(1).unwrap();
-        
+
         // 旧的 A1 和 B 应该被删除了，只剩下 A 和新加的 C
         assert_eq!(new_tree.len(), 2);
         let updated_a = new_tree.iter().find(|n| n.content == "一级节点A").unwrap();

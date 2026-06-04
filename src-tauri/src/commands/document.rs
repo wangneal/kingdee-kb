@@ -69,6 +69,7 @@ pub async fn delete_document(
     }
 
     // 2. 从 BM25 删除
+    state.get_or_init_bm25()?;
     if let Ok(bm25) = state.bm25.write() {
         if let Err(e) = bm25.remove_chunks(&vector_keys) {
             let err_msg = format!("BM25 删除失败(outbox_id={}): {}", outbox_id, e);
@@ -176,7 +177,9 @@ pub async fn delete_documents_batch(
     let mut errors: Vec<String> = Vec::new();
 
     // 3. BM25 批量删除
-    if let Ok(bm25) = state.bm25.write() {
+    if let Err(e) = state.get_or_init_bm25() {
+        errors.push(format!("BM25 初始化失败: {}", e));
+    } else if let Ok(bm25) = state.bm25.write() {
         if let Err(e) = bm25.remove_chunks(&all_vector_keys) {
             errors.push(format!("BM25 批量删除失败: {}", e));
         }
@@ -201,7 +204,11 @@ pub async fn delete_documents_batch(
     // 6. 更新所有 outbox 状态
     {
         let meta = state.metadata.lock().map_err(|e| e.to_string())?;
-        let status = if errors.is_empty() { "completed" } else { "failed" };
+        let status = if errors.is_empty() {
+            "completed"
+        } else {
+            "failed"
+        };
         let error_msg = if errors.is_empty() {
             None
         } else {

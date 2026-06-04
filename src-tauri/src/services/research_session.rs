@@ -89,7 +89,12 @@ impl ResearchSessionStore {
         let conn = Connection::open(db_path)
             .map_err(|e| format!("Failed to open research session DB: {}", e))?;
         conn.busy_timeout(std::time::Duration::from_secs(5))
-            .map_err(|e| format!("Failed to set busy timeout on research session store: {}", e))?;
+            .map_err(|e| {
+                format!(
+                    "Failed to set busy timeout on research session store: {}",
+                    e
+                )
+            })?;
         let store = Self {
             conn: Mutex::new(conn),
         };
@@ -515,14 +520,7 @@ mod tests {
     fn test_create_and_list_session() {
         let store = new_store();
         let id = store
-            .create_session(
-                "测试会话",
-                "enterprise",
-                "BOS",
-                "张三",
-                "2026-05-24",
-                1,
-            )
+            .create_session("测试会话", "enterprise", "BOS", "张三", "2026-05-24", 1)
             .unwrap();
         assert!(id > 0);
 
@@ -572,14 +570,7 @@ mod tests {
     fn test_export_csv_and_markdown() {
         let store = new_store();
         let sid = store
-            .create_session(
-                "导出测试",
-                "enterprise",
-                "CM",
-                "王五",
-                "2026-05-24",
-                1,
-            )
+            .create_session("导出测试", "enterprise", "CM", "王五", "2026-05-24", 1)
             .unwrap();
         store
             .add_record(sid, None, "问题1", "答案1", "", 0)

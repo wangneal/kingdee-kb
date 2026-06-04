@@ -223,9 +223,6 @@ const MOCK_RESPONSES: Record<string, unknown> = {
   },
 
   // Risk control
-  list_risk_projects: [],
-  create_risk_project: 1,
-  delete_risk_project: null,
   list_scope_items: [],
   add_scope_item: 1,
   delete_scope_item: null,
@@ -238,7 +235,7 @@ const MOCK_RESPONSES: Record<string, unknown> = {
   },
   get_project_health: {
     overall_score: 75,
-    risk_level: "medium",
+    risk_level: "critical",
     dimensions: [
       { name: "范围控制", score: 20, weight: 0.3, detail: "范围稳定" },
       { name: "进度管理", score: 15, weight: 0.25, detail: "进度正常" },
@@ -259,9 +256,8 @@ const MOCK_RESPONSES: Record<string, unknown> = {
   export_database: null,
   import_database: {
     db_size_bytes: 1024000,
-    risk_project_count: 3,
-    scope_item_count: 15,
-    metric_count: 8,
+    document_count: 15,
+    chunk_count: 8,
   },
 
   // Blueprint / Fit-Gap / Desensitize

@@ -150,7 +150,7 @@ async fn from_provider_api(
         }
     }
 
-    // Ollama (Local)
+    // Ollama 原生协议
     if provider.protocol == LLMProtocol::Local {
         let url = format!("{}/api/show", provider.base_url.trim_end_matches('/'));
         let resp = client

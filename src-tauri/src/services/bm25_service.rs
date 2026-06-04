@@ -206,13 +206,11 @@ pub struct BM25SearchResult {
 
 // ─── BM25 服务 ───
 
-/// 基于 tantivy 和 jieba 分词的 BM25 全文搜索服务
-pub struct BM25Service {
+/// BM25 内部引擎（tantivy + jieba）
+struct InnerBM25 {
     index: Index,
     reader: IndexReader,
     writer: Arc<Mutex<IndexWriter>>,
-    index_dir: PathBuf,
-    // 字段句柄（缓存以提高性能）
     field_chunk_id: Field,
     field_content: Field,
     field_title: Field,
@@ -220,10 +218,10 @@ pub struct BM25Service {
     field_project: Field,
 }
 
-impl BM25Service {
+impl InnerBM25 {
     /// 在指定目录创建或打开 BM25 索引
-    pub fn new(index_dir: PathBuf) -> Result<Self, String> {
-        std::fs::create_dir_all(&index_dir)
+    fn build(index_dir: &std::path::Path) -> Result<Self, String> {
+        std::fs::create_dir_all(index_dir)
             .map_err(|e| format!("Failed to create BM25 index directory: {}", e))?;
 
         let mut schema_builder = Schema::builder();
@@ -274,10 +272,10 @@ impl BM25Service {
 
         // 打开现有索引或创建新索引
         let index = if index_dir.join("meta.json").exists() {
-            Index::open_in_dir(&index_dir)
+            Index::open_in_dir(index_dir)
                 .map_err(|e| format!("Failed to open BM25 index: {}", e))?
         } else {
-            Index::create_in_dir(&index_dir, schema.clone())
+            Index::create_in_dir(index_dir, schema.clone())
                 .map_err(|e| format!("Failed to create BM25 index: {}", e))?
         };
 
@@ -296,22 +294,68 @@ impl BM25Service {
             .try_into()
             .map_err(|e| format!("Failed to create BM25 reader: {}", e))?;
 
-        // 使用 50MB 堆内存的写入器
+        // 使用 15MB 堆内存的写入器（tantivy BM25 要求至少 15MB）
         let writer = index
-            .writer(50_000_000)
+            .writer(15_000_000)
             .map_err(|e| format!("Failed to create BM25 writer: {}", e))?;
 
         Ok(Self {
             index,
             reader,
             writer: Arc::new(Mutex::new(writer)),
-            index_dir,
             field_chunk_id,
             field_content,
             field_title,
             field_section_path,
             field_project,
         })
+    }
+}
+
+/// 基于 tantivy 和 jieba 分词的 BM25 全文搜索服务（支持懒加载）
+pub struct BM25Service {
+    inner: Option<InnerBM25>,
+    index_dir: PathBuf,
+}
+
+impl BM25Service {
+    /// 在指定目录创建或打开 BM25 索引（立即初始化）
+    pub fn new(index_dir: PathBuf) -> Result<Self, String> {
+        let inner = InnerBM25::build(&index_dir)?;
+        Ok(Self {
+            inner: Some(inner),
+            index_dir,
+        })
+    }
+
+    /// 创建懒加载 BM25 服务——首次使用时才初始化
+    pub fn empty(index_dir: PathBuf) -> Self {
+        Self {
+            inner: None,
+            index_dir,
+        }
+    }
+
+    /// BM25 引擎是否已初始化
+    pub fn is_ready(&self) -> bool {
+        self.inner.is_some()
+    }
+
+    /// 确保 BM25 引擎已初始化（幂等安全）
+    pub fn ensure_initialized(&mut self) -> Result<(), String> {
+        if self.inner.is_some() {
+            return Ok(());
+        }
+        let inner = InnerBM25::build(&self.index_dir)?;
+        self.inner = Some(inner);
+        Ok(())
+    }
+
+    /// 获取内部引擎引用（写操作调用，未初始化时返回错误）
+    fn inner(&self) -> Result<&InnerBM25, String> {
+        self.inner
+            .as_ref()
+            .ok_or_else(|| "BM25 全文搜索服务尚未初始化".to_string())
     }
 
     /// 索引单个 chunk
@@ -323,15 +367,16 @@ impl BM25Service {
         section_path: Option<&str>,
         project: &str,
     ) -> Result<(), String> {
-        let writer = self.writer.lock().map_err(|e| e.to_string())?;
+        let inner = self.inner()?;
+        let writer = inner.writer.lock().map_err(|e| e.to_string())?;
 
         let mut doc = TantivyDocument::new();
-        doc.add_i64(self.field_chunk_id, chunk_id);
-        doc.add_text(self.field_content, content);
-        doc.add_text(self.field_title, title);
-        doc.add_text(self.field_project, project);
+        doc.add_i64(inner.field_chunk_id, chunk_id);
+        doc.add_text(inner.field_content, content);
+        doc.add_text(inner.field_title, title);
+        doc.add_text(inner.field_project, project);
         if let Some(sp) = section_path {
-            doc.add_text(self.field_section_path, sp);
+            doc.add_text(inner.field_section_path, sp);
         }
 
         writer
@@ -346,15 +391,16 @@ impl BM25Service {
         &self,
         chunks: &[(i64, String, String, Option<String>, String)],
     ) -> Result<(), String> {
-        let writer = self.writer.lock().map_err(|e| e.to_string())?;
+        let inner = self.inner()?;
+        let writer = inner.writer.lock().map_err(|e| e.to_string())?;
         for (chunk_id, title, content, section_path, project) in chunks {
             let mut doc = TantivyDocument::new();
-            doc.add_i64(self.field_chunk_id, *chunk_id);
-            doc.add_text(self.field_content, content.as_str());
-            doc.add_text(self.field_title, title.as_str());
-            doc.add_text(self.field_project, project.as_str());
+            doc.add_i64(inner.field_chunk_id, *chunk_id);
+            doc.add_text(inner.field_content, content.as_str());
+            doc.add_text(inner.field_title, title.as_str());
+            doc.add_text(inner.field_project, project.as_str());
             if let Some(sp) = section_path {
-                doc.add_text(self.field_section_path, sp.as_str());
+                doc.add_text(inner.field_section_path, sp.as_str());
             }
 
             writer
@@ -367,22 +413,27 @@ impl BM25Service {
 
     /// 根据 chunk_id 从索引中移除 chunk
     pub fn remove_chunk(&self, chunk_id: i64) -> Result<(), String> {
-        let writer = self.writer.lock().map_err(|e| e.to_string())?;
-        let term = tantivy::Term::from_field_i64(self.field_chunk_id, chunk_id);
+        let inner = self.inner()?;
+        let writer = inner.writer.lock().map_err(|e| e.to_string())?;
+        let term = tantivy::Term::from_field_i64(inner.field_chunk_id, chunk_id);
         writer.delete_term(term);
         Ok(())
     }
 
     /// 移除多个 chunk 并提交（批量删除并持久化）
     pub fn remove_chunks(&self, chunk_ids: &[i64]) -> Result<(), String> {
-        let mut writer = self.writer.lock().map_err(|e| e.to_string())?;
+        let inner = self.inner()?;
+        let mut writer = inner.writer.lock().map_err(|e| e.to_string())?;
         for cid in chunk_ids {
-            let term = tantivy::Term::from_field_i64(self.field_chunk_id, *cid);
+            let term = tantivy::Term::from_field_i64(inner.field_chunk_id, *cid);
             writer.delete_term(term);
         }
-        writer.commit().map_err(|e| format!("BM25 批量删除提交失败: {}", e))?;
+        writer
+            .commit()
+            .map_err(|e| format!("BM25 批量删除提交失败: {}", e))?;
         drop(writer);
-        self.reader
+        inner
+            .reader
             .reload()
             .map_err(|e| format!("BM25 重载失败: {}", e))?;
         Ok(())
@@ -390,21 +441,24 @@ impl BM25Service {
 
     /// 移除项目中的所有 chunk
     pub fn remove_project(&self, project: &str) -> Result<(), String> {
-        let writer = self.writer.lock().map_err(|e| e.to_string())?;
-        let term = tantivy::Term::from_field_text(self.field_project, project);
+        let inner = self.inner()?;
+        let writer = inner.writer.lock().map_err(|e| e.to_string())?;
+        let term = tantivy::Term::from_field_text(inner.field_project, project);
         writer.delete_term(term);
         Ok(())
     }
 
     /// 提交待处理的更改并重新加载读取器
     pub fn commit(&self) -> Result<(), String> {
-        let mut writer = self.writer.lock().map_err(|e| e.to_string())?;
+        let inner = self.inner()?;
+        let mut writer = inner.writer.lock().map_err(|e| e.to_string())?;
         writer
             .commit()
             .map_err(|e| format!("Failed to commit BM25 index: {}", e))?;
         drop(writer);
 
-        self.reader
+        inner
+            .reader
             .reload()
             .map_err(|e| format!("Failed to reload BM25 reader: {}", e))?;
 
@@ -414,6 +468,7 @@ impl BM25Service {
     /// 搜索匹配查询的 chunk，可选按项目过滤。
     /// 支持在 tantivy 查询级别预过滤排除 chunk ID
     /// （修复聊天附件项目的"搜索劫持"问题）。
+    /// 未初始化时返回空结果（不阻塞搜索流程）。
     pub fn search(
         &self,
         query: &str,
@@ -422,10 +477,14 @@ impl BM25Service {
         top_k: u32,
         exclude_chunk_ids: &[i64],
     ) -> Result<Vec<BM25SearchResult>, String> {
-        let searcher = self.reader.searcher();
+        let inner = match self.inner.as_ref() {
+            Some(i) => i,
+            None => return Ok(Vec::new()),
+        };
+        let searcher = inner.reader.searcher();
 
         let query_parser =
-            QueryParser::for_index(&self.index, vec![self.field_content, self.field_title]);
+            QueryParser::for_index(&inner.index, vec![inner.field_content, inner.field_title]);
 
         // 构建用户查询
         let user_query_str = if let Some(proj) = project_id {
@@ -451,7 +510,7 @@ impl BM25Service {
             let mut subqueries: Vec<(Occur, Box<dyn tantivy::query::Query>)> = Vec::new();
             subqueries.push((Occur::Must, parsed_user_query));
             for cid in exclude_chunk_ids {
-                let term = tantivy::Term::from_field_i64(self.field_chunk_id, *cid);
+                let term = tantivy::Term::from_field_i64(inner.field_chunk_id, *cid);
                 subqueries.push((
                     Occur::MustNot,
                     Box::new(TermQuery::new(term, IndexRecordOption::Basic)),
@@ -472,29 +531,29 @@ impl BM25Service {
                 .map_err(|e| format!("Failed to retrieve doc: {}", e))?;
 
             let chunk_id = doc
-                .get_first(self.field_chunk_id)
+                .get_first(inner.field_chunk_id)
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
 
             let title = doc
-                .get_first(self.field_title)
+                .get_first(inner.field_title)
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
 
             let content = doc
-                .get_first(self.field_content)
+                .get_first(inner.field_content)
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
 
             let section_path = doc
-                .get_first(self.field_section_path)
+                .get_first(inner.field_section_path)
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
             let project = doc
-                .get_first(self.field_project)
+                .get_first(inner.field_project)
                 .and_then(|v| v.as_str())
                 .unwrap_or("default")
                 .to_string();
@@ -516,9 +575,12 @@ impl BM25Service {
         Ok(results)
     }
 
-    /// 获取已索引文档数量
+    /// 获取已索引文档数量（未初始化时返回 0）
     pub fn doc_count(&self) -> usize {
-        self.reader.searcher().num_docs() as usize
+        match self.inner.as_ref() {
+            Some(inner) => inner.reader.searcher().num_docs() as usize,
+            None => 0,
+        }
     }
 
     /// 获取索引目录路径
@@ -531,7 +593,8 @@ impl BM25Service {
         &self,
         chunks: &[(i64, String, String, Option<String>, String)],
     ) -> Result<(), String> {
-        let mut writer = self.writer.lock().map_err(|e| e.to_string())?;
+        let inner = self.inner()?;
+        let mut writer = inner.writer.lock().map_err(|e| e.to_string())?;
         // 清除所有现有文档
         writer
             .delete_all_documents()
@@ -540,12 +603,12 @@ impl BM25Service {
         // 重新索引所有 chunk
         for (chunk_id, title, content, section_path, project) in chunks {
             let mut doc = TantivyDocument::new();
-            doc.add_i64(self.field_chunk_id, *chunk_id);
-            doc.add_text(self.field_content, content.as_str());
-            doc.add_text(self.field_title, title.as_str());
-            doc.add_text(self.field_project, project.as_str());
+            doc.add_i64(inner.field_chunk_id, *chunk_id);
+            doc.add_text(inner.field_content, content.as_str());
+            doc.add_text(inner.field_title, title.as_str());
+            doc.add_text(inner.field_project, project.as_str());
             if let Some(sp) = section_path {
-                doc.add_text(self.field_section_path, sp.as_str());
+                doc.add_text(inner.field_section_path, sp.as_str());
             }
 
             writer
@@ -553,12 +616,13 @@ impl BM25Service {
                 .map_err(|e| format!("Failed to index chunk {}: {}", chunk_id, e))?;
         }
 
-        writer
-            .commit()
-            .map_err(|e| format!("Failed to commit BM25 rebuild: {}", e))?;
+            writer
+                .commit()
+                .map_err(|e| format!("Failed to commit BM25 rebuild: {}", e))?;
         drop(writer);
 
-        self.reader
+        inner
+            .reader
             .reload()
             .map_err(|e| format!("Failed to reload BM25 reader: {}", e))?;
 
@@ -662,28 +726,14 @@ mod tests {
         let service = BM25Service::new(index_dir).unwrap();
 
         service
-            .add_chunk(
-                1,
-                "项目一资料",
-                "项目关键词",
-                None,
-                "1",
-            )
+            .add_chunk(1, "项目一资料", "项目关键词", None, "1")
             .unwrap();
         service
-            .add_chunk(
-                2,
-                "项目二资料",
-                "项目关键词",
-                None,
-                "2",
-            )
+            .add_chunk(2, "项目二资料", "项目关键词", None, "2")
             .unwrap();
         service.commit().unwrap();
 
-        let unrestricted = service
-            .search("项目关键词", None, &[], 10, &[])
-            .unwrap();
+        let unrestricted = service.search("项目关键词", None, &[], 10, &[]).unwrap();
         assert_eq!(unrestricted.len(), 2);
 
         let scoped_project = "1".to_string();

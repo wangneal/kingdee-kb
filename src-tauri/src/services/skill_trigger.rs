@@ -8,7 +8,7 @@
 //!   - 确保了 100% 的语义精确度，同时具备极高的系统容错性与冷启动安全性
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use crate::services::embedding::EmbeddingService;
 use crate::services::skill_types::Skill;
@@ -94,13 +94,20 @@ impl SkillTriggerEngine {
 
                 let keywords = Self::extract_keywords(desc);
                 for keyword in keywords {
-                    keyword_map.entry(keyword).or_default().push(skill_id.clone());
+                    keyword_map
+                        .entry(keyword)
+                        .or_default()
+                        .push(skill_id.clone());
                 }
             }
 
-            let trigger_keywords = crate::services::skill_types::extract_triggers_from_body(&skill.body);
+            let trigger_keywords =
+                crate::services::skill_types::extract_triggers_from_body(&skill.body);
             for keyword in &trigger_keywords {
-                keyword_map.entry(keyword.clone()).or_default().push(skill_id.clone());
+                keyword_map
+                    .entry(keyword.clone())
+                    .or_default()
+                    .push(skill_id.clone());
             }
 
             if !trigger_keywords.is_empty() {
@@ -139,7 +146,11 @@ impl SkillTriggerEngine {
         let remote_config = {
             let emb = embedding.read().map_err(|e| e.to_string())?;
             if emb.is_remote() {
-                Some(emb.remote_config().cloned().ok_or("远程配置不存在".to_string()))
+                Some(
+                    emb.remote_config()
+                        .cloned()
+                        .ok_or("远程配置不存在".to_string()),
+                )
             } else {
                 None
             }
@@ -240,7 +251,11 @@ impl SkillTriggerEngine {
     }
 
     /// 根据用户输入匹配技能
-    pub async fn match_by_input(&self, input: &str, embedding: &RwLock<EmbeddingService>) -> Vec<SkillMatch> {
+    pub async fn match_by_input(
+        &self,
+        input: &str,
+        embedding: &RwLock<EmbeddingService>,
+    ) -> Vec<SkillMatch> {
         let input_lower = input.to_lowercase();
         self.ensure_vector_cache(embedding).await;
 
@@ -418,7 +433,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_alias_matching() {
-        let skills = vec![create_test_skill("humanizer", "AI文案去味 24种模式检测。触发场景和短语：这段文字去AI味")];
+        let skills = vec![create_test_skill(
+            "humanizer",
+            "AI文案去味 24种模式检测。触发场景和短语：这段文字去AI味",
+        )];
 
         let engine = SkillTriggerEngine::new(&skills);
         let emb = RwLock::new(EmbeddingService::empty());

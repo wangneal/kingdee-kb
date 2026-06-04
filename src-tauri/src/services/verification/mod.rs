@@ -6,9 +6,9 @@ pub mod self_consistency;
 pub mod types;
 pub mod uncertainty;
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, LazyLock};
 use crate::services::hybrid_search::HybridSearchResult;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 
 // 全局会话级别的 RAG 检索缓存，键为 session_id
 pub static SESSION_RAG_CACHE: LazyLock<Arc<Mutex<HashMap<String, Vec<HybridSearchResult>>>>> =

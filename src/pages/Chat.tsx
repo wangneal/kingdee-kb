@@ -65,7 +65,7 @@ function nextId(): string {
 }
 
 const CHAT_STORAGE_KEY = "kingdee_kb_chat_history"
-const MAX_STORED_MESSAGES = 500
+const MAX_STORED_MESSAGES = 100
 
 const DOCUMENT_EXTENSIONS = new Set([
   "md",
@@ -218,6 +218,27 @@ export default function Chat() {
   const dropdownRef = useRef<HTMLDivElement>(null)
   const lastInputRef = useRef<{ text: string; attachments: ChatAttachment[] } | null>(null)
 
+  // 是否处于自动滚动跟随状态
+  const isAutoScrollingRef = useRef(true)
+
+  // 处理滚动事件，判断用户是否手动往上滚动
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+
+    // 计算距离底部的像素数
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+
+    // 如果距离底部小于等于 100px，认为用户重新回到了底部，开启自动跟随
+    // 否则认为用户在手动翻看历史，关闭自动跟随
+    if (distanceFromBottom <= 100) {
+      isAutoScrollingRef.current = true
+    } else {
+      isAutoScrollingRef.current = false
+    }
+  }, [])
+
+
   // 从 localStorage 加载聊天历史到 slot
   const didLoadRef = useRef(false)
   useEffect(() => {
@@ -259,55 +280,56 @@ export default function Chat() {
       })
   }, [])
 
-  // 自动滚动（rAF 节流 + 首次无条件置底 + 仅接近底部时跟随）
-  const scrollRafRef = useRef<number | null>(null)
+  // 首次加载且消息不为空时，无条件强制置底一次；当清空消息时重置状态
   const isInitialScrollRef = useRef(true)
-
-  // 当清空消息时，重置首次滚动标志
   useEffect(() => {
     if (messages.length === 0) {
       isInitialScrollRef.current = true
+      return
+    }
+
+    const el = scrollRef.current
+    if (!el) return
+
+    if (isInitialScrollRef.current) {
+      isInitialScrollRef.current = false
+      isAutoScrollingRef.current = true
+      el.scrollTop = el.scrollHeight
     }
   }, [messages.length])
 
+  // 双重保险：当消息列表或推理轨迹变化时，如果处于自动滚动状态，则执行滚动置底
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
 
-    const scroll = () => {
-      if (scrollRef.current) {
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-      }
-    }
-
-    // 首次加载且消息不为空时，无条件强制置底
-    if (isInitialScrollRef.current && messages.length > 0) {
-      isInitialScrollRef.current = false
-      if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current)
-      scrollRafRef.current = requestAnimationFrame(() => {
-        scrollRafRef.current = null
-        scroll()
-      })
-      return
-    }
-
-    // 距离底部 < 100px 才自动跟随
-    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100
-    if (!isNearBottom) return
-
-    if (scrollRafRef.current) return
-    scrollRafRef.current = requestAnimationFrame(() => {
-      scrollRafRef.current = null
-      scroll()
-    })
-
-    return () => {
-      if (scrollRafRef.current) {
-        cancelAnimationFrame(scrollRafRef.current)
-        scrollRafRef.current = null
-      }
+    if (isAutoScrollingRef.current) {
+      el.scrollTop = el.scrollHeight
     }
   }, [messages, currentTrace])
+
+  // 使用 ResizeObserver 监听聊天内容容器的尺寸变化
+  // 只要内容高度改变（如图片加载完成、Markdown 渲染展开等）且处于自动滚动状态，就强制置底
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+
+    const resizeObserver = new ResizeObserver(() => {
+      if (isAutoScrollingRef.current) {
+        el.scrollTop = el.scrollHeight
+      }
+    })
+
+    // 监听包裹消息列表的子元素 div
+    const child = el.firstElementChild
+    if (child) {
+      resizeObserver.observe(child)
+    }
+
+    return () => {
+      resizeObserver.disconnect()
+    }
+  }, [])
 
   // Update token count（禁止在 streaming 中运行，2 秒节流）
   const countTokensRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -372,6 +394,12 @@ export default function Chat() {
 
     setInput("")
     setAttachments([])
+
+    // 发送消息后，强制开启自动跟随，并立即执行一次滚动置底
+    isAutoScrollingRef.current = true
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
 
     const history = buildAgentHistory(messages)
     await agent.sendMessage("chat", outboundText, {
@@ -564,6 +592,7 @@ export default function Chat() {
   const handleClear = useCallback(() => {
     agent.clearSlot("chat")
     localStorage.removeItem(CHAT_STORAGE_KEY)
+    isAutoScrollingRef.current = true
   }, [agent])
 
   const handleKeyDown = useCallback(
@@ -622,7 +651,7 @@ export default function Chat() {
       </div>
 
       {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4">
+      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-6 py-4">
         <div className="space-y-4">
           {messages.length === 0 && !loading ? (
             <div className="flex flex-col items-center justify-center pt-20 text-center">
@@ -777,8 +806,8 @@ export default function Chat() {
 
                 {/* Auto-routing indicator */}
                 {attachments.some((a) => a.kind === "image") &&
-                  selectedProvider &&
-                  selectedProvider.is_multimodal !== true && (
+                  selectedModel &&
+                  selectedModel.is_multimodal !== true && (
                     <div className="mt-1 flex items-center gap-1 text-[10px] text-amber-600">
                       <Zap className="h-3 w-3" />
                       <span>图片附件将自动使用多模态模型</span>
@@ -1261,10 +1290,22 @@ const MessageBubble = memo(function MessageBubble({
             <div className="whitespace-pre-wrap">{message.content}</div>
           ) : message.streaming ? (
             /* 流式阶段：纯文本渲染，避免 ReactMarkdown 重复解析的性能开销 */
-            <div className="text-sm leading-relaxed whitespace-pre-wrap">
-              {message.content.replace(/^\n+/, "")}
-              <span className="ml-1 inline-block h-3.5 w-1.5 animate-pulse bg-amber-500 rounded-sm align-middle" />
-            </div>
+            message.content ? (
+              <div className="text-sm leading-relaxed whitespace-pre-wrap">
+                {message.content.replace(/^\n+/, "")}
+                <span className="ml-1 inline-block h-3.5 w-1.5 animate-pulse bg-amber-500 rounded-sm align-middle" />
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-sm text-neutral-500">
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-amber-500" />
+                <span>{message.statusText || "正在准备回答..."}</span>
+                <span className="flex gap-0.5" aria-hidden="true">
+                  <span className="h-1 w-1 animate-pulse rounded-full bg-neutral-400" />
+                  <span className="h-1 w-1 animate-pulse rounded-full bg-neutral-400 [animation-delay:150ms]" />
+                  <span className="h-1 w-1 animate-pulse rounded-full bg-neutral-400 [animation-delay:300ms]" />
+                </span>
+              </div>
+            )
           ) : (
             /* 完成后：Markdown 渲染（含本地图片自动转 Tauri URL） */
             <div className="prose prose-sm max-w-none prose-headings:text-neutral-800 prose-a:text-amber-600 prose-code:bg-neutral-100 prose-code:px-1 prose-code:rounded prose-pre:bg-neutral-900 prose-pre:text-neutral-100 [&_pre_code]:bg-transparent [&_pre_code]:text-inherit">

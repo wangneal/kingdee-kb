@@ -27,7 +27,9 @@ impl Checker for SelfConsistencyChecker {
         let text = &input.generated_text;
 
         // 没有检索源且非知识编译场景时跳过
-        if input.retrieved_chunks.is_empty() && input.scenario != super::types::ScenarioType::KnowledgeCompilation {
+        if input.retrieved_chunks.is_empty()
+            && input.scenario != super::types::ScenarioType::KnowledgeCompilation
+        {
             return CheckResult::pass("self_consistency")
                 .with_confidence(0.5)
                 .with_evidence(vec!["无知识库内容可进行一致性验证".to_string()]);
@@ -68,7 +70,10 @@ impl Checker for SelfConsistencyChecker {
         match self.llm.chat_completion(&messages, &config).await {
             Ok(response) => {
                 let trimmed = response.trim();
-                if trimmed.contains("验证通过") || trimmed.contains("没有发现") || trimmed.contains("无矛盾") {
+                if trimmed.contains("验证通过")
+                    || trimmed.contains("没有发现")
+                    || trimmed.contains("无矛盾")
+                {
                     CheckResult::pass("self_consistency")
                         .with_confidence(0.9)
                         .with_evidence(vec![trimmed.to_string()])
@@ -79,11 +84,12 @@ impl Checker for SelfConsistencyChecker {
                         .with_evidence(issues)
                 }
             }
-            Err(e) => {
-                CheckResult::fail("self_consistency", "LLM 验证调用失败，验证未完成".to_string())
-                    .with_confidence(0.0)
-                    .with_evidence(vec![format!("LLM 调用失败: {}", e)])
-            }
+            Err(e) => CheckResult::fail(
+                "self_consistency",
+                "LLM 验证调用失败，验证未完成".to_string(),
+            )
+            .with_confidence(0.0)
+            .with_evidence(vec![format!("LLM 调用失败: {}", e)]),
         }
     }
 }

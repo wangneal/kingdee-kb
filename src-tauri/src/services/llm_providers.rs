@@ -94,6 +94,7 @@ pub struct ModelConfig {
 
 /// LLM 供应商配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LLMProviderConfig {
     /// 唯一标识
     pub id: String,
@@ -105,32 +106,14 @@ pub struct LLMProviderConfig {
     pub base_url: String,
     /// 是否为默认供应商
     pub is_default: bool,
-    /// API Key 列表（新版：支持多个）
-    #[serde(default)]
+    /// API Key 列表
     pub api_keys: Vec<ApiKeyConfig>,
-    /// 模型列表（新版：支持多个）
-    #[serde(default)]
+    /// 模型列表
     pub models: Vec<ModelConfig>,
     /// 最大上下文窗口（token 数，默认：4096）
-    #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
     /// 生成温度（默认：0.3）
-    #[serde(default = "default_temperature")]
     pub temperature: f32,
-
-    // ─── 旧版字段（向后兼容，迁移后不再使用）───
-    /// 旧版单个 API Key
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub api_key: String,
-    /// 旧版单个模型名称
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub model: String,
-    /// 旧版多模态状态
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub is_multimodal: Option<bool>,
-    /// 旧版探测时间
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_probe_at: Option<String>,
 }
 
 impl LLMProviderConfig {
@@ -139,12 +122,7 @@ impl LLMProviderConfig {
         if self.protocol == LLMProtocol::Local {
             return !self.base_url.is_empty();
         }
-        // 新版：检查 api_keys 列表
-        if !self.api_keys.is_empty() {
-            return self.api_keys.iter().any(|k| !k.key.is_empty());
-        }
-        // 旧版兼容
-        !self.api_key.is_empty()
+        self.api_keys.iter().any(|k| !k.key.is_empty())
     }
 
     /// 获取默认 API Key
@@ -157,11 +135,9 @@ impl LLMProviderConfig {
 
     /// 获取默认 API Key 值
     pub fn get_default_key_value(&self) -> String {
-        if let Some(key_config) = self.get_default_api_key() {
-            return key_config.key.clone();
-        }
-        // 旧版兼容
-        self.api_key.clone()
+        self.get_default_api_key()
+            .map(|key_config| key_config.key.clone())
+            .unwrap_or_default()
     }
 
     /// 获取默认模型
@@ -174,70 +150,10 @@ impl LLMProviderConfig {
 
     /// 获取默认模型名称
     pub fn get_default_model_name(&self) -> String {
-        if let Some(model_config) = self.get_default_model() {
-            return model_config.name.clone();
-        }
-        // 旧版兼容
-        self.model.clone()
+        self.get_default_model()
+            .map(|model_config| model_config.name.clone())
+            .unwrap_or_default()
     }
-
-    /// 检查是否需要从旧版格式迁移
-    pub fn needs_migration(&self) -> bool {
-        !self.api_key.is_empty() && self.api_keys.is_empty()
-    }
-
-    /// 从旧版格式迁移到新版格式
-    pub fn migrate_from_legacy(&mut self) {
-        if !self.needs_migration() {
-            return;
-        }
-
-        // 迁移 API Key
-        if !self.api_key.is_empty() {
-            self.api_keys = vec![ApiKeyConfig {
-                id: uuid_simple(),
-                name: "\u{9ED8}\u{8BA4} Key".to_string(),
-                key: self.api_key.clone(),
-                is_default: true,
-            }];
-            self.api_key.clear();
-        }
-
-        // 迁移模型
-        if !self.model.is_empty() {
-            let is_multimodal = self.is_multimodal;
-            let last_probe_at = self.last_probe_at.clone();
-            self.models = vec![ModelConfig {
-                id: uuid_simple(),
-                name: self.model.clone(),
-                is_default: true,
-                is_multimodal,
-                last_probe_at,
-                ..Default::default()
-            }];
-            self.model.clear();
-            self.is_multimodal = None;
-            self.last_probe_at = None;
-        }
-    }
-}
-
-/// 生成简易 UUID（不依赖 uuid crate）
-fn uuid_simple() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let nanos = duration.as_nanos();
-    format!("{:016x}", nanos)
-}
-
-fn default_max_tokens() -> u32 {
-    4096
-}
-
-fn default_temperature() -> f32 {
-    0.3
 }
 
 /// LLM 协议类型
@@ -245,13 +161,10 @@ fn default_temperature() -> f32 {
 #[serde(rename_all = "lowercase")]
 pub enum LLMProtocol {
     /// OpenAI 兼容（GPT、通义千问、DeepSeek 等）
-    #[serde(alias = "OpenAI")]
     OpenAI,
     /// Anthropic 兼容（Claude）
-    #[serde(alias = "Anthropic")]
     Anthropic,
-    /// 本地模型（Ollama、llama.cpp）
-    #[serde(alias = "Local")]
+    /// 本地模型（Ollama 原生协议）
     Local,
 }
 
@@ -328,12 +241,7 @@ impl LLMProviderManager {
 
         if let Ok(content) = std::fs::read_to_string(&self.config_path) {
             if let Ok(config) = serde_json::from_str::<ProviderConfigFile>(&content) {
-                let mut providers = config.providers.unwrap_or_default();
-                // 迁移旧版格式
-                for provider in &mut providers {
-                    provider.migrate_from_legacy();
-                }
-                self.providers = providers;
+                self.providers = config.providers.unwrap_or_default();
                 self.ocr_config = config.ocr_config;
             }
         }
@@ -373,6 +281,7 @@ impl LLMProviderManager {
 
     /// 添加供应商
     pub fn add_provider(&mut self, provider: LLMProviderConfig) -> Result<(), String> {
+        validate_provider_endpoint(&provider)?;
         // 检查 ID 唯一性
         if self.providers.iter().any(|p| p.id == provider.id) {
             return Err(format!("供应商 ID '{}' 已存在", provider.id));
@@ -398,6 +307,7 @@ impl LLMProviderManager {
 
     /// 更新供应商
     pub fn update_provider(&mut self, id: &str, provider: LLMProviderConfig) -> Result<(), String> {
+        validate_provider_endpoint(&provider)?;
         let index = self
             .providers
             .iter()
@@ -845,145 +755,12 @@ impl LLMProviderManager {
                     }
                 }
 
-                if ollama_success {
-                    return true;
-                }
-
-                // 2. 退步尝试 OpenAI 兼容接口
-                let openai_url = if provider.base_url.contains("/v1") {
-                    format!(
-                        "{}/chat/completions",
-                        provider.base_url.trim_end_matches('/')
-                    )
-                } else {
-                    format!(
-                        "{}/v1/chat/completions",
-                        provider.base_url.trim_end_matches('/')
-                    )
-                };
-
-                let result = self.client
-                    .post(&openai_url)
-                    .header("Authorization", format!("Bearer {}", api_key))
-                    .json(&serde_json::json!({
-                        "model": model_name,
-                        "messages": [{"role": "user", "content": [
-                            {"type": "text", "text": "test"},
-                            {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{}", test_img)}}
-                        ]}],
-                        "max_tokens": 1
-                    }))
-                    .send()
-                    .await;
-
-                let mut is_success = false;
-                match result {
-                    Ok(resp) => {
-                        let status = resp.status();
-                        if status.is_success() {
-                            is_success = true;
-                        } else {
-                            let text = resp.text().await.unwrap_or_default();
-                            tracing::warn!("Local OpenAI-compatible multimodal probe with Base64 failed for model {}. Status: {}, Response: {}", model_name, status, text);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Local OpenAI-compatible multimodal probe with Base64 request failed for model {}. Error: {:?}", model_name, e);
-                    }
-                }
-
-                if is_success {
-                    return true;
-                }
-
-                // 2. 如果 Base64 失败，尝试公网图片 URL 探测 (fallback)
-                let public_img_url = "https://tauri.app/img/logo-colored.png";
-                tracing::info!("Attempting Local OpenAI-compatible multimodal probe with public URL for model {}", model_name);
-                let result_url = self
-                    .client
-                    .post(&openai_url)
-                    .header("Authorization", format!("Bearer {}", api_key))
-                    .json(&serde_json::json!({
-                        "model": model_name,
-                        "messages": [{"role": "user", "content": [
-                            {"type": "text", "text": "test"},
-                            {"type": "image_url", "image_url": {"url": public_img_url}}
-                        ]}],
-                        "max_tokens": 1
-                    }))
-                    .send()
-                    .await;
-
-                match result_url {
-                    Ok(resp) => {
-                        let status = resp.status();
-                        if status.is_success() {
-                            is_success = true;
-                        } else {
-                            let text = resp.text().await.unwrap_or_default();
-                            tracing::warn!("Local OpenAI-compatible multimodal probe with public URL failed for model {}. Status: {}, Response: {}", model_name, status, text);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Local OpenAI-compatible multimodal probe with public URL request failed for model {}. Error: {:?}", model_name, e);
-                    }
-                }
-
-                if is_success {
-                    return true;
-                }
-
-                // 3. 如果依然失败，尝试本地临时文件路径探测 (适用于可以访问本地路径的本地部署模型)
-                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(test_img) {
-                    let temp_path = std::env::temp_dir().join("kingdee_probe_temp.png");
-                    if std::fs::write(&temp_path, bytes).is_ok() {
-                        if let Ok(abs_path) = temp_path.canonicalize() {
-                            let file_url = format!(
-                                "file:///{}",
-                                abs_path.to_string_lossy().replace('\\', "/")
-                            );
-                            tracing::info!("Attempting Local OpenAI-compatible multimodal probe with local file path for model {}: {}", model_name, file_url);
-                            let result_local = self
-                                .client
-                                .post(&openai_url)
-                                .header("Authorization", format!("Bearer {}", api_key))
-                                .json(&serde_json::json!({
-                                    "model": model_name,
-                                    "messages": [{"role": "user", "content": [
-                                        {"type": "text", "text": "test"},
-                                        {"type": "image_url", "image_url": {"url": file_url}}
-                                    ]}],
-                                    "max_tokens": 1
-                                }))
-                                .send()
-                                .await;
-
-                            let _ = std::fs::remove_file(&temp_path);
-
-                            match result_local {
-                                Ok(resp) => {
-                                    let status = resp.status();
-                                    if status.is_success() {
-                                        is_success = true;
-                                    } else {
-                                        let text = resp.text().await.unwrap_or_default();
-                                        tracing::warn!("Local OpenAI-compatible multimodal probe with local path failed for model {}. Status: {}, Response: {}", model_name, status, text);
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Local OpenAI-compatible multimodal probe with local path request failed for model {}. Error: {:?}", model_name, e);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                is_success
+                ollama_success
             }
         }
     }
 
-    /// 探测供应商的默认模型是否支持多模态（旧版兼容）
+    /// 探测供应商的默认模型是否支持多模态
     pub async fn probe_multimodal(&self, provider: &LLMProviderConfig) -> bool {
         let api_key = provider.get_default_key_value();
         let model_name = provider.get_default_model_name();
@@ -1299,6 +1076,15 @@ struct ProviderConfigFile {
     ocr_config: Option<OcrProviderConfig>,
 }
 
+fn validate_provider_endpoint(provider: &LLMProviderConfig) -> Result<(), String> {
+    if provider.protocol == LLMProtocol::Local
+        && provider.base_url.trim_end_matches('/').ends_with("/v1")
+    {
+        return Err("Local 协议仅支持 Ollama 原生根地址，Endpoint URL 不能以 /v1 结尾".to_string());
+    }
+    Ok(())
+}
+
 // ─── 测试 ───
 
 #[cfg(test)]
@@ -1316,12 +1102,8 @@ mod tests {
             id: "test1".to_string(),
             name: "Test Provider".to_string(),
             protocol: LLMProtocol::OpenAI,
-            api_key: String::new(),
-            model: String::new(),
             base_url: "https://api.openai.com/v1".to_string(),
             is_default: true,
-            is_multimodal: None,
-            last_probe_at: None,
             max_tokens: 4096,
             temperature: 0.3,
             api_keys: vec![ApiKeyConfig {
@@ -1356,44 +1138,46 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_migration() {
+    fn test_rejects_ambiguous_local_endpoint() {
         let temp_dir = tempfile::tempdir().unwrap();
         let data_dir = temp_dir.path().to_path_buf();
+        let mut manager = LLMProviderManager::new(&data_dir);
+        let provider = LLMProviderConfig {
+            id: "local1".to_string(),
+            name: "Local Ollama".to_string(),
+            protocol: LLMProtocol::Local,
+            base_url: "http://localhost:11434/v1".to_string(),
+            is_default: true,
+            api_keys: vec![],
+            models: vec![ModelConfig {
+                id: "model1".to_string(),
+                name: "qwen2.5:7b".to_string(),
+                is_default: true,
+                ..Default::default()
+            }],
+            max_tokens: 4096,
+            temperature: 0.3,
+        };
 
-        // 写入旧版格式配置
-        let legacy_config = serde_json::json!({
-            "providers": [{
-                "id": "legacy1",
-                "name": "Legacy Provider",
-                "protocol": "OpenAI",
-                "api_key": "sk-legacy",
-                "base_url": "https://api.openai.com/v1",
-                "model": "gpt-4",
-                "is_default": true,
-                "is_multimodal": false
-            }]
+        assert!(manager.add_provider(provider).is_err());
+    }
+
+    #[test]
+    fn test_rejects_removed_provider_fields() {
+        let removed_shape = serde_json::json!({
+            "id": "removed1",
+            "name": "Removed Shape",
+            "protocol": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "is_default": true,
+            "api_keys": [],
+            "models": [],
+            "max_tokens": 4096,
+            "temperature": 0.3,
+            "api_key": "removed"
         });
 
-        let config_path = data_dir.join("llm_providers.json");
-        std::fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&legacy_config).unwrap(),
-        )
-        .unwrap();
-
-        // 加载并验证迁移
-        let manager = LLMProviderManager::new(&data_dir);
-        let provider = manager.get_provider("legacy1").unwrap();
-
-        // 应该已迁移到新版格式
-        assert_eq!(provider.api_keys.len(), 1);
-        assert_eq!(provider.api_keys[0].key, "sk-legacy");
-        assert_eq!(provider.models.len(), 1);
-        assert_eq!(provider.models[0].name, "gpt-4");
-        assert_eq!(provider.models[0].is_multimodal, Some(false));
-        // 旧版字段应已清空
-        assert!(provider.api_key.is_empty());
-        assert!(provider.model.is_empty());
+        assert!(serde_json::from_value::<LLMProviderConfig>(removed_shape).is_err());
     }
 
     #[test]
@@ -1408,12 +1192,8 @@ mod tests {
                 id: "text-only".to_string(),
                 name: "Text Only".to_string(),
                 protocol: LLMProtocol::OpenAI,
-                api_key: String::new(),
-                model: String::new(),
                 base_url: "https://api.openai.com/v1".to_string(),
                 is_default: true,
-                is_multimodal: None,
-                last_probe_at: None,
                 max_tokens: 4096,
                 temperature: 0.3,
                 api_keys: vec![ApiKeyConfig {
@@ -1438,12 +1218,8 @@ mod tests {
                 id: "multimodal".to_string(),
                 name: "Multimodal".to_string(),
                 protocol: LLMProtocol::OpenAI,
-                api_key: String::new(),
-                model: String::new(),
                 base_url: "https://api.openai.com/v1".to_string(),
                 is_default: false,
-                is_multimodal: None,
-                last_probe_at: None,
                 max_tokens: 4096,
                 temperature: 0.3,
                 api_keys: vec![ApiKeyConfig {

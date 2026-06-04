@@ -41,8 +41,8 @@ impl RerankerService {
     pub fn try_new(top_k: usize) -> Result<Self, String> {
         let options = InitOptionsWithLength::new(RerankerModel::BGERerankerV2M3)
             .with_show_download_progress(false);
-        let model = TextRerank::try_new(options)
-            .map_err(|e| format!("Reranker 模型加载失败: {}", e))?;
+        let model =
+            TextRerank::try_new(options).map_err(|e| format!("Reranker 模型加载失败: {}", e))?;
 
         Ok(Self {
             model: Mutex::new(model),
@@ -90,7 +90,11 @@ impl RerankerService {
             .collect();
 
         // 按 rerank_score 降序排列（fastembed 已排序，这里确保）
-        output.sort_by(|a, b| b.rerank_score.partial_cmp(&a.rerank_score).unwrap_or(std::cmp::Ordering::Equal));
+        output.sort_by(|a, b| {
+            b.rerank_score
+                .partial_cmp(&a.rerank_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // 截取 TOP K
         output.truncate(self.top_k);

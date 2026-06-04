@@ -35,8 +35,8 @@ pub fn assess_quality(results: &[HybridSearchResult]) -> RetrievalQuality {
     }
 
     let top_score = results.first().map(|r| r.score).unwrap_or(0.0);
-    let top3_avg: f32 = results.iter().take(3).map(|r| r.score).sum::<f32>()
-        / results.len().min(3) as f32;
+    let top3_avg: f32 =
+        results.iter().take(3).map(|r| r.score).sum::<f32>() / results.len().min(3) as f32;
 
     let mut reasons = Vec::new();
     if top_score < 0.3 {
@@ -67,10 +67,7 @@ pub fn expand_query(query: &str) -> Vec<String> {
     expanded.push(query.to_string());
 
     // 策略 2：添加金蝶ERP上下文
-    let prefixes = [
-        "金蝶",
-        "ERP",
-    ];
+    let prefixes = ["金蝶", "ERP"];
     for prefix in &prefixes {
         if !query.contains(prefix) {
             expanded.push(format!("{} {}", prefix, query));
@@ -103,14 +100,24 @@ mod tests {
     fn test_good_results() {
         let results = vec![
             HybridSearchResult {
-                chunk_id: 1, title: "".to_string(), content: "".to_string(),
-                score: 0.8, source: "vector".to_string(), document_id: 1,
-                section_path: None, project: "test".to_string(),
+                chunk_id: 1,
+                title: "".to_string(),
+                content: "".to_string(),
+                score: 0.8,
+                source: "vector".to_string(),
+                document_id: 1,
+                section_path: None,
+                project: "test".to_string(),
             },
             HybridSearchResult {
-                chunk_id: 2, title: "".to_string(), content: "".to_string(),
-                score: 0.6, source: "vector".to_string(), document_id: 1,
-                section_path: None, project: "test".to_string(),
+                chunk_id: 2,
+                title: "".to_string(),
+                content: "".to_string(),
+                score: 0.6,
+                source: "vector".to_string(),
+                document_id: 1,
+                section_path: None,
+                project: "test".to_string(),
             },
         ];
         let quality = assess_quality(&results);

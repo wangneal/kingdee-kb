@@ -46,18 +46,28 @@ impl VerificationCacheStore {
     }
 
     /// 插入缓存记录
-    pub fn insert(&self, query_hash: &str, result_json: &str, ttl_hours: i64) -> Result<VerificationCache, String> {
+    pub fn insert(
+        &self,
+        query_hash: &str,
+        result_json: &str,
+        ttl_hours: i64,
+    ) -> Result<VerificationCache, String> {
         self.db
             .prepare_cached(
                 "INSERT INTO verification_cache (query_hash, result_json, expires_at)
                  VALUES (?1, ?2, datetime('now', ?3))",
             )
             .map_err(|e| format!("prepare 失败: {}", e))?
-            .insert(params![query_hash, result_json, format!("+{} hours", ttl_hours)])
+            .insert(params![
+                query_hash,
+                result_json,
+                format!("+{} hours", ttl_hours)
+            ])
             .map_err(|e| format!("插入 verification_cache 失败: {}", e))?;
 
         let id = self.db.last_insert_rowid();
-        self.get_by_id(id)?.ok_or_else(|| "插入后读取失败".to_string())
+        self.get_by_id(id)?
+            .ok_or_else(|| "插入后读取失败".to_string())
     }
 
     pub fn get_by_id(&self, id: i64) -> Result<Option<VerificationCache>, String> {

@@ -28,12 +28,14 @@ use crate::services::product_store::ProductStore;
 use crate::services::project_store::ProjectStore;
 use crate::services::question_tool::PendingQuestions;
 use crate::services::react_agent::ReActEvent;
-use crate::services::rig_provider::{build_anthropic_client, build_openai_client};
+use crate::services::rig_provider::{
+    build_anthropic_client, build_ollama_client, build_openai_client,
+};
 use crate::services::rig_tool::{all_rig_tools, runtime_rig_tools};
-use crate::services::wiki_page::WikiPageStore;
 use crate::services::risk_control::RiskControlStore;
 use crate::services::types::{AgentMode, AttachmentInfo};
 use crate::services::vector_index::VectorIndex;
+use crate::services::wiki_page::WikiPageStore;
 use rig_core::client::CompletionClient;
 use rig_core::streaming::StreamingPrompt;
 
@@ -134,7 +136,7 @@ impl RigAgent {
         session_id: &str,
         pending: PendingQuestions,
         project_id: Option<i64>,
-        risk_project_id: Option<i64>,
+        _risk_project_id: Option<i64>,
         embedding: Arc<RwLock<EmbeddingService>>,
         vector_index: Arc<RwLock<VectorIndex>>,
         bm25: Arc<RwLock<BM25Service>>,
@@ -371,7 +373,7 @@ impl RigAgent {
                 session_id,
                 pending.clone(),
                 project_id,
-                risk_project_id,
+                None,
                 embedding.clone(),
                 vector_index.clone(),
                 bm25.clone(),
@@ -485,14 +487,16 @@ impl RigAgent {
 在每次回答前：
 1. 检查用户消息是否包含附件：
    - 有附件 → 直接基于附件内容回答/生成
-   - 无附件 → **必须先调用 search-knowledge 工具搜索知识库**
+   - 无附件且属于需要查证的事实性问题（如提到了金蝶产品功能、配置路径、技术报错、项目资料等） → **必须先调用 search-knowledge 工具搜索知识库**
 2. **强制搜索规则**：当用户提到以下内容时，必须先搜索知识库再回答：
    - 项目名称、客户名称
    - 金蝶产品功能、模块、配置
    - 实施方法论、最佳实践
    - 具体技术问题、报错信息
    - 任何需要查证的事实性问题
-3. 只有当用户问的是完全通用的问题（如 你好、今天天气）时，才可以跳过搜索直接回答
+3. **跳过搜索规则**：
+   - 只有当用户问的是完全通用的问题、日常问候寒暄（如 “哈喽”、“你好”、“Hi”）或与金蝶业务无关的常规问题时，才可以跳过搜索直接回答。
+   - **禁止对上述日常问候与闲聊语句调用任何检索或文档生成工具**。
 4. 搜索结果作为回答的依据，必须引用来源
 
 【规则】
@@ -540,7 +544,7 @@ impl RigAgent {
         let result = tokio::time::timeout(Duration::from_secs(AGENT_SESSION_TIMEOUT_SECS), async {
             let mut rate_limiter = ToolRateLimiter::new(30);
             match config.protocol {
-                LLMProtocol::OpenAI | LLMProtocol::Local => {
+                LLMProtocol::OpenAI => {
                     let client = match build_openai_client(&config) {
                         Ok(c) => c,
                         Err(e) => {
@@ -568,7 +572,7 @@ impl RigAgent {
                         project_store.clone(),
                         risk_store.clone(),
                         skill_manager.clone(),
-                        risk_project_id,
+                        None,
                         attachment_search_projects.clone(),
                         wiki_pages.clone(),
                         Some(sid.to_string()), // 传入会话 ID 用于 RAG 缓存
@@ -583,6 +587,65 @@ impl RigAgent {
                     ));
 
                     let mut stream = completions_client
+                        .agent(&model)
+                        .preamble(&system_prompt)
+                        .tools(tools)
+                        .temperature(temperature)
+                        .max_tokens(max_tokens)
+                        .default_max_turns(PRACTICALLY_UNLIMITED_TURNS)
+                        .build()
+                        .stream_prompt(prompt.as_str())
+                        .await;
+
+                    Self::drain_stream(
+                        &mut stream,
+                        &sender,
+                        &sid,
+                        started_at,
+                        &mut rate_limiter,
+                        cancel_flag.clone(),
+                    )
+                    .await;
+                }
+                LLMProtocol::Local => {
+                    let client = match build_ollama_client(&config) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let _ = sender.send(ReActEvent::Error {
+                                session_id: sid,
+                                message: e,
+                            });
+                            return;
+                        }
+                    };
+
+                    let mut tools = all_rig_tools(
+                        project_id,
+                        data_dir.clone(),
+                        llm.clone(),
+                        embedding.clone(),
+                        vector_index.clone(),
+                        bm25.clone(),
+                        metadata.clone(),
+                        products.clone(),
+                        project_store.clone(),
+                        risk_store.clone(),
+                        skill_manager.clone(),
+                        None,
+                        attachment_search_projects.clone(),
+                        wiki_pages.clone(),
+                        Some(sid.to_string()), // 传入会话 ID 用于 RAG 缓存
+                    );
+
+                    tools.extend(runtime_rig_tools(
+                        pending.clone(),
+                        sender.clone(),
+                        sid.clone(),
+                        skill_manager.clone(),
+                        data_dir.clone(),
+                    ));
+
+                    let mut stream = client
                         .agent(&model)
                         .preamble(&system_prompt)
                         .tools(tools)
@@ -627,7 +690,7 @@ impl RigAgent {
                         project_store.clone(),
                         risk_store.clone(),
                         skill_manager.clone(),
-                        risk_project_id,
+                        None,
                         attachment_search_projects.clone(),
                         wiki_pages.clone(),
                         Some(sid.to_string()), // 传入会话 ID 用于 RAG 缓存
@@ -671,7 +734,10 @@ impl RigAgent {
                 session_id: timeout_sid.clone(),
                 message: "会话超时（超过10分钟），请重新开始对话".to_string(),
             });
-            let _ = timeout_sender.send(ReActEvent::Done { session_id: timeout_sid, verification_report: None });
+            let _ = timeout_sender.send(ReActEvent::Done {
+                session_id: timeout_sid,
+                verification_report: None,
+            });
         }
     }
 
@@ -1028,7 +1094,10 @@ impl RigAgent {
             }
         }
 
-        let _ = sender.send(ReActEvent::Done { session_id: sid, verification_report: None });
+        let _ = sender.send(ReActEvent::Done {
+            session_id: sid,
+            verification_report: None,
+        });
         Ok(())
     }
 }

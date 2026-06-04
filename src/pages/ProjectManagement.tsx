@@ -40,20 +40,33 @@ export default function ProjectManagement() {
   const [sources, setSources] = useState<RawSource[]>([])
   const [queue, setQueue] = useState<IngestionQueueItem[]>([])
   const [busy, setBusy] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState("")
 
   const refresh = useCallback(async () => {
-    if (currentProjectId == null) return
-    const [nextProject, nextPhases, nextSources, nextQueue] = await Promise.all([
-      getProject(currentProjectId),
-      getProjectPhases(currentProjectId),
-      listRawSources(currentProjectId),
-      listIngestionQueue(),
-    ])
-    setProject(nextProject)
-    setPhases(nextPhases)
-    setSources(nextSources)
-    setQueue(nextQueue.filter((item) => item.project_id === currentProjectId))
+    if (currentProjectId == null) {
+      setProject(null)
+      setPhases([])
+      setSources([])
+      setQueue([])
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    try {
+      const [nextProject, nextPhases, nextSources, nextQueue] = await Promise.all([
+        getProject(currentProjectId),
+        getProjectPhases(currentProjectId),
+        listRawSources(currentProjectId),
+        listIngestionQueue(),
+      ])
+      setProject(nextProject)
+      setPhases(nextPhases)
+      setSources(nextSources)
+      setQueue(nextQueue.filter((item) => item.project_id === currentProjectId))
+    } finally {
+      setLoading(false)
+    }
   }, [currentProjectId])
 
   useEffect(() => {
@@ -72,6 +85,15 @@ export default function ProjectManagement() {
     } finally {
       setBusy(false)
     }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-neutral-500">
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+        正在加载项目管理数据...
+      </div>
+    )
   }
 
   if (currentProjectId == null || !project) {
@@ -95,10 +117,11 @@ export default function ProjectManagement() {
         <button
           type="button"
           onClick={() => void refresh()}
+          disabled={loading}
           className="rounded-md border border-neutral-200 p-2 text-neutral-500 hover:bg-white"
           title="刷新"
         >
-          <RefreshCw className="h-4 w-4" />
+          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
         </button>
       </div>
 

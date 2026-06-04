@@ -23,7 +23,9 @@ use crate::services::llm_providers::{
     anthropic_messages_url, LLMProtocol, LLMProviderConfig, LLMProviderManager,
 };
 use crate::services::metadata::MetadataStore;
-use crate::services::rig_provider::{build_anthropic_client, build_openai_client};
+use crate::services::rig_provider::{
+    build_anthropic_client, build_ollama_client, build_openai_client,
+};
 use crate::services::vector_index::VectorIndex;
 use rig_core::agent::{MultiTurnStreamItem, StreamingResult as RigStreamingResult};
 use rig_core::client::CompletionClient;
@@ -31,9 +33,7 @@ use rig_core::completion::{Chat as RigChat, Message as RigMessage};
 use rig_core::streaming::{StreamedAssistantContent, StreamingChat};
 
 use crate::services::verification::pipeline::VerificationPipeline;
-use crate::services::verification::types::{
-    ScenarioType, VerificationInput, VerificationReport,
-};
+use crate::services::verification::types::{ScenarioType, VerificationInput, VerificationReport};
 
 // 常量
 
@@ -650,7 +650,7 @@ impl LLMService {
 
         let request_future = async {
             match config.protocol {
-                LLMProtocol::OpenAI | LLMProtocol::Local => {
+                LLMProtocol::OpenAI => {
                     let client = build_openai_client(config)?
                         .completions_api()
                         .agent(&model)
@@ -663,6 +663,19 @@ impl LLMService {
                         .chat(prompt, &mut history)
                         .await
                         .map_err(|e| format!("Rig chat completion failed: {}", e))
+                }
+                LLMProtocol::Local => {
+                    let client = build_ollama_client(config)?
+                        .agent(&model)
+                        .preamble(&system_prompt)
+                        .temperature(temperature)
+                        .max_tokens(max_tokens)
+                        .build();
+
+                    client
+                        .chat(prompt, &mut history)
+                        .await
+                        .map_err(|e| format!("Rig Ollama chat completion failed: {}", e))
                 }
                 LLMProtocol::Anthropic => {
                     let client = build_anthropic_client(config)?
@@ -697,9 +710,20 @@ impl LLMService {
         let temperature = config.temperature as f64;
 
         match config.protocol {
-            LLMProtocol::OpenAI | LLMProtocol::Local => {
+            LLMProtocol::OpenAI => {
                 let client = build_openai_client(config)?
                     .completions_api()
+                    .agent(&model)
+                    .preamble(&system_prompt)
+                    .temperature(temperature)
+                    .max_tokens(RESPONSE_TOKENS as u64)
+                    .build();
+
+                let mut stream = client.stream_chat(prompt, history).await;
+                Self::collect_rig_stream(&mut stream).await
+            }
+            LLMProtocol::Local => {
+                let client = build_ollama_client(config)?
                     .agent(&model)
                     .preamble(&system_prompt)
                     .temperature(temperature)
@@ -743,7 +767,10 @@ impl LLMService {
                 retrieved_chunks: context_chunks.iter().map(|c| c.content.clone()).collect(),
                 chunk_titles: context_chunks.iter().map(|c| c.title.clone()).collect(),
                 available_chunk_ids: context_chunks.iter().map(|c| c.chunk_id).collect(),
-                query: messages.last().map(|m| m.content.clone()).unwrap_or_default(),
+                query: messages
+                    .last()
+                    .map(|m| m.content.clone())
+                    .unwrap_or_default(),
                 scenario: ScenarioType::Chat,
             };
 
@@ -796,9 +823,20 @@ impl LLMService {
         let temperature = config.temperature as f64;
 
         match config.protocol {
-            LLMProtocol::OpenAI | LLMProtocol::Local => {
+            LLMProtocol::OpenAI => {
                 let client = build_openai_client(config)?
                     .completions_api()
+                    .agent(&model)
+                    .preamble(&system_prompt)
+                    .temperature(temperature)
+                    .max_tokens(RESPONSE_TOKENS as u64)
+                    .build();
+
+                let mut stream = client.stream_chat(prompt, history).await;
+                Self::send_rig_stream(&mut stream, tx, master_mapping).await
+            }
+            LLMProtocol::Local => {
+                let client = build_ollama_client(config)?
                     .agent(&model)
                     .preamble(&system_prompt)
                     .temperature(temperature)
@@ -1448,7 +1486,9 @@ impl LLMService {
         let mut attempts = 0;
         let mut current_config = config.clone();
         loop {
-            if current_config.get_default_key_value().is_empty() {
+            if current_config.get_default_key_value().is_empty()
+                && current_config.protocol != LLMProtocol::Local
+            {
                 return Err("LLM API key not configured".to_string());
             }
 
@@ -1890,7 +1930,7 @@ impl LLMService {
         }
 
         match config.protocol {
-            LLMProtocol::OpenAI | LLMProtocol::Local => {
+            LLMProtocol::OpenAI => {
                 let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
                 let body = serde_json::json!({
                     "model": config.get_default_model_name(),
@@ -1926,6 +1966,39 @@ impl LLMService {
 
                 Ok(format!(
                     "连接成功（OpenAI / {}）",
+                    config.get_default_model_name()
+                ))
+            }
+            LLMProtocol::Local => {
+                let url = format!("{}/api/chat", config.base_url.trim_end_matches('/'));
+                let body = serde_json::json!({
+                    "model": config.get_default_model_name(),
+                    "messages": [{"role": "user", "content": "Hi"}],
+                    "stream": false
+                });
+
+                let response = tokio::time::timeout(
+                    Duration::from_secs(LLM_CALL_TIMEOUT_SECS),
+                    self.client_for_config(&config)?
+                        .post(&url)
+                        .json(&body)
+                        .send(),
+                )
+                .await
+                .map_err(|_| "Ollama 连接测试超时".to_string())?
+                .map_err(|e| format!("连接失败：{}", e))?;
+
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let body_text = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "<unreadable>".to_string());
+                    return Err(format!("Ollama API 返回错误 ({})：{}", status, body_text));
+                }
+
+                Ok(format!(
+                    "连接成功（Ollama / {}）",
                     config.get_default_model_name()
                 ))
             }

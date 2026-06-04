@@ -59,15 +59,12 @@ const ANALYZER_VERSION: &str = "1";
 
 /// 中文常见停用词（精简版）
 const STOP_WORDS_ZH: &[&str] = &[
-    "的", "了", "在", "是", "我", "有", "和", "就", "不", "人",
-    "都", "一", "一个", "上", "也", "很", "到", "说", "要", "去",
-    "你", "会", "着", "没有", "看", "好", "自己", "这", "他", "她",
-    "它", "们", "那", "些", "什么", "怎么", "因为", "所以", "但是",
-    "如果", "虽然", "而且", "或者", "但是", "然而", "因此", "可以",
-    "这个", "那个", "已经", "通过", "进行", "使用", "需要", "能够",
-    "以及", "其中", "之后", "之前", "同时", "此外", "对于", "关于",
-    "按照", "根据", "作为", "从", "到", "与", "为", "以", "被", "将",
-    "把", "让", "向", "往", "由", "于", "之", "所", "其", "该",
+    "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一", "一个", "上", "也",
+    "很", "到", "说", "要", "去", "你", "会", "着", "没有", "看", "好", "自己", "这", "他", "她",
+    "它", "们", "那", "些", "什么", "怎么", "因为", "所以", "但是", "如果", "虽然", "而且", "或者",
+    "但是", "然而", "因此", "可以", "这个", "那个", "已经", "通过", "进行", "使用", "需要", "能够",
+    "以及", "其中", "之后", "之前", "同时", "此外", "对于", "关于", "按照", "根据", "作为", "从",
+    "到", "与", "为", "以", "被", "将", "把", "让", "向", "往", "由", "于", "之", "所", "其", "该",
 ];
 
 /// TF-IDF 关键词提取数量
@@ -193,14 +190,16 @@ impl RustAnalysisEngine {
             return cap[1].trim().to_string();
         }
         // 退回到第一行非空文本
-        text.lines().find(|l| !l.trim().is_empty())
+        text.lines()
+            .find(|l| !l.trim().is_empty())
             .map(|l| l.trim().to_string())
             .unwrap_or_default()
     }
 
     /// 解析 Markdown 标题标记，构建标题层级树
     fn parse_headings(text: &str) -> Vec<Heading> {
-        let matches: Vec<(u8, String)> = RE_HEADINGS.captures_iter(text)
+        let matches: Vec<(u8, String)> = RE_HEADINGS
+            .captures_iter(text)
             .map(|cap| {
                 let level = cap[1].len() as u8;
                 let text = cap[2].trim().to_string();
@@ -280,8 +279,7 @@ impl RustAnalysisEngine {
 
             // 当前标题是 parent_level 的子级
             // 递归收集它的子标题（level > *level 的标题）
-            let (children, next_i) =
-                Self::build_heading_tree_inner(headings, i + 1, *level);
+            let (children, next_i) = Self::build_heading_tree_inner(headings, i + 1, *level);
 
             result.push(Heading {
                 level: *level,
@@ -330,7 +328,11 @@ impl RustAnalysisEngine {
             .collect();
 
         // 按分数降序排列
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // 取前 N 个
         scored.truncate(KEYWORD_COUNT);
@@ -634,8 +636,8 @@ pub struct AnalysisOrchestrator {
 
 impl AnalysisOrchestrator {
     pub fn new(
-    cache_store: Arc<Mutex<AnalysisCacheStore>>,
-    provider_manager: Arc<RwLock<LLMProviderManager>>,
+        cache_store: Arc<Mutex<AnalysisCacheStore>>,
+        provider_manager: Arc<RwLock<LLMProviderManager>>,
     ) -> Self {
         Self {
             cache_store,
@@ -730,7 +732,10 @@ impl AnalysisOrchestrator {
                     warn!("LLM 分析失败: {}，降级到 Rust 引擎", e);
                 }
                 Err(_) => {
-                    warn!("LLM 分析超时 ({}s)，降级到 Rust 引擎", LLM_ANALYSIS_TIMEOUT_SECS);
+                    warn!(
+                        "LLM 分析超时 ({}s)，降级到 Rust 引擎",
+                        LLM_ANALYSIS_TIMEOUT_SECS
+                    );
                 }
             }
         }
@@ -776,12 +781,7 @@ impl AnalysisOrchestrator {
     }
 
     /// Rust 引擎降级分析
-    fn fallback_rust(
-        &self,
-        text: &str,
-        source_identity: &str,
-        sha256: &str,
-    ) -> AnalysisResult {
+    fn fallback_rust(&self, text: &str, source_identity: &str, sha256: &str) -> AnalysisResult {
         info!("使用 Rust 引擎分析: source={}", source_identity);
         let analysis = RustAnalysisEngine::analyze(text, source_identity, sha256);
         AnalysisResult {

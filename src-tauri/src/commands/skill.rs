@@ -92,7 +92,6 @@ pub async fn match_skill(
     Ok(None)
 }
 
-
 /// 从一个 ZIP 技能包导入新技能，解压到 skills/<skill-name>/ 目录
 #[tauri::command]
 pub async fn import_skill(state: State<'_, AppState>, file_path: String) -> Result<String, String> {
@@ -272,7 +271,9 @@ pub async fn trigger_skill_match(
 
     if let Some(ref engine) = engine_clone {
         // 使用触发引擎匹配（仅调用一次 match_by_input，避免重复 embedding 请求）
-        let mut all_matches = engine.match_by_input(&context.user_input, &state.embedding).await;
+        let mut all_matches = engine
+            .match_by_input(&context.user_input, &state.embedding)
+            .await;
         // 合并路径匹配
         let path_matches = engine.match_by_paths(&context.accessed_files);
         all_matches.extend(path_matches);
@@ -451,7 +452,7 @@ pub async fn save_template_manifest(
 /// 检查图像处理依赖状态
 #[tauri::command]
 pub async fn check_image_deps(state: State<'_, AppState>) -> Result<ImageDepsStatus, String> {
-        let processor = state.image_processor.read().map_err(|e| e.to_string())?;
+    let processor = state.image_processor.read().map_err(|e| e.to_string())?;
 
     Ok(ImageDepsStatus {
         ocr_configured: processor.has_ocr(),
@@ -532,7 +533,7 @@ pub async fn process_image(
 ) -> Result<ImageProcessResult, String> {
     // 获取 OCR 配置（所有尝试共享）
     let ocr_config = {
-    let processor = state.image_processor.read().map_err(|e| e.to_string())?;
+        let processor = state.image_processor.read().map_err(|e| e.to_string())?;
         processor.get_ocr_config_cloned()
     };
 

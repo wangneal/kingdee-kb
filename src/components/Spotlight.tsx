@@ -52,6 +52,7 @@ export default function Spotlight() {
   // Listen for ReAct events (filtered by session)
   useEffect(() => {
     let cancelled = false
+    const unlistenRef: { current: (() => void) | null } = { current: null }
     listenReActEvents((event) => {
       // Support both snake_case and camelCase (Tauri v2 may convert)
       const eventSessionId = event.session_id || (event as any).sessionId
@@ -65,6 +66,7 @@ export default function Spotlight() {
         spotSessionRef.current = null
       }
     }).then((fn) => {
+      unlistenRef.current = fn
       if (cancelled) {
         fn()
         return
@@ -72,6 +74,7 @@ export default function Spotlight() {
     })
     return () => {
       cancelled = true
+      unlistenRef.current?.()
     }
   }, [])
 

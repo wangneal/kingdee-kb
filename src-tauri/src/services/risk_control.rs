@@ -57,10 +57,12 @@ pub struct HealthMetric {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectHealthScore {
     pub overall_score: f64, // 0-100, 越高越危险
-    pub risk_level: String, // "low" / "medium" / "high" / "critical"
+    pub risk_level: String, // "unknown" / "low" / "medium" / "high" / "critical"
     pub dimensions: Vec<HealthDimension>,
-    pub trend: String,    // 趋势描述
-    pub alert_count: u32, // 需要关注的告警数
+    pub trend: String,          // 趋势描述
+    pub alert_count: u32,       // 需要关注的告警数
+    pub metric_count: usize,    // 已录入的指标记录数
+    pub data_completeness: f64, // 已有指标维度占比
 }
 
 /// 健康维度评分
@@ -70,6 +72,7 @@ pub struct HealthDimension {
     pub score: f64,
     pub weight: f64,
     pub detail: String,
+    pub has_data: bool,
 }
 
 /// 防身话术请求
@@ -95,25 +98,12 @@ pub struct ScriptItem {
     pub tip: String,     // 使用提示
 }
 
-/// 风控项目
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RiskProject {
-    pub id: i64,
-    pub name: String,
-    pub client_name: String,
-    pub kb_project_id: Option<i64>,
-    pub contract_doc_id: Option<i64>,
-    pub sow_doc_id: Option<i64>,
-    pub created_at: String,
-}
-
 /// 整库导入结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportDbResult {
     pub db_size_bytes: u64,
     pub document_count: i64,
     pub chunk_count: i64,
-    pub risk_project_count: i64,
 }
 
 /// 候选范围条目（LLM 提取）
@@ -181,16 +171,6 @@ impl RiskControlStore {
                 recorded_at TEXT DEFAULT (datetime('now'))
             );
 
-            CREATE TABLE IF NOT EXISTS risk_projects (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                client_name TEXT DEFAULT '',
-                kb_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
-                contract_doc_id INTEGER DEFAULT NULL,
-                sow_doc_id INTEGER DEFAULT NULL,
-                created_at TEXT DEFAULT (datetime('now'))
-            );
-
             CREATE INDEX IF NOT EXISTS idx_scope_project ON contract_scope_items(project_id);
             CREATE INDEX IF NOT EXISTS idx_health_project ON project_health_metrics(project_id);
             CREATE INDEX IF NOT EXISTS idx_health_type ON project_health_metrics(indicator_type);",
@@ -201,12 +181,52 @@ impl RiskControlStore {
         let alter_tables = [
             "ALTER TABLE contract_scope_items ADD COLUMN project_id INTEGER NOT NULL DEFAULT -1",
             "ALTER TABLE project_health_metrics ADD COLUMN project_id INTEGER NOT NULL DEFAULT -1",
-            "ALTER TABLE risk_projects ADD COLUMN kb_project_id INTEGER",
         ];
         for sql in &alter_tables {
             let _ = conn.execute(sql, []);
         }
+        drop(conn);
+        self.migrate_legacy_risk_project_links()?;
         Ok(())
+    }
+
+    fn table_exists(&self, table_name: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            params![table_name],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|exists| exists == 1)
+        .map_err(|e| format!("检查数据表失败: {}", e))
+    }
+
+    fn migrate_legacy_risk_project_links(&self) -> Result<(), String> {
+        if !self.table_exists("risk_projects")? {
+            return Ok(());
+        }
+
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        conn.execute_batch(
+            "UPDATE contract_scope_items
+             SET project_id = (
+                 SELECT kb_project_id FROM risk_projects
+                 WHERE risk_projects.id = contract_scope_items.project_id
+             )
+             WHERE project_id IN (
+                 SELECT id FROM risk_projects WHERE kb_project_id IS NOT NULL
+             );
+
+             UPDATE project_health_metrics
+             SET project_id = (
+                 SELECT kb_project_id FROM risk_projects
+                 WHERE risk_projects.id = project_health_metrics.project_id
+             )
+             WHERE project_id IN (
+                 SELECT id FROM risk_projects WHERE kb_project_id IS NOT NULL
+             );",
+        )
+        .map_err(|e| format!("迁移旧风险项目关联失败: {}", e))
     }
 
     // ─── 合同范围管理 ───
@@ -261,13 +281,20 @@ impl RiskControlStore {
         Ok(items)
     }
 
-    pub fn delete_scope_item(&self, id: i64) -> Result<(), String> {
+    pub fn delete_scope_item(&self, project_id: i64, id: i64) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-        conn.execute(
-            "DELETE FROM contract_scope_items WHERE id = ?1",
-            params![id],
-        )
-        .map_err(|e| format!("Failed to delete: {}", e))?;
+        let deleted = conn
+            .execute(
+                "DELETE FROM contract_scope_items WHERE id = ?1 AND project_id = ?2",
+                params![id, project_id],
+            )
+            .map_err(|e| format!("Failed to delete: {}", e))?;
+        if deleted == 0 {
+            return Err(format!(
+                "范围条目 {} 不存在或不属于当前项目 {}",
+                id, project_id
+            ));
+        }
         Ok(())
     }
 
@@ -366,14 +393,20 @@ impl RiskControlStore {
         let mut total_weight = 0.0;
 
         for (key, weight, label) in &weights {
-            let score = latest.get(*key).copied().unwrap_or(30.0); // 默认30
-            weighted_sum += score * weight;
-            total_weight += weight;
+            let value = latest.get(*key).copied();
+            let score = value.unwrap_or(0.0);
+            if value.is_some() {
+                weighted_sum += score * weight;
+                total_weight += weight;
+            }
             dimensions.push(HealthDimension {
                 name: label.to_string(),
                 score,
                 weight: *weight,
-                detail: format!("最近记录值: {:.1}", score),
+                detail: value
+                    .map(|_| format!("最近记录值: {:.1}", score))
+                    .unwrap_or_else(|| "暂无指标记录".to_string()),
+                has_data: value.is_some(),
             });
         }
 
@@ -383,7 +416,9 @@ impl RiskControlStore {
             0.0
         };
 
-        let risk_level = if overall >= 70.0 {
+        let risk_level = if total_weight == 0.0 {
+            "unknown"
+        } else if overall >= 70.0 {
             "critical"
         } else if overall >= 50.0 {
             "high"
@@ -393,11 +428,20 @@ impl RiskControlStore {
             "low"
         };
 
-        let alert_count = dimensions.iter().filter(|d| d.score >= 50.0).count() as u32;
-        let trend = if alert_count >= 2 {
+        let alert_count = dimensions
+            .iter()
+            .filter(|d| d.has_data && d.score >= 50.0)
+            .count() as u32;
+        let available_dimensions = dimensions.iter().filter(|d| d.has_data).count();
+        let data_completeness = available_dimensions as f64 / dimensions.len() as f64;
+        let trend = if available_dimensions == 0 {
+            "暂无健康指标数据，无法判断趋势"
+        } else if alert_count >= 2 {
             "⚠️ 多项指标偏高，建议紧急干预"
         } else if alert_count >= 1 {
             "🔶 存在风险点，建议关注"
+        } else if available_dimensions < dimensions.len() {
+            "部分指标缺失，当前判断仅供参考"
         } else {
             "✅ 项目整体健康"
         };
@@ -408,6 +452,8 @@ impl RiskControlStore {
             dimensions,
             trend: trend.to_string(),
             alert_count,
+            metric_count: metrics.len(),
+            data_completeness: (data_completeness * 1000.0).round() / 1000.0,
         })
     }
 
@@ -469,7 +515,9 @@ impl RiskControlStore {
         ];
 
         let config = llm.get_active_config()?;
-        let (response, _report) = llm.verified_chat_completion(&messages, &config, ScenarioType::RiskReport).await?;
+        let (response, _report) = llm
+            .verified_chat_completion(&messages, &config, ScenarioType::RiskReport)
+            .await?;
 
         // 解析JSON响应
         serde_json::from_str(&response)
@@ -479,11 +527,13 @@ impl RiskControlStore {
     /// 生成爆雷预警报告 (P1.2)
     pub async fn generate_risk_report(
         &self,
+        project_id: i64,
         llm: &LLMService,
         additional_context: &str,
     ) -> Result<String, String> {
-        let health = self.calculate_health_score(-1)?;
-        let metrics = self.get_all_recent_metrics(-1)?;
+        let health = self.calculate_health_score(project_id)?;
+        let metrics = self.get_all_recent_metrics(project_id)?;
+        let scope_items = self.list_scope_items(project_id, None, None)?;
 
         let metrics_summary: String = metrics
             .iter()
@@ -495,28 +545,76 @@ impl RiskControlStore {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        let scope_summary = if scope_items.is_empty() {
+            "暂无已确认的合同范围条目".to_string()
+        } else {
+            scope_items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    format!(
+                        "【范围基线{}】[{}] {}：{}；依据：{}",
+                        index + 1,
+                        if item.is_in_scope {
+                            "范围内"
+                        } else {
+                            "明确排除"
+                        },
+                        item.category,
+                        item.description,
+                        item.detail
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let health_score_summary = if health.risk_level == "unknown" {
+            "暂无健康评分（未录入健康指标）".to_string()
+        } else {
+            format!(
+                "{:.1}/100（风险等级：{}）",
+                health.overall_score, health.risk_level
+            )
+        };
 
         let prompt = format!(
-            "当前项目健康评分：{:.1}/100（风险等级：{}）\n\
+            "当前项目健康评分：{}\n\
              告警数：{}\n\n\
+             健康指标数据完整度：{:.0}%（共 {} 条记录）\n\
              各维度评分：\n{}\n\n\
              原始指标记录：\n{}\n\n\
-             补充上下文：\n{}\n\n\
-             请生成一份简要的实施爆雷预警报告，包含：\n\
-             1. 整体风险评估\n\
-             2. 主要风险因子\n\
-             3. 建议的缓解措施\n\
-             4. 建议告知客户的沟通策略",
-            health.overall_score,
-            health.risk_level,
+             已确认的合同范围基线：\n{}\n\n\
+             项目文档检索证据与补充上下文：\n{}\n\n\
+             请生成一份基于证据的实施爆雷预警报告，要求：\n\
+             1. 首先说明分析覆盖范围、数据完整度和无法判断的事项\n\
+             2. 分析合同/SOW范围风险、计划进度与超期风险、问题阻塞、交付与客户配合风险\n\
+             3. 涉及日期时，以证据中的分析基准日期判断是否超期\n\
+             4. 每个事实性结论必须引用对应的【证据N】、【范围基线N】或【阶段计划N】；没有依据时明确写“暂无证据，无法判断”\n\
+             5. 严格区分文档事实与合理推断，禁止编造里程碑、日期、进度或风险数据\n\
+             6. 给出按优先级排序的缓解措施、建议负责人和建议完成期限\n\
+             7. 报告末尾列出实际引用的证据索引，包含证据编号、文档标题和章节",
+            health_score_summary,
             health.alert_count,
+            health.data_completeness * 100.0,
+            health.metric_count,
             health
                 .dimensions
                 .iter()
-                .map(|d| format!("- {}: {:.1}/100", d.name, d.score))
+                .map(|d| {
+                    if d.has_data {
+                        format!("- {}: {:.1}/100", d.name, d.score)
+                    } else {
+                        format!("- {}: 暂无数据", d.name)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join("\n"),
-            metrics_summary,
+            if metrics_summary.is_empty() {
+                "暂无健康指标记录"
+            } else {
+                &metrics_summary
+            },
+            scope_summary,
             additional_context
         );
 
@@ -574,77 +672,12 @@ impl RiskControlStore {
         ];
 
         let config = llm.get_active_config()?;
-        let (response, _report) = llm.verified_chat_completion(&messages, &config, ScenarioType::RiskReport).await?;
+        let (response, _report) = llm
+            .verified_chat_completion(&messages, &config, ScenarioType::RiskReport)
+            .await?;
 
         serde_json::from_str(&response)
             .map_err(|e| format!("LLM返回格式错误: {} — 原始响应: {}", e, response))
-    }
-
-    // ─── 风控项目 CRUD ───
-
-    pub fn create_risk_project(
-        &self,
-        name: &str,
-        client_name: &str,
-        kb_project_id: Option<i64>,
-    ) -> Result<i64, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-        conn.execute(
-            "INSERT INTO risk_projects (name, client_name, kb_project_id) VALUES (?1, ?2, ?3)",
-            params![name, client_name, kb_project_id],
-        )
-        .map_err(|e| format!("Failed to create project: {}", e))?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    pub fn list_risk_projects(&self) -> Result<Vec<RiskProject>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-        let mut stmt = conn.prepare(
-            "SELECT id, name, client_name, kb_project_id, contract_doc_id, sow_doc_id, created_at FROM risk_projects ORDER BY created_at DESC"
-        ).map_err(|e| format!("Failed to prepare: {}", e))?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(RiskProject {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    client_name: row.get(2)?,
-                    kb_project_id: row.get(3)?,
-                    contract_doc_id: row.get(4)?,
-                    sow_doc_id: row.get(5)?,
-                    created_at: row.get(6)?,
-                })
-            })
-            .map_err(|e| format!("Failed to query: {}", e))?;
-        let mut items = Vec::new();
-        for row in rows {
-            items.push(row.map_err(|e| format!("Failed to read row: {}", e))?);
-        }
-        Ok(items)
-    }
-
-    pub fn delete_risk_project(&self, project_id: i64) -> Result<(), String> {
-        let mut conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-        let tx = conn
-            .transaction()
-            .map_err(|e| format!("Failed to begin transaction: {}", e))?;
-        tx.execute(
-            "DELETE FROM risk_projects WHERE id = ?1",
-            params![project_id],
-        )
-        .map_err(|e| format!("Failed to delete project: {}", e))?;
-        tx.execute(
-            "DELETE FROM contract_scope_items WHERE project_id = ?1",
-            params![project_id],
-        )
-        .map_err(|e| format!("Failed to delete scope items: {}", e))?;
-        tx.execute(
-            "DELETE FROM project_health_metrics WHERE project_id = ?1",
-            params![project_id],
-        )
-        .map_err(|e| format!("Failed to delete health metrics: {}", e))?;
-        tx.commit()
-            .map_err(|e| format!("Failed to commit deletion: {}", e))?;
-        Ok(())
     }
 
     // ─── 范围提取 ───
@@ -681,7 +714,9 @@ impl RiskControlStore {
             },
         ];
         let config = llm.get_active_config()?;
-        let (response, _report) = llm.verified_chat_completion(&messages, &config, ScenarioType::RiskReport).await?;
+        let (response, _report) = llm
+            .verified_chat_completion(&messages, &config, ScenarioType::RiskReport)
+            .await?;
         Self::extract_json_from_llm_response(&response)
     }
 
@@ -798,13 +833,25 @@ impl RiskControlStore {
         self.init_tables()?;
 
         // 统计（临时备份由 TempFileGuard 自动清理）
-        let project_count = self.list_risk_projects()?.len() as i64;
+        let (document_count, chunk_count) = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let scope_count = conn
+                .query_row("SELECT COUNT(*) FROM contract_scope_items", [], |row| {
+                    row.get(0)
+                })
+                .unwrap_or(0);
+            let metric_count = conn
+                .query_row("SELECT COUNT(*) FROM project_health_metrics", [], |row| {
+                    row.get(0)
+                })
+                .unwrap_or(0);
+            (scope_count, metric_count)
+        };
 
         Ok(ImportDbResult {
             db_size_bytes: db_size,
-            document_count: project_count,
-            chunk_count: 0,
-            risk_project_count: project_count,
+            document_count,
+            chunk_count,
         })
     }
 }
@@ -860,11 +907,24 @@ mod tests {
     }
 
     #[test]
+    fn init_tables_does_not_create_risk_projects_table() {
+        let store = new_store();
+        let conn = store.conn.lock().unwrap();
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'risk_projects'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(exists, 0);
+    }
+
+    #[test]
     fn test_add_and_list_scope_items() {
         let store = new_store();
-        let pid = store
-            .create_risk_project("测试项目", "测试客户", Some(1))
-            .unwrap();
+        let pid = 1;
         let id = store
             .add_scope_item(pid, "FI", "总账模块实施", true, "合同第3.1条")
             .unwrap();
@@ -882,9 +942,7 @@ mod tests {
     #[test]
     fn test_record_and_calculate_health() {
         let store = new_store();
-        let pid = store
-            .create_risk_project("测试项目", "测试客户", Some(1))
-            .unwrap();
+        let pid = 1;
         store
             .record_health_metric(pid, "attendance", 80.0, "项目经理连续2周缺席")
             .unwrap();
@@ -893,40 +951,49 @@ mod tests {
             .unwrap();
 
         let score = store.calculate_health_score(pid).unwrap();
-        assert!(score.overall_score > 0.0);
+        assert!((score.overall_score - 70.9).abs() < 0.1);
         assert_eq!(score.dimensions.len(), 4);
+        assert_eq!(score.metric_count, 2);
+        assert_eq!(score.data_completeness, 0.5);
+        assert_eq!(score.dimensions.iter().filter(|d| d.has_data).count(), 2);
     }
 
     #[test]
     fn test_delete_scope_item() {
         let store = new_store();
-        let pid = store
-            .create_risk_project("测试项目", "测试客户", Some(1))
-            .unwrap();
+        let pid = 1;
         let id = store
             .add_scope_item(pid, "MM", "采购模块", true, "")
             .unwrap();
-        store.delete_scope_item(id).unwrap();
+        store.delete_scope_item(pid, id).unwrap();
         assert_eq!(store.list_scope_items(pid, None, None).unwrap().len(), 0);
     }
 
     #[test]
-    fn test_health_empty_returns_default() {
+    fn test_delete_scope_item_rejects_other_project() {
         let store = new_store();
-        let pid = store
-            .create_risk_project("测试项目", "测试客户", Some(1))
-            .unwrap();
+        let id = store.add_scope_item(1, "MM", "采购模块", true, "").unwrap();
+
+        assert!(store.delete_scope_item(2, id).is_err());
+        assert_eq!(store.list_scope_items(1, None, None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_health_empty_returns_unknown() {
+        let store = new_store();
+        let pid = 1;
         let score = store.calculate_health_score(pid).unwrap();
-        // 空数据默认返回30分
-        assert!(score.overall_score > 0.0);
+        assert_eq!(score.overall_score, 0.0);
+        assert_eq!(score.risk_level, "unknown");
+        assert_eq!(score.metric_count, 0);
+        assert_eq!(score.data_completeness, 0.0);
+        assert!(score.dimensions.iter().all(|d| !d.has_data));
     }
 
     #[test]
     fn test_get_recent_metrics() {
         let store = new_store();
-        let pid = store
-            .create_risk_project("测试项目", "测试客户", Some(1))
-            .unwrap();
+        let pid = 1;
         store
             .record_health_metric(pid, "attendance", 50.0, "测试")
             .unwrap();
@@ -937,43 +1004,15 @@ mod tests {
 
         let metrics = store.get_recent_metrics(pid, "attendance", 2).unwrap();
         assert_eq!(metrics.len(), 2);
-        // Most recent first
+        // 最新记录排在前面
         assert!((metrics[0].value - 60.0).abs() < 0.01);
         assert!((metrics[1].value - 50.0).abs() < 0.01);
     }
 
     #[test]
-    fn test_create_list_delete_project() {
-        let store = new_store();
-
-        // 创建 2 个项目
-        let pid1 = store.create_risk_project("项目A", "客户A", Some(1)).unwrap();
-        let pid2 = store.create_risk_project("项目B", "客户B", Some(2)).unwrap();
-        assert!(pid1 > 0);
-        assert!(pid2 > 0);
-
-        // 列表验证有 2 个
-        let projects = store.list_risk_projects().unwrap();
-        assert_eq!(projects.len(), 2);
-
-        // 删除第一个
-        store.delete_risk_project(pid1).unwrap();
-        let projects = store.list_risk_projects().unwrap();
-        assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].id, pid2);
-
-        // 删除最后一个
-        store.delete_risk_project(pid2).unwrap();
-        let projects = store.list_risk_projects().unwrap();
-        assert_eq!(projects.len(), 0);
-    }
-
-    #[test]
     fn test_confirm_scope_items() {
         let store = new_store();
-        let pid = store
-            .create_risk_project("确认测试", "客户C", Some(1))
-            .unwrap();
+        let pid = 1;
 
         // 构造候选范围项
         let candidates = vec![
@@ -1018,9 +1057,7 @@ mod tests {
     #[ignore = "涉及文件系统 VACUUM INTO 操作，需在集成测试环境中运行"]
     fn test_export_import_database() {
         let store = new_store();
-        let pid = store
-            .create_risk_project("导出测试", "客户D", Some(1))
-            .unwrap();
+        let pid = 1;
         store
             .add_scope_item(pid, "FI", "总账", true, "测试")
             .unwrap();
@@ -1034,7 +1071,7 @@ mod tests {
         // 验证导入
         let result = store.import_database(export_str).unwrap();
         assert!(result.db_size_bytes > 0);
-        assert_eq!(result.risk_project_count, 1);
+        assert_eq!(result.document_count, 1);
 
         // 清理
         let _ = std::fs::remove_file(&export_path);

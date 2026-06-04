@@ -39,7 +39,12 @@ pub async fn traverse_graph(
         .graph_store
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.traverse_graph(project_id, &slug, max_depth.unwrap_or(2), min_weight.unwrap_or(0.1))
+    store.traverse_graph(
+        project_id,
+        &slug,
+        max_depth.unwrap_or(2),
+        min_weight.unwrap_or(0.1),
+    )
 }
 
 /// 获取某页面的直接邻居（1 跳）。

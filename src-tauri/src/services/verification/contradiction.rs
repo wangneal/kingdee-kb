@@ -1,5 +1,5 @@
-use super::types::{CheckResult, Checker, VerificationInput};
 use super::consistency::FactualConsistencyChecker;
+use super::types::{CheckResult, Checker, VerificationInput};
 
 pub struct SelfContradictionChecker;
 
@@ -40,8 +40,11 @@ impl SelfContradictionChecker {
     }
 
     fn has_negation(s: &str) -> bool {
-        s.contains("不") || s.contains("没有") || s.contains("无法")
-            || s.contains("不支持") || s.contains("不能")
+        s.contains("不")
+            || s.contains("没有")
+            || s.contains("无法")
+            || s.contains("不支持")
+            || s.contains("不能")
     }
 }
 
@@ -62,7 +65,10 @@ impl Checker for SelfContradictionChecker {
                 if Self::are_contradictory(&sentences[i], &sentences[j]) {
                     contradictions.push(format!(
                         "句子 {} 和 {} 可能矛盾: 「{}」vs 「{}」",
-                        i + 1, j + 1, sentences[i], sentences[j]
+                        i + 1,
+                        j + 1,
+                        sentences[i],
+                        sentences[j]
                     ));
                 }
             }
@@ -73,9 +79,12 @@ impl Checker for SelfContradictionChecker {
                 .with_confidence(1.0)
                 .with_evidence(vec![format!("{} 个句子间未检测到矛盾", sentences.len())])
         } else {
-            CheckResult::fail("self_contradiction", format!("检测到 {} 处潜在矛盾", contradictions.len()))
-                .with_confidence(0.0)
-                .with_evidence(contradictions)
+            CheckResult::fail(
+                "self_contradiction",
+                format!("检测到 {} 处潜在矛盾", contradictions.len()),
+            )
+            .with_confidence(0.0)
+            .with_evidence(contradictions)
         }
     }
 }
@@ -106,7 +115,8 @@ mod tests {
     async fn test_no_contradiction_in_good_answer() {
         let checker = SelfContradictionChecker;
         let input = VerificationInput {
-            generated_text: "金蝶云星空支持多组织架构。它适用于大型企业。系统支持多语言。".to_string(),
+            generated_text: "金蝶云星空支持多组织架构。它适用于大型企业。系统支持多语言。"
+                .to_string(),
             retrieved_chunks: vec![],
             chunk_titles: vec![],
             available_chunk_ids: vec![],

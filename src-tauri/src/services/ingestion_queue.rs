@@ -112,7 +112,10 @@ impl IngestionQueue {
 
     /// 获取所有待处理任务
     pub fn list_pending(&self) -> Vec<&QueueItem> {
-        self.items.iter().filter(|i| i.status == "pending").collect()
+        self.items
+            .iter()
+            .filter(|i| i.status == "pending")
+            .collect()
     }
 
     /// 将所有失败任务重置为待处理（手动重试）
@@ -148,8 +151,7 @@ impl IngestionQueue {
         let json = serde_json::to_string_pretty(&self.items)
             .map_err(|e| format!("序列化摄入队列失败: {}", e))?;
         let tmp_path = self.queue_path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, &json)
-            .map_err(|e| format!("写入摄入队列临时文件失败: {}", e))?;
+        std::fs::write(&tmp_path, &json).map_err(|e| format!("写入摄入队列临时文件失败: {}", e))?;
         std::fs::rename(&tmp_path, &self.queue_path)
             .map_err(|e| format!("重命名摄入队列文件失败: {}", e))?;
         Ok(())
@@ -212,10 +214,7 @@ mod tests {
             "failed"
         );
         assert_eq!(
-            queue
-                .dequeue_for_project(2)
-                .expect("项目二任务应存在")
-                .id,
+            queue.dequeue_for_project(2).expect("项目二任务应存在").id,
             project_b
         );
     }

@@ -89,7 +89,10 @@ impl RawSourceStore {
             }
         }
         self.db
-            .execute_batch(&format!("ALTER TABLE {} ADD COLUMN {} {};", table, column, definition))
+            .execute_batch(&format!(
+                "ALTER TABLE {} ADD COLUMN {} {};",
+                table, column, definition
+            ))
             .map_err(|e| format!("添加列 {}.{} 失败: {}", table, column, e))?;
         Ok(())
     }
@@ -269,11 +272,7 @@ impl RawSourceStore {
         .ok_or_else(|| format!("未找到 raw_source: id={}", id))
     }
 
-    fn query_one(
-        &self,
-        sql: &str,
-        p: impl rusqlite::Params,
-    ) -> Result<Option<RawSource>, String> {
+    fn query_one(&self, sql: &str, p: impl rusqlite::Params) -> Result<Option<RawSource>, String> {
         let mut stmt = self
             .db
             .prepare(sql)

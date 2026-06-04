@@ -209,14 +209,6 @@ export interface LLMProviderConfig {
   is_default: boolean
   api_keys: ApiKeyConfig[]
   models: ModelConfig[]
-  /** 旧版单个 API Key（向后兼容） */
-  api_key: string
-  /** 旧版单个模型名称（向后兼容） */
-  model: string
-  /** 旧版多模态状态（向后兼容） */
-  is_multimodal: boolean | null
-  /** 旧版探测时间（向后兼容） */
-  last_probe_at: string | null
 }
 
 /** OCR 供应商配置 */
@@ -229,7 +221,7 @@ export interface OcrProviderConfig {
   is_default: boolean
 }
 
-/** 供应商探测结果（旧版兼容） */
+/** 供应商探测结果 */
 export interface ProviderProbeResult {
   id: string
   is_multimodal: boolean

@@ -19,8 +19,8 @@ use crate::services::metadata::MetadataStore;
 use crate::services::research_indexer::ResearchIndexer;
 use crate::services::research_outline::{Edition, FlatQuestion};
 use crate::services::smart_completion::{KBSource, SmartFillResult};
-use crate::services::verification::types::ScenarioType;
 use crate::services::vector_index::VectorIndex;
+use crate::services::verification::types::ScenarioType;
 
 // --- Types ---
 
@@ -357,7 +357,9 @@ pub async fn generate_followup_questions(
         },
     ];
 
-    let (response_text, _report) = llm.verified_chat_completion(&messages, &config, ScenarioType::Research).await?;
+    let (response_text, _report) = llm
+        .verified_chat_completion(&messages, &config, ScenarioType::Research)
+        .await?;
     let followup_questions = parse_followup_response(&response_text);
     Ok(FollowUpResult {
         followup_questions,
@@ -455,7 +457,9 @@ pub async fn smart_fill_for_question(
         },
     ];
 
-    let llm_response = llm.verified_chat_completion(&messages, &config, ScenarioType::Research).await;
+    let llm_response = llm
+        .verified_chat_completion(&messages, &config, ScenarioType::Research)
+        .await;
 
     match llm_response {
         Ok((answer, _report)) => {

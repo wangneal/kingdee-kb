@@ -4,7 +4,6 @@ import {
   BookOpen,
   Brain,
   CheckCircle,
-  ChevronDown,
   Download,
   FileUp,
   Loader2,
@@ -26,36 +25,26 @@ import {
   type ContractScopeItem,
   checkScopeCreep,
   confirmScopeItems,
-  createRiskProject,
   type DefenseScriptResult,
-  deleteRiskProject,
   deleteScopeItem,
-  desensitizeText,
+  type DocumentMeta,
   exportReport,
   extractScopeFromDocument,
   generateDefenseScript,
   generateRiskReport,
   getProjectHealth,
-  listRiskProjects,
+  listDocuments,
   listScopeItems,
   type ProjectHealthScore,
-  type RiskProject,
   type ScopeCreepResult,
 } from "../lib/tauri-commands"
 
 type Tab = "scope" | "health" | "scripts" | "analysis"
 
 export default function RiskControl() {
-  const { currentProjectId } = useProject()
+  const { currentProjectId, currentProject, loading: projectLoading } = useProject()
   const [tab, setTab] = useState<Tab>("scope")
-  const [projects, setProjects] = useState<RiskProject[]>([])
-  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null)
-  const [showNewProject, setShowNewProject] = useState(false)
-  const [newProjectName, setNewProjectName] = useState("")
-  const [newClientName, setNewClientName] = useState("")
-  const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? null
-  const selectedKbProjectId = selectedProject?.kb_project_id ?? currentProjectId
-  const toast = useToast()
+  const activeProjectId = currentProjectId
 
   const tabs: { key: Tab; label: string; icon: typeof Shield }[] = [
     { key: "scope", label: "需求蔓延警报", icon: AlertTriangle },
@@ -64,57 +53,6 @@ export default function RiskControl() {
     { key: "analysis", label: "AI 深度分析", icon: Brain },
   ]
 
-  const refreshProjects = useCallback(async () => {
-    try {
-      const list = await listRiskProjects()
-      setProjects(list)
-      if (list.length > 0) {
-        setSelectedProjectId((prev) => prev ?? list[0].id)
-      }
-    } catch (e) {
-      console.error("加载项目列表失败:", e)
-    }
-  }, [])
-
-  useEffect(() => {
-    refreshProjects()
-  }, [refreshProjects])
-
-  const handleCreateProject = async () => {
-    if (!newProjectName.trim()) return
-    try {
-      let safeClientName = newClientName.trim()
-      if (safeClientName) {
-        const result = await desensitizeText(safeClientName)
-        safeClientName = result.safe_text
-      }
-      const id = await createRiskProject(
-        newProjectName.trim(),
-        safeClientName || undefined,
-        currentProjectId,
-      )
-      setNewProjectName("")
-      setNewClientName("")
-      setShowNewProject(false)
-      setSelectedProjectId(id)
-      await refreshProjects()
-    } catch (e) {
-      toast.error("创建项目失败: " + String(e))
-    }
-  }
-
-  const handleDeleteProject = async () => {
-    if (selectedProjectId === null) return
-    if (!confirm("确定删除当前项目？此操作不可撤销。")) return
-    try {
-      await deleteRiskProject(selectedProjectId)
-      setSelectedProjectId(null)
-      await refreshProjects()
-    } catch (e) {
-      toast.error("删除项目失败: " + String(e))
-    }
-  }
-
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-14 items-center justify-between border-b border-neutral-200 px-6">
@@ -122,94 +60,10 @@ export default function RiskControl() {
           <ShieldAlert className="h-5 w-5 text-amber-600" />
           <h1 className="text-base font-semibold text-neutral-800">双轨风险把控舱</h1>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="relative">
-            <select
-              value={selectedProjectId ?? ""}
-              onChange={(e) => setSelectedProjectId(e.target.value ? Number(e.target.value) : null)}
-              className="appearance-none rounded-lg border border-neutral-200 bg-white py-1.5 pl-3 pr-8 text-xs font-medium text-neutral-700 outline-none focus:border-amber-500"
-            >
-              {projects.length === 0 && <option value="">暂无项目</option>}
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                  {p.client_name ? ` — ${p.client_name}` : ""}
-                </option>
-              ))}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-neutral-400" />
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowNewProject(true)}
-            className="flex items-center gap-1 rounded-lg bg-amber-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-amber-700 transition-colors"
-          >
-            <Plus className="h-3 w-3" />
-            新建
-          </button>
-          {selectedProjectId !== null && (
-            <button
-              type="button"
-              onClick={handleDeleteProject}
-              className="flex items-center gap-1 rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"
-            >
-              <Trash2 className="h-3 w-3" />
-              删除
-            </button>
-          )}
-        </div>
+        <p className="text-xs font-medium text-neutral-500">
+          当前项目：{projectLoading ? "加载中" : currentProject?.name ?? "未选择项目"}
+        </p>
       </div>
-
-      {/* 新建项目对话框 */}
-      {showNewProject && (
-        <div className="border-b border-neutral-200 bg-amber-50 px-6 py-3">
-          <div className="flex items-start gap-2">
-            <div className="flex flex-col gap-1.5">
-              <input
-                value={newProjectName}
-                onChange={(e) => setNewProjectName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleCreateProject()
-                }}
-                placeholder="输入项目名称..."
-                className="w-64 rounded-lg border border-amber-200 px-3 py-1.5 text-xs outline-none focus:border-amber-500"
-              />
-              <input
-                value={newClientName}
-                onChange={(e) => setNewClientName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleCreateProject()
-                }}
-                placeholder="输入客户名（自动脱敏）..."
-                className="w-64 rounded-lg border border-amber-200 px-3 py-1.5 text-xs outline-none focus:border-amber-500"
-              />
-            </div>
-            <div className="flex items-center gap-2 pt-0.5">
-              <button
-                type="button"
-                onClick={handleCreateProject}
-                className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700"
-              >
-                确认
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowNewProject(false)
-                  setNewProjectName("")
-                  setNewClientName("")
-                }}
-                className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs text-neutral-500 hover:bg-neutral-100"
-              >
-                取消
-              </button>
-            </div>
-          </div>
-          <p className="mt-1.5 text-[10px] text-neutral-400">
-            客户名将自动脱敏（敏感词替换为占位符），可在脱敏管理中添加敏感词
-          </p>
-        </div>
-      )}
 
       <div className="flex border-b border-neutral-200 bg-white px-6">
         {tabs.map(({ key, label, icon: Icon }) => (
@@ -229,11 +83,11 @@ export default function RiskControl() {
         ))}
       </div>
       <div className="flex-1 overflow-y-auto p-6">
-        {tab === "scope" && <ScopeTab projectId={selectedProjectId} />}
-        {tab === "health" && <HealthTab projectId={selectedProjectId} />}
-        {tab === "scripts" && <ScriptsTab projectId={selectedProjectId} />}
+        {tab === "scope" && <ScopeTab projectId={activeProjectId} />}
+        {tab === "health" && <HealthTab projectId={activeProjectId} />}
+        {tab === "scripts" && <ScriptsTab projectId={activeProjectId} />}
         {tab === "analysis" && (
-          <AnalysisTab projectId={selectedProjectId} kbProjectId={selectedKbProjectId} />
+          <AnalysisTab projectId={activeProjectId} />
         )}
       </div>
     </div>
@@ -248,17 +102,35 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
   const [newCat, setNewCat] = useState("")
   const [newDesc, setNewDesc] = useState("")
   const [showExtract, setShowExtract] = useState(false)
+  const [documents, setDocuments] = useState<DocumentMeta[]>([])
+  const [docLoading, setDocLoading] = useState(false)
   const [extractDocId, setExtractDocId] = useState("")
   const [extractLoading, setExtractLoading] = useState(false)
   const [candidates, setCandidates] = useState<CandidateScopeItem[]>([])
   const [confirmLoading, setConfirmLoading] = useState(false)
   const toast = useToast()
+  const activeProjectRef = useRef(projectId)
+
+  useEffect(() => {
+    activeProjectRef.current = projectId
+    setItems([])
+    setCheckResult(null)
+    setNewReq("")
+    setShowExtract(false)
+    setDocuments([])
+    setExtractDocId("")
+    setCandidates([])
+    setLoading(false)
+    setDocLoading(false)
+    setExtractLoading(false)
+    setConfirmLoading(false)
+  }, [projectId])
 
   const refresh = useCallback(async () => {
     if (projectId === null) return
     try {
       const list = await listScopeItems(projectId)
-      setItems(list)
+      if (activeProjectRef.current === projectId) setItems(list)
     } catch (e) {
       console.error("加载范围列表失败:", e)
     }
@@ -268,24 +140,48 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
     refresh()
   }, [refresh])
 
+  // 打开提取对话框时加载文档列表
+  useEffect(() => {
+    if (!showExtract || projectId === null) {
+      if (!showExtract) {
+        setExtractDocId("")
+        setCandidates([])
+      }
+      return
+    }
+    setDocLoading(true)
+    listDocuments(projectId)
+      .then((result) => {
+        if (activeProjectRef.current === projectId) setDocuments(result)
+      })
+      .catch(() => {
+        if (activeProjectRef.current === projectId) setDocuments([])
+      })
+      .finally(() => {
+        if (activeProjectRef.current === projectId) setDocLoading(false)
+      })
+  }, [showExtract, projectId])
+
   const handleCheck = async () => {
     if (!newReq.trim() || projectId === null) return
     setLoading(true)
     try {
       const r = await checkScopeCreep(projectId, newReq.trim())
-      setCheckResult(r)
+      if (activeProjectRef.current === projectId) setCheckResult(r)
     } catch (e) {
       toast.error(String(e))
     }
-    setLoading(false)
+    if (activeProjectRef.current === projectId) setLoading(false)
   }
 
   const handleAdd = async () => {
     if (!newCat.trim() || !newDesc.trim() || projectId === null) return
     await addScopeItem(projectId, newCat.trim(), newDesc.trim(), true, "")
-    setNewCat("")
-    setNewDesc("")
-    refresh()
+    if (activeProjectRef.current === projectId) {
+      setNewCat("")
+      setNewDesc("")
+      refresh()
+    }
   }
 
   const handleExtract = async () => {
@@ -294,11 +190,11 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
     setCandidates([])
     try {
       const result = await extractScopeFromDocument(projectId, Number(extractDocId))
-      setCandidates(result)
+      if (activeProjectRef.current === projectId) setCandidates(result)
     } catch (e) {
       toast.error("提取失败: " + String(e))
     }
-    setExtractLoading(false)
+    if (activeProjectRef.current === projectId) setExtractLoading(false)
   }
 
   const handleConfirmImport = async () => {
@@ -306,21 +202,23 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
     setConfirmLoading(true)
     try {
       await confirmScopeItems(projectId, candidates)
-      setCandidates([])
-      setShowExtract(false)
-      setExtractDocId("")
-      await refresh()
+      if (activeProjectRef.current === projectId) {
+        setCandidates([])
+        setShowExtract(false)
+        setExtractDocId("")
+        await refresh()
+      }
     } catch (e) {
       toast.error("导入失败: " + String(e))
     }
-    setConfirmLoading(false)
+    if (activeProjectRef.current === projectId) setConfirmLoading(false)
   }
 
   if (projectId === null) {
     return (
       <div className="flex flex-col items-center justify-center pt-20">
         <Search className="mb-3 h-10 w-10 text-neutral-300" />
-        <p className="text-sm text-neutral-500">请先在顶部选择或创建一个项目</p>
+        <p className="text-sm text-neutral-500">请先在侧边栏选择一个项目</p>
       </div>
     )
   }
@@ -425,17 +323,28 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
         {showExtract && (
           <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3">
             <div className="flex items-center gap-2">
-              <input
-                value={extractDocId}
-                onChange={(e) => setExtractDocId(e.target.value)}
-                placeholder="输入知识库文档 ID..."
-                type="number"
-                className="w-48 rounded-lg border border-amber-200 px-2 py-1 text-xs outline-none focus:border-amber-500"
-              />
+              {docLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin text-amber-600" />
+              ) : documents.length === 0 ? (
+                <span className="text-xs text-neutral-500">暂无可用文档，请先导入知识库</span>
+              ) : (
+                <select
+                  value={extractDocId}
+                  onChange={(e) => setExtractDocId(e.target.value)}
+                  className="w-64 rounded-lg border border-amber-200 px-2 py-1 text-xs outline-none focus:border-amber-500"
+                >
+                  <option value="">请选择文档...</option>
+                  {documents.map((doc) => (
+                    <option key={doc.id} value={doc.id}>
+                      {doc.title}
+                    </option>
+                  ))}
+                </select>
+              )}
               <button
                 type="button"
                 onClick={handleExtract}
-                disabled={extractLoading || !extractDocId.trim()}
+                disabled={extractLoading || !extractDocId}
                 className="flex items-center gap-1 rounded bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
               >
                 {extractLoading ? (
@@ -513,7 +422,7 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
                 <button
                   type="button"
                   onClick={async () => {
-                    await deleteScopeItem(item.id)
+                    await deleteScopeItem(projectId, item.id)
                     refresh()
                   }}
                   className="text-neutral-300 hover:text-red-500"
@@ -538,16 +447,29 @@ function HealthTab({ projectId }: { projectId: number | null }) {
   const [fitGapResult, setFitGapResult] = useState("")
   const [fitGapLoading, setFitGapLoading] = useState(false)
   const toast = useToast()
+  const activeProjectRef = useRef(projectId)
+
+  useEffect(() => {
+    activeProjectRef.current = projectId
+    setHealth(null)
+    setAiReport("")
+    setFitGapInput("")
+    setFitGapResult("")
+    setLoading(false)
+    setAiLoading(false)
+    setFitGapLoading(false)
+  }, [projectId])
 
   const refresh = useCallback(async () => {
     if (projectId === null) return
     setLoading(true)
     try {
-      setHealth(await getProjectHealth(projectId))
+      const result = await getProjectHealth(projectId)
+      if (activeProjectRef.current === projectId) setHealth(result)
     } catch (e) {
       toast.error(String(e))
     }
-    setLoading(false)
+    if (activeProjectRef.current === projectId) setLoading(false)
   }, [projectId])
 
   useEffect(() => {
@@ -558,20 +480,19 @@ function HealthTab({ projectId }: { projectId: number | null }) {
     if (!health || aiLoading || projectId === null) return
     setAiLoading(true)
     setAiReport("")
-    const context =
-      `项目健康评分: ${health.overall_score}/100, 风险等级: ${health.risk_level}\n` +
-      health.dimensions.map((d) => `- ${d.name}: ${d.score}/100 (${d.detail})`).join("\n")
     try {
-      const report = await generateRiskReport(projectId, context)
-      setAiReport(report)
+      const report = await generateRiskReport(projectId, "")
+      if (activeProjectRef.current === projectId) setAiReport(report)
     } catch (e) {
       toast.error("分析失败: " + String(e))
     }
-    setAiLoading(false)
+    if (activeProjectRef.current === projectId) setAiLoading(false)
   }, [health, aiLoading, projectId])
 
   const colorClass = (level: string) =>
-    level === "critical"
+    level === "unknown"
+      ? "text-neutral-500"
+      : level === "critical"
       ? "text-red-600"
       : level === "high"
         ? "text-orange-600"
@@ -580,7 +501,9 @@ function HealthTab({ projectId }: { projectId: number | null }) {
           : "text-green-600"
 
   const bgClass = (level: string) =>
-    level === "critical"
+    level === "unknown"
+      ? "bg-neutral-50 border-neutral-200"
+      : level === "critical"
       ? "bg-red-50 border-red-200"
       : level === "high"
         ? "bg-orange-50 border-orange-200"
@@ -592,7 +515,7 @@ function HealthTab({ projectId }: { projectId: number | null }) {
     return (
       <div className="flex flex-col items-center justify-center pt-20">
         <Shield className="mb-3 h-10 w-10 text-neutral-300" />
-        <p className="text-sm text-neutral-500">请先在顶部选择或创建一个项目</p>
+        <p className="text-sm text-neutral-500">请先在侧边栏选择一个项目</p>
       </div>
     )
   }
@@ -610,11 +533,13 @@ function HealthTab({ projectId }: { projectId: number | null }) {
             <div className="mb-2 flex items-center gap-2">
               <Shield className={`h-5 w-5 ${colorClass(health.risk_level)}`} />
               <span className={`text-lg font-bold ${colorClass(health.risk_level)}`}>
-                {health.overall_score.toFixed(0)}/100
+                {health.risk_level === "unknown" ? "暂无评分" : `${health.overall_score.toFixed(0)}/100`}
               </span>
               <span
                 className={`rounded px-2 py-0.5 text-xs font-medium ${
-                  health.risk_level === "critical"
+                  health.risk_level === "unknown"
+                    ? "bg-neutral-100 text-neutral-600"
+                    : health.risk_level === "critical"
                     ? "bg-red-100 text-red-700"
                     : health.risk_level === "high"
                       ? "bg-orange-100 text-orange-700"
@@ -623,7 +548,9 @@ function HealthTab({ projectId }: { projectId: number | null }) {
                         : "bg-green-100 text-green-700"
                 }`}
               >
-                {health.risk_level === "critical"
+                {health.risk_level === "unknown"
+                  ? "数据不足"
+                  : health.risk_level === "critical"
                   ? "危急"
                   : health.risk_level === "high"
                     ? "高风险"
@@ -633,6 +560,10 @@ function HealthTab({ projectId }: { projectId: number | null }) {
               </span>
             </div>
             <p className="text-xs text-neutral-600">{health.trend}</p>
+            <p className="mt-1 text-[10px] text-neutral-500">
+              健康指标完整度 {(health.data_completeness * 100).toFixed(0)}%，共{" "}
+              {health.metric_count} 条记录
+            </p>
             {health.alert_count > 0 && (
               <p className="mt-1 text-xs font-medium text-red-600">
                 ⚠ {health.alert_count} 项指标需要关注
@@ -647,21 +578,31 @@ function HealthTab({ projectId }: { projectId: number | null }) {
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-xs font-medium text-neutral-700">{d.name}</span>
                   <span
-                    className={`text-xs font-bold ${d.score >= 50 ? "text-red-600" : d.score >= 30 ? "text-yellow-600" : "text-green-600"}`}
+                    className={`text-xs font-bold ${
+                      !d.has_data
+                        ? "text-neutral-400"
+                        : d.score >= 50
+                          ? "text-red-600"
+                          : d.score >= 30
+                            ? "text-yellow-600"
+                            : "text-green-600"
+                    }`}
                   >
-                    {d.score.toFixed(0)}/100
+                    {d.has_data ? `${d.score.toFixed(0)}/100` : "暂无数据"}
                   </span>
                 </div>
                 <div className="h-2 rounded-full bg-neutral-100">
                   <div
                     className={`h-full rounded-full transition-all ${
-                      d.score >= 50
+                      !d.has_data
+                        ? "bg-neutral-200"
+                        : d.score >= 50
                         ? "bg-red-500"
                         : d.score >= 30
                           ? "bg-yellow-500"
                           : "bg-green-500"
                     }`}
-                    style={{ width: `${d.score}%` }}
+                    style={{ width: d.has_data ? `${d.score}%` : "0%" }}
                   />
                 </div>
                 <p className="mt-1 text-[10px] text-neutral-400">{d.detail}</p>
@@ -680,7 +621,7 @@ function HealthTab({ projectId }: { projectId: number | null }) {
             ) : (
               <Brain className="h-3.5 w-3.5" />
             )}
-            {aiLoading ? "分析中..." : "AI 风险分析"}
+            {aiLoading ? "正在检索项目文档并分析..." : "基于项目文档进行 AI 风险分析"}
           </button>
           {aiReport && (
             <div className="mt-2 space-y-2">
@@ -726,11 +667,14 @@ function HealthTab({ projectId }: { projectId: number | null }) {
             if (!fitGapInput.trim()) return
             setFitGapLoading(true)
             try {
-              setFitGapResult(await analyzeFitGap(fitGapInput))
+              const result = await analyzeFitGap(projectId, fitGapInput)
+              if (activeProjectRef.current === projectId) setFitGapResult(result)
             } catch (e) {
-              setFitGapResult("分析失败: " + String(e))
+              if (activeProjectRef.current === projectId) {
+                setFitGapResult("分析失败: " + String(e))
+              }
             }
-            setFitGapLoading(false)
+            if (activeProjectRef.current === projectId) setFitGapLoading(false)
           }}
           disabled={fitGapLoading || !fitGapInput.trim()}
           className="mt-2 flex items-center gap-1 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
@@ -771,32 +715,45 @@ function HealthTab({ projectId }: { projectId: number | null }) {
 }
 
 function ScriptsTab({ projectId }: { projectId: number | null }) {
-  void projectId
   const [scenario, setScenario] = useState("")
   const [context, setContext] = useState("")
   const [tone, setTone] = useState("push_back")
   const [result, setResult] = useState<DefenseScriptResult | null>(null)
   const [loading, setLoading] = useState(false)
   const toast = useToast()
+  const activeProjectRef = useRef(projectId)
+
+  useEffect(() => {
+    activeProjectRef.current = projectId
+    setScenario("")
+    setContext("")
+    setResult(null)
+    setLoading(false)
+  }, [projectId])
 
   const handleGenerate = async () => {
-    if (!scenario.trim()) return
+    if (!scenario.trim() || projectId === null) return
     setLoading(true)
     try {
-      const r = await generateDefenseScript({
+      const r = await generateDefenseScript(projectId, {
         scenario: scenario.trim(),
         context: context.trim(),
         tone,
       })
-      setResult(r)
+      if (activeProjectRef.current === projectId) setResult(r)
     } catch (e) {
       toast.error(String(e))
     }
-    setLoading(false)
+    if (activeProjectRef.current === projectId) setLoading(false)
   }
 
   return (
     <div className="space-y-4">
+      {projectId === null && (
+        <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-4 text-xs text-neutral-500">
+          请先在侧边栏选择一个项目
+        </div>
+      )}
       <div className="rounded-lg border border-neutral-200 bg-white p-4">
         <h2 className="mb-3 text-sm font-semibold text-neutral-700">生成防身话术</h2>
         <div className="space-y-3">
@@ -836,7 +793,7 @@ function ScriptsTab({ projectId }: { projectId: number | null }) {
             <button
               type="button"
               onClick={handleGenerate}
-              disabled={loading || !scenario.trim()}
+              disabled={loading || !scenario.trim() || projectId === null}
               className="ml-auto flex items-center gap-1 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
             >
               {loading ? (
@@ -891,12 +848,17 @@ function ScriptsTab({ projectId }: { projectId: number | null }) {
 
 // ─── Analysis Tab: ReAct 深度分析对话 ──────────────────────────────────
 
-function AnalysisTab({ projectId, kbProjectId }: { projectId: number | null; kbProjectId?: number | null }) {
+function AnalysisTab({ projectId }: { projectId: number | null }) {
   const agent = useAgent()
-  const slot = agent.slots.get("risk-analysis") ?? DEFAULT_SLOT
+  const slotId = `risk-analysis:${projectId ?? "none"}`
+  const slot = agent.slots.get(slotId) ?? DEFAULT_SLOT
   const { messages, loading, currentTrace } = slot
   const [input, setInput] = useState("")
   const chatEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setInput("")
+  }, [projectId])
 
   // Auto-scroll
   useEffect(() => {
@@ -911,11 +873,10 @@ function AnalysisTab({ projectId, kbProjectId }: { projectId: number | null; kbP
     const prompt =
       "请作为 KingdeeKB 双轨风险把控舱中的风控专家分析以下问题，必要时使用知识库搜索、范围蔓延检查、项目健康评分、差异分析或防身话术工具，并给出专业、简洁、可执行的回答。\n\n问题：" +
       text
-    await agent.sendMessage("risk-analysis", prompt, {
-      projectId: kbProjectId ?? null,
-      riskProjectId: projectId,
+    await agent.sendMessage(slotId, prompt, {
+      projectId,
     })
-  }, [input, loading, projectId, kbProjectId, agent])
+  }, [input, loading, projectId, agent, slotId])
 
   return (
     <div className="flex flex-col" style={{ height: "calc(100vh - 12rem)" }}>

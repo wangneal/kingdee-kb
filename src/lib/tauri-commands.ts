@@ -705,6 +705,7 @@ export interface HealthDimension {
   score: number
   weight: number
   detail: string
+  has_data: boolean
 }
 
 export interface ProjectHealthScore {
@@ -713,6 +714,8 @@ export interface ProjectHealthScore {
   dimensions: HealthDimension[]
   trend: string
   alert_count: number
+  metric_count: number
+  data_completeness: number
 }
 
 // ── P2: 蓝图提炼 / Fit-Gap / 脱敏 ──────────────────────────────────────
@@ -721,8 +724,8 @@ export async function extractBlueprint(researchContext: string): Promise<string>
   return invoke("extract_blueprint", { researchContext })
 }
 
-export async function analyzeFitGap(requirements: string): Promise<string> {
-  return invoke("analyze_fit_gap", { requirements })
+export async function analyzeFitGap(projectId: number, requirements: string): Promise<string> {
+  return invoke("analyze_fit_gap", { projectId, requirements })
 }
 
 export async function desensitizeText(
@@ -811,7 +814,6 @@ export async function agentChat(
   message: string,
   sessionId?: string,
   projectId?: number | null,
-  riskProjectId?: number | null,
   history?: ChatMessage[],
   providerId?: string,
   attachments?: AttachmentInfo[],
@@ -825,7 +827,7 @@ export async function agentChat(
         message,
         sessionId: sid,
         projectId: projectId ?? null,
-        riskProjectId: riskProjectId ?? null,
+        riskProjectId: null,
         history: history ?? [],
         providerId: providerId ?? null,
         attachments: attachments ?? [],
@@ -972,16 +974,6 @@ export function listenVideoProgress(
 
 // ─── Risk Control Types (P1: 双轨风险把控舱) ───
 
-export interface RiskProject {
-  id: number
-  name: string
-  client_name: string
-  kb_project_id: number | null
-  contract_doc_id: number | null
-  sow_doc_id: number | null
-  created_at: string
-}
-
 export interface CandidateScopeItem {
   category: string
   description: string
@@ -1009,33 +1001,11 @@ export interface ScriptItem {
 
 export interface ImportDbResult {
   db_size_bytes: number
-  risk_project_count: number
-  scope_item_count: number
-  metric_count: number
+  document_count: number
+  chunk_count: number
 }
 
 // ─── Risk Control API ───
-
-// 项目
-export async function createRiskProject(
-  name: string,
-  clientName?: string,
-  kbProjectId?: number | null,
-): Promise<number> {
-  return invoke("create_risk_project", {
-    name,
-    clientName: clientName ?? "",
-    kbProjectId: kbProjectId ?? null,
-  })
-}
-
-export async function listRiskProjects(): Promise<RiskProject[]> {
-  return invoke("list_risk_projects")
-}
-
-export async function deleteRiskProject(projectId: number): Promise<void> {
-  return invoke("delete_risk_project", { projectId })
-}
 
 // 合同范围
 export async function listScopeItems(projectId: number): Promise<ContractScopeItem[]> {
@@ -1058,8 +1028,8 @@ export async function addScopeItem(
   })
 }
 
-export async function deleteScopeItem(itemId: number): Promise<void> {
-  return invoke("delete_scope_item", { itemId })
+export async function deleteScopeItem(projectId: number, itemId: number): Promise<void> {
+  return invoke("delete_scope_item", { projectId, itemId })
 }
 
 // 需求蔓延检查
@@ -1096,9 +1066,10 @@ export async function generateRiskReport(projectId: number, context: string): Pr
 
 // 防身话术
 export async function generateDefenseScript(
+  projectId: number,
   request: DefenseScriptRequest,
 ): Promise<DefenseScriptResult> {
-  return invoke("generate_defense_script", { request })
+  return invoke("generate_defense_script", { projectId, request })
 }
 
 // 文档范围提取

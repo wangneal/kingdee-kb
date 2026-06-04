@@ -211,11 +211,16 @@ impl Tool for SearchKnowledgeTool {
                                             .unwrap_or_default(),
                                     });
                                 }
-                                crate::services::verification::append_session_rag_results(sid, &results);
+                                crate::services::verification::append_session_rag_results(
+                                    sid, &results,
+                                );
                             }
 
                             let mut output = String::new();
-                            output.push_str(&format!("找到 {} 条相关结果（来自 Wiki）：\n\n", pages.len()));
+                            output.push_str(&format!(
+                                "找到 {} 条相关结果（来自 Wiki）：\n\n",
+                                pages.len()
+                            ));
                             for (i, r) in pages.iter().enumerate() {
                                 output.push_str(&format!(
                                     "【{}】{} (相关度: {:.3}, 来源: {})\n{}\n\n",
@@ -442,16 +447,13 @@ impl Tool for GenerateDocTool {
         .map_err(ToolError::msg)?;
 
         let product_id = {
-            let product_project_id = self
-                .project_id
-                .map(Ok)
-                .unwrap_or_else(|| {
-                    self.project_store
-                        .lock()
-                        .map_err(|e| ToolError::msg(e.to_string()))?
-                        .ensure_default_project()
-                        .map_err(ToolError::msg)
-                })?;
+            let product_project_id = self.project_id.map(Ok).unwrap_or_else(|| {
+                self.project_store
+                    .lock()
+                    .map_err(|e| ToolError::msg(e.to_string()))?
+                    .ensure_default_project()
+                    .map_err(ToolError::msg)
+            })?;
             let store = self
                 .products
                 .lock()
@@ -641,7 +643,7 @@ fn sanitize_filename(value: &str) -> String {
 // ─── 3. CheckScopeCreepTool ───
 
 pub struct CheckScopeCreepTool {
-    pub project_id: i64,
+    pub project_id: Option<i64>,
     pub llm: LLMService,
     pub risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
 }
@@ -653,7 +655,7 @@ pub struct CheckScopeCreepToolArgs {
 
 impl CheckScopeCreepTool {
     pub fn new(
-        project_id: i64,
+        project_id: Option<i64>,
         llm: LLMService,
         risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
     ) -> Self {
@@ -686,9 +688,12 @@ impl Tool for CheckScopeCreepTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let project_id = self
+            .project_id
+            .ok_or_else(|| ToolError::msg("未选择当前项目，无法执行范围蔓延检查"))?;
         let store = self.risk_store.lock().await;
         let result = store
-            .check_scope_creep(self.project_id, &self.llm, &args.requirement)
+            .check_scope_creep(project_id, &self.llm, &args.requirement)
             .await
             .map_err(ToolError::msg)?;
 
@@ -706,7 +711,9 @@ impl Tool for CheckScopeCreepTool {
 // ─── 4. AnalyzeFitGapTool ───
 
 pub struct AnalyzeFitGapTool {
+    pub project_id: Option<i64>,
     pub llm: LLMService,
+    pub risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
 }
 
 #[derive(Deserialize)]
@@ -715,8 +722,16 @@ pub struct AnalyzeFitGapToolArgs {
 }
 
 impl AnalyzeFitGapTool {
-    pub fn new(llm: LLMService) -> Self {
-        Self { llm }
+    pub fn new(
+        project_id: Option<i64>,
+        llm: LLMService,
+        risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
+    ) -> Self {
+        Self {
+            project_id,
+            llm,
+            risk_store,
+        }
     }
 }
 
@@ -742,13 +757,44 @@ impl Tool for AnalyzeFitGapTool {
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         use crate::services::llm_service::ChatMessage;
+        let project_id = self
+            .project_id
+            .ok_or_else(|| ToolError::msg("未选择当前项目，无法执行项目 Fit-Gap 分析"))?;
+        let scope_items = self
+            .risk_store
+            .lock()
+            .await
+            .list_scope_items(project_id, None, None)
+            .map_err(ToolError::msg)?;
+        let scope_context = if scope_items.is_empty() {
+            "当前项目暂无已确认合同范围".to_string()
+        } else {
+            scope_items
+                .iter()
+                .map(|item| {
+                    format!(
+                        "- [{}] {}：{}；依据：{}",
+                        if item.is_in_scope {
+                            "范围内"
+                        } else {
+                            "明确排除"
+                        },
+                        item.category,
+                        item.description,
+                        item.detail
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
 
         let prompt = format!(
             "你是一个金蝶ERP差异分析专家。请分析以下需求，判断每项是标准配置(Fit)还是需要二次开发(Gap)。\n\n\
+             当前项目合同范围：\n{}\n\n\
              需求列表：\n{}\n\n\
              请以Markdown表格格式返回，包含列：需求项、Fit/Gap、说明、建议。\n\
-             如果是Gap，说明需要评估的内容。",
-            args.requirements
+             如果是Gap，说明需要评估的内容。合同范围或证据不足时必须标记待确认。",
+            scope_context, args.requirements
         );
 
         let messages = vec![
@@ -775,7 +821,7 @@ impl Tool for AnalyzeFitGapTool {
 // ─── 5. GetProjectHealthTool ───
 
 pub struct GetProjectHealthTool {
-    pub project_id: i64,
+    pub project_id: Option<i64>,
     pub risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
 }
 
@@ -783,7 +829,10 @@ pub struct GetProjectHealthTool {
 pub struct GetProjectHealthToolArgs {}
 
 impl GetProjectHealthTool {
-    pub fn new(project_id: i64, risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>) -> Self {
+    pub fn new(
+        project_id: Option<i64>,
+        risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
+    ) -> Self {
         Self {
             project_id,
             risk_store,
@@ -811,21 +860,36 @@ impl Tool for GetProjectHealthTool {
     }
 
     async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let project_id = self
+            .project_id
+            .ok_or_else(|| ToolError::msg("未选择当前项目，无法获取项目健康度"))?;
         let store = self.risk_store.lock().await;
         let score = store
-            .calculate_health_score(self.project_id)
+            .calculate_health_score(project_id)
             .map_err(ToolError::msg)?;
 
         let dimensions: Vec<String> = score
             .dimensions
             .iter()
-            .map(|d| format!("- {}: {:.1}/100 ({})", d.name, d.score, d.detail))
+            .map(|d| {
+                if d.has_data {
+                    format!("- {}: {:.1}/100 ({})", d.name, d.score, d.detail)
+                } else {
+                    format!("- {}: 暂无数据", d.name)
+                }
+            })
             .collect();
+        let overall = if score.risk_level == "unknown" {
+            "暂无评分".to_string()
+        } else {
+            format!("{:.1}/100", score.overall_score)
+        };
 
         Ok(format!(
-            "项目健康评分：{:.1}/100\n风险等级：{}\n趋势：{}\n告警数：{}\n\n各维度：\n{}",
-            score.overall_score,
+            "项目健康评分：{}\n风险等级：{}\n数据完整度：{:.0}%\n趋势：{}\n告警数：{}\n\n各维度：\n{}",
+            overall,
             score.risk_level,
+            score.data_completeness * 100.0,
             score.trend,
             score.alert_count,
             dimensions.join("\n")
@@ -836,6 +900,7 @@ impl Tool for GetProjectHealthTool {
 // ─── 6. GenerateDefenseScriptTool ───
 
 pub struct GenerateDefenseScriptTool {
+    pub project_id: Option<i64>,
     pub llm: LLMService,
     pub risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
 }
@@ -847,8 +912,16 @@ pub struct GenerateDefenseScriptToolArgs {
 }
 
 impl GenerateDefenseScriptTool {
-    pub fn new(llm: LLMService, risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>) -> Self {
-        Self { llm, risk_store }
+    pub fn new(
+        project_id: Option<i64>,
+        llm: LLMService,
+        risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
+    ) -> Self {
+        Self {
+            project_id,
+            llm,
+            risk_store,
+        }
     }
 }
 
@@ -875,12 +948,34 @@ impl Tool for GenerateDefenseScriptTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let project_id = self
+            .project_id
+            .ok_or_else(|| ToolError::msg("未选择当前项目，无法生成项目防身话术"))?;
+        let store = self.risk_store.lock().await;
+        let scope_items = store
+            .list_scope_items(project_id, None, None)
+            .map_err(ToolError::msg)?;
+        let health = store
+            .calculate_health_score(project_id)
+            .map_err(ToolError::msg)?;
+        let project_context = format!(
+            "当前项目健康状态：{}；合同范围：{}",
+            health.trend,
+            if scope_items.is_empty() {
+                "暂无已确认范围".to_string()
+            } else {
+                scope_items
+                    .iter()
+                    .map(|item| format!("{}：{}", item.category, item.description))
+                    .collect::<Vec<_>>()
+                    .join("；")
+            }
+        );
         let request = crate::services::risk_control::DefenseScriptRequest {
             scenario: args.scenario,
-            context: String::new(),
+            context: project_context,
             tone: args.tone.unwrap_or_else(|| "guide".to_string()),
         };
-        let store = self.risk_store.lock().await;
         let result = store
             .generate_defense_script(&self.llm, &request)
             .await
@@ -1214,10 +1309,7 @@ impl Tool for UseSkillTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let mgr = self
-            .skill_manager
-            .lock()
-            .await;
+        let mgr = self.skill_manager.lock().await;
         match args.action.as_str() {
             "list" => {
                 let skills = mgr.list_all();
@@ -1356,10 +1448,7 @@ impl Tool for RunSkillScriptTool {
         }
 
         let skill = {
-            let mgr = self
-                .skill_manager
-                .lock()
-                .await;
+            let mgr = self.skill_manager.lock().await;
             mgr.get(&args.skill_name)
                 .ok_or_else(|| ToolError::msg(format!("技能 '{}' 不存在", args.skill_name)))?
         };
@@ -1868,10 +1957,7 @@ impl Tool for SetupSkillEnvTool {
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let skill = {
-            let mgr = self
-                .skill_manager
-                .lock()
-                .await;
+            let mgr = self.skill_manager.lock().await;
             mgr.get(&args.skill_name)
                 .ok_or_else(|| ToolError::msg(format!("技能 '{}' 不存在", args.skill_name)))?
         };
@@ -2556,14 +2642,11 @@ pub fn all_rig_tools(
     project_store: Arc<Mutex<ProjectStore>>,
     risk_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
     skill_manager: Arc<tokio::sync::Mutex<crate::services::skill_manager::SkillManager>>,
-    risk_project_id: Option<i64>,
+    _risk_project_id: Option<i64>,
     extra_search_project_ids: Vec<String>,
     wiki_pages: Option<Arc<Mutex<WikiPageStore>>>,
     session_id: Option<String>, // 新增：会话ID，用于缓存 RAG 检索结果
 ) -> Vec<Box<dyn rig_core::tool::ToolDyn>> {
-    // 风险工具使用数值型风险项目ID。非数值型知识库项目名称保留在全局范围。
-    let risk_project_id = risk_project_id.or(project_id).unwrap_or(0);
-
     vec![
         // 安全工具 — 包装重试机制 (指数退避)
         Box::new(RetryToolWrapper::new(SearchKnowledgeTool::new(
@@ -2589,16 +2672,21 @@ pub fn all_rig_tools(
             project_store,
         )),
         Box::new(RetryToolWrapper::new(CheckScopeCreepTool::new(
-            risk_project_id,
+            project_id,
             llm.clone(),
             risk_store.clone(),
         ))),
-        Box::new(RetryToolWrapper::new(AnalyzeFitGapTool::new(llm.clone()))),
+        Box::new(RetryToolWrapper::new(AnalyzeFitGapTool::new(
+            project_id,
+            llm.clone(),
+            risk_store.clone(),
+        ))),
         Box::new(RetryToolWrapper::new(GetProjectHealthTool::new(
-            risk_project_id,
+            project_id,
             risk_store.clone(),
         ))),
         Box::new(RetryToolWrapper::new(GenerateDefenseScriptTool::new(
+            project_id,
             llm.clone(),
             risk_store,
         ))),

@@ -108,7 +108,14 @@ pub async fn save_chat_memory(
 
     // 4. Check for duplicate by semantic similarity — skip if too similar to recent memory
     let title = format!("记忆: {}", extract_title(conversation));
-    if is_duplicate_memory(&title, &memory_text, embedding, vector_index, metadata, project_id) {
+    if is_duplicate_memory(
+        &title,
+        &memory_text,
+        embedding,
+        vector_index,
+        metadata,
+        project_id,
+    ) {
         info!(target: "memory", title = %title, "[Memory] Skipping — similar memory already exists");
         return;
     }
@@ -470,12 +477,15 @@ mod tests {
         let db_path = tmp.path().join("test.db");
         let project_store = ProjectStore::new(&db_path).unwrap();
         let default_project_id = project_store.ensure_default_project().unwrap();
-        let other_project_id = project_store
-            .create_project("测试项目 B", "", "")
-            .unwrap();
+        let other_project_id = project_store.create_project("测试项目 B", "", "").unwrap();
         drop(project_store);
         let store = MetadataStore::new(db_path).unwrap();
-        (tmp, Arc::new(Mutex::new(store)), default_project_id, other_project_id)
+        (
+            tmp,
+            Arc::new(Mutex::new(store)),
+            default_project_id,
+            other_project_id,
+        )
     }
 
     // ── extract_title ─────────────────────────────────────────────────────

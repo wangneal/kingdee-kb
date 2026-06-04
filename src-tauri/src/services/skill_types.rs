@@ -377,7 +377,9 @@ pub fn extract_triggers_from_body(body: &str) -> Vec<String> {
 
             // 2. 若没有提取出引号包裹短语，则按常见分隔符（逗号、顿号、空格）切分
             if extracted.is_empty() {
-                for part in content.split(|c| c == ',' || c == '，' || c == '、' || c == ' ' || c == '\t') {
+                for part in
+                    content.split(|c| c == ',' || c == '，' || c == '、' || c == ' ' || c == '\t')
+                {
                     let val = part.trim().to_string();
                     if !val.is_empty() {
                         extracted.push(val);
@@ -395,4 +397,3 @@ pub fn extract_triggers_from_body(body: &str) -> Vec<String> {
 
     triggers
 }
-

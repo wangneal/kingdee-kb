@@ -242,16 +242,19 @@ pub fn hybrid_search(
     // ── Step 8: Cross-Encoder Rerank（可选）──
     if let Some(reranker) = reranker {
         if let Ok(reranked) = reranker.rerank(query, &results) {
-            return Ok(reranked.into_iter().map(|r| HybridSearchResult {
-                chunk_id: r.chunk_id,
-                title: r.title,
-                content: r.content,
-                score: r.score,
-                source: r.source,
-                document_id: r.document_id,
-                section_path: r.section_path,
-                project: r.project,
-            }).collect());
+            return Ok(reranked
+                .into_iter()
+                .map(|r| HybridSearchResult {
+                    chunk_id: r.chunk_id,
+                    title: r.title,
+                    content: r.content,
+                    score: r.score,
+                    source: r.source,
+                    document_id: r.document_id,
+                    section_path: r.section_path,
+                    project: r.project,
+                })
+                .collect());
         }
     }
 

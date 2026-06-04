@@ -48,12 +48,8 @@ pub async fn add_llm_provider(
         id,
         name,
         protocol,
-        api_key: String::new(),
-        model: String::new(),
         base_url,
         is_default: false,
-        is_multimodal: None,
-        last_probe_at: None,
         max_tokens: 4096,
         temperature: 0.3,
         api_keys,
@@ -100,12 +96,8 @@ pub async fn update_llm_provider(
         id: id.clone(),
         name,
         protocol,
-        api_key: String::new(),
-        model: String::new(),
         base_url,
         is_default,
-        is_multimodal: None,
-        last_probe_at: None,
         max_tokens: 4096,
         temperature: 0.3,
         api_keys,
@@ -342,7 +334,7 @@ pub async fn probe_model_multimodal(
     Ok(is_multimodal)
 }
 
-/// 探测单个供应商的多模态能力（使用默认模型，旧版兼容）
+/// 探测单个供应商的多模态能力（使用默认模型）
 #[tauri::command]
 pub async fn probe_provider_multimodal(
     state: State<'_, AppState>,

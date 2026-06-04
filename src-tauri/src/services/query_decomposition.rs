@@ -6,10 +6,7 @@ use crate::services::llm_service::{ChatMessage, LLMService};
 
 /// 尝试将查询分解为子问题。返回子问题列表。
 /// 如果查询不需要分解（简单问题），返回包含原查询的 vec。
-pub async fn decompose_query(
-    llm: &LLMService,
-    query: &str,
-) -> Result<Vec<String>, String> {
+pub async fn decompose_query(llm: &LLMService, query: &str) -> Result<Vec<String>, String> {
     let word_count = query.chars().filter(|c| c.is_whitespace()).count() + 1;
     if word_count <= 5 {
         return Ok(vec![query.to_string()]);

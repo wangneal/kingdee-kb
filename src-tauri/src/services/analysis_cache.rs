@@ -92,7 +92,10 @@ impl AnalysisCacheStore {
             }
         }
         self.db
-            .execute_batch(&format!("ALTER TABLE {} ADD COLUMN {} {};", table, column, definition))
+            .execute_batch(&format!(
+                "ALTER TABLE {} ADD COLUMN {} {};",
+                table, column, definition
+            ))
             .map_err(|e| format!("添加列 {}.{} 失败: {}", table, column, e))?;
         Ok(())
     }
@@ -230,10 +233,7 @@ impl AnalysisCacheStore {
     pub fn delete(&self, id: i64) -> Result<(), String> {
         let rows = self
             .db
-            .execute(
-                "DELETE FROM analysis_cache WHERE id = ?1",
-                params![id],
-            )
+            .execute("DELETE FROM analysis_cache WHERE id = ?1", params![id])
             .map_err(|e| format!("删除 analysis_cache 失败: {}", e))?;
 
         if rows == 0 {

@@ -43,6 +43,7 @@ pub async fn ingest_text(
     enable_kb_compilation: Option<bool>,
 ) -> Result<IngestionResult, String> {
     state.ensure_embedding_ready();
+    state.ensure_bm25_ready();
 
     // 纯文本导入 identity 使用 title
     let source_identity = title.clone();
@@ -110,6 +111,7 @@ pub async fn ingest_file(
     enable_kb_compilation: Option<bool>,
 ) -> Result<IngestionResult, String> {
     state.ensure_embedding_ready();
+    state.ensure_bm25_ready();
 
     let mut result = ingest_file_fn(
         PathBuf::from(&file_path).as_path(),
@@ -199,6 +201,7 @@ pub async fn ingest_directory(
     enable_kb_compilation: Option<bool>,
 ) -> Result<DirectoryIngestionResult, String> {
     state.ensure_embedding_ready();
+    state.ensure_bm25_ready();
 
     let mut result = ingest_directory_fn(
         PathBuf::from(&dir_path).as_path(),

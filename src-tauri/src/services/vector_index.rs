@@ -50,6 +50,8 @@ pub struct IndexStats {
 pub struct VectorCompactionPlan {
     new_index: Index,
     surviving_count: usize,
+    /// prepare_compaction 时的版本号，apply_compaction 用于检测并发修改
+    compaction_version: u64,
 }
 
 /// HNSW 向量索引管理器
@@ -66,6 +68,8 @@ pub struct VectorIndex {
     last_compact: std::sync::Mutex<std::time::Instant>,
     /// 最大已使用 key 值，用于 compact 时的遍历范围
     max_key: std::sync::atomic::AtomicU64,
+    /// 每次 add/remove 递增，用于 compaction 版本校验防止竞态
+    compaction_version: std::sync::atomic::AtomicU64,
 }
 
 impl VectorIndex {
@@ -105,6 +109,7 @@ impl VectorIndex {
             deleted_count: std::sync::atomic::AtomicUsize::new(0),
             last_compact: std::sync::Mutex::new(std::time::Instant::now()),
             max_key: std::sync::atomic::AtomicU64::new(0),
+            compaction_version: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -169,6 +174,7 @@ impl VectorIndex {
             deleted_count: std::sync::atomic::AtomicUsize::new(0),
             last_compact: std::sync::Mutex::new(std::time::Instant::now()),
             max_key: std::sync::atomic::AtomicU64::new(max_k),
+            compaction_version: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -216,7 +222,10 @@ impl VectorIndex {
             .add(key, vector)
             .map_err(|e| format!("Failed to add vector {}: {}", key, e))?;
         // 更新最大 key
-        self.max_key.fetch_max(key, std::sync::atomic::Ordering::Relaxed);
+        self.max_key
+            .fetch_max(key, std::sync::atomic::Ordering::Relaxed);
+        self.compaction_version
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -236,8 +245,11 @@ impl VectorIndex {
             self.index
                 .add(*key, vector)
                 .map_err(|e| format!("Failed to add vector {}: {}", key, e))?;
-            self.max_key.fetch_max(*key, std::sync::atomic::Ordering::Relaxed);
+            self.max_key
+                .fetch_max(*key, std::sync::atomic::Ordering::Relaxed);
         }
+        self.compaction_version
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         Ok(())
     }
@@ -272,7 +284,10 @@ impl VectorIndex {
             .remove(key)
             .map_err(|e| format!("Failed to remove key {}: {}", key, e));
         if result.is_ok() {
-            self.deleted_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.deleted_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.compaction_version
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
         result
     }
@@ -285,20 +300,30 @@ impl VectorIndex {
                 count += 1;
             }
         }
-        self.deleted_count.fetch_add(count, std::sync::atomic::Ordering::SeqCst);
+        self.deleted_count
+            .fetch_add(count, std::sync::atomic::Ordering::SeqCst);
+        if count > 0 {
+            self.compaction_version
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         Ok(count)
     }
 
     /// 检查是否超过碎片整理阈值（20% 逻辑删除 + 5 分钟冷却）
     pub fn check_compact(&self) -> bool {
         let total = self.len() as f64;
-        if total <= 0.0 { return false; }
+        if total <= 0.0 {
+            return false;
+        }
         if let Ok(last) = self.last_compact.lock() {
             if last.elapsed() < std::time::Duration::from_secs(Self::COMPACT_COOLDOWN_SECS) {
                 return false;
             }
         }
-        let ratio = self.deleted_count.load(std::sync::atomic::Ordering::Relaxed) as f64 / total;
+        let ratio = self
+            .deleted_count
+            .load(std::sync::atomic::Ordering::Relaxed) as f64
+            / total;
         ratio >= Self::COMPACT_THRESHOLD
     }
 
@@ -306,7 +331,12 @@ impl VectorIndex {
     /// 在 tokio::task::spawn_blocking 中执行，不阻塞主线程
     pub fn compact(&mut self) -> Result<(), String> {
         let n = self.len() as u64;
-        if n == 0 || self.deleted_count.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        if n == 0
+            || self
+                .deleted_count
+                .load(std::sync::atomic::Ordering::Relaxed)
+                == 0
+        {
             return Ok(());
         }
         // 收集幸存向量（key = 1..=max_key，逐 key 尝试获取）
@@ -329,18 +359,20 @@ impl VectorIndex {
             expansion_search: DEFAULT_EXPANSION_SEARCH,
             multi: true, // 保持与当前配置一致
         };
-        let new_index = new_index(&options)
-            .map_err(|e| format!("创建新索引失败: {}", e))?;
-        new_index.reserve(surviving.len())
+        let new_index = new_index(&options).map_err(|e| format!("创建新索引失败: {}", e))?;
+        new_index
+            .reserve(surviving.len())
             .map_err(|e| format!("预留容量失败: {}", e))?;
         for (key, vec) in &surviving {
-            new_index.add(*key, vec)
+            new_index
+                .add(*key, vec)
                 .map_err(|e| format!("添加向量失败: {}", e))?;
         }
         // 原子替换
         let old = std::mem::replace(&mut self.index, new_index);
         drop(old); // 释放旧索引
-        self.deleted_count.store(0, std::sync::atomic::Ordering::SeqCst);
+        self.deleted_count
+            .store(0, std::sync::atomic::Ordering::SeqCst);
         if let Ok(mut last) = self.last_compact.lock() {
             *last = std::time::Instant::now();
         }
@@ -350,7 +382,12 @@ impl VectorIndex {
     /// 在共享读锁下准备碎片整理计划，避免长时间占用外层写锁。
     pub fn prepare_compaction(&self) -> Result<Option<VectorCompactionPlan>, String> {
         let n = self.len() as u64;
-        if n == 0 || self.deleted_count.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        if n == 0
+            || self
+                .deleted_count
+                .load(std::sync::atomic::Ordering::Relaxed)
+                == 0
+        {
             return Ok(None);
         }
 
@@ -372,8 +409,7 @@ impl VectorIndex {
             expansion_search: DEFAULT_EXPANSION_SEARCH,
             multi: true,
         };
-        let new_index = new_index(&options)
-            .map_err(|e| format!("创建新索引失败: {}", e))?;
+        let new_index = new_index(&options).map_err(|e| format!("创建新索引失败: {}", e))?;
         new_index
             .reserve(surviving.len())
             .map_err(|e| format!("预留容量失败: {}", e))?;
@@ -383,17 +419,33 @@ impl VectorIndex {
                 .map_err(|e| format!("添加向量失败: {}", e))?;
         }
 
+        let version = self
+            .compaction_version
+            .load(std::sync::atomic::Ordering::SeqCst);
+
         Ok(Some(VectorCompactionPlan {
             new_index,
             surviving_count: surviving.len(),
+            compaction_version: version,
         }))
     }
 
     /// 应用已准备好的碎片整理计划，只在替换阶段占用外层写锁。
+    /// 如果 prepare_compaction 后有新 add/remove，返回错误（调用方应重试）。
     pub fn apply_compaction(&mut self, plan: VectorCompactionPlan) -> Result<(), String> {
+        let current_version = self
+            .compaction_version
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if current_version != plan.compaction_version {
+            return Err(format!(
+                "碎片整理版本不匹配（prepare={}, current={}），有并发修改，请重试",
+                plan.compaction_version, current_version
+            ));
+        }
         let old = std::mem::replace(&mut self.index, plan.new_index);
         drop(old);
-        self.deleted_count.store(0, std::sync::atomic::Ordering::SeqCst);
+        self.deleted_count
+            .store(0, std::sync::atomic::Ordering::SeqCst);
         self.reserved = plan.surviving_count > 0;
         if let Ok(mut last) = self.last_compact.lock() {
             *last = std::time::Instant::now();

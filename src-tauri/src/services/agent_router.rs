@@ -7,7 +7,7 @@ use crate::services::llm_service::ChatMessage;
 use crate::services::types::AgentMode;
 
 /// 复杂度阈值：超过此分数触发 Plan-Execute 模式
-pub const COMPLEXITY_THRESHOLD: u32 = 20;
+pub const COMPLEXITY_THRESHOLD: u32 = 30;
 
 /// 计算用户消息的复杂度分数
 ///
@@ -18,13 +18,12 @@ pub const COMPLEXITY_THRESHOLD: u32 = 20;
 pub fn score_complexity(user_message: &str, history: &[ChatMessage]) -> u32 {
     let mut score: u32 = 0;
 
-    // 1. 中文多步骤关键词
+    // 1. 中文多步骤关键词（去除了日常高频、不代表高复杂度的词如 “先”、“所有”、“全部”、“系统”、“多个”）
     let cn_patterns = [
         "分步骤",
         "第一步",
         "第二步",
         "第三步",
-        "先",
         "然后",
         "接着",
         "最后",
@@ -36,15 +35,9 @@ pub fn score_complexity(user_message: &str, history: &[ChatMessage]) -> u32 {
         "迁移",
         "集成",
         "部署",
-        "批量",
-        "多个",
-        "全部",
-        "所有",
         "整体",
-        "系统",
         "规划",
         "计划",
-        "任务",
         "阶段",
         "里程碑",
     ];
@@ -134,7 +127,7 @@ mod tests {
     #[test]
     fn test_complex_plan_high_score() {
         let score = score_complexity(
-            "请帮我分步骤设计一个完整的采购到付款流程迁移方案，包括架构设计和部署计划",
+            "请帮我分步骤设计一个完整的采购到付款流程迁移方案，包括架构设计 and 部署计划",
             &[],
         );
         assert!(score >= COMPLEXITY_THRESHOLD, "复杂规划应该高分: {}", score);

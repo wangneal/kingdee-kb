@@ -148,9 +148,7 @@ pub fn list_research_sessions(
     state: State<'_, AppState>,
     project_id: Option<i64>,
 ) -> Result<Vec<ResearchSession>, String> {
-    state
-        .research_session_store
-        .list_sessions(project_id)
+    state.research_session_store.list_sessions(project_id)
 }
 
 #[tauri::command]

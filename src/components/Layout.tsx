@@ -115,7 +115,7 @@ function StatusBar({ onNavigate }: { onNavigate: (path: string) => void }) {
     }
 
     check()
-    const interval = setInterval(check, 30_000)
+    const interval = setInterval(check, 60_000)
     return () => {
       cancelled = true
       clearInterval(interval)
@@ -154,7 +154,7 @@ export default function Layout() {
   const sideSessionRef = useRef<string | null>(null)
   const navigate = useNavigate()
 
-  // Sidebar localStorage bridge: poll for questions from Tencent Meeting sidebar
+  // Sidebar localStorage bridge: 定期检查腾讯会议侧边栏发来的问题
   useEffect(() => {
     let cancelled = false
     let unsub: (() => void) | null = null
@@ -203,7 +203,7 @@ export default function Layout() {
       } catch {
         /* poll error */
       }
-    }, 2000)
+    }, 5000)
 
     return () => {
       cancelled = true

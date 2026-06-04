@@ -81,7 +81,7 @@ const PROVIDER_DEFAULTS: Record<string, { base_url: string; model: string }> = {
     model: "claude-3-5-sonnet-20241022",
   },
   local: {
-    base_url: "http://localhost:11434/v1",
+    base_url: "http://localhost:11434",
     model: "qwen2.5:7b",
   },
 }
@@ -200,6 +200,7 @@ export default function Settings() {
 
   // 合并内置规格和 localStorage 覆盖
   const mergedModelSpecs = useMemo(() => {
+    void overrideKey
     const overrides: Record<string, { context_window?: number; max_output?: number }> = JSON.parse(
       localStorage.getItem("model_spec_overrides") || "{}",
     )
@@ -1206,7 +1207,7 @@ function DatabaseBackupCard() {
       setImportResult(result)
       setMsg({
         ok: true,
-        text: `导入成功：${result.risk_project_count} 个项目，${result.scope_item_count} 条范围，${result.metric_count} 条指标`,
+        text: `导入成功：${result.document_count} 条范围，${result.chunk_count} 条指标`,
       })
     } catch (err) {
       setMsg({ ok: false, text: `导入失败：${err instanceof Error ? err.message : String(err)}` })
@@ -1255,21 +1256,15 @@ function DatabaseBackupCard() {
           )}
         </div>
         {importResult && (
-          <div className="mt-3 grid grid-cols-3 gap-3">
+          <div className="mt-3 grid grid-cols-2 gap-3">
             <div className="rounded-lg border border-neutral-100 bg-neutral-50 p-2 text-center">
               <p className="text-lg font-semibold text-neutral-800">
-                {importResult.risk_project_count}
-              </p>
-              <p className="text-xs text-neutral-500">风控项目</p>
-            </div>
-            <div className="rounded-lg border border-neutral-100 bg-neutral-50 p-2 text-center">
-              <p className="text-lg font-semibold text-neutral-800">
-                {importResult.scope_item_count}
+                {importResult.document_count}
               </p>
               <p className="text-xs text-neutral-500">范围条目</p>
             </div>
             <div className="rounded-lg border border-neutral-100 bg-neutral-50 p-2 text-center">
-              <p className="text-lg font-semibold text-neutral-800">{importResult.metric_count}</p>
+              <p className="text-lg font-semibold text-neutral-800">{importResult.chunk_count}</p>
               <p className="text-xs text-neutral-500">健康指标</p>
             </div>
           </div>
@@ -1487,10 +1482,10 @@ function ProviderCard({
           </div>
           <div className="mt-2 grid gap-1 text-xs text-neutral-500 md:grid-cols-2">
             <span className="truncate">
-              默认模型：{defaultModel?.name || provider.model || "未设置"}
+              默认模型：{defaultModel?.name || "未设置"}
             </span>
             <span className="truncate">
-              默认 Key：{defaultKey?.name || (provider.api_key ? "旧版 Key" : "未设置")}
+              默认 Key：{defaultKey?.name || "未设置"}
             </span>
             <span className="truncate md:col-span-2">
               Base URL：{provider.base_url || "未设置"}
@@ -1622,6 +1617,12 @@ function ProviderFormDialog({
       return
     }
 
+    if (protocol === "local" && baseUrl.trim().replace(/\/+$/, "").endsWith("/v1")) {
+      setMessage("Local 协议仅支持 Ollama 原生根地址，Endpoint URL 不能以 /v1 结尾")
+      setSaving(false)
+      return
+    }
+
     const existingKeys = provider?.api_keys ?? []
     const apiKeys: ApiKeyConfig[] = apiKey.trim()
       ? [
@@ -1634,7 +1635,7 @@ function ProviderFormDialog({
         ]
       : existingKeys
 
-    if (protocol !== "local" && apiKeys.length === 0 && !provider?.api_key) {
+    if (protocol !== "local" && apiKeys.length === 0) {
       setMessage("请填写 API Key")
       setSaving(false)
       return
@@ -1709,7 +1710,7 @@ function ProviderFormDialog({
             >
               <option value="openai">OpenAI（Chat Completions）</option>
               <option value="anthropic">Anthropic（Messages）</option>
-              <option value="local">本地模型（Ollama / llama.cpp）</option>
+              <option value="local">本地模型（Ollama 原生协议）</option>
             </select>
           </label>
 
@@ -1719,6 +1720,11 @@ function ProviderFormDialog({
             onChange={setBaseUrl}
             placeholder="https://api.openai.com/v1"
           />
+          {protocol === "local" && (
+            <p className="text-xs text-neutral-500">
+              Local 使用 Ollama 原生接口。llama.cpp 或其他 OpenAI 兼容服务请选择 OpenAI 协议。
+            </p>
+          )}
           {protocol !== "local" && (
             <ProviderTextInput
               label={provider ? "API Key（留空则保持原值）" : "API Key"}
@@ -1986,10 +1992,11 @@ function OcrConfigCard() {
         ) : (
           <div className="space-y-4">
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-neutral-600">
+              <label htmlFor="ocr-provider" className="mb-1.5 block text-xs font-medium text-neutral-600">
                 OCR 服务商
               </label>
               <select
+                id="ocr-provider"
                 value={provider}
                 onChange={(e) => setProvider(e.target.value)}
                 className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
@@ -2000,8 +2007,9 @@ function OcrConfigCard() {
             </div>
 
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-neutral-600">名称</label>
+              <label htmlFor="ocr-name" className="mb-1.5 block text-xs font-medium text-neutral-600">名称</label>
               <input
+                id="ocr-name"
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -2011,9 +2019,10 @@ function OcrConfigCard() {
             </div>
 
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-neutral-600">API Key</label>
+              <label htmlFor="ocr-api-key" className="mb-1.5 block text-xs font-medium text-neutral-600">API Key</label>
               <div className="relative">
                 <input
+                  id="ocr-api-key"
                   type={showApiKey ? "text" : "password"}
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
@@ -2033,10 +2042,11 @@ function OcrConfigCard() {
 
             {provider === "baidu" && (
               <div>
-                <label className="mb-1.5 block text-xs font-medium text-neutral-600">
+                <label htmlFor="ocr-secret-key" className="mb-1.5 block text-xs font-medium text-neutral-600">
                   Secret Key
                 </label>
                 <input
+                  id="ocr-secret-key"
                   type="password"
                   value={secretKey}
                   onChange={(e) => setSecretKey(e.target.value)}

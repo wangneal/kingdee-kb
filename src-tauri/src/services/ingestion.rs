@@ -267,14 +267,18 @@ pub fn ingest_text(
 
         // 批量嵌入，不与元数据、BM25、向量索引锁同时持有
         let embeddings = {
-            let mut emb = embedding.write().map_err(|e| format!("Lock error: {}", e))?;
+            let mut emb = embedding
+                .write()
+                .map_err(|e| format!("Lock error: {}", e))?;
             emb.embed_batch(&texts)?
         };
 
         // 按规格锁顺序写入：metadata → bm25 → vector_index
         {
             let meta = metadata.lock().map_err(|e| format!("Lock error: {}", e))?;
-            let bm25_guard = bm25.write().map_err(|e| format!("BM25 lock error: {}", e))?;
+            let bm25_guard = bm25
+                .write()
+                .map_err(|e| format!("BM25 lock error: {}", e))?;
             let mut idx = vector_index
                 .write()
                 .map_err(|e| format!("Lock error: {}", e))?;
@@ -345,7 +349,9 @@ pub fn ingest_text(
 
     // 提交 BM25 索引，使新分块可搜索
     {
-        let bm25_guard = bm25.write().map_err(|e| format!("BM25 lock error: {}", e))?;
+        let bm25_guard = bm25
+            .write()
+            .map_err(|e| format!("BM25 lock error: {}", e))?;
         bm25_guard.commit()?;
     }
 
@@ -444,7 +450,7 @@ pub fn ingest_file(
     let title = extract_title_from_filename(filename);
 
     let file_path_str = file_path.to_string_lossy();
-    
+
     // 生成 raw_source_identity（使用相对路径或文件名）
     let raw_source_identity = raw_sources.as_ref().map(|_| {
         file_path

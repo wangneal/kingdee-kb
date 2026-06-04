@@ -11,9 +11,9 @@ impl FactualConsistencyChecker {
         while let Some(ch) = chars.next() {
             current.push(ch);
             let is_end = if matches!(ch, '。' | '！' | '？') {
-                chars.peek().is_none_or(|&next| {
-                    !matches!(next, '」' | '』' | '）' | ')')
-                })
+                chars
+                    .peek()
+                    .is_none_or(|&next| !matches!(next, '」' | '』' | '）' | ')'))
             } else if matches!(ch, '.' | '!' | '?') {
                 chars.peek().is_none_or(|&next| {
                     next.is_whitespace() || matches!(next, '"' | '」' | '』' | '）' | ')')
@@ -40,8 +40,16 @@ impl FactualConsistencyChecker {
 
     fn is_factual_claim(sentence: &str) -> bool {
         let skip_prefixes = [
-            "你好", "请问", "抱歉", "谢谢", "可以", "请", "您好",
-            "总结", "根据", "综上所述",
+            "你好",
+            "请问",
+            "抱歉",
+            "谢谢",
+            "可以",
+            "请",
+            "您好",
+            "总结",
+            "根据",
+            "综上所述",
         ];
         for prefix in &skip_prefixes {
             if sentence.starts_with(prefix) {
@@ -56,7 +64,9 @@ impl FactualConsistencyChecker {
             .chars()
             .collect::<Vec<_>>()
             .windows(2)
-            .filter(|w| w[0] > '\u{4e00}' && w[0] < '\u{9fff}' && w[1] > '\u{4e00}' && w[1] < '\u{9fff}')
+            .filter(|w| {
+                w[0] > '\u{4e00}' && w[0] < '\u{9fff}' && w[1] > '\u{4e00}' && w[1] < '\u{9fff}'
+            })
             .map(|w| w.iter().collect::<String>())
             .collect();
 
@@ -109,7 +119,10 @@ impl Checker for FactualConsistencyChecker {
             if consistent {
                 verified_count += 1;
             } else {
-                inconsistencies.push(format!("句子中包含上下文未出现的内容: {} (缺失: {:?})", sentence, missing_terms));
+                inconsistencies.push(format!(
+                    "句子中包含上下文未出现的内容: {} (缺失: {:?})",
+                    sentence, missing_terms
+                ));
             }
         }
 
@@ -124,15 +137,24 @@ impl Checker for FactualConsistencyChecker {
         if ratio >= 0.8 {
             CheckResult::pass("factual_consistency")
                 .with_confidence(ratio)
-                .with_evidence(vec![format!("{}/{} 个事实陈述与知识库一致", verified_count, total_claims)])
+                .with_evidence(vec![format!(
+                    "{}/{} 个事实陈述与知识库一致",
+                    verified_count, total_claims
+                )])
         } else if ratio >= 0.5 {
-            CheckResult::fail("factual_consistency", format!("{}/{} 个事实陈述与知识库一致", verified_count, total_claims))
-                .with_confidence(ratio)
-                .with_evidence(inconsistencies)
+            CheckResult::fail(
+                "factual_consistency",
+                format!("{}/{} 个事实陈述与知识库一致", verified_count, total_claims),
+            )
+            .with_confidence(ratio)
+            .with_evidence(inconsistencies)
         } else {
-            CheckResult::fail("factual_consistency", "多数事实陈述与知识库内容不一致".to_string())
-                .with_confidence(ratio)
-                .with_evidence(inconsistencies)
+            CheckResult::fail(
+                "factual_consistency",
+                "多数事实陈述与知识库内容不一致".to_string(),
+            )
+            .with_confidence(ratio)
+            .with_evidence(inconsistencies)
         }
     }
 }

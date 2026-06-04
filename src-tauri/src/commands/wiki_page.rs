@@ -20,10 +20,7 @@ pub async fn create_wiki_page(
 
 /// 根据 ID 获取维基页面。
 #[tauri::command]
-pub async fn get_wiki_page(
-    state: State<'_, AppState>,
-    id: i64,
-) -> Result<WikiPage, String> {
+pub async fn get_wiki_page(state: State<'_, AppState>, id: i64) -> Result<WikiPage, String> {
     let store = state
         .wiki_pages
         .lock()
@@ -77,10 +74,7 @@ pub async fn update_wiki_page(
 
 /// 删除维基页面。
 #[tauri::command]
-pub async fn delete_wiki_page(
-    state: State<'_, AppState>,
-    id: i64,
-) -> Result<(), String> {
+pub async fn delete_wiki_page(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let store = state
         .wiki_pages
         .lock()
@@ -90,10 +84,7 @@ pub async fn delete_wiki_page(
 
 /// 批准维基页面的候选内容（将 content_candidate 提升为 content）。
 #[tauri::command]
-pub async fn approve_wiki_page(
-    state: State<'_, AppState>,
-    id: i64,
-) -> Result<WikiPage, String> {
+pub async fn approve_wiki_page(state: State<'_, AppState>, id: i64) -> Result<WikiPage, String> {
     let store = state
         .wiki_pages
         .lock()
@@ -103,10 +94,7 @@ pub async fn approve_wiki_page(
 
 /// 拒绝维基页面的候选内容（清空候选字段）。
 #[tauri::command]
-pub async fn reject_wiki_page(
-    state: State<'_, AppState>,
-    id: i64,
-) -> Result<WikiPage, String> {
+pub async fn reject_wiki_page(state: State<'_, AppState>, id: i64) -> Result<WikiPage, String> {
     let store = state
         .wiki_pages
         .lock()

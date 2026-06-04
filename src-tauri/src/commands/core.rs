@@ -243,12 +243,21 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
         if let Some(source) = candidates.into_iter().find(|path| path.exists()) {
             match copy_dir_recursive(&source, &skills_dir) {
                 Ok(_) => {
-                    println!("Copied built-in skills in background from {:?} to {:?}", source, &skills_dir);
+                    println!(
+                        "Copied built-in skills in background from {:?} to {:?}",
+                        source, &skills_dir
+                    );
                     let mut sm = app_state.skill_manager.lock().await;
                     sm.scan();
-                    println!("Skill manager background scan complete. Loaded {} skills", sm.count());
+                    println!(
+                        "Skill manager background scan complete. Loaded {} skills",
+                        sm.count()
+                    );
                 }
-                Err(e) => eprintln!("Warning: failed to seed built-in skills in background: {}", e),
+                Err(e) => eprintln!(
+                    "Warning: failed to seed built-in skills in background: {}",
+                    e
+                ),
             }
         }
     }
@@ -311,11 +320,12 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
     )
     .await;
 
-    // 异步预加载 Reranker 模型，避免首次检索时因下载模型导致卡顿
+    // 异步预加载 Embedding 与 Reranker 模型，避免首次检索时因加载模型导致卡顿
     let app_clone = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if let Some(state) = app_clone.try_state::<AppState>() {
-            println!("后台异步预加载 Reranker 模型中...");
+            println!("后台异步预加载 Embedding 与 Reranker 模型中...");
+            state.ensure_embedding_ready();
             let _ = state.get_or_init_reranker();
         }
     });

@@ -1,4 +1,4 @@
-use crate::services::llm_providers::{LLMProtocol, LLMProviderConfig};
+use crate::services::llm_providers::LLMProviderConfig;
 use bytes::Bytes;
 use futures::StreamExt;
 use rig_core::http_client::{self, HttpClientExt, MultipartForm, Request, Response};
@@ -224,7 +224,7 @@ pub fn build_openai_client(
     config: &LLMProviderConfig,
 ) -> Result<rig_core::providers::openai::Client<CompatReqwestClient>, String> {
     let api_key = config.get_default_key_value();
-    if api_key.is_empty() && config.protocol != LLMProtocol::Local {
+    if api_key.is_empty() {
         return Err("API key 为空，无法构建 rig OpenAI client".to_string());
     }
 
@@ -271,6 +271,22 @@ pub fn build_anthropic_client(
     builder
         .build()
         .map_err(|e| format!("构建 rig Anthropic client 失败: {}", e))
+}
+
+pub fn build_ollama_client(
+    config: &LLMProviderConfig,
+) -> Result<rig_core::providers::ollama::Client<CompatReqwestClient>, String> {
+    let mut builder = rig_core::providers::ollama::Client::builder()
+        .api_key(config.get_default_key_value())
+        .http_client(custom_http_client(&config.base_url)?);
+
+    if !config.base_url.is_empty() {
+        builder = builder.base_url(config.base_url.trim_end_matches('/'));
+    }
+
+    builder
+        .build()
+        .map_err(|e| format!("构建 rig Ollama client 失败: {}", e))
 }
 
 #[cfg(test)]
@@ -329,9 +345,7 @@ mod tests {
             Arc::new(std::sync::Mutex::new(
                 ProductStore::new(db_path).expect("product store"),
             )),
-            Arc::new(std::sync::Mutex::new(
-                project_store,
-            )),
+            Arc::new(std::sync::Mutex::new(project_store)),
             Arc::new(tokio::sync::Mutex::new(
                 RiskControlStore::new(&root.join("metadata.db")).expect("risk control store"),
             )),

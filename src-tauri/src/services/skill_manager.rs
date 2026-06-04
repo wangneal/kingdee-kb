@@ -18,7 +18,6 @@ use crate::services::skill_types::{
     SkillPhase,
 };
 
-
 /// 技能管理器 — 扫描、加载、缓存、触发匹配
 pub struct SkillManager {
     /// 按 name 索引的技能
@@ -41,7 +40,6 @@ impl SkillManager {
             prompt_assembler: PromptAssembler::new(128000), // 默认 128K 上下文窗口
         };
         manager.scan();
-        manager.init_trigger_engine();
         manager
     }
 
@@ -84,7 +82,7 @@ impl SkillManager {
 
         println!("Loaded {} skills", self.skills.len());
 
-        // 重建触发引擎索引
+        // 重建触发引擎，确保技能匹配使用最新技能列表
         self.init_trigger_engine();
     }
 
@@ -230,7 +228,11 @@ impl SkillManager {
     /// 根据用户输入匹配最相关的技能
     ///
     /// 委托给触发引擎进行统一的匹配逻辑。
-    pub async fn match_best(&self, user_input: &str, embedding: &RwLock<EmbeddingService>) -> Option<Skill> {
+    pub async fn match_best(
+        &self,
+        user_input: &str,
+        embedding: &RwLock<EmbeddingService>,
+    ) -> Option<Skill> {
         let engine = self.trigger_engine.as_ref()?;
 
         let matches = engine.match_by_input(user_input, embedding).await;
@@ -284,16 +286,24 @@ impl SkillManager {
 
     /// 已弃用：命令层已改为直接 clone engine 后调用，请勿使用此方法
     #[deprecated(note = "命令层直接使用 SkillTriggerEngine，此入口已废弃")]
-    pub async fn match_best_skill(&self, _context: &TriggerContext, _embedding: &RwLock<EmbeddingService>) -> Option<SkillMatch> {
+    pub async fn match_best_skill(
+        &self,
+        _context: &TriggerContext,
+        _embedding: &RwLock<EmbeddingService>,
+    ) -> Option<SkillMatch> {
         None
     }
 
     /// 已弃用：命令层已改为直接 clone engine 后调用，请勿使用此方法
     #[deprecated(note = "命令层直接使用 SkillTriggerEngine，此入口已废弃")]
-    pub async fn match_candidates(&self, _user_input: &str, _limit: usize, _embedding: &RwLock<EmbeddingService>) -> Vec<SkillMatch> {
+    pub async fn match_candidates(
+        &self,
+        _user_input: &str,
+        _limit: usize,
+        _embedding: &RwLock<EmbeddingService>,
+    ) -> Vec<SkillMatch> {
         Vec::new()
     }
-
 
     /// 生成技能列表系统提示
     pub fn build_skill_list_prompt(&self) -> String {
@@ -559,7 +569,6 @@ description: "在任何创造性工作之前..."
         let emb = RwLock::new(EmbeddingService::empty());
         for (input, expected) in &test_cases {
             match mgr.match_best(input, &emb).await {
-
                 Some(s) => {
                     let hit = s.name.contains(expected);
                     if hit {

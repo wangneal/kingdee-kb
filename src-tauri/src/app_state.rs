@@ -15,19 +15,19 @@ use crate::services::edition_config::EditionConfig;
 use crate::services::embedding::{EmbeddingService, ModelManager};
 use crate::services::image_processor::ImageProcessor;
 use crate::services::ingest_cache::IngestCacheStore;
+use crate::services::ingestion_queue::IngestionQueue;
+use crate::services::knowledge_graph::GraphStore;
 use crate::services::llm_providers::LLMProviderManager;
 use crate::services::llm_service::LLMService;
 use crate::services::metadata::MetadataStore;
+use crate::services::outline::OutlineStore;
 use crate::services::product_store::ProductStore;
 use crate::services::project_store::ProjectStore;
 use crate::services::question_tool::{self, PendingQuestions};
-use crate::services::rerank::RerankerService;
 use crate::services::raw_source::RawSourceStore;
+use crate::services::rerank::RerankerService;
 use crate::services::research_indexer::ResearchIndexer;
-use crate::services::wiki_page::WikiPageStore;
-use crate::services::knowledge_graph::GraphStore;
 use crate::services::research_session::ResearchSessionStore;
-use crate::services::outline::OutlineStore;
 use crate::services::rig_agent::RigAgent;
 use crate::services::risk_control::RiskControlStore;
 use crate::services::signal_writer::SignalWriter;
@@ -35,7 +35,7 @@ use crate::services::skill_manager::SkillManager;
 use crate::services::template_manager::TemplateManager;
 use crate::services::vector_index::VectorIndex;
 use crate::services::whisper_service::WhisperService;
-use crate::services::ingestion_queue::IngestionQueue;
+use crate::services::wiki_page::WikiPageStore;
 use crate::AsrConfigStore;
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -147,24 +147,24 @@ impl AppState {
         // 初始化 MetadataStore（依赖 projects 表提供 project_id 外键）
         let metadata = MetadataStore::new(db_path.clone())?;
 
-        // 初始化 BM25Service（tantivy + jieba 全文索引）
+        // 初始化 BM25Service（懒加载——首次搜索时初始化）
         let bm25_index_dir = data_dir.join("bm25_index");
-        let bm25 = BM25Service::new(bm25_index_dir)?;
+        let bm25 = BM25Service::empty(bm25_index_dir);
 
         // 初始化 ProductStore（共享 metadata.db）
         let products = ProductStore::new(db_path.clone())?;
 
         // 初始化 RawSourceStore（共享 metadata.db）
-        let raw_source_conn = Connection::open(&db_path)
-            .map_err(|e| format!("打开原始文件数据库失败: {}", e))?;
+        let raw_source_conn =
+            Connection::open(&db_path).map_err(|e| format!("打开原始文件数据库失败: {}", e))?;
         let raw_source_store = RawSourceStore::new(raw_source_conn);
         raw_source_store.ensure_table()?;
         let raw_sources = Arc::new(Mutex::new(raw_source_store));
 
         // 初始化 WikiPageStore（共享 metadata.db）
         let wiki_pages = {
-            let conn = Connection::open(&db_path)
-                .map_err(|e| format!("打开维基页面数据库失败: {}", e))?;
+            let conn =
+                Connection::open(&db_path).map_err(|e| format!("打开维基页面数据库失败: {}", e))?;
             let store = WikiPageStore::new(conn);
             store.ensure_table()?;
             Arc::new(Mutex::new(store))
@@ -172,8 +172,8 @@ impl AppState {
 
         // 初始化 GraphStore（共享 metadata.db）
         let graph_store = {
-            let conn = Connection::open(&db_path)
-                .map_err(|e| format!("打开知识图谱数据库失败: {}", e))?;
+            let conn =
+                Connection::open(&db_path).map_err(|e| format!("打开知识图谱数据库失败: {}", e))?;
             let store = GraphStore::new(conn);
             store.ensure_table()?;
             Arc::new(Mutex::new(store))
@@ -181,8 +181,8 @@ impl AppState {
 
         // 初始化 AnalysisCacheStore（共享 metadata.db）
         let analysis_cache = {
-            let conn = Connection::open(&db_path)
-                .map_err(|e| format!("打开分析缓存数据库失败: {}", e))?;
+            let conn =
+                Connection::open(&db_path).map_err(|e| format!("打开分析缓存数据库失败: {}", e))?;
             let store = AnalysisCacheStore::new(conn);
             store.ensure_table()?;
             Arc::new(Mutex::new(store))
@@ -190,8 +190,8 @@ impl AppState {
 
         // 初始化 IngestCacheStore（共享 metadata.db）
         let ingest_cache_store = {
-            let conn = Connection::open(&db_path)
-                .map_err(|e| format!("打开摄入缓存数据库失败: {}", e))?;
+            let conn =
+                Connection::open(&db_path).map_err(|e| format!("打开摄入缓存数据库失败: {}", e))?;
             let store = IngestCacheStore::new(conn);
             store.ensure_table()?;
             Arc::new(Mutex::new(store))
@@ -244,7 +244,9 @@ impl AppState {
         let template_manager = TemplateManager::new(template_cache_dir, String::new());
 
         // 初始化 LLM 供应商管理器
-        let llm_providers = Arc::new(RwLock::new(LLMProviderManager::new(&data_dir.to_path_buf())));
+        let llm_providers = Arc::new(RwLock::new(LLMProviderManager::new(
+            &data_dir.to_path_buf(),
+        )));
 
         // 初始化 ImageProcessor（图像处理，从 LLMProviderManager 获取配置）
         let image_processor = {
@@ -314,8 +316,7 @@ impl AppState {
         let db_path = data_dir.join("metadata.db");
 
         let project_store = {
-            let store = ProjectStore::new(&db_path)
-                .expect("Fatal: cannot create project store");
+            let store = ProjectStore::new(&db_path).expect("Fatal: cannot create project store");
             store
                 .ensure_default_project()
                 .expect("Fatal: cannot create default project");
@@ -328,8 +329,7 @@ impl AppState {
         let vector_index = VectorIndex::new(data_dir.join("index"))
             .expect("Fatal: cannot create vector index — app cannot function without it");
 
-        let bm25 = BM25Service::new(data_dir.join("bm25_index"))
-            .expect("Fatal: cannot create BM25 index — app cannot function without it");
+        let bm25 = BM25Service::empty(data_dir.join("bm25_index"));
 
         let products = ProductStore::new(db_path.clone())
             .expect("Fatal: cannot create product store — app cannot function without it");
@@ -371,8 +371,7 @@ impl AppState {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("WARNING: OutlineStore init failed (non-fatal): {}", e);
-                OutlineStore::new_in_memory()
-                    .expect("Fatal: cannot create in-memory OutlineStore")
+                OutlineStore::new_in_memory().expect("Fatal: cannot create in-memory OutlineStore")
             }
         }));
 
@@ -394,7 +393,9 @@ impl AppState {
         let whisper_service = WhisperService::new();
         let audio_capture = AudioCapture::new(data_dir);
 
-        let llm_providers = Arc::new(RwLock::new(LLMProviderManager::new(&data_dir.to_path_buf())));
+        let llm_providers = Arc::new(RwLock::new(LLMProviderManager::new(
+            &data_dir.to_path_buf(),
+        )));
         let llm = LLMService::with_desensitizer(llm_providers.clone(), desensitizer.clone());
 
         let ingest_queue = Mutex::new(IngestionQueue::new(data_dir));
@@ -410,38 +411,48 @@ impl AppState {
             llm,
             products: Arc::new(Mutex::new(products)),
             raw_sources: Arc::new(Mutex::new({
-                let conn = Connection::open(&db_path)
-                    .expect("Fatal: cannot open DB for RawSourceStore");
+                let conn =
+                    Connection::open(&db_path).expect("Fatal: cannot open DB for RawSourceStore");
                 let store = RawSourceStore::new(conn);
-                store.ensure_table().expect("Fatal: cannot init raw_sources table");
+                store
+                    .ensure_table()
+                    .expect("Fatal: cannot init raw_sources table");
                 store
             })),
             wiki_pages: Arc::new(Mutex::new({
-                let conn = Connection::open(&db_path)
-                    .expect("Fatal: cannot open DB for WikiPageStore");
+                let conn =
+                    Connection::open(&db_path).expect("Fatal: cannot open DB for WikiPageStore");
                 let store = WikiPageStore::new(conn);
-                store.ensure_table().expect("Fatal: cannot init wiki_pages table");
+                store
+                    .ensure_table()
+                    .expect("Fatal: cannot init wiki_pages table");
                 store
             })),
             graph_store: Arc::new(Mutex::new({
-                let conn = Connection::open(&db_path)
-                    .expect("Fatal: cannot open DB for GraphStore");
+                let conn =
+                    Connection::open(&db_path).expect("Fatal: cannot open DB for GraphStore");
                 let store = GraphStore::new(conn);
-                store.ensure_table().expect("Fatal: cannot init knowledge_graph table");
+                store
+                    .ensure_table()
+                    .expect("Fatal: cannot init knowledge_graph table");
                 store
             })),
             analysis_cache: Arc::new(Mutex::new({
                 let conn = Connection::open(&db_path)
                     .expect("Fatal: cannot open DB for AnalysisCacheStore");
                 let store = AnalysisCacheStore::new(conn);
-                store.ensure_table().expect("Fatal: cannot init analysis_cache table");
+                store
+                    .ensure_table()
+                    .expect("Fatal: cannot init analysis_cache table");
                 store
             })),
             ingest_cache_store: Arc::new(Mutex::new({
-                let conn = Connection::open(&db_path)
-                    .expect("Fatal: cannot open DB for IngestCacheStore");
+                let conn =
+                    Connection::open(&db_path).expect("Fatal: cannot open DB for IngestCacheStore");
                 let store = IngestCacheStore::new(conn);
-                store.ensure_table().expect("Fatal: cannot init ingest_cache table");
+                store
+                    .ensure_table()
+                    .expect("Fatal: cannot init ingest_cache table");
                 store
             })),
             download_progress: Arc::new(AtomicU32::new(0)),
@@ -456,7 +467,9 @@ impl AppState {
             whisper_service: Arc::new(RwLock::new(whisper_service)),
             audio_capture: Arc::new(RwLock::new(audio_capture)),
             asr_config: Arc::new(RwLock::new(AsrConfigStore::new(&db_path))),
-            skill_manager: Arc::new(tokio::sync::Mutex::new(SkillManager::new(data_dir.join("skills")))),
+            skill_manager: Arc::new(tokio::sync::Mutex::new(SkillManager::new(
+                data_dir.join("skills"),
+            ))),
             signal_writer: Arc::new(RwLock::new(
                 SignalWriter::new(data_dir.join("signals.jsonl")).unwrap_or_else(|_| {
                     // 降级到临时目录
@@ -505,6 +518,26 @@ impl AppState {
             }
         }
         write.clone()
+    }
+
+    /// 确保 BM25 全文搜索服务已初始化（幂等安全）
+    /// 类似于 ensure_embedding_ready()，用于调用 get_or_init_bm25 的公共入口。
+    pub fn ensure_bm25_ready(&self) {
+        if let Err(e) = self.get_or_init_bm25() {
+            tracing::error!("BM25 初始化失败: {}", e);
+        }
+    }
+
+    /// 确保 BM25 全文搜索服务已初始化（幂等安全）
+    pub fn get_or_init_bm25(&self) -> Result<(), String> {
+        {
+            let read = self.bm25.read().map_err(|e| e.to_string())?;
+            if read.is_ready() {
+                return Ok(());
+            }
+        }
+        let mut write = self.bm25.write().map_err(|e| e.to_string())?;
+        write.ensure_initialized()
     }
 
     /// 注册一个取消标志，返回共享的 AtomicBool 传入 agent 循环。

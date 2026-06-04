@@ -47,6 +47,8 @@ export interface AgentMessage {
   role: "user" | "assistant"
   content: string
   streaming?: boolean
+  /** 流式响应首包到达前展示的当前处理状态 */
+  statusText?: string
   error?: boolean
   hiddenContext?: string
   clarification?: ClarificationPayload
@@ -109,7 +111,6 @@ export const DEFAULT_SLOT: AgentSlot = createDefaultSlot()
 
 export interface SendMessageOptions {
   projectId?: number | null
-  riskProjectId?: number | null
   providerId?: string
   history?: ChatMessage[]
   /** Override the text shown as user message (defaults to outbound text) */
@@ -176,25 +177,28 @@ function extractSourcesFromToolResult(toolName: string, result: string): RAGSour
 
   // 解析格式: 【1】title (相关度: 0.xxx, 来源: xxx)\ncontent
   const regex = /【\d+】(.+?)\s*\(相关度:\s*([\d.]+),\s*来源:\s*(.+?)\)\n([\s\S]*?)(?=【\d+】|$)/g
-  let match
+  let match: RegExpExecArray | null = regex.exec(result)
 
-  while ((match = regex.exec(result)) !== null) {
+  while (match !== null) {
     sources.push({
       title: match[1].trim(),
       section_path: match[3].trim(),
       content_snippet: match[4].trim().slice(0, 200),
       score: parseFloat(match[2]) || 0,
     })
+    match = regex.exec(result)
   }
 
   // 如果上面的格式没匹配，尝试简单的格式
   if (sources.length === 0) {
     const simpleRegex = /【\d+】(.+?)\s*\(相关度:\s*([\d.]+)\)/g
-    while ((match = simpleRegex.exec(result)) !== null) {
+    match = simpleRegex.exec(result)
+    while (match !== null) {
       sources.push({
         title: match[1].trim(),
         score: parseFloat(match[2]) || 0,
       })
+      match = simpleRegex.exec(result)
     }
   }
 
@@ -210,8 +214,8 @@ function extractFilesFromToolResult(_toolName: string, result: string): FileAtta
   // 匹配"输出/生成/文件: /path/to/file.ext" 模式
   const pathRegex =
     /(?:输出目录[:：\s]*|生成[:：\s]*|文件[:：\s]*|output[:：\s]*|sandbox[:：\s]*)(.+?\.\w+)/gi
-  let match
-  while ((match = pathRegex.exec(result)) !== null) {
+  let match: RegExpExecArray | null = pathRegex.exec(result)
+  while (match !== null) {
     const path = match[1].trim()
     if (extPattern.test(path)) {
       const name = path.split(/[\\/]/).pop() || path
@@ -223,12 +227,14 @@ function extractFilesFromToolResult(_toolName: string, result: string): FileAtta
         kind: isImage ? "image" : "generated",
       })
     }
+    match = pathRegex.exec(result)
   }
 
   // 匹配 file:///path 或 /absolute/path 模式
   if (files.length === 0) {
     const absPathRegex = /(?:file:\/\/\/|output\s*(?:dir|directory)?[\s:]*)(\/[^\s,;]+\.\w+)/gi
-    while ((match = absPathRegex.exec(result)) !== null) {
+    match = absPathRegex.exec(result)
+    while (match !== null) {
       const path = match[1]
       const name = path.split(/[\\/]/).pop() || path
       const isImage = /\.(png|jpg|jpeg|gif|svg|webp|bmp)$/i.test(path)
@@ -240,6 +246,7 @@ function extractFilesFromToolResult(_toolName: string, result: string): FileAtta
           kind: isImage ? "image" : "generated",
         })
       }
+      match = absPathRegex.exec(result)
     }
   }
 
@@ -273,6 +280,16 @@ export function useAgent(): AgentContextValue {
 interface SlotInternal {
   slot: AgentSlot
   latestToolName: string
+}
+
+/** 单个 slot 最多保留的消息数，超限时丢弃最早的非活跃消息 */
+const MAX_MESSAGES_PER_SLOT = 200
+
+/** 超出上限时裁剪最早的消息，保留最近的 N 条 */
+function trimMessages(msgs: AgentMessage[]): AgentMessage[] {
+  if (msgs.length <= MAX_MESSAGES_PER_SLOT) return msgs
+  const overflow = msgs.length - MAX_MESSAGES_PER_SLOT
+  return msgs.slice(overflow)
 }
 
 // ── 提供者 ────────────────────────────────────────────────────────────────
@@ -326,6 +343,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
               slot.messages[slot.messages.length - 1] = {
                 ...last,
                 content: last.content + buf.text,
+                statusText: undefined,
               }
             } else {
               slot.messages = [
@@ -338,6 +356,13 @@ export function AgentProvider({ children }: { children: ReactNode }) {
             slot.currentTrace = {
               ...slot.currentTrace,
               thinking: slot.currentTrace.thinking + buf.thinking,
+            }
+            const last = slot.messages[slot.messages.length - 1]
+            if (last && last.role === "assistant" && last.streaming && !last.content) {
+              slot.messages[slot.messages.length - 1] = {
+                ...last,
+                statusText: "正在思考并组织回答...",
+              }
             }
           }
           next.set(sid, { slot, latestToolName: internal.latestToolName })
@@ -405,6 +430,15 @@ export function AgentProvider({ children }: { children: ReactNode }) {
                 { name: event.name, args: event.args, result: "" },
               ],
             }
+            {
+              const last = slot.messages[slot.messages.length - 1]
+              if (last && last.role === "assistant" && last.streaming && !last.content) {
+                slot.messages[slot.messages.length - 1] = {
+                  ...last,
+                  statusText: `正在使用工具：${event.name}`,
+                }
+              }
+            }
             break
 
           case "tool_result": {
@@ -435,6 +469,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
               const existingFiles = lastMsg.attachments ?? []
               slot.messages[slot.messages.length - 1] = {
                 ...lastMsg,
+                statusText: lastMsg.content ? undefined : "正在整理结果并生成回答...",
                 hiddenContext: [lastMsg.hiddenContext, summary].filter(Boolean).join("\n\n"),
                 sources: newSources
                   ? [...existingSources, ...newSources]
@@ -448,8 +483,12 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           }
 
           case "done": {
-            slot.messages = slot.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m))
+            slot.messages = slot.messages.map((m) =>
+              m.streaming ? { ...m, streaming: false, statusText: undefined } : m,
+            )
             slot.loading = false
+            // 清理会话映射，避免 sessionToSlot ref 累积泄漏
+            sessionToSlot.current.delete(eventSessionId)
             slot.currentTrace = {
               thinking: "",
               toolCalls: [],
@@ -466,15 +505,24 @@ export function AgentProvider({ children }: { children: ReactNode }) {
             if (lastMsg && lastMsg.role === "assistant" && lastMsg.content) {
               runVerification(lastMsg.content, "chat", eventSessionId)
                 .then((res) => {
-                  updateMessages(slotId, (prev) =>
-                    prev.map((m) =>
-                      m.id === lastMsg.id ? { ...m, verificationReport: res.report } : m,
-                    ),
-                  )
+                  updateSlots((prev) => {
+                    const next = new Map(prev)
+                    const internal = next.get(slotId)
+                    if (!internal) return prev
+                    next.set(slotId, {
+                      ...internal,
+                      slot: {
+                        ...internal.slot,
+                        messages: internal.slot.messages.map((m) =>
+                          m.id === lastMsg.id ? { ...m, verificationReport: res.report } : m,
+                        ),
+                      },
+                    })
+                    return next
+                  })
                 })
                 .catch(() => {})
             }
-
 
             break
           }
@@ -486,6 +534,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
                     ...m,
                     content: m.content || "请求失败：" + event.message,
                     streaming: false,
+                    statusText: undefined,
                     error: true,
                   }
                 : m,
@@ -609,6 +658,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         role: "assistant",
         content: "",
         streaming: true,
+        statusText: "正在理解你的问题...",
       }
 
       sessionToSlot.current.set(sid, slotId)
@@ -618,7 +668,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         const internal = next.get(slotId) ?? { slot: createDefaultSlot(), latestToolName: "" }
         next.set(slotId, {
           slot: {
-            messages: [...internal.slot.messages, userMsg, assistantMsg],
+            messages: trimMessages([...internal.slot.messages, userMsg, assistantMsg]),
             loading: true,
             currentTrace: {
               thinking: "",
@@ -642,7 +692,6 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           text,
           sid,
           options?.projectId,
-          options?.riskProjectId,
           options?.history,
           options?.providerId,
           options?.attachments,
@@ -655,7 +704,13 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           if (!internal) return prev
           const msgs = internal.slot.messages.map((m) =>
             m.id === assistantMsg.id
-              ? { ...m, content: "请求失败：" + errorMsg, streaming: false, error: true }
+              ? {
+                  ...m,
+                  content: "请求失败：" + errorMsg,
+                  streaming: false,
+                  statusText: undefined,
+                  error: true,
+                }
               : m,
           )
           next.set(slotId, {
@@ -690,6 +745,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         role: "assistant",
         content: "",
         streaming: true,
+        statusText: "正在处理你的补充信息...",
       }
 
       updateSlots((prev) => {
@@ -700,7 +756,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           ...internal,
           slot: {
             ...internal.slot,
-            messages: [...internal.slot.messages, answerMsg, assistantMsg],
+            messages: trimMessages([...internal.slot.messages, answerMsg, assistantMsg]),
             loading: true,
             currentTrace: {
               thinking: "",

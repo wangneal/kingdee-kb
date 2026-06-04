@@ -20,9 +20,7 @@ pub async fn enqueue_ingestion(
 
 /// 获取摄入队列中所有任务
 #[tauri::command]
-pub async fn list_ingestion_queue(
-    state: State<'_, AppState>,
-) -> Result<Vec<QueueItem>, String> {
+pub async fn list_ingestion_queue(state: State<'_, AppState>) -> Result<Vec<QueueItem>, String> {
     let queue = state
         .ingest_queue
         .lock()
@@ -73,11 +71,17 @@ pub fn process_pending_queue(state: &AppState) -> Result<Vec<String>, String> {
     process_pending_queue_inner(state, None)
 }
 
-fn process_pending_queue_for_project(state: &AppState, project_id: i64) -> Result<Vec<String>, String> {
+fn process_pending_queue_for_project(
+    state: &AppState,
+    project_id: i64,
+) -> Result<Vec<String>, String> {
     process_pending_queue_inner(state, Some(project_id))
 }
 
-fn process_pending_queue_inner(state: &AppState, project_id: Option<i64>) -> Result<Vec<String>, String> {
+fn process_pending_queue_inner(
+    state: &AppState,
+    project_id: Option<i64>,
+) -> Result<Vec<String>, String> {
     let mut processed = Vec::new();
 
     loop {
@@ -121,6 +125,7 @@ fn process_pending_queue_inner(state: &AppState, project_id: Option<i64>) -> Res
 
 fn process_one_queue_item(state: &AppState, item: &QueueItem) -> Result<(), String> {
     state.ensure_embedding_ready();
+    state.ensure_bm25_ready();
 
     let raw_source = {
         let store = state

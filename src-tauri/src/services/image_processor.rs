@@ -153,8 +153,27 @@ impl ImageProcessor {
                 }
                 req.send().await
             }
-            // OpenAI / Local 协议探测
-            _ => {
+            // Ollama 原生协议探测
+            crate::services::llm_providers::LLMProtocol::Local => {
+                self.client
+                    .post(format!(
+                        "{}/api/chat",
+                        self.llm_base_url.trim_end_matches('/')
+                    ))
+                    .json(&serde_json::json!({
+                        "model": self.llm_model,
+                        "messages": [{
+                            "role": "user",
+                            "content": "test",
+                            "images": [test_img]
+                        }],
+                        "stream": false
+                    }))
+                    .send()
+                    .await
+            }
+            // OpenAI 兼容协议探测
+            crate::services::llm_providers::LLMProtocol::OpenAI => {
                 let mut req = self.client
                     .post(format!("{}/chat/completions", self.llm_base_url))
                     .json(&serde_json::json!({
@@ -185,9 +204,11 @@ impl ImageProcessor {
                         Ok(body) => {
                             // 尝试解析为 JSON，检查是否有有效响应
                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-                                // OpenAI 格式: choices 数组
-                                // Anthropic 格式: content 数组
-                                if json["choices"].is_array() || json["content"].is_array() {
+                                // OpenAI 格式为 choices，Anthropic 格式为 content，Ollama 格式为 message
+                                if json["choices"].is_array()
+                                    || json["content"].is_array()
+                                    || json["message"].is_object()
+                                {
                                     true
                                 } else if json["error"].is_object() {
                                     // API 在 body 中返回错误
@@ -485,12 +506,65 @@ impl ImageProcessor {
             crate::services::llm_providers::LLMProtocol::Anthropic => {
                 self.vision_anthropic(img_base64, local_path, prompt).await
             }
-            crate::services::llm_providers::LLMProtocol::OpenAI
-            | crate::services::llm_providers::LLMProtocol::Local => {
+            crate::services::llm_providers::LLMProtocol::Local => {
+                self.vision_ollama(img_base64, prompt).await
+            }
+            crate::services::llm_providers::LLMProtocol::OpenAI => {
                 self.vision_openai_compatible(img_base64, local_path, prompt)
                     .await
             }
         }
+    }
+
+    /// Ollama 原生格式的视觉调用
+    async fn vision_ollama(&self, img_base64: &str, prompt: &str) -> Result<String, ImageError> {
+        let url = format!("{}/api/chat", self.llm_base_url.trim_end_matches('/'));
+        let response = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({
+                "model": self.llm_model,
+                "messages": [{
+                    "role": "user",
+                    "content": prompt,
+                    "images": [img_base64]
+                }],
+                "stream": false
+            }))
+            .send()
+            .await
+            .map_err(|e| ImageError::ApiError(format!("Ollama 请求失败: {}", e)))?;
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let lower = body.to_lowercase();
+            if lower.contains("image")
+                || lower.contains("vision")
+                || lower.contains("multimodal")
+                || lower.contains("not supported")
+            {
+                self.llm_multimodal.store(false, Ordering::Relaxed);
+                self.probed.store(true, Ordering::Relaxed);
+                return Err(ImageError::LlmNotMultimodal);
+            }
+            return Err(ImageError::ApiError(format!(
+                "Ollama API 返回错误 ({}): {}",
+                status,
+                body.chars().take(300).collect::<String>()
+            )));
+        }
+
+        let json: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| ImageError::ApiError(format!("Ollama 响应解析失败: {}", e)))?;
+        let content = json["message"]["content"]
+            .as_str()
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| ImageError::ApiError("Ollama 响应中无文本内容".to_string()))?;
+
+        self.llm_multimodal.store(true, Ordering::Relaxed);
+        self.probed.store(true, Ordering::Relaxed);
+        Ok(content.to_string())
     }
 
     /// Anthropic Messages API 格式的视觉调用

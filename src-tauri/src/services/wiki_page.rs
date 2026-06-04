@@ -122,14 +122,16 @@ impl WikiPageStore {
 
         self.ensure_column("wiki_pages", "project_id", "INTEGER")?;
         self.backfill_project_id("wiki_pages")?;
-        self.db.execute_batch(
-            "
+        self.db
+            .execute_batch(
+                "
             CREATE UNIQUE INDEX IF NOT EXISTS idx_wiki_pages_slug ON wiki_pages(project_id, slug);
             CREATE INDEX IF NOT EXISTS idx_wiki_pages_project_id ON wiki_pages(project_id);
             CREATE INDEX IF NOT EXISTS idx_wiki_pages_status ON wiki_pages(page_status);
             CREATE INDEX IF NOT EXISTS idx_wiki_pages_type ON wiki_pages(page_type);
             ",
-        ).map_err(|e| format!("创建 wiki_pages 索引失败: {}", e))?;
+            )
+            .map_err(|e| format!("创建 wiki_pages 索引失败: {}", e))?;
         Ok(())
     }
 
@@ -147,7 +149,10 @@ impl WikiPageStore {
             }
         }
         self.db
-            .execute_batch(&format!("ALTER TABLE {} ADD COLUMN {} {};", table, column, definition))
+            .execute_batch(&format!(
+                "ALTER TABLE {} ADD COLUMN {} {};",
+                table, column, definition
+            ))
             .map_err(|e| format!("添加列 {}.{} 失败: {}", table, column, e))?;
         Ok(())
     }
@@ -276,7 +281,8 @@ impl WikiPageStore {
                     candidate_version, page_status, version, created_at, updated_at
              FROM wiki_pages WHERE id = ?1",
             params![id],
-        )?.ok_or_else(|| format!("wiki_page 未找到: id={}", id))
+        )?
+        .ok_or_else(|| format!("wiki_page 未找到: id={}", id))
     }
 
     /// 按项目 + slug 查找页面
@@ -334,33 +340,55 @@ impl WikiPageStore {
             .candidate_status
             .as_deref()
             .or(existing.candidate_status.as_deref());
-        let frontmatter = input.frontmatter.as_deref().unwrap_or(&existing.frontmatter);
+        let frontmatter = input
+            .frontmatter
+            .as_deref()
+            .unwrap_or(&existing.frontmatter);
         let sources = input.sources.as_deref().unwrap_or(&existing.sources);
         let wikilinks = input.wikilinks.as_deref().unwrap_or(&existing.wikilinks);
         let tags = input.tags.as_deref().unwrap_or(&existing.tags);
-        let page_metadata = input.page_metadata.as_deref().unwrap_or(&existing.page_metadata);
+        let page_metadata = input
+            .page_metadata
+            .as_deref()
+            .unwrap_or(&existing.page_metadata);
         let candidate_version: Option<i64> = input.candidate_version.or(existing.candidate_version);
-        let page_status = input.page_status.as_deref().unwrap_or(&existing.page_status);
-        self.db.execute(
-            "UPDATE wiki_pages SET
+        let page_status = input
+            .page_status
+            .as_deref()
+            .unwrap_or(&existing.page_status);
+        self.db
+            .execute(
+                "UPDATE wiki_pages SET
                 title = ?1, content = ?2, content_candidate = ?3, candidate_status = ?4,
                 frontmatter = ?5, sources = ?6, wikilinks = ?7, tags = ?8,
                 page_metadata = ?9, candidate_version = ?10, page_status = ?11,
                 version = ?12, updated_at = datetime('now')
              WHERE id = ?13",
-            params![
-                title, content, content_candidate, candidate_status,
-                frontmatter, sources, wikilinks, tags,
-                page_metadata, candidate_version, page_status,
-                existing.version, id,
-            ],
-        ).map_err(|e| format!("更新 wiki_page 失败: {}", e))?;
+                params![
+                    title,
+                    content,
+                    content_candidate,
+                    candidate_status,
+                    frontmatter,
+                    sources,
+                    wikilinks,
+                    tags,
+                    page_metadata,
+                    candidate_version,
+                    page_status,
+                    existing.version,
+                    id,
+                ],
+            )
+            .map_err(|e| format!("更新 wiki_page 失败: {}", e))?;
         self.get_by_id(id)
     }
 
     /// 删除一条维基页面
     pub fn delete(&self, id: i64) -> Result<(), String> {
-        let rows = self.db.execute("DELETE FROM wiki_pages WHERE id = ?1", params![id])
+        let rows = self
+            .db
+            .execute("DELETE FROM wiki_pages WHERE id = ?1", params![id])
             .map_err(|e| format!("删除 wiki_page 失败: {}", e))?;
         if rows == 0 {
             return Err(format!("wiki_page 未找到: id={}", id));
@@ -371,39 +399,50 @@ impl WikiPageStore {
     /// 批准候选内容：将 content_candidate 提升为 content，重置候选字段，版本递增
     pub fn approve_candidate(&self, id: i64) -> Result<WikiPage, String> {
         let existing = self.get_by_id(id)?;
-        let candidate = existing.content_candidate
+        let candidate = existing
+            .content_candidate
             .ok_or_else(|| "没有待批准的候选内容".to_string())?;
-        self.db.execute(
-            "UPDATE wiki_pages SET
+        self.db
+            .execute(
+                "UPDATE wiki_pages SET
                 content = ?1, content_candidate = NULL, candidate_status = NULL,
                 candidate_version = NULL, version = version + 1, updated_at = datetime('now')
              WHERE id = ?2 AND content_candidate IS NOT NULL",
-            params![candidate, id],
-        ).map_err(|e| format!("批准 wiki_page 候选内容失败: {}", e))?;
+                params![candidate, id],
+            )
+            .map_err(|e| format!("批准 wiki_page 候选内容失败: {}", e))?;
         self.get_by_id(id)
     }
 
     /// 拒绝候选内容：清空候选字段，版本不递增
     pub fn reject_candidate(&self, id: i64) -> Result<WikiPage, String> {
-        self.db.execute(
-            "UPDATE wiki_pages SET
+        self.db
+            .execute(
+                "UPDATE wiki_pages SET
                 content_candidate = NULL, candidate_status = NULL,
                 candidate_version = NULL, updated_at = datetime('now')
              WHERE id = ?1",
-            params![id],
-        ).map_err(|e| format!("拒绝 wiki_page 候选内容失败: {}", e))?;
+                params![id],
+            )
+            .map_err(|e| format!("拒绝 wiki_page 候选内容失败: {}", e))?;
         self.get_by_id(id)
     }
 
     /// 插入 50 条种子演示数据，用于阶段五知识图谱开发测试
     pub fn seed_demo_pages(&self, project_id: i64) -> Result<usize, String> {
-        let existing: i64 = self.db.query_row(
-            "SELECT COUNT(*) FROM wiki_pages WHERE project_id = ?1",
-            params![project_id],
-            |row| row.get(0),
-        ).map_err(|e| format!("检查已有数据失败: {}", e))?;
+        let existing: i64 = self
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM wiki_pages WHERE project_id = ?1",
+                params![project_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("检查已有数据失败: {}", e))?;
         if existing > 0 {
-            return Err(format!("项目 {} 下已有 {} 条 wiki_pages，跳过种子数据", project_id, existing));
+            return Err(format!(
+                "项目 {} 下已有 {} 条 wiki_pages，跳过种子数据",
+                project_id, existing
+            ));
         }
         let script_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("resources")
@@ -411,22 +450,29 @@ impl WikiPageStore {
         let sql = std::fs::read_to_string(&script_path)
             .map_err(|e| format!("读取种子数据脚本失败 ({}): {}", script_path.display(), e))?;
         let sql = sql.replace("__PROJECT__", &project_id.to_string());
-        self.db.execute_batch(&sql)
+        self.db
+            .execute_batch(&sql)
             .map_err(|e| format!("执行种子数据脚本失败: {}", e))?;
-        let count: i64 = self.db.query_row(
-            "SELECT COUNT(*) FROM wiki_pages WHERE project_id = ?1",
-            params![project_id],
-            |row| row.get(0),
-        ).map_err(|e| format!("查询种子数据量失败: {}", e))?;
+        let count: i64 = self
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM wiki_pages WHERE project_id = ?1",
+                params![project_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("查询种子数据量失败: {}", e))?;
         Ok(count as usize)
     }
 
     /// 按项目删除所有页面
     pub fn delete_by_project(&self, project_id: i64) -> Result<usize, String> {
-        let rows = self.db.execute(
-            "DELETE FROM wiki_pages WHERE project_id = ?1",
-            params![project_id],
-        ).map_err(|e| format!("删除项目 wiki_pages 失败: {}", e))?;
+        let rows = self
+            .db
+            .execute(
+                "DELETE FROM wiki_pages WHERE project_id = ?1",
+                params![project_id],
+            )
+            .map_err(|e| format!("删除项目 wiki_pages 失败: {}", e))?;
         Ok(rows)
     }
 
@@ -471,13 +517,12 @@ impl WikiPageStore {
     /// 添加 wikilink（追加 slug 到 wikilinks JSON 数组，去重）
     pub fn add_wikilink(&self, page_id: i64, target_slug: &str) -> Result<WikiPage, String> {
         let existing = self.get_by_id(page_id)?;
-        let mut links: Vec<String> =
-            serde_json::from_str(&existing.wikilinks).unwrap_or_default();
+        let mut links: Vec<String> = serde_json::from_str(&existing.wikilinks).unwrap_or_default();
         if !links.contains(&target_slug.to_string()) {
             links.push(target_slug.to_string());
         }
-        let json = serde_json::to_string(&links)
-            .map_err(|e| format!("序列化 wikilinks 失败: {}", e))?;
+        let json =
+            serde_json::to_string(&links).map_err(|e| format!("序列化 wikilinks 失败: {}", e))?;
         self.db
             .execute(
                 "UPDATE wiki_pages SET wikilinks = ?1, updated_at = datetime('now') WHERE id = ?2",
@@ -490,12 +535,8 @@ impl WikiPageStore {
     /// 移除 wikilink（从数组中删除 slug）
     pub fn remove_wikilink(&self, page_id: i64, target_slug: &str) -> Result<WikiPage, String> {
         let existing = self.get_by_id(page_id)?;
-        let links: Vec<String> =
-            serde_json::from_str(&existing.wikilinks).unwrap_or_default();
-        let filtered: Vec<String> = links
-            .into_iter()
-            .filter(|s| s != target_slug)
-            .collect();
+        let links: Vec<String> = serde_json::from_str(&existing.wikilinks).unwrap_or_default();
+        let filtered: Vec<String> = links.into_iter().filter(|s| s != target_slug).collect();
         let json = serde_json::to_string(&filtered)
             .map_err(|e| format!("序列化 wikilinks 失败: {}", e))?;
         self.db
@@ -528,8 +569,10 @@ impl WikiPageStore {
             .db
             .prepare(&sql)
             .map_err(|e| format!("准备 wikilink 目标查询失败: {}", e))?;
-        let mut params: Vec<&dyn rusqlite::types::ToSql> =
-            slugs.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = slugs
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
         params.push(&project_id as &dyn rusqlite::types::ToSql);
         let rows = stmt
             .query_map(params.as_slice(), |row| {
@@ -561,8 +604,10 @@ impl WikiPageStore {
 
         let mut results = Vec::new();
         if let Some(pid) = project_id {
-            let mut stmt = self.db.prepare(
-                "SELECT id, project_id, title, content, 0.7 AS score
+            let mut stmt = self
+                .db
+                .prepare(
+                    "SELECT id, project_id, title, content, 0.7 AS score
                  FROM wiki_pages
                  WHERE project_id = ?1 AND title LIKE ?2
                  UNION
@@ -570,27 +615,32 @@ impl WikiPageStore {
                  FROM wiki_pages
                  WHERE project_id = ?1 AND content LIKE ?2 AND title NOT LIKE ?2
                  ORDER BY score DESC
-                 LIMIT ?3"
-            ).map_err(|e| format!("准备搜索 wiki_pages 查询失败: {}", e))?;
-            let mapped = stmt.query_map(params![pid, pattern, top_k as i64], |row| {
-                let score: f64 = row.get(4)?;
-                Ok(HybridSearchResult {
-                    chunk_id: row.get::<_, i64>(0)?,
-                    title: row.get::<_, String>(2)?,
-                    content: row.get::<_, String>(3)?,
-                    score: score as f32,
-                    source: "wiki_pages".to_string(),
-                    document_id: row.get::<_, i64>(0)?,
-                    section_path: None,
-                    project: row.get::<_, i64>(1)?.to_string(),
+                 LIMIT ?3",
+                )
+                .map_err(|e| format!("准备搜索 wiki_pages 查询失败: {}", e))?;
+            let mapped = stmt
+                .query_map(params![pid, pattern, top_k as i64], |row| {
+                    let score: f64 = row.get(4)?;
+                    Ok(HybridSearchResult {
+                        chunk_id: row.get::<_, i64>(0)?,
+                        title: row.get::<_, String>(2)?,
+                        content: row.get::<_, String>(3)?,
+                        score: score as f32,
+                        source: "wiki_pages".to_string(),
+                        document_id: row.get::<_, i64>(0)?,
+                        section_path: None,
+                        project: row.get::<_, i64>(1)?.to_string(),
+                    })
                 })
-            }).map_err(|e| format!("执行搜索 wiki_pages 查询失败: {}", e))?;
+                .map_err(|e| format!("执行搜索 wiki_pages 查询失败: {}", e))?;
             for row in mapped {
                 results.push(row.map_err(|e| format!("读取 wiki_pages 搜索行失败: {}", e))?);
             }
         } else {
-            let mut stmt = self.db.prepare(
-                "SELECT id, project_id, title, content, 0.7 AS score
+            let mut stmt = self
+                .db
+                .prepare(
+                    "SELECT id, project_id, title, content, 0.7 AS score
                  FROM wiki_pages
                  WHERE title LIKE ?1
                  UNION
@@ -598,21 +648,24 @@ impl WikiPageStore {
                  FROM wiki_pages
                  WHERE content LIKE ?1 AND title NOT LIKE ?1
                  ORDER BY score DESC
-                 LIMIT ?2"
-            ).map_err(|e| format!("准备搜索 wiki_pages 查询失败: {}", e))?;
-            let mapped = stmt.query_map(params![pattern, top_k as i64], |row| {
-                let score: f64 = row.get(4)?;
-                Ok(HybridSearchResult {
-                    chunk_id: row.get::<_, i64>(0)?,
-                    title: row.get::<_, String>(2)?,
-                    content: row.get::<_, String>(3)?,
-                    score: score as f32,
-                    source: "wiki_pages".to_string(),
-                    document_id: row.get::<_, i64>(0)?,
-                    section_path: None,
-                    project: row.get::<_, i64>(1)?.to_string(),
+                 LIMIT ?2",
+                )
+                .map_err(|e| format!("准备搜索 wiki_pages 查询失败: {}", e))?;
+            let mapped = stmt
+                .query_map(params![pattern, top_k as i64], |row| {
+                    let score: f64 = row.get(4)?;
+                    Ok(HybridSearchResult {
+                        chunk_id: row.get::<_, i64>(0)?,
+                        title: row.get::<_, String>(2)?,
+                        content: row.get::<_, String>(3)?,
+                        score: score as f32,
+                        source: "wiki_pages".to_string(),
+                        document_id: row.get::<_, i64>(0)?,
+                        section_path: None,
+                        project: row.get::<_, i64>(1)?.to_string(),
+                    })
                 })
-            }).map_err(|e| format!("执行搜索 wiki_pages 查询失败: {}", e))?;
+                .map_err(|e| format!("执行搜索 wiki_pages 查询失败: {}", e))?;
             for row in mapped {
                 results.push(row.map_err(|e| format!("读取 wiki_pages 搜索行失败: {}", e))?);
             }
@@ -673,14 +726,13 @@ impl WikiPageStore {
         })
     }
 
-    fn query_one(
-        &self,
-        sql: &str,
-        p: impl rusqlite::Params,
-    ) -> Result<Option<WikiPage>, String> {
-        let mut stmt = self.db.prepare(sql)
+    fn query_one(&self, sql: &str, p: impl rusqlite::Params) -> Result<Option<WikiPage>, String> {
+        let mut stmt = self
+            .db
+            .prepare(sql)
             .map_err(|e| format!("准备查询失败: {}", e))?;
-        let mut rows = stmt.query_map(p, Self::row_to_page)
+        let mut rows = stmt
+            .query_map(p, Self::row_to_page)
             .map_err(|e| format!("执行查询失败: {}", e))?;
         match rows.next() {
             Some(Ok(s)) => Ok(Some(s)),
@@ -690,9 +742,12 @@ impl WikiPageStore {
     }
 
     fn query_list(&self, sql: &str, p: impl rusqlite::Params) -> Result<Vec<WikiPage>, String> {
-        let mut stmt = self.db.prepare(sql)
+        let mut stmt = self
+            .db
+            .prepare(sql)
             .map_err(|e| format!("准备查询失败: {}", e))?;
-        let rows = stmt.query_map(p, Self::row_to_page)
+        let rows = stmt
+            .query_map(p, Self::row_to_page)
             .map_err(|e| format!("执行查询失败: {}", e))?;
         let mut results = Vec::new();
         for row in rows {

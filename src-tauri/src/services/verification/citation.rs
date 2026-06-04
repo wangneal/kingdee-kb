@@ -3,18 +3,13 @@ use std::sync::LazyLock;
 
 use super::types::{CheckResult, Checker, VerificationInput};
 
-static RE_CITATION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[来源：([^\]]+\.md)\]|[（(]来源：([^）)]+\.md)[）)]").unwrap()
-});
+static RE_CITATION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[来源：([^\]]+\.md)\]|[（(]来源：([^）)]+\.md)[）)]").unwrap());
 
-static RE_SRC_SHORT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[src:(\d+)\]").unwrap()
-});
+static RE_SRC_SHORT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[src:(\d+)\]").unwrap());
 
 /// 匹配 [chunk:N] 格式 — 程序化可校验的段落 ID 引用
-static RE_CHUNK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[chunk:(\d+)\]").unwrap()
-});
+static RE_CHUNK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[chunk:(\d+)\]").unwrap());
 
 pub struct CitationExistenceChecker;
 
@@ -52,9 +47,10 @@ impl Checker for CitationExistenceChecker {
         for citation in &citations {
             let exists = input.chunk_titles.iter().any(|t| {
                 t.to_lowercase().contains(&citation.to_lowercase())
-                    || input.retrieved_chunks.iter().any(|c| {
-                        c.to_lowercase().contains(&citation.to_lowercase())
-                    })
+                    || input
+                        .retrieved_chunks
+                        .iter()
+                        .any(|c| c.to_lowercase().contains(&citation.to_lowercase()))
             });
             if !exists {
                 missing.push(citation.clone());
@@ -81,13 +77,18 @@ impl Checker for CitationExistenceChecker {
         }
 
         if missing.is_empty() {
-            CheckResult::pass("citation_existence")
-                .with_evidence(vec![format!("所有 {} 个引用均在检索结果中找到", total_refs)])
+            CheckResult::pass("citation_existence").with_evidence(vec![format!(
+                "所有 {} 个引用均在检索结果中找到",
+                total_refs
+            )])
         } else {
             let ratio = found as f32 / total_refs as f32;
-            CheckResult::fail("citation_existence", format!("{} 个引用未在检索结果中找到: {:?}", missing.len(), missing))
-                .with_confidence(ratio)
-                .with_evidence(missing)
+            CheckResult::fail(
+                "citation_existence",
+                format!("{} 个引用未在检索结果中找到: {:?}", missing.len(), missing),
+            )
+            .with_confidence(ratio)
+            .with_evidence(missing)
         }
     }
 }
@@ -131,7 +132,8 @@ mod tests {
     async fn test_chunk_ref_found() {
         let checker = CitationExistenceChecker;
         let input = VerificationInput {
-            generated_text: "金蝶云星空支持多组织架构[chunk:1]。配置路径详见系统管理[chunk:2]。".to_string(),
+            generated_text: "金蝶云星空支持多组织架构[chunk:1]。配置路径详见系统管理[chunk:2]。"
+                .to_string(),
             retrieved_chunks: vec![],
             chunk_titles: vec![],
             available_chunk_ids: vec![1, 2, 3],

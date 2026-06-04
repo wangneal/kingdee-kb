@@ -5,6 +5,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react"
 import {
@@ -43,6 +44,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const ensuredDefaultProject = useRef(false)
 
   const projectId = currentProjectId == null ? undefined : String(currentProjectId)
 
@@ -70,8 +72,19 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setLoading(true)
     setError(null)
     try {
-      const defaultId = await ensureDefaultProject()
-      const nextProjects = await listProjects()
+      let defaultId: number | null = null
+      if (!ensuredDefaultProject.current) {
+        defaultId = await ensureDefaultProject()
+        ensuredDefaultProject.current = true
+      }
+
+      let nextProjects = await listProjects()
+      if (!nextProjects.some((project) => project.status === "active")) {
+        defaultId = await ensureDefaultProject()
+        ensuredDefaultProject.current = true
+        nextProjects = await listProjects()
+      }
+
       setProjects(nextProjects)
       setCurrentProjectIdState((previousId) => {
         if (

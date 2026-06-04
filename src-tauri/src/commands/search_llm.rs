@@ -16,6 +16,7 @@ pub async fn bm25_search(
     project_id: Option<i64>,
     top_k: Option<u32>,
 ) -> Result<Vec<BM25SearchResult>, String> {
+    state.get_or_init_bm25()?;
     let bm25 = state.bm25.read().map_err(|e| e.to_string())?;
     let project_id = project_id.map(|id| id.to_string());
     bm25.search(&query, project_id.as_deref(), &[], top_k.unwrap_or(10), &[])
@@ -32,6 +33,7 @@ pub async fn hybrid_search(
     top_k: Option<usize>,
 ) -> Result<Vec<HybridSearchResult>, String> {
     state.ensure_embedding_ready();
+    state.get_or_init_bm25()?;
     let project_id = project_id.map(|id| id.to_string());
 
     crate::services::hybrid_search::hybrid_search(
@@ -55,6 +57,7 @@ pub async fn save_chat_memory(
     conversation: Vec<ChatMessage>,
     project_id: Option<i64>,
 ) -> Result<(), String> {
+    state.get_or_init_bm25()?;
     let data_dir = dirs::home_dir()
         .ok_or("Cannot find home directory")?
         .join(".kingdee-kb");
