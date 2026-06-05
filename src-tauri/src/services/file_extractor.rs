@@ -7,6 +7,7 @@
 //! - DOC：使用本机 Microsoft Word COM 提取文本（需要安装 Word）
 //! - DOCX：解压 ZIP → 解析 word/document.xml → 提取 <w:t> 文本
 //! - XLSX/XLS：使用 umya-spreadsheet 读取每个 sheet 的单元格文本
+//! - 图片（PNG/JPG/GIF/BMP/WEBP）：需通过 ImageProcessor 异步 OCR 提取文本
 
 use std::fs::File;
 use std::io::Read;
@@ -45,6 +46,14 @@ pub fn extract_text(file_path: &Path) -> Result<String, String> {
             ))
         }
 
+        // 图片格式：需异步 OCR 处理，不能同步提取文本
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" => {
+            Err(format!(
+                "图片文件 (.{}) 需要通过 ImageProcessor 异步处理",
+                extension
+            ))
+        }
+
         _ => Err(format!("不支持的文件格式：.{}", extension)),
     }
 }
@@ -55,7 +64,22 @@ pub fn supported_extensions() -> &'static [&'static str] {
         "md", "txt", "text", "markdown", "html", "htm", "pdf", "doc", "docx", "xlsx", "xls",
         // Phase 14: Video/Audio formats (require transcription pipeline)
         "mp4", "webm", "avi", "mov", "mkv", "flv", "wmv", "m4a", "mp3", "wav",
+        // 图片格式（需通过 ImageProcessor 异步 OCR 提取文本）
+        "png", "jpg", "jpeg", "gif", "bmp", "webp",
     ]
+}
+
+/// 检查文件是否为图片格式（需异步 OCR 处理）
+pub fn is_image_format(file_path: &Path) -> bool {
+    let extension = file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    matches!(
+        extension.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp"
+    )
 }
 
 /// 检查文件扩展名是否受支持

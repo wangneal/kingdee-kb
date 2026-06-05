@@ -601,4 +601,41 @@ impl AppState {
             emb.set_model(model);
         }
     }
+
+    /// 检查并释放空闲超时的本地 Embedding 模型。
+    ///
+    /// 如果本地模型空闲时间超过 `timeout_secs` 秒，则释放模型内存。
+    /// 下次使用时 `ensure_embedding_ready()` 会从磁盘缓存重新加载。
+    /// 返回 true 表示已释放，false 表示未释放。
+    pub fn unload_idle_embedding(&self, timeout_secs: u64) -> bool {
+        // 检查是否有本地模型且已空闲超时
+        let should_unload = match self.embedding.read() {
+            Ok(emb) => emb.has_local_model() && emb.idle_seconds() >= timeout_secs,
+            Err(_) => return false,
+        };
+
+        if !should_unload {
+            return false;
+        }
+
+        // 释放 EmbeddingService 中的模型
+        match self.embedding.write() {
+            Ok(mut emb) => {
+                // 二次检查（避免在获取写锁期间被其他线程更新）
+                if !emb.has_local_model() || emb.idle_seconds() < timeout_secs {
+                    return false;
+                }
+                emb.unload();
+            }
+            Err(_) => return false,
+        }
+
+        // 重置 ModelManager 以便下次懒加载
+        match self.model_manager.write() {
+            Ok(mut mm) => mm.reset_for_reload(),
+            Err(_) => {}
+        }
+
+        true
+    }
 }

@@ -17,6 +17,29 @@ pub struct IngestCache {
     pub updated_at: String,
 }
 
+impl IngestCache {
+    /// 判断该缓存写入的 slugs 列表中是否包含目标 slug
+    /// files_written 是 JSON 数组字符串（如 `["开发需求设计确认单"]`），做精确匹配避免子串误中
+    pub fn contains_slug(&self, page_slug: &str) -> bool {
+        match serde_json::from_str::<Vec<String>>(&self.files_written) {
+            Ok(slugs) => slugs.iter().any(|s| s == page_slug),
+            Err(_) => false,
+        }
+    }
+}
+
+/// 从缓存列表中查找包含目标 slug 的缓存项，返回 (source_identity, sha256) 元组列表
+pub fn find_cache_keys_by_slug(
+    caches: &[IngestCache],
+    page_slug: &str,
+) -> Vec<(String, String)> {
+    caches
+        .iter()
+        .filter(|c| c.contains_slug(page_slug))
+        .map(|c| (c.source_identity.clone(), c.sha256.clone()))
+        .collect()
+}
+
 /// 创建摄入缓存时的数据传输对象
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateIngestCache {
@@ -269,7 +292,6 @@ impl IngestCacheStore {
             .db
             .prepare(sql)
             .map_err(|e| format!("准备查询失败: {}", e))?;
-
         let mut rows = stmt
             .query_map(p, Self::row_to_cache)
             .map_err(|e| format!("执行查询失败: {}", e))?;
@@ -296,5 +318,145 @@ impl IngestCacheStore {
             results.push(row.map_err(|e| format!("读取行失败: {}", e))?);
         }
         Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_cache(files_written: &str) -> IngestCache {
+        IngestCache {
+            id: 1,
+            project_id: 19,
+            source_identity: "test.md".to_string(),
+            sha256: "abc123".to_string(),
+            files_written: files_written.to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    // ─── IngestCache::contains_slug 单元测试 ───
+
+    #[test]
+    fn contains_slug_exact_match() {
+        let cache = make_cache(r#"["开发需求设计确认单"]"#);
+        assert!(cache.contains_slug("开发需求设计确认单"));
+    }
+
+    #[test]
+    fn contains_slug_multi_entry_match() {
+        let cache = make_cache(r#"["需求评审记录", "需求变更申请单"]"#);
+        assert!(cache.contains_slug("需求变更申请单"));
+    }
+
+    #[test]
+    fn contains_slug_substring_should_not_match() {
+        // 关键回归测试：原 issue #1，substring 匹配会误中
+        let cache = make_cache(r#"["需求评审记录"]"#);
+        assert!(!cache.contains_slug("需求"));
+        assert!(!cache.contains_slug("评审"));
+    }
+
+    #[test]
+    fn contains_slug_empty_array() {
+        let cache = make_cache("[]");
+        assert!(!cache.contains_slug("任何slug"));
+    }
+
+    #[test]
+    fn contains_slug_invalid_json_returns_false() {
+        // 损坏的 JSON 应被安全忽略（不能 panic）
+        let cache = make_cache("not a json");
+        assert!(!cache.contains_slug("任何slug"));
+    }
+
+    #[test]
+    fn contains_slug_empty_string() {
+        let cache = make_cache("");
+        assert!(!cache.contains_slug("任何slug"));
+    }
+
+    // ─── find_cache_keys_by_slug 单元测试 ───
+
+    #[test]
+    fn find_cache_keys_empty_list() {
+        let caches: Vec<IngestCache> = vec![];
+        let result = find_cache_keys_by_slug(&caches, "any-slug");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn find_cache_keys_returns_matching_only() {
+        let cache_a = IngestCache {
+            id: 1,
+            project_id: 19,
+            source_identity: "a.md".to_string(),
+            sha256: "sha-a".to_string(),
+            files_written: r#"["需求评审记录"]"#.to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let cache_b = IngestCache {
+            id: 2,
+            project_id: 19,
+            source_identity: "b.md".to_string(),
+            sha256: "sha-b".to_string(),
+            files_written: r#"["需求变更申请单", "其他"]"#.to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let cache_c = IngestCache {
+            id: 3,
+            project_id: 19,
+            source_identity: "c.md".to_string(),
+            sha256: "sha-c".to_string(),
+            files_written: r#"["完全无关"]"#.to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let caches = vec![cache_a, cache_b, cache_c];
+        let result = find_cache_keys_by_slug(&caches, "需求变更申请单");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "b.md");
+        assert_eq!(result[0].1, "sha-b");
+    }
+
+    #[test]
+    fn find_cache_keys_multiple_matches_allowed() {
+        // 一个 slug 可能被多个源共同贡献（如合并输入）
+        let cache_a = IngestCache {
+            id: 1,
+            project_id: 19,
+            source_identity: "a.md".to_string(),
+            sha256: "sha-a".to_string(),
+            files_written: r#"["合并页"]"#.to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let cache_b = IngestCache {
+            id: 2,
+            project_id: 19,
+            source_identity: "b.md".to_string(),
+            sha256: "sha-b".to_string(),
+            files_written: r#"["合并页", "其他"]"#.to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let result = find_cache_keys_by_slug(&[cache_a, cache_b], "合并页");
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn find_cache_keys_skips_invalid_json_safely() {
+        // 损坏 JSON 不应阻止其他有效缓存被找到
+        let cache_bad = make_cache("not json {{{");
+        let cache_good = make_cache(r#"["目标slug"]"#);
+        let result = find_cache_keys_by_slug(&[cache_bad, cache_good], "目标slug");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "test.md");
     }
 }

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/streetsidesoftware/cspell/main/cspell.schema.json",
+  "version": "0.2",
+  "language": "en,zh-CN",
+  "words": [
+    "Anthropic",
+    "claude",
+    "tauri",
+    "reqwest",
+    "serde",
+    "tokio",
+    "anthropic"
+  ],
+  "ignorePaths": [
+    "node_modules/**",
+    "target/**",
+    "dist/**",
+    ".git/**",
+    "src-tauri/target/**",
+    "src-tauri/gen/**"
+  ]
+}

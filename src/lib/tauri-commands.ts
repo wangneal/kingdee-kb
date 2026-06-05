@@ -264,6 +264,7 @@ export type EmbeddingProviderType =
   | "zhipu"
   | "dashscope"
   | "cohere"
+  | "custom"
 
 export interface EmbeddingModelConfig {
   custom_model_dir?: string | null
@@ -1215,9 +1216,19 @@ export async function deleteWikiPage(id: number): Promise<void> {
   return invoke("delete_wiki_page", { id })
 }
 
+/** 批量删除 Wiki 页面 */
+export async function batchDeleteWikiPages(ids: number[]): Promise<number> {
+  return invoke("batch_delete_wiki_pages", { ids })
+}
+
 /** 批准 Wiki 页面候选内容 */
 export async function approveWikiPage(id: number): Promise<WikiPage> {
   return invoke("approve_wiki_page", { id })
+}
+
+/** 拒绝 Wiki 页面候选内容（清空候选字段，保留 content） */
+export async function rejectWikiPage(id: number): Promise<WikiPage> {
+  return invoke("reject_wiki_page", { id })
 }
 
 /** 搜索 Wiki 页面（用于 wikilink 候选） */

@@ -1,7 +1,7 @@
 //! 知识编译开关的 Tauri Command
 
 use crate::app_state::AppState;
-use crate::services::ingestion_pipeline::process_with_kb_compilation;
+use crate::services::ingestion_pipeline::{process_with_kb_compilation, KbCompilationResult};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -46,7 +46,9 @@ pub async fn set_kb_compilation_enabled(
 pub async fn recompile_failed_kb_sources(
     state: tauri::State<'_, AppState>,
     project_id: i64,
+    force: Option<bool>,
 ) -> Result<RecompileFailedSourcesResult, String> {
+    let force = force.unwrap_or(false);
     let sources = {
         let store = state
             .raw_sources
@@ -67,10 +69,17 @@ pub async fn recompile_failed_kb_sources(
             .collect()
     };
 
-    let failed_sources: Vec<_> = sources
-        .into_iter()
-        .filter(|source| !cache_keys.contains(&(source.identity.clone(), source.sha256.clone())))
-        .collect();
+    // force=true：重编译全部；force=false：仅重编译 cache 缺失的源
+    let failed_sources: Vec<_> = if force {
+        sources
+    } else {
+        sources
+            .into_iter()
+            .filter(|source| {
+                !cache_keys.contains(&(source.identity.clone(), source.sha256.clone()))
+            })
+            .collect()
+    };
 
     let retried = failed_sources.len();
     let mut succeeded = 0;
@@ -91,6 +100,24 @@ pub async fn recompile_failed_kb_sources(
                 }
             };
 
+        // force 模式下：先清掉 cache，让后续 process_with_kb_compilation 不会命中旧 cache
+        if force {
+            if let Ok(ingest) = state.ingest_cache_store.lock() {
+                if let Ok(Some(cache)) =
+                    ingest.get_by_key(project_id, &source.identity, &source.sha256)
+                {
+                    let _ = ingest.delete(cache.id);
+                }
+            }
+            if let Ok(analysis) = state.analysis_cache.lock() {
+                if let Ok(Some(cache)) =
+                    analysis.get_by_key(project_id, &source.identity, &source.sha256)
+                {
+                    let _ = analysis.delete(cache.id);
+                }
+            }
+        }
+
         let compilation = process_with_kb_compilation(
             &text,
             &source.identity,
@@ -102,6 +129,8 @@ pub async fn recompile_failed_kb_sources(
             state.llm_providers.clone(),
             state.wiki_pages.clone(),
             state.ingest_cache_store.clone(),
+            None,
+            force, // force 模式传递 true，跳过 Step 0 cache 命中
         )
         .await;
 
@@ -134,4 +163,152 @@ fn source_title(identity: &str) -> String {
         .filter(|stem| !stem.trim().is_empty())
         .unwrap_or(identity)
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── source_title 单元测试 ───
+    // 用于从 raw_sources.identity（带扩展名）提取页面 title
+
+    #[test]
+    fn source_title_strips_md_extension() {
+        assert_eq!(source_title("需求跟踪矩阵.md"), "需求跟踪矩阵");
+    }
+
+    #[test]
+    fn source_title_strips_xlsx_extension() {
+        assert_eq!(
+            source_title("05需求跟踪矩阵_模板（for V10.0）.xlsx"),
+            "05需求跟踪矩阵_模板（for V10.0）"
+        );
+    }
+
+    #[test]
+    fn source_title_strips_docx_extension() {
+        assert_eq!(
+            source_title("开发需求设计确认单.docx"),
+            "开发需求设计确认单"
+        );
+    }
+
+    #[test]
+    fn source_title_strips_path_prefix() {
+        // identity 可能含路径前缀
+        assert_eq!(
+            source_title("C:/Users/Neal/原始资料/需求.docx"),
+            "需求"
+        );
+    }
+
+    #[test]
+    fn source_title_no_extension_returns_as_is() {
+        assert_eq!(source_title("无扩展名"), "无扩展名");
+    }
+
+    #[test]
+    fn source_title_empty_string_returns_input() {
+        // 空字符串会触发 unwrap_or(identity) 兜底
+        assert_eq!(source_title(""), "");
+    }
+}
+
+/// 强制重编译指定的源（用于"删 wiki 后原地重生成"场景）
+///
+/// 流程：
+/// 1. 按 source_id 查出 raw_source，校验 project_id
+/// 2. 重新读取源文件提取文本
+/// 3. 强制清除该源的 ingest_cache 和 analysis_cache
+/// 4. 调用 process_with_kb_compilation，force_recompile=true 跳过 cache 检查
+#[tauri::command]
+pub async fn force_recompile_kb_source(
+    state: tauri::State<'_, AppState>,
+    project_id: i64,
+    source_id: i64,
+) -> Result<KbCompilationResult, String> {
+    // 1. 读取源记录
+    let source = {
+        let store = state
+            .raw_sources
+            .lock()
+            .map_err(|e| format!("获取 raw_sources 锁失败: {}", e))?;
+        store.get_by_id(source_id)?
+    };
+
+    // 2. 校验 project_id 一致
+    if source.project_id != project_id {
+        return Err(format!(
+            "源项目不匹配: source.project_id={}, 传入 project_id={}",
+            source.project_id, project_id
+        ));
+    }
+
+    let title = source_title(&source.identity);
+
+    // 3. 反查 document_id（确保新建 wiki 页面 sources 含真实 document_id，避免 null）
+    //    关联键：documents.sha256 = source.sha256 AND documents.project_id = source.project_id
+    //    AND documents.raw_source_identity = source.identity
+    let document_id: Option<i64> = {
+        let meta = state
+            .metadata
+            .lock()
+            .map_err(|e| format!("获取 metadata 锁失败: {}", e))?;
+        meta.get_document_by_sha256(&source.sha256)?
+            .filter(|doc| {
+                doc.project_id == project_id
+                    && doc.raw_source_identity.as_deref() == Some(source.identity.as_str())
+            })
+            .map(|doc| doc.id)
+    };
+
+    // 4. 重新读取并提取文本
+    let text = crate::services::file_extractor::extract_text(Path::new(&source.storage_path))
+        .map_err(|e| format!("读取原始资料失败: {}", e))?;
+
+    // 5. 强制清除 ingest_cache 和 analysis_cache
+    {
+        let ingest = state
+            .ingest_cache_store
+            .lock()
+            .map_err(|e| format!("获取 ingest_cache 锁失败: {}", e))?;
+        if let Ok(Some(cache)) = ingest.get_by_key(project_id, &source.identity, &source.sha256) {
+            let _ = ingest.delete(cache.id);
+            tracing::info!(
+                "force_recompile 已清 ingest_cache: source={}, sha256={}",
+                source.identity,
+                source.sha256
+            );
+        }
+    }
+    {
+        let analysis = state
+            .analysis_cache
+            .lock()
+            .map_err(|e| format!("获取 analysis_cache 锁失败: {}", e))?;
+        if let Ok(Some(cache)) = analysis.get_by_key(project_id, &source.identity, &source.sha256) {
+            let _ = analysis.delete(cache.id);
+            tracing::info!(
+                "force_recompile 已清 analysis_cache: source={}",
+                source.identity
+            );
+        }
+    }
+
+    // 6. 走完整流程（force_recompile=true 跳过 Step 0 的 cache 检查）
+    process_with_kb_compilation(
+        &text,
+        &source.identity,
+        &source.sha256,
+        project_id,
+        &title,
+        true, // enable_kb_compilation
+        state.analysis_cache.clone(),
+        state.llm_providers.clone(),
+        state.wiki_pages.clone(),
+        state.ingest_cache_store.clone(),
+        document_id, // 传入反查到的 document_id（issue 2 修复）
+        true,        // force_recompile：跳过 cache 命中检查
+    )
+    .await
 }

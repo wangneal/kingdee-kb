@@ -4,6 +4,7 @@
 //! 并通过 ingest_cache 实现增量缓存（project_id + source_identity + sha256 三元组）。
 
 use regex::Regex;
+use serde::Serialize;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use tracing::{info, warn};
 
@@ -28,7 +29,7 @@ use crate::services::verification::types::{ScenarioType, VerificationInput};
 use crate::services::wiki_page::{CreateWikiPage, UpdateWikiPage, WikiPageStore};
 
 /// 两步摄入编译结果
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct KbCompilationResult {
     /// Step 1 文档分析结果
     pub analysis: DocumentAnalysis,
@@ -62,32 +63,36 @@ pub async fn process_with_kb_compilation(
     provider_manager: Arc<RwLock<LLMProviderManager>>,
     wiki_pages: Arc<Mutex<WikiPageStore>>,
     ingest_cache_store: Arc<Mutex<IngestCacheStore>>,
+    document_id: Option<i64>,
+    force_recompile: bool,
 ) -> Result<KbCompilationResult, String> {
-    // Step 0: 检查 ingest_cache
-    if let Some(cached) =
-        check_ingest_cache(&ingest_cache_store, project_id, source_identity, sha256)?
-    {
-        info!("ingest_cache 命中: source={}", source_identity);
-        return Ok(KbCompilationResult {
-            analysis: DocumentAnalysis {
-                source_identity: source_identity.to_string(),
-                sha256: sha256.to_string(),
-                title: title.to_string(),
-                headings: Vec::new(),
-                keywords: Vec::new(),
-                word_count: 0,
-                char_count: 0,
-                language: String::new(),
-                entities: Vec::new(),
-                key_concepts: Vec::new(),
-                cross_references: Vec::new(),
-                contradictions: Vec::new(),
-            },
-            engine: "cache".to_string(),
-            cache_hit: true,
-            generated_pages: cached,
-            compilation_done: true,
-        });
+    // Step 0: 检查 ingest_cache（force_recompile=true 时跳过，用于"删 wiki 后重生成"场景）
+    if !force_recompile {
+        if let Some(cached) =
+            check_ingest_cache(&ingest_cache_store, project_id, source_identity, sha256)?
+        {
+            info!("ingest_cache 命中: source={}", source_identity);
+            return Ok(KbCompilationResult {
+                analysis: DocumentAnalysis {
+                    source_identity: source_identity.to_string(),
+                    sha256: sha256.to_string(),
+                    title: title.to_string(),
+                    headings: Vec::new(),
+                    keywords: Vec::new(),
+                    word_count: 0,
+                    char_count: 0,
+                    language: String::new(),
+                    entities: Vec::new(),
+                    key_concepts: Vec::new(),
+                    cross_references: Vec::new(),
+                    contradictions: Vec::new(),
+                },
+                engine: "cache".to_string(),
+                cache_hit: true,
+                generated_pages: cached,
+                compilation_done: true,
+            });
+        }
     }
 
     // Step 1: 文档分析（同时用于双引擎降级 + analysis_cache）
@@ -118,6 +123,7 @@ pub async fn process_with_kb_compilation(
             &[],
             &wiki_pages,
             &provider_manager,
+            document_id,
         )
         .await
         {
@@ -205,6 +211,7 @@ async fn run_llm_compilation(
     chunk_ids: &[i64],
     wiki_pages: &Arc<Mutex<WikiPageStore>>,
     provider_manager: &Arc<RwLock<LLMProviderManager>>,
+    document_id: Option<i64>,
 ) -> Result<Vec<String>, String> {
     let page_slug = slugify(&analysis.title);
     let page_title = if analysis.title.is_empty() {
@@ -220,7 +227,7 @@ async fn run_llm_compilation(
 
     let sources_json = serde_json::json!([{
         "source_id": serde_json::Value::Null,
-        "document_id": serde_json::Value::Null,
+        "document_id": document_id,
         "chunks": chunk_ids,
     }])
     .to_string();

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use serde::Serialize;
 
@@ -320,13 +320,80 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
     )
     .await;
 
-    // 异步预加载 Embedding 与 Reranker 模型，避免首次检索时因加载模型导致卡顿
+    // 异步预加载 Embedding 模型，避免首次检索时因加载模型导致卡顿
+    // 注意：Reranker 模型 (bge-reranker-v2-m3) 占 2.1GB 内存，改为首次搜索时懒加载
     let app_clone = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if let Some(state) = app_clone.try_state::<AppState>() {
-            println!("后台异步预加载 Embedding 与 Reranker 模型中...");
+            println!("后台异步预加载 Embedding 模型中...");
             state.ensure_embedding_ready();
-            let _ = state.get_or_init_reranker();
+        }
+    });
+
+    // 后台定时检查：空闲超过 5 分钟自动释放本地 Embedding 模型（~90MB）
+    // 下次使用时 ensure_embedding_ready() 会从磁盘缓存重新加载（毫秒级）
+    let app_for_idle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        const IDLE_TIMEOUT_SECS: u64 = 300; // 5 分钟
+        const CHECK_INTERVAL_SECS: u64 = 60; // 每 60 秒检查一次
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(CHECK_INTERVAL_SECS));
+            if let Some(state) = app_for_idle.try_state::<AppState>() {
+                if state.unload_idle_embedding(IDLE_TIMEOUT_SECS) {
+                    println!("后台检查：本地 Embedding 模型空闲超过 {}秒，已自动释放内存", IDLE_TIMEOUT_SECS);
+                }
+            }
+        }
+    });
+
+    // 后台定时熵管理：每小时扫描过期技能/索引漂移，发现异常时通知前端
+    // 符合 Harness Engineering 的“垃圾回收”理念：持续小额偿还技术债
+    let app_for_entropy = app.clone();
+    let data_dir_for_entropy = app
+        .try_state::<AppState>()
+        .map(|s| s.data_dir.clone())
+        .unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        use crate::services::harness::entropy::EntropyManager;
+        const SCAN_INTERVAL_SECS: u64 = 3600; // 每小时扫描一次
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(SCAN_INTERVAL_SECS));
+            if data_dir_for_entropy.as_os_str().is_empty() {
+                continue;
+            }
+
+            let mgr = EntropyManager::new(data_dir_for_entropy.clone());
+
+            // 扫描过期技能
+            let stale_skills = mgr.scan_stale_files("skills");
+            if !stale_skills.is_empty() {
+                let items: Vec<serde_json::Value> = stale_skills
+                    .iter()
+                    .map(|item| {
+                        serde_json::json!({
+                            "path": item.path.display().to_string(),
+                            "days": item.last_accessed_days,
+                            "type": "skill"
+                        })
+                    })
+                    .collect();
+                let _ = app_for_entropy.emit("entropy-warning", serde_json::json!({
+                    "kind": "stale-skills",
+                    "count": items.len(),
+                    "items": items
+                }));
+                println!("后台熵检查：发现 {} 个过期技能", stale_skills.len());
+            }
+
+            // 扫描索引漂移
+            let drifts = mgr.scan_index_drift("sources", "index");
+            if !drifts.is_empty() {
+                let _ = app_for_entropy.emit("entropy-warning", serde_json::json!({
+                    "kind": "index-drift",
+                    "count": drifts.len()
+                }));
+                println!("后台熵检查：发现 {} 个索引漂移", drifts.len());
+            }
         }
     });
 

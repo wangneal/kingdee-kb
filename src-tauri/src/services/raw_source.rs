@@ -262,11 +262,12 @@ impl RawSourceStore {
         })
     }
 
-    fn get_by_id(&self, id: i64) -> Result<RawSource, String> {
+    /// 按 ID 获取原始导入记录（仅未软删）
+    pub fn get_by_id(&self, id: i64) -> Result<RawSource, String> {
         self.query_one(
             "SELECT id, project_id, identity, original_path, storage_path, sha256, file_size,
                     mime_type, status, created_at, deleted_at
-             FROM raw_sources WHERE id = ?1",
+             FROM raw_sources WHERE id = ?1 AND deleted_at IS NULL",
             params![id],
         )?
         .ok_or_else(|| format!("未找到 raw_source: id={}", id))

@@ -117,6 +117,11 @@ const EMBEDDING_PROVIDERS: Record<
     baseUrl: "https://api.cohere.com/v2",
     models: ["embed-multilingual-v3.0", "embed-english-v3.0"],
   },
+  custom: {
+    label: "自定义 (OpenAI 兼容)",
+    baseUrl: "",
+    models: [],
+  },
 }
 
 const DEFAULT_EMBEDDING_PROVIDER_CONFIG: EmbeddingProviderConfig = {

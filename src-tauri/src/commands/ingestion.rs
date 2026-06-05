@@ -8,6 +8,41 @@ use crate::services::ingestion::{
 };
 use crate::services::ingestion_pipeline::process_with_kb_compilation;
 
+/// 从全局状态克隆 ImageProcessor 配置（不持锁，避免 Send 问题）
+fn clone_image_processor(
+    state: &State<'_, AppState>,
+) -> Result<crate::services::image_processor::ImageProcessor, String> {
+    let guard = state.image_processor.read().map_err(|e| e.to_string())?;
+    let mut p = crate::services::image_processor::ImageProcessor::new(
+        guard.get_llm_api_key().to_string(),
+        guard.get_llm_base_url().to_string(),
+        guard.get_llm_model().to_string(),
+    );
+    p.set_llm_multimodal(guard.is_llm_multimodal());
+    if let Some(ocr) = guard.get_ocr_config_cloned() {
+        p.set_ocr_config(ocr);
+    }
+    if let Some(protocol) = guard.get_protocol_cloned() {
+        p.set_protocol(protocol);
+    }
+    Ok(p)
+}
+
+/// 通过 ImageProcessor 异步提取图片文本（owned processor，可 Send）
+async fn extract_image_text_with_processor(
+    file_path: &str,
+    processor: crate::services::image_processor::ImageProcessor,
+) -> Result<String, String> {
+    let result = processor
+        .process_image(file_path)
+        .await
+        .map_err(|e| format!("图片处理失败: {}", e))?;
+    if result.text.trim().is_empty() {
+        return Err("图片中未识别到任何文本".to_string());
+    }
+    Ok(result.text)
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ExtractedFileText {
     pub file_path: String,
@@ -82,6 +117,8 @@ pub async fn ingest_text(
             provider_manager,
             wiki_pages,
             ingest_cache,
+            Some(result.document_id),
+            false,
         )
         .await
         {
@@ -102,6 +139,7 @@ pub async fn ingest_text(
 /// 摄入单个文件
 ///
 /// 首次调用时会自动加载 embedding 模型（懒加载）。
+/// 图片文件（PNG/JPG/GIF/BMP/WEBP）会通过 OCR/多模态视觉自动提取文本后摄入。
 #[tauri::command]
 pub async fn ingest_file(
     state: State<'_, AppState>,
@@ -113,8 +151,91 @@ pub async fn ingest_file(
     state.ensure_embedding_ready();
     state.ensure_bm25_ready();
 
+    let path = PathBuf::from(&file_path);
+
+    // ─── 图片文件分支：通过 ImageProcessor 异步提取文本 ───
+    if crate::services::file_extractor::is_image_format(&path) {
+        // 同步块：检查能力 + 克隆 processor（不持锁跨 await）
+        let can_process = {
+            let guard = state.image_processor.read().map_err(|e| e.to_string())?;
+            guard.can_process_images()
+        };
+        if !can_process {
+            return Err("未配置 OCR 或多模态视觉模型，无法提取图片文本".to_string());
+        }
+        let processor = clone_image_processor(&state)?;
+
+        // 异步：提取图片文本
+        let image_text = extract_image_text_with_processor(&file_path, processor).await?;
+
+        // 同步：走纯文本摄入流程
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("untitled");
+        let title = filename
+            .rsplit_once('.')
+            .map(|(n, _)| n)
+            .unwrap_or(filename)
+            .replace(['-', '_'], " ");
+
+        let mut result = ingest_text_fn(
+            &image_text,
+            &title,
+            project_id,
+            &state.embedding,
+            &state.vector_index,
+            &state.metadata,
+            &state.bm25,
+            Some(&state.raw_sources),
+            Some(filename),
+            Some(&file_path),
+            Some(&app),
+            Some(&state.data_dir),
+        )?;
+        result.title = title.clone();
+
+        // KB 编译
+        if resolve_kb_compilation(&state, enable_kb_compilation) {
+            let sha256 = result.sha256.clone();
+            let source_identity = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            match process_with_kb_compilation(
+                &image_text,
+                &source_identity,
+                &sha256,
+                project_id,
+                &title,
+                true,
+                state.analysis_cache.clone(),
+                state.llm_providers.clone(),
+                state.wiki_pages.clone(),
+                state.ingest_cache_store.clone(),
+                Some(result.document_id),
+                false,
+            )
+            .await
+            {
+                Ok(compilation) => {
+                    result.kb_analysis_engine = Some(compilation.engine);
+                }
+                Err(e) => {
+                    tracing::warn!("KB 编译失败（图片导入）: {}", e);
+                    result.kb_compilation_error = Some(format!("{}", e));
+                }
+            }
+        }
+
+        return Ok(result);
+    }
+
+    // ─── 非图片文件：正常同步摄入 ───
     let mut result = ingest_file_fn(
-        PathBuf::from(&file_path).as_path(),
+        path.as_path(),
         project_id,
         &state.embedding,
         &state.vector_index,
@@ -127,20 +248,15 @@ pub async fn ingest_file(
 
     // 知识编译
     if resolve_kb_compilation(&state, enable_kb_compilation) {
-        let text = crate::services::file_extractor::extract_text(&PathBuf::from(&file_path))
+        let text = crate::services::file_extractor::extract_text(&path)
             .map_err(|e| format!("读取文件内容失败: {}", e))?;
         let sha256 = result.sha256.clone();
         let title = result.title.clone();
-        // source_identity 使用文件名（与 raw_sources.identity 一致）
-        let source_identity = PathBuf::from(&file_path)
+        let source_identity = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
-        let cache_store = state.analysis_cache.clone();
-        let provider_manager = state.llm_providers.clone();
-        let wiki_pages = state.wiki_pages.clone();
-        let ingest_cache = state.ingest_cache_store.clone();
 
         match process_with_kb_compilation(
             &text,
@@ -149,10 +265,12 @@ pub async fn ingest_file(
             project_id,
             &title,
             true,
-            cache_store,
-            provider_manager,
-            wiki_pages,
-            ingest_cache,
+            state.analysis_cache.clone(),
+            state.llm_providers.clone(),
+            state.wiki_pages.clone(),
+            state.ingest_cache_store.clone(),
+            Some(result.document_id),
+            false,
         )
         .await
         {
@@ -161,7 +279,6 @@ pub async fn ingest_file(
             }
             Err(e) => {
                 tracing::warn!("KB 编译失败（文件导入）: {}", e);
-                // 导入本身已成功，将编译失败记录在结构化字段中
                 result.kb_compilation_error = Some(format!("{}", e));
             }
         }
@@ -192,6 +309,7 @@ pub async fn extract_file_text(file_path: String) -> Result<ExtractedFileText, S
 /// 摄入目录中的所有支持文件
 ///
 /// 首次调用时会自动加载 embedding 模型（懒加载）。
+/// 图片文件（PNG/JPG/GIF/BMP/WEBP）会通过 OCR/多模态视觉自动提取文本后摄入。
 #[tauri::command]
 pub async fn ingest_directory(
     state: State<'_, AppState>,
@@ -203,8 +321,11 @@ pub async fn ingest_directory(
     state.ensure_embedding_ready();
     state.ensure_bm25_ready();
 
+    let dir = PathBuf::from(&dir_path);
+
+    // 同步摄入非图片文件（图片在同步扫描中已被跳过）
     let mut result = ingest_directory_fn(
-        PathBuf::from(&dir_path).as_path(),
+        dir.as_path(),
         project_id,
         &state.embedding,
         &state.vector_index,
@@ -215,51 +336,160 @@ pub async fn ingest_directory(
         Some(&state.data_dir),
     )?;
 
-    // 知识编译（对每个成功导入的文件）
-    if resolve_kb_compilation(&state, enable_kb_compilation) {
-        let cache_store = state.analysis_cache.clone();
-        let provider_manager = state.llm_providers.clone();
-        let wiki_pages = state.wiki_pages.clone();
-        let ingest_cache = state.ingest_cache_store.clone();
+    // ─── 异步处理图片文件 ───
+    let image_paths = crate::services::ingestion::collect_image_paths(&dir);
+    let can_process_images = {
+        let guard = state.image_processor.read().map_err(|e| e.to_string())?;
+        guard.can_process_images()
+    };
 
+    if !image_paths.is_empty() && can_process_images {
+        for img_path in &image_paths {
+            let img_path_str = img_path.to_string_lossy().to_string();
+
+            // 同步：克隆 processor
+            let processor = match clone_image_processor(&state) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("克隆 ImageProcessor 失败: {}", e);
+                    result.errors.push(crate::services::ingestion::FileError {
+                        path: img_path_str.clone(),
+                        error: e,
+                    });
+                    continue;
+                }
+            };
+
+            // 异步：提取图片文本
+            let image_text =
+                match extract_image_text_with_processor(&img_path_str, processor).await {
+                    Ok(text) => text,
+                    Err(e) => {
+                        tracing::warn!("图片 OCR 失败: {:?}: {}", img_path, e);
+                        result.errors.push(crate::services::ingestion::FileError {
+                            path: img_path_str.clone(),
+                            error: e,
+                        });
+                        continue;
+                    }
+                };
+
+            // 同步：走纯文本摄入
+            let filename = img_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("untitled");
+            let title = filename
+                .rsplit_once('.')
+                .map(|(n, _)| n)
+                .unwrap_or(filename)
+                .replace(['-', '_'], " ");
+
+            match ingest_text_fn(
+                &image_text,
+                &title,
+                project_id,
+                &state.embedding,
+                &state.vector_index,
+                &state.metadata,
+                &state.bm25,
+                Some(&state.raw_sources),
+                Some(filename),
+                Some(&img_path_str),
+                Some(&app),
+                Some(&state.data_dir),
+            ) {
+                Ok(mut ing_result) => {
+                    ing_result.title = title;
+                    result.imported.push(ing_result);
+                }
+                Err(e) => {
+                    tracing::warn!("图片摄入失败: {:?}: {}", img_path, e);
+                    result.errors.push(crate::services::ingestion::FileError {
+                        path: img_path_str.clone(),
+                        error: e,
+                    });
+                }
+            }
+        }
+    } else if !image_paths.is_empty() && !can_process_images {
+        // 有图片但未配置 OCR/视觉模型，记录为错误
+        for img_path in &image_paths {
+            result.errors.push(crate::services::ingestion::FileError {
+                path: img_path.to_string_lossy().to_string(),
+                error: "未配置 OCR 或多模态视觉模型，无法提取图片文本".to_string(),
+            });
+        }
+    }
+
+    // ─── 知识编译（对每个成功导入的文件，包括图片） ───
+    if resolve_kb_compilation(&state, enable_kb_compilation) {
         for imported in &mut result.imported {
             if let Some(ref sp) = imported.source_path {
-                match crate::services::file_extractor::extract_text(&PathBuf::from(sp)) {
-                    Ok(text) => {
-                        let sha256 = imported.sha256.clone();
-                        let title = imported.title.clone();
-                        // source_identity 使用文件名（与 raw_sources.identity 一致）
-                        let source_identity = PathBuf::from(sp)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                        match process_with_kb_compilation(
-                            &text,
-                            &source_identity,
-                            &sha256,
-                            project_id,
-                            &title,
-                            true,
-                            cache_store.clone(),
-                            provider_manager.clone(),
-                            wiki_pages.clone(),
-                            ingest_cache.clone(),
-                        )
-                        .await
-                        {
-                            Ok(compilation) => {
-                                imported.kb_analysis_engine = Some(compilation.engine);
-                            }
+                let path_buf = PathBuf::from(sp);
+
+                // 获取文本：优先使用缓存的 extracted_text（避免重复 OCR/读取）
+                let text = if let Some(ref cached_text) = imported.extracted_text {
+                    cached_text.clone()
+                } else {
+                    let is_image = crate::services::file_extractor::is_image_format(&path_buf);
+                    if is_image {
+                        let processor = match clone_image_processor(&state) {
+                            Ok(p) => p,
                             Err(e) => {
-                                tracing::warn!("KB 编译失败: {}: {}", title, e);
-                                imported.kb_compilation_error = Some(format!("{}", e));
+                                imported.kb_compilation_error = Some(e);
+                                continue;
+                            }
+                        };
+                        match extract_image_text_with_processor(sp, processor).await {
+                            Ok(t) => t,
+                            Err(e) => {
+                                imported.kb_compilation_error = Some(e);
+                                continue;
+                            }
+                        }
+                    } else {
+                        match crate::services::file_extractor::extract_text(&path_buf) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                imported.kb_compilation_error =
+                                    Some(format!("读取文件失败: {}", e));
+                                continue;
                             }
                         }
                     }
+                };
+
+                let sha256 = imported.sha256.clone();
+                let title = imported.title.clone();
+                let source_identity = path_buf
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                match process_with_kb_compilation(
+                    &text,
+                    &source_identity,
+                    &sha256,
+                    project_id,
+                    &title,
+                    true,
+                    state.analysis_cache.clone(),
+                    state.llm_providers.clone(),
+                    state.wiki_pages.clone(),
+                    state.ingest_cache_store.clone(),
+                    Some(imported.document_id),
+                    false,
+                )
+                .await
+                {
+                    Ok(compilation) => {
+                        imported.kb_analysis_engine = Some(compilation.engine);
+                    }
                     Err(e) => {
-                        tracing::warn!("KB 编译读取文件失败: {} — {}", sp, e);
-                        imported.kb_compilation_error = Some(format!("读取文件失败: {}", e));
+                        tracing::warn!("KB 编译失败: {}: {}", title, e);
+                        imported.kb_compilation_error = Some(format!("{}", e));
                     }
                 }
             }

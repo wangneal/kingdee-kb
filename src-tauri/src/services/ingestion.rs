@@ -90,6 +90,9 @@ pub struct IngestionResult {
     pub kb_compilation_error: Option<String>,
     /// KB 分析实际使用的引擎：llm、rust 或 cache
     pub kb_analysis_engine: Option<String>,
+    /// 提取的原始文本（仅用于内部 KB 编译缓存，避免重复 OCR/读取）
+    #[serde(default, skip_serializing)]
+    pub extracted_text: Option<String>,
 }
 
 /// 摄入纯文本（来自粘贴或文本框）
@@ -150,6 +153,7 @@ pub fn ingest_text(
                     source_path: source_path.map(|s| s.to_string()),
                     kb_compilation_error: None,
                     kb_analysis_engine: None,
+                    extracted_text: None,
                 });
             }
         }
@@ -369,6 +373,7 @@ pub fn ingest_text(
         source_path: source_path.map(|s| s.to_string()),
         kb_compilation_error: None,
         kb_analysis_engine: None,
+        extracted_text: Some(text.to_string()),
     })
 }
 
@@ -559,6 +564,9 @@ fn ingest_dir_recursive(
         } else if is_temp_file(&path) {
             // 静默跳过 Office 锁文件和其他临时文件
             continue;
+        } else if file_extractor::is_image_format(&path) {
+            // 图片文件需异步 OCR 处理，同步扫描时跳过
+            continue;
         } else if file_extractor::is_supported(&path) {
             match ingest_file(
                 &path,
@@ -585,6 +593,26 @@ fn ingest_dir_recursive(
         }
     }
     Ok(())
+}
+
+/// 递归收集目录中的所有图片文件路径（用于异步 OCR 处理）
+pub fn collect_image_paths(dir_path: &Path) -> Vec<PathBuf> {
+    let mut images = Vec::new();
+    collect_images_recursive(dir_path, &mut images);
+    images
+}
+
+fn collect_images_recursive(dir_path: &Path, images: &mut Vec<PathBuf>) {
+    if let Ok(entries) = std::fs::read_dir(dir_path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_images_recursive(&path, images);
+            } else if !is_temp_file(&path) && file_extractor::is_image_format(&path) {
+                images.push(path);
+            }
+        }
+    }
 }
 
 /// 向前端发出进度事件

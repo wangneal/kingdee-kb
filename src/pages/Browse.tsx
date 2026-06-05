@@ -1,4 +1,14 @@
-import { AlertCircle, BookOpen, CheckCircle, FileUp, RefreshCw } from "lucide-react"
+import { diffLines } from "diff"
+import {
+  AlertCircle,
+  BookOpen,
+  CheckCircle,
+  CheckSquare,
+  FileUp,
+  RefreshCw,
+  Square,
+  Trash2,
+} from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import ContextMenu, { type ContextMenuItem } from "../components/ContextMenu"
 import ImportModal from "../components/ImportModal"
@@ -6,10 +16,13 @@ import WikiLinkEditor from "../components/wiki/WikiLinkEditor"
 import { useProject } from "../contexts/ProjectContext"
 import {
   approveWikiPage,
+  batchDeleteWikiPages,
+  deleteWikiPage,
   getGraphNeighbors,
   getWikiPage,
   listWikiPages,
   recompileFailedKbSources,
+  rejectWikiPage,
   type WikiPage,
   type WikiPageBrief,
 } from "../lib/tauri-commands"
@@ -27,6 +40,9 @@ export default function Browse() {
   const [importModalOpen, setImportModalOpen] = useState(false)
   const [recompiling, setRecompiling] = useState(false)
   const [recompileMessage, setRecompileMessage] = useState<string | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  // 内容视图：current 已批准；candidate 候选全文；diff 行级对比
+  const [viewMode, setViewMode] = useState<"current" | "candidate" | "diff">("current")
 
   const refreshWikiPages = useCallback(async () => {
     if (currentProjectId == null) {
@@ -34,6 +50,7 @@ export default function Browse() {
       setSelectedWiki(null)
       setNeighbors([])
       setLoading(false)
+      setSelectedIds(new Set())
       return
     }
 
@@ -77,6 +94,8 @@ export default function Browse() {
     async (pageId: number) => {
       const page = await getWikiPage(pageId)
       setSelectedWiki(page)
+      // 切换页面时回到"已批准内容"视图，避免混淆
+      setViewMode("current")
       if (currentProjectId == null) return
       getGraphNeighbors(currentProjectId, page.slug)
         .then(setNeighbors)
@@ -122,6 +141,38 @@ export default function Browse() {
     return <CheckCircle className="h-3 w-3 text-green-500" />
   }
 
+  const toggleSelect = useCallback((id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds((prev) => {
+      if (prev.size === wikiPages.length) return new Set()
+      return new Set(wikiPages.map((p) => p.id))
+    })
+  }, [wikiPages])
+
+  const handleBatchDelete = useCallback(async () => {
+    if (selectedIds.size === 0) return
+    if (!confirm(`确认批量删除 ${selectedIds.size} 个 Wiki 页面及其关联数据？`)) return
+    const count = await batchDeleteWikiPages(Array.from(selectedIds))
+    setSelectedIds(new Set())
+    if (selectedWiki && selectedIds.has(selectedWiki.id)) {
+      setSelectedWiki(null)
+      setNeighbors([])
+    }
+    await refreshWikiPages()
+    // 显示反馈（可选）
+    console.log(`已删除 ${count} 个页面`)
+  }, [selectedIds, selectedWiki, refreshWikiPages])
+
+  const allSelected = wikiPages.length > 0 && selectedIds.size === wikiPages.length
+
   return (
     <>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: 面板右键菜单是标准交互模式 */}
@@ -130,6 +181,16 @@ export default function Browse() {
           <div className="mb-3 flex items-center justify-between gap-2">
             <h3 className="text-sm font-medium text-neutral-600">知识页面</h3>
             <div className="flex items-center gap-2">
+              {selectedIds.size > 0 && (
+                <button
+                  type="button"
+                  onClick={handleBatchDelete}
+                  className="inline-flex items-center gap-1 rounded-md border border-red-200 px-2 py-1 text-xs text-red-500 transition-colors hover:bg-red-50"
+                >
+                  <Trash2 className="h-3 w-3" />
+                  删除({selectedIds.size})
+                </button>
+              )}
               <span className="text-xs text-neutral-400">{wikiPages.length} 页</span>
               <button
                 type="button"
@@ -159,22 +220,52 @@ export default function Browse() {
             </div>
           ) : (
             <div className="space-y-1">
+              <button
+                type="button"
+                onClick={toggleSelectAll}
+                className="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-xs text-neutral-500 hover:bg-neutral-50 border border-transparent"
+              >
+                {allSelected ? (
+                  <CheckSquare className="h-3.5 w-3.5 text-amber-600" />
+                ) : (
+                  <Square className="h-3.5 w-3.5" />
+                )}
+                {allSelected ? "取消全选" : "全选"}
+              </button>
               {wikiPages.map((wikiPage) => (
-                <button
-                  type="button"
+                <div
                   key={wikiPage.id}
-                  onClick={() => loadPage(wikiPage.id)}
-                  className={`w-full rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                  className={`flex items-center gap-1 rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
                     selectedWiki?.id === wikiPage.id
-                      ? "bg-amber-50 text-amber-700 border border-amber-200"
-                      : "text-neutral-600 hover:bg-neutral-50 border border-transparent"
+                      ? "bg-amber-50 text-amber-700 border-amber-200"
+                      : "text-neutral-600 hover:bg-neutral-50 border-transparent"
                   }`}
                 >
-                  <div className="font-medium">{wikiPage.title}</div>
-                  <div className="mt-0.5 text-[11px] text-neutral-400">
-                    {pageTypeLabel(wikiPage.page_type)}
-                  </div>
-                </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      toggleSelect(wikiPage.id)
+                    }}
+                    className="shrink-0"
+                  >
+                    {selectedIds.has(wikiPage.id) ? (
+                      <CheckSquare className="h-3.5 w-3.5 text-amber-600" />
+                    ) : (
+                      <Square className="h-3.5 w-3.5 text-neutral-400" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => loadPage(wikiPage.id)}
+                    className="flex-1 min-w-0"
+                  >
+                    <div className="font-medium truncate">{wikiPage.title}</div>
+                    <div className="mt-0.5 text-[11px] text-neutral-400">
+                      {pageTypeLabel(wikiPage.page_type)}
+                    </div>
+                  </button>
+                </div>
               ))}
             </div>
           )}
@@ -194,30 +285,117 @@ export default function Browse() {
                       <span className="flex items-center gap-1">
                         {statusIcon(selectedWiki.candidate_status)}
                         {statusLabel(selectedWiki.candidate_status)}
+                        {selectedWiki.candidate_version != null && (
+                          <span className="ml-1 text-neutral-300">
+                            → v{selectedWiki.candidate_version}
+                          </span>
+                        )}
                       </span>
                     )}
                   </div>
                 </div>
-                {selectedWiki.candidate_status === "pending" && (
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const updated = await approveWikiPage(selectedWiki.id)
-                      setSelectedWiki(updated)
-                      await refreshWikiPages()
-                    }}
-                    className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs text-white hover:bg-amber-600"
-                  >
-                    批准内容
-                  </button>
+                {selectedWiki.candidate_status && (
+                  <div className="flex items-center gap-2">
+                    {/* 三态视图切换：已批准 / 候选 / 行级 diff */}
+                    <div className="inline-flex rounded-lg border border-amber-200 bg-amber-50 p-0.5 text-xs">
+                      {(
+                        [
+                          { key: "current", label: "已批准" },
+                          { key: "diff", label: "查看差异" },
+                          { key: "candidate", label: "候选" },
+                        ] as const
+                      ).map((opt) => (
+                        <button
+                          key={opt.key}
+                          type="button"
+                          onClick={() => setViewMode(opt.key)}
+                          className={
+                            viewMode === opt.key
+                              ? "rounded-md bg-amber-500 px-2.5 py-1 font-medium text-white"
+                              : "rounded-md px-2.5 py-1 text-amber-700 hover:bg-amber-100"
+                          }
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!confirm("确认批准候选内容？此操作将覆盖当前已批准版本。")) return
+                        const updated = await approveWikiPage(selectedWiki.id)
+                        setSelectedWiki(updated)
+                        setViewMode("current")
+                        await refreshWikiPages()
+                      }}
+                      className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs text-white hover:bg-amber-600"
+                    >
+                      批准内容
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (
+                          !confirm(
+                            "确认拒绝候选内容？此操作将丢弃 LLM 生成的新版本，保留已批准版本。",
+                          )
+                        )
+                          return
+                        const updated = await rejectWikiPage(selectedWiki.id)
+                        setSelectedWiki(updated)
+                        setViewMode("current")
+                        await refreshWikiPages()
+                      }}
+                      className="rounded-lg border border-neutral-300 px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50"
+                    >
+                      拒绝候选
+                    </button>
+                  </div>
                 )}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!confirm(`确认删除 Wiki 页面「${selectedWiki.title}」？`)) return
+                    await deleteWikiPage(selectedWiki.id)
+                    setSelectedWiki(null)
+                    setNeighbors([])
+                    await refreshWikiPages()
+                  }}
+                  className="rounded-lg border border-red-200 px-3 py-1.5 text-xs text-red-500 hover:bg-red-50 hover:text-red-600"
+                >
+                  <Trash2 className="inline-block h-3 w-3 mr-1" />
+                  删除
+                </button>
               </div>
 
-              <div className="prose prose-sm max-w-none prose-headings:text-neutral-800 prose-a:text-amber-600 prose-code:bg-neutral-100 prose-pre:bg-neutral-900 prose-pre:text-neutral-100 [&_pre_code]:bg-transparent [&_pre_code]:text-inherit">
-                <pre className="whitespace-pre-wrap text-sm leading-relaxed">
-                  {selectedWiki.content}
-                </pre>
-              </div>
+              {selectedWiki.candidate_status && viewMode !== "current" && (
+                <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                  {viewMode === "candidate"
+                    ? `正在预览 LLM 候选内容（v${selectedWiki.candidate_version ?? "?"}），尚未批准。`
+                    : "行级 diff：绿色为新增，红色为删除。请确认后选择「批准内容」或「拒绝候选」。"}
+                </div>
+              )}
+
+              {viewMode === "diff" ? (
+                selectedWiki.content_candidate ? (
+                  <WikiContentDiff
+                    oldText={selectedWiki.content}
+                    newText={selectedWiki.content_candidate}
+                  />
+                ) : (
+                  <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                    候选内容为空，无法生成 diff。
+                  </div>
+                )
+              ) : (
+                <div className="prose prose-sm max-w-none prose-headings:text-neutral-800 prose-a:text-amber-600 prose-code:bg-neutral-100 prose-pre:bg-neutral-900 prose-pre:text-neutral-100 [&_pre_code]:bg-transparent [&_pre_code]:text-inherit">
+                  <pre className="whitespace-pre-wrap text-sm leading-relaxed">
+                    {viewMode === "candidate" && selectedWiki.content_candidate
+                      ? selectedWiki.content_candidate
+                      : selectedWiki.content}
+                  </pre>
+                </div>
+              )}
 
               {currentProjectId != null && (
                 <div className="mt-6">
@@ -295,5 +473,47 @@ export default function Browse() {
         project={currentProjectId ?? undefined}
       />
     </>
+  )
+}
+
+/**
+ * 行级 diff 渲染（基于 jsdiff）
+ * - 绿色背景：候选新增
+ * - 红色背景：候选删除（即原 content 有但候选没有）
+ * - 无背景：未变化
+ */
+function WikiContentDiff({ oldText, newText }: { oldText: string; newText: string }) {
+  const parts = useMemo(() => diffLines(oldText, newText), [oldText, newText])
+  const addedCount = parts.filter((p) => p.added).length
+  const removedCount = parts.filter((p) => p.removed).length
+
+  return (
+    <div>
+      <div className="mb-2 flex gap-3 text-xs text-neutral-500">
+        <span className="text-emerald-600">+ 新增 {addedCount} 段</span>
+        <span className="text-rose-600">- 删除 {removedCount} 段</span>
+      </div>
+      <div className="rounded border border-neutral-200 bg-neutral-50 font-mono text-xs leading-relaxed">
+        {parts.map((part) => {
+          const bgClass = part.added
+            ? "bg-emerald-50 text-emerald-900"
+            : part.removed
+              ? "bg-rose-50 text-rose-900"
+              : "text-neutral-700"
+          const prefix = part.added ? "+ " : part.removed ? "- " : "  "
+          // 用 状态 + 长度 + 内容前 64 字符 做稳定 key
+          // 长度作二级鉴别，避免两段恰好前 64 字符相同且状态相同时 key 冲突
+          const valueKey = `${part.added ? "+" : part.removed ? "-" : "="}|${part.value.length}|${part.value.slice(0, 64)}`
+          return (
+            <div key={valueKey} className={`flex ${bgClass}`}>
+              <span className="select-none pr-2 text-neutral-300">{prefix}</span>
+              <pre className="whitespace-pre-wrap break-all py-0.5">
+                {part.value.replace(/\n$/, "")}
+              </pre>
+            </div>
+          )
+        })}
+      </div>
+    </div>
   )
 }

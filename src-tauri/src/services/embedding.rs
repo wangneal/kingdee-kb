@@ -15,7 +15,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // ─── 在线 Embedding 提供商 ───
 
@@ -40,6 +40,9 @@ pub enum EmbeddingProvider {
     /// Cohere
     #[serde(rename = "cohere")]
     Cohere,
+    /// 自定义 OpenAI 兼容端点（用户填写任意 base_url/model/api_key）
+    #[serde(rename = "custom")]
+    Custom,
 }
 
 impl EmbeddingProvider {
@@ -94,6 +97,14 @@ impl EmbeddingProvider {
                 description: "embed-multilingual-v3.0 等多语言模型".to_string(),
                 default_base_url: Some("https://api.cohere.com/v2".to_string()),
                 default_model: Some("embed-multilingual-v3.0".to_string()),
+                requires_api_key: true,
+            },
+            ProviderInfo {
+                provider: EmbeddingProvider::Custom,
+                name: "自定义 (OpenAI 兼容)".to_string(),
+                description: "任意兼容 OpenAI /embeddings 的端点，自定义 base_url 和模型".to_string(),
+                default_base_url: None,
+                default_model: None,
                 requires_api_key: true,
             },
         ]
@@ -879,6 +890,14 @@ impl ModelManager {
     pub fn take_model(&mut self) -> Option<TextEmbedding> {
         self.model.take()
     }
+
+    /// 重置状态以便重新加载模型（用于空闲释放后的重新加载）
+    ///
+    /// 将 `is_ready` 设为 false，下次 `init()` 时会从磁盘缓存重新加载。
+    pub fn reset_for_reload(&mut self) {
+        self.is_ready = false;
+        self.model = None;
+    }
 }
 
 /// Compute SHA256 hex digest of data (for hf-hub blob naming).
@@ -926,6 +945,8 @@ pub struct EmbeddingService {
     cached_dimension: usize,
     /// Default batch size for embed_batch
     batch_size: usize,
+    /// 上次使用时间（用于空闲超时释放）
+    last_used: Instant,
 }
 
 /// Probe the embedding dimension by embedding a short test string.
@@ -949,6 +970,7 @@ impl EmbeddingService {
             client: None,
             cached_dimension: dim,
             batch_size: 64,
+            last_used: Instant::now(),
         }
     }
 
@@ -958,8 +980,9 @@ impl EmbeddingService {
             model: None,
             remote_config: None,
             client: None,
-            cached_dimension: DEFAULT_BGE_DIMENSION, // default to BGE dimension
+            cached_dimension: DEFAULT_BGE_DIMENSION,
             batch_size: 64,
+            last_used: Instant::now(),
         }
     }
 
@@ -1001,6 +1024,7 @@ impl EmbeddingService {
         let embeddings = model
             .embed(vec![text], None)
             .map_err(|e| format!("Embed failed: {}", e))?;
+        self.last_used = Instant::now();
 
         embeddings
             .into_iter()
@@ -1028,6 +1052,7 @@ impl EmbeddingService {
                 .map_err(|e| format!("Batch embed failed: {}", e))?;
             all_embeddings.extend(embeddings);
         }
+        self.last_used = Instant::now();
 
         Ok(all_embeddings)
     }
@@ -1046,12 +1071,33 @@ impl EmbeddingService {
         self.client = None;
         self.cached_dimension = probe_dimension(&mut model);
         self.model = Some(model);
+        self.last_used = Instant::now();
     }
 
     /// Get the embedding dimension (detected via probe embed)
     /// bge-small-zh-v1.5: 512, all-MiniLM-L6-v2: 384, BGE-M3: 1024
     pub fn dimension(&self) -> usize {
         self.cached_dimension
+    }
+
+    /// 释放本地模型内存（空闲超时时调用）
+    ///
+    /// 释放后，下次使用时需通过 `ensure_embedding_ready()` 重新加载。
+    pub fn unload(&mut self) {
+        if self.model.is_some() {
+            self.model = None;
+            tracing::info!("本地 Embedding 模型已释放（空闲自动释放）");
+        }
+    }
+
+    /// 是否有本地模型加载中
+    pub fn has_local_model(&self) -> bool {
+        self.model.is_some()
+    }
+
+    /// 距上次使用的空闲时间（秒）
+    pub fn idle_seconds(&self) -> u64 {
+        self.last_used.elapsed().as_secs()
     }
 }
 

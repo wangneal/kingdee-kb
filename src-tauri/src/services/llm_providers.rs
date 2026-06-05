@@ -31,7 +31,7 @@ pub fn anthropic_messages_url(base_url: &str) -> String {
     format!("{}/v1/messages", normalized)
 }
 
-fn with_anthropic_headers(
+pub fn with_anthropic_headers(
     request: reqwest::RequestBuilder,
     url: &str,
     api_key: &str,

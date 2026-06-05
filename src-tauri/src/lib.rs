@@ -243,6 +243,7 @@ pub fn run() {
             commands::kb_compilation::get_kb_compilation_enabled,
             commands::kb_compilation::set_kb_compilation_enabled,
             commands::kb_compilation::recompile_failed_kb_sources,
+            commands::kb_compilation::force_recompile_kb_source,
             // Phase 2: 持久化摄入队列
             commands::ingestion_queue::enqueue_ingestion,
             commands::ingestion_queue::list_ingestion_queue,
@@ -418,6 +419,7 @@ pub fn run() {
             commands::wiki_page::list_wiki_pages,
             commands::wiki_page::update_wiki_page,
             commands::wiki_page::delete_wiki_page,
+            commands::wiki_page::batch_delete_wiki_pages,
             commands::wiki_page::approve_wiki_page,
             commands::wiki_page::reject_wiki_page,
             commands::wiki_page::seed_demo_wiki_pages,

@@ -13,6 +13,7 @@ use futures::StreamExt;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use crate::services::harness::agents_log::AgentsLog;
 use crate::services::harness::constraints::ToolConstraintChecker;
 use crate::services::harness::verifier::{ResultVerifier, VerificationStatus};
 
@@ -178,6 +179,14 @@ impl RigAgent {
             },
         };
         let attachment_project_id = active_project_id.to_string();
+
+        // 查询项目名称，让 LLM 能感知当前项目名而非数字 ID
+        let active_project_name = project_store
+            .lock()
+            .ok()
+            .and_then(|store| store.get_project(active_project_id).ok().flatten())
+            .map(|p| p.name)
+            .unwrap_or_else(|| active_project_id.to_string());
         let attachment_search_projects = attachments
             .as_ref()
             .filter(|list| !list.is_empty())
@@ -372,7 +381,7 @@ impl RigAgent {
                 &sender,
                 session_id,
                 pending.clone(),
-                project_id,
+                &active_project_name,
                 None,
                 embedding.clone(),
                 vector_index.clone(),
@@ -412,13 +421,19 @@ impl RigAgent {
         };
 
         // 2. 构建系统提示词
-        let project_section = match project_id {
-            Some(pid) => format!("\n【当前项目】{}\n所有工具调用（搜索知识库、生成文档等）都应限定在此项目范围内。\n", pid),
-            None => String::new(),
-        };
+        let project_section = format!(
+            "\n【当前项目】{}\n所有工具调用（搜索知识库、生成文档等）都应限定在此项目范围内。\n",
+            active_project_name
+        );
+
+        // 活文档机制：注入历史失败教训（驾驭工程 Harness Engineering）
+        // agents_log 在会话结束后保持可变，用于记录本次会话的失败模式
+        let mut agents_log = AgentsLog::new(&data_dir);
+        let learned_section = agents_log.get_learned_constraints().unwrap_or_default();
         let system_prompt = format!(
             "\
 {extra}\
+{learned_section}\
 {project_section}\
 你是一个金蝶ERP实施顾问AI助手。你可以调用工具来获取信息或执行操作。
 
@@ -604,6 +619,7 @@ impl RigAgent {
                         started_at,
                         &mut rate_limiter,
                         cancel_flag.clone(),
+                        &mut agents_log,
                     )
                     .await;
                 }
@@ -663,6 +679,7 @@ impl RigAgent {
                         started_at,
                         &mut rate_limiter,
                         cancel_flag.clone(),
+                        &mut agents_log,
                     )
                     .await;
                 }
@@ -722,6 +739,7 @@ impl RigAgent {
                         started_at,
                         &mut rate_limiter,
                         cancel_flag,
+                        &mut agents_log,
                     )
                     .await;
                 }
@@ -750,6 +768,7 @@ impl RigAgent {
         started_at: Instant,
         rate_limiter: &mut ToolRateLimiter,
         cancel_flag: Option<Arc<AtomicBool>>,
+        agents_log: &mut AgentsLog,
     ) {
         use rig_core::agent::MultiTurnStreamItem;
         use rig_core::streaming::{StreamedAssistantContent, StreamedUserContent};
@@ -911,12 +930,14 @@ impl RigAgent {
                         match verify_status {
                             VerificationStatus::NeedsReplan(reason) => {
                                 warn!(session = %sid, reason = %reason, "result verifier triggered replan");
+                                agents_log.record_failure("replan", &reason, &sid);
                             }
                             VerificationStatus::Fail(reason) => {
                                 debug!(session = %sid, reason = %reason, "tool result verification failed");
                             }
                             VerificationStatus::Exhausted(reason) => {
                                 warn!(session = %sid, reason = %reason, "result verifier exhausted");
+                                agents_log.record_failure("exhausted", &reason, &sid);
                                 let _ = sender.send(ReActEvent::Error {
                                     session_id: sid.to_string(),
                                     message: format!("连续验证失败: {}", reason),
@@ -975,7 +996,7 @@ impl RigAgent {
         sender: &mpsc::UnboundedSender<ReActEvent>,
         session_id: &str,
         _pending: PendingQuestions,
-        project_id: Option<i64>,
+        project_name: &str,
         _risk_project_id: Option<i64>,
         _embedding: Arc<RwLock<EmbeddingService>>,
         _vector_index: Arc<RwLock<VectorIndex>>,
@@ -1001,7 +1022,7 @@ impl RigAgent {
             planner::Planner::plan(
                 user_message,
                 system_extra,
-                &project_id.map(|id| id.to_string()).unwrap_or_default(),
+                project_name,
                 llm,
                 plan_budget,
             ),

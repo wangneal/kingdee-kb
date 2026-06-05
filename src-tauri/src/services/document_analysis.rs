@@ -12,6 +12,31 @@ use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Duration;
 use tracing::{info, warn};
 
+use super::llm_providers::{anthropic_messages_url, with_anthropic_headers, LLMProtocol};
+
+/// 判断 base_url 是否需要放宽 TLS 校验（与 LLM 服务保持一致）
+fn needs_relaxed_tls(base_url: &str) -> bool {
+    let url = base_url.to_ascii_lowercase();
+    url.starts_with("https://maas.gd.chinamobile.com")
+}
+
+/// 根据 base_url 构建合适的 HTTP 客户端（与 LLM 服务 client_for_config 一致）
+fn build_http_client(base_url: &str) -> Result<reqwest::Client, String> {
+    if needs_relaxed_tls(base_url) {
+        return reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .http1_only()
+            .no_proxy()
+            .timeout(Duration::from_secs(LLM_ANALYSIS_TIMEOUT_SECS))
+            .build()
+            .map_err(|e| format!("构建 HTTP 客户端失败: {}", e));
+    }
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(LLM_ANALYSIS_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))
+}
+
 // ─── 静态正则（LazyLock，避免每次调用重新编译） ───
 
 /// 匹配 # 一级标题
@@ -51,11 +76,26 @@ use crate::services::llm_providers::LLMProviderManager;
 
 // ─── 常量 ───
 
-/// LLM 分析超时时间（30 秒）
-const LLM_ANALYSIS_TIMEOUT_SECS: u64 = 30;
+/// LLM 分析超时时间（60 秒）
+const LLM_ANALYSIS_TIMEOUT_SECS: u64 = 60;
 
 /// 分析器版本号，缓存失效用
 const ANALYZER_VERSION: &str = "1";
+
+/// Anthropic extended thinking 预算 token 数
+const ANTHROPIC_THINKING_BUDGET_TOKENS: u64 = 4096;
+
+/// Anthropic 最大输出 token 数（必须 ≥ budget_tokens + 期望输出 token 数）
+const ANTHROPIC_MAX_TOKENS: u64 = 16384;
+
+/// Anthropic token 耗尽重试时的最大输出 token 数
+const ANTHROPIC_MAX_TOKENS_RETRY: u64 = 32768;
+
+/// LLM 分析最大重试次数（token 耗尽重试）
+const LLM_ANALYSIS_MAX_RETRIES: u32 = 1;
+
+/// Anthropic token 耗尽错误标识（用于重试判断）
+const ANTHROPIC_TOKEN_EXHAUSTED_ERROR: &str = "Anthropic token 耗尽，模型未输出 text 块";
 
 /// 中文常见停用词（精简版）
 const STOP_WORDS_ZH: &[&str] = &[
@@ -84,9 +124,11 @@ const CJK_EXT_END: u32 = 0x4DBF;
 /// 文档分析结果（兼容两种引擎输出）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentAnalysis {
-    /// 关联 raw_sources.identity
+    /// 关联 raw_sources.identity（由本地参数注入，LLM 响应中可缺）
+    #[serde(default)]
     pub source_identity: String,
-    /// 源文件 SHA256
+    /// 源文件 SHA256（由本地参数注入，LLM 响应中可缺）
+    #[serde(default)]
     pub sha256: String,
     /// 提取的标题
     pub title: String,
@@ -150,6 +192,55 @@ pub struct AnalysisResult {
     pub analysis: DocumentAnalysis,
     pub engine: EngineType,
 }
+
+// ─── LLM 调用错误 ───
+
+/// Extended thinking 模式（仅 Anthropic 协议有效）
+///
+/// - `Enabled`：开启 extended thinking，模型先思考再输出 text
+/// - `Disabled`：关闭 thinking，把全部 `max_tokens` 配额给 text 块
+///   （用于 token 耗尽重试场景，避免重试时 thinking 再次耗尽 token）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ThinkingMode {
+    Enabled,
+    Disabled,
+}
+
+/// LLM 调用错误类型（结构化错误处理 + 重试判断）
+///
+/// 用枚举变体替代字符串匹配识别错误类型，避免错误消息变更导致重试逻辑静默失效。
+/// 实现 `std::error::Error`，可与 `?` 操作符及其他错误处理生态集成。
+#[derive(Debug)]
+enum LlmCallError {
+    /// Anthropic token 耗尽（thinking 消耗了全部 token 预算，未输出 text 块）
+    /// 这是可重试错误：重试时关闭 thinking 并增大 max_tokens
+    AnthropicTokenExhausted,
+    /// HTTP 请求失败（网络层）
+    Http(String),
+    /// API 返回非 2xx 状态码（携带状态码和响应体）
+    ApiStatus(u16, String),
+    /// 响应 JSON 解析失败
+    Parse(String),
+    /// 响应缺少必要字段（字段描述字符串，如 "Anthropic content 数组"）
+    MissingField(&'static str),
+    /// 其他未分类错误（如 parse_response 内部校验失败）
+    Other(String),
+}
+
+impl std::fmt::Display for LlmCallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AnthropicTokenExhausted => f.write_str(ANTHROPIC_TOKEN_EXHAUSTED_ERROR),
+            Self::Http(s) => write!(f, "LLM 请求失败: {}", s),
+            Self::ApiStatus(code, s) => write!(f, "LLM API 错误 ({}): {}", code, s),
+            Self::Parse(s) => write!(f, "解析 LLM 响应失败: {}", s),
+            Self::MissingField(name) => write!(f, "LLM 响应中未找到 {}", name),
+            Self::Other(s) => write!(f, "{}", s),
+        }
+    }
+}
+
+impl std::error::Error for LlmCallError {}
 
 // ─── Rust 分析引擎 ───
 
@@ -571,57 +662,6 @@ source_identity: {source_identity}
 
         text.to_string()
     }
-
-    /// 通过 LLM 分析文档（直接提供配置信息）
-    pub async fn analyze_with_config(
-        text: &str,
-        source_identity: &str,
-        sha256: &str,
-        base_url: &str,
-        api_key: &str,
-        model_name: &str,
-    ) -> Result<DocumentAnalysis, String> {
-        let prompt = Self::build_prompt(text, source_identity);
-
-        let body = serde_json::json!({
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": "你是一个文档分析专家。请严格按照要求的 JSON 格式输出分析结果。"},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.1,
-            "max_tokens": 4096
-        });
-
-        let client = reqwest::Client::new();
-        let chat_url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-
-        let response = client
-            .post(&chat_url)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("LLM 请求失败: {}", e))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let err_text = response.text().await.unwrap_or_default();
-            return Err(format!("LLM API 错误 ({}): {}", status, err_text));
-        }
-
-        let response_json: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| format!("解析 LLM 响应失败: {}", e))?;
-
-        let content = response_json["choices"][0]["message"]["content"]
-            .as_str()
-            .ok_or_else(|| "LLM 响应中未找到 content".to_string())?;
-
-        Self::parse_response(content, source_identity, sha256)
-    }
 }
 
 // ─── 分析编排器 ───
@@ -649,9 +689,10 @@ impl AnalysisOrchestrator {
     ///
     /// 流程：
     /// 1. 检查 `analysis_cache` 是否命中且版本匹配
-    /// 2. 若未命中，尝试 LLM 引擎（30s 超时）
-    /// 3. LLM 不可用/超时 → 自动降级到 Rust 引擎
-    /// 4. 写入 analysis_cache
+    /// 2. 若未命中，尝试 LLM 引擎（60s 超时）
+    /// 3. Anthropic token 耗尽时自动增大 max_tokens 重试一次
+    /// 4. LLM 不可用/超时 → 自动降级到 Rust 引擎
+    /// 5. 写入 analysis_cache
     pub async fn analyze(
         &self,
         project_id: i64,
@@ -674,7 +715,7 @@ impl AnalysisOrchestrator {
 
         // 2. 尝试 LLM 引擎
         if enable_kb_compilation {
-            let llm_config: Option<(String, String, String)> = {
+            let llm_config: Option<(String, String, String, LLMProtocol)> = {
                 let mgr = match self.provider_manager.read() {
                     Ok(m) => m,
                     Err(e) => {
@@ -687,12 +728,13 @@ impl AnalysisOrchestrator {
                         p.base_url.clone(),
                         p.get_default_key_value(),
                         p.get_default_model_name(),
+                        p.protocol.clone(),
                     )),
                     _ => None,
                 }
             };
 
-            let (base_url, api_key, model_name) = match llm_config {
+            let (base_url, api_key, model_name, protocol) = match llm_config {
                 Some(c) => c,
                 None => {
                     warn!("LLM 供应商未配置，降级到 Rust 引擎");
@@ -700,43 +742,97 @@ impl AnalysisOrchestrator {
                 }
             };
 
-            let chat_url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+            // 构建 HTTP 客户端，失败则降级到 Rust 引擎
+            // （不能 fallback 到默认 Client：可能缺少超时配置和 TLS 放宽，
+            //  对 https://maas.gd.chinamobile.com 这类需要证书放宽的 base_url 会导致握手失败）
+            let client = match build_http_client(&base_url) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("构建 HTTP 客户端失败: {}，降级到 Rust 引擎", e);
+                    return self.fallback_rust(text, source_identity, sha256);
+                }
+            };
             let prompt = LlmAnalysisEngine::build_prompt(text, source_identity);
-            let body = serde_json::json!({
-                "model": model_name,
-                "messages": [
-                    {"role": "system", "content": "你是一个文档分析专家。请严格按照要求的 JSON 格式输出分析结果。"},
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.1,
-                "max_tokens": 4096
-            });
 
-            let client = reqwest::Client::new();
-            let result = tokio::time::timeout(
-                Duration::from_secs(LLM_ANALYSIS_TIMEOUT_SECS),
-                Self::call_llm_inner(&client, &chat_url, &api_key, &body, source_identity, sha256),
-            )
-            .await;
+            // 按协议构建 URL
+            let chat_url = match protocol {
+                LLMProtocol::Anthropic => anthropic_messages_url(&base_url),
+                _ => format!("{}/chat/completions", base_url.trim_end_matches('/')),
+            };
 
-            match result {
-                Ok(Ok(analysis)) => {
-                    info!("LLM 分析成功: source={}", source_identity);
-                    self.write_cache(project_id, source_identity, sha256, &analysis);
-                    return AnalysisResult {
-                        analysis,
-                        engine: EngineType::Llm,
-                    };
+            // 构建请求体（支持可变 max_tokens 用于重试）
+            let mut max_tokens = match protocol {
+                LLMProtocol::Anthropic => ANTHROPIC_MAX_TOKENS,
+                _ => 4096u64,
+            };
+            // 仅 Anthropic 协议开启 extended thinking
+            // 重试时会切换为 Disabled，把全部 max_tokens 配额给 text 块
+            let mut thinking_mode = if matches!(protocol, LLMProtocol::Anthropic) {
+                ThinkingMode::Enabled
+            } else {
+                ThinkingMode::Disabled
+            };
+
+            // LLM 调用 + token 耗尽重试循环
+            let mut retry_count: u32 = 0;
+            loop {
+                let body = Self::build_request_body(
+                    &model_name,
+                    &prompt,
+                    &protocol,
+                    max_tokens,
+                    thinking_mode,
+                );
+
+                let result = tokio::time::timeout(
+                    Duration::from_secs(LLM_ANALYSIS_TIMEOUT_SECS),
+                    Self::call_llm_inner(
+                        &client,
+                        &chat_url,
+                        &api_key,
+                        &body,
+                        &protocol,
+                        source_identity,
+                        sha256,
+                    ),
+                )
+                .await;
+
+                match result {
+                    Ok(Ok(analysis)) => {
+                        info!("LLM 分析成功: source={}", source_identity);
+                        self.write_cache(project_id, source_identity, sha256, &analysis);
+                        return AnalysisResult {
+                            analysis,
+                            engine: EngineType::Llm,
+                        };
+                    }
+                    Ok(Err(err)) => {
+                        // 仅 AnthropicTokenExhausted 是可重试错误（结构化匹配）
+                        let should_retry = matches!(err, LlmCallError::AnthropicTokenExhausted)
+                            && retry_count < LLM_ANALYSIS_MAX_RETRIES;
+                        if should_retry {
+                            retry_count += 1;
+                            max_tokens = ANTHROPIC_MAX_TOKENS_RETRY;
+                            // 切换为 Disabled：把全部 max_tokens 配额给 text 块，
+                            // 避免重试时 thinking 再次耗尽 token
+                            thinking_mode = ThinkingMode::Disabled;
+                            info!(
+                                "Anthropic token 耗尽，关闭 thinking 并增大 max_tokens 到 {} 重试 (第{}次)",
+                                max_tokens, retry_count
+                            );
+                            continue;
+                        }
+                        warn!("LLM 分析失败: {}，降级到 Rust 引擎", err);
+                    }
+                    Err(_) => {
+                        warn!(
+                            "LLM 分析超时 ({}s)，降级到 Rust 引擎",
+                            LLM_ANALYSIS_TIMEOUT_SECS
+                        );
+                    }
                 }
-                Ok(Err(e)) => {
-                    warn!("LLM 分析失败: {}，降级到 Rust 引擎", e);
-                }
-                Err(_) => {
-                    warn!(
-                        "LLM 分析超时 ({}s)，降级到 Rust 引擎",
-                        LLM_ANALYSIS_TIMEOUT_SECS
-                    );
-                }
+                break;
             }
         }
 
@@ -744,40 +840,187 @@ impl AnalysisOrchestrator {
         self.fallback_rust(text, source_identity, sha256)
     }
 
+    /// 构建请求体（支持可变 max_tokens + 可切换 thinking 模式）
+    ///
+    /// Anthropic 协议下，`thinking_mode=Disabled` 时不发送 `thinking` 字段，
+    /// 让全部 `max_tokens` 配额给 text 块（用于 token 耗尽重试场景）。
+    /// 非 Anthropic 协议忽略 `thinking_mode` 参数。
+    fn build_request_body(
+        model_name: &str,
+        prompt: &str,
+        protocol: &LLMProtocol,
+        max_tokens: u64,
+        thinking_mode: ThinkingMode,
+    ) -> serde_json::Value {
+        match protocol {
+            LLMProtocol::Anthropic => {
+                // 开启 extended thinking 时设置 budget_tokens
+                // max_tokens 必须 ≥ budget_tokens + 期望输出 token 数
+                let mut body = serde_json::json!({
+                    "model": model_name,
+                    "max_tokens": max_tokens,
+                    "system": "你是一个文档分析专家。请严格按照要求的 JSON 格式输出分析结果。",
+                    "messages": [
+                        {"role": "user", "content": prompt}
+                    ]
+                });
+                if thinking_mode == ThinkingMode::Enabled {
+                    body["thinking"] = serde_json::json!({
+                        "type": "enabled",
+                        "budget_tokens": ANTHROPIC_THINKING_BUDGET_TOKENS
+                    });
+                }
+                body
+            }
+            _ => {
+                serde_json::json!({
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": "你是一个文档分析专家。请严格按照要求的 JSON 格式输出分析结果。"},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": max_tokens
+                })
+            }
+        }
+    }
+
     /// 内部 LLM HTTP 调用辅助（无 self，可传递给 timeout）
+    ///
+    /// 根据 `protocol` 自动选择正确的请求头和响应解析方式：
+    /// - OpenAI/Local → `Authorization: Bearer` + `choices[0].message.content`
+    /// - Anthropic → `x-api-key` + `anthropic-version` + content[].text（跳过 thinking 块）
+    ///
+    /// Anthropic extended thinking 响应格式：
+    /// ```json
+    /// {
+    ///   "stop_reason": "end_turn" | "max_tokens" | ...,
+    ///   "content": [
+    ///     {"type": "thinking", "thinking": "思考过程...", "signature": "..."},
+    ///     {"type": "text", "text": "结构化输出..."}
+    ///   ]
+    /// }
+    /// ```
+    /// 当 thinking 消耗过多 token 导致 max_tokens 耗尽时，
+    /// content 数组中可能只有 thinking 块而没有 text 块，
+    /// 此时 stop_reason 为 "max_tokens"，返回 `LlmCallError::AnthropicTokenExhausted`
+    /// 供上层触发重试。
     async fn call_llm_inner(
         client: &reqwest::Client,
         chat_url: &str,
         api_key: &str,
         body: &serde_json::Value,
+        protocol: &LLMProtocol,
         source_identity: &str,
         sha256: &str,
-    ) -> Result<DocumentAnalysis, String> {
-        let response = client
-            .post(chat_url)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| format!("LLM 请求失败: {}", e))?;
+    ) -> Result<DocumentAnalysis, LlmCallError> {
+        // 根据协议发送请求（Anthropic 使用不同的请求头）
+        let response: reqwest::Response = if matches!(protocol, LLMProtocol::Anthropic) {
+            with_anthropic_headers(client.post(chat_url), chat_url, api_key)
+                .json(body)
+                .send()
+                .await
+                .map_err(|e| LlmCallError::Http(e.to_string()))?
+        } else {
+            client
+                .post(chat_url)
+                .header("Authorization", format!("Bearer {}", api_key))
+                .header("Content-Type", "application/json")
+                .json(body)
+                .send()
+                .await
+                .map_err(|e| LlmCallError::Http(e.to_string()))?
+        };
 
         if !response.status().is_success() {
             let status = response.status();
             let err_text = response.text().await.unwrap_or_default();
-            return Err(format!("LLM API 错误 ({}): {}", status, err_text));
+            return Err(LlmCallError::ApiStatus(status.as_u16(), err_text));
         }
 
         let response_json: serde_json::Value = response
             .json()
             .await
-            .map_err(|e| format!("解析 LLM 响应失败: {}", e))?;
+            .map_err(|e| LlmCallError::Parse(e.to_string()))?;
 
-        let content = response_json["choices"][0]["message"]["content"]
-            .as_str()
-            .ok_or_else(|| "LLM 响应中未找到 content".to_string())?;
+        // 按协议提取响应文本
+        let content: &str = match protocol {
+            LLMProtocol::Anthropic => {
+                // 提取 stop_reason 用于判断 token 是否耗尽
+                let stop_reason = response_json
+                    .get("stop_reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+
+                let content_arr = &response_json["content"];
+                if content_arr.is_null()
+                    || content_arr.as_array().map_or(true, |a| a.is_empty())
+                {
+                    warn!(
+                        "Anthropic 响应 content 为空: {}",
+                        serde_json::to_string(&response_json).unwrap_or_default()
+                    );
+                    return Err(LlmCallError::MissingField("Anthropic content 数组"));
+                }
+
+                // 查找第一个 type == "text" 的元素（跳过 thinking/tool_use 等）
+                let text_content = content_arr
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|item| item.get("type").and_then(|t| t.as_str()) == Some("text"))
+                    .and_then(|item| item["text"].as_str());
+
+                match text_content {
+                    Some(t) => t,
+                    None => {
+                        // content 数组中没有 type=text 元素
+                        // 检查 stop_reason 判断是否为 token 耗尽
+                        if stop_reason == "max_tokens" {
+                            // token 耗尽：thinking 消耗了全部 token 预算，
+                            // 模型还没来得及输出 text 块就被截断了
+                            warn!(
+                                "Anthropic token 耗尽 (stop_reason=max_tokens)，\
+                                 模型思考过程消耗了全部 token 预算，未输出 text 块"
+                            );
+                            return Err(LlmCallError::AnthropicTokenExhausted);
+                        }
+
+                        // 其他原因导致没有 text 块（异常情况）
+                        let first_content = &content_arr[0];
+                        warn!(
+                            "Anthropic content 数组中未找到 type=text 元素，\
+                             stop_reason={}，第一个元素: {}",
+                            stop_reason,
+                            serde_json::to_string(first_content).unwrap_or_default()
+                        );
+                        return Err(LlmCallError::MissingField("Anthropic text 字段"));
+                    }
+                }
+            }
+            _ => {
+                // OpenAI/Local 格式: {"choices": [{"message": {"content": "..."}}]}
+                let choices = &response_json["choices"];
+                if choices.is_null() || choices.as_array().map_or(true, |a| a.is_empty()) {
+                    warn!(
+                        "OpenAI 响应 choices 为空: {}",
+                        serde_json::to_string(&response_json).unwrap_or_default()
+                    );
+                    return Err(LlmCallError::MissingField("OpenAI choices 数组"));
+                }
+                choices[0]["message"]["content"].as_str().ok_or_else(|| {
+                    warn!(
+                        "OpenAI message.content 为空: {}",
+                        serde_json::to_string(&choices[0]).unwrap_or_default()
+                    );
+                    LlmCallError::MissingField("OpenAI message.content")
+                })?
+            }
+        };
 
         LlmAnalysisEngine::parse_response(content, source_identity, sha256)
+            .map_err(LlmCallError::Other)
     }
 
     /// Rust 引擎降级分析

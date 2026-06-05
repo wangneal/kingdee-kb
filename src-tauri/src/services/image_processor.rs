@@ -112,6 +112,11 @@ impl ImageProcessor {
         self.ocr_config.clone()
     }
 
+    /// 克隆协议配置
+    pub fn get_protocol_cloned(&self) -> Option<crate::services::llm_providers::LLMProtocol> {
+        self.protocol.clone()
+    }
+
     /// 探测当前 LLM 是否支持多模态
     pub async fn probe_multimodal(&self) -> bool {
         if self.probed.load(Ordering::Relaxed) {
