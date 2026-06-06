@@ -12,6 +12,7 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use tracing;
 
 /// 根据文件扩展名提取纯文本内容
 pub fn extract_text(file_path: &Path) -> Result<String, String> {
@@ -141,7 +142,7 @@ fn extract_docx_text(file_path: &Path) -> Result<String, String> {
     let file_list: Vec<String> = (0..archive.len())
         .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
         .collect();
-    eprintln!("[DOCX] ZIP 内容: {:?}", file_list);
+    tracing::debug!("[DOCX] ZIP 内容: {:?}", file_list);
 
     // 读取 word/document.xml
     let mut document_xml = String::new();
@@ -151,12 +152,12 @@ fn extract_docx_text(file_path: &Path) -> Result<String, String> {
         .read_to_string(&mut document_xml)
         .map_err(|e| format!("读取 document.xml 失败: {}", e))?;
 
-    eprintln!("[DOCX] document.xml 长度: {} bytes", document_xml.len());
+    tracing::debug!("[DOCX] document.xml 长度: {} bytes", document_xml.len());
 
     // 解析 XML 提取文本
     let text = extract_text_from_docx_xml(&document_xml)?;
 
-    eprintln!(
+    tracing::debug!(
         "[DOCX] 提取文本长度: {} chars, 前200字: {:?}",
         text.len(),
         text.chars().take(200).collect::<String>()
@@ -233,7 +234,7 @@ fn extract_xlsx_text(file_path: &Path) -> Result<String, String> {
 
     let mut text_buffer = String::new();
     let sheet_count = book.get_sheet_count();
-    eprintln!("[Excel] 工作表数量: {}", sheet_count);
+    tracing::debug!("[Excel] 工作表数量: {}", sheet_count);
 
     for sheet_idx in 0..sheet_count {
         let sheet = match book.get_sheet(&sheet_idx) {
@@ -294,7 +295,7 @@ fn extract_xlsx_text(file_path: &Path) -> Result<String, String> {
         }
     }
 
-    eprintln!("[Excel] 提取文本长度: {} chars", text_buffer.len());
+    tracing::debug!("[Excel] 提取文本长度: {} chars", text_buffer.len());
 
     if text_buffer.trim().is_empty() {
         return Err(format!("Excel 文件内容为空: {:?}", file_path.display()));
@@ -311,7 +312,7 @@ fn extract_xls_text(file_path: &Path) -> Result<String, String> {
         .map_err(|e| format!("打开 XLS 文件失败 {:?}: {}", file_path.display(), e))?;
 
     let sheet_names = workbook.sheet_names().to_owned();
-    eprintln!("[Excel/XLS] 工作表: {:?}", sheet_names);
+    tracing::debug!("[Excel/XLS] 工作表: {:?}", sheet_names);
 
     let mut text_buffer = String::new();
 
@@ -350,7 +351,7 @@ fn extract_xls_text(file_path: &Path) -> Result<String, String> {
         }
     }
 
-    eprintln!("[Excel/XLS] 提取文本长度: {} chars", text_buffer.len());
+    tracing::debug!("[Excel/XLS] 提取文本长度: {} chars", text_buffer.len());
 
     if text_buffer.trim().is_empty() {
         return Err(format!("XLS 文件内容为空: {:?}", file_path.display()));

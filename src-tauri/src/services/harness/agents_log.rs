@@ -6,6 +6,7 @@
 //! 文件存储在 `{data_dir}/agents_failures.json`，跨会话持久化。
 
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,15 +31,15 @@ pub struct AgentsLog {
     log_path: PathBuf,
     /// 最大保留条数（避免提示词膨胀）
     max_records: usize,
-    /// 内存缓存
-    records: Vec<FailureRecord>,
+    /// 内存缓存（VecDeque 避免首部删除 O(n)）
+    records: VecDeque<FailureRecord>,
 }
 
 impl AgentsLog {
     /// 创建日志管理器，自动从磁盘加载历史记录
     pub fn new(data_dir: &PathBuf) -> Self {
         let log_path = data_dir.join("agents_failures.json");
-        let records = Self::load_from_disk(&log_path);
+        let records: VecDeque<FailureRecord> = Self::load_from_disk(&log_path).into();
         Self {
             log_path,
             max_records: 20,
@@ -85,11 +86,11 @@ impl AgentsLog {
             record.derived_rule
         );
 
-        self.records.push(record);
+        self.records.push_back(record);
 
         // 淘汰最旧的记录
         while self.records.len() > self.max_records {
-            self.records.remove(0);
+            self.records.pop_front();
         }
 
         // 持久化到磁盘
@@ -122,7 +123,7 @@ impl AgentsLog {
     }
 
     /// 获取所有记录（用于前端展示）
-    pub fn records(&self) -> &[FailureRecord] {
+    pub fn records(&self) -> &VecDeque<FailureRecord> {
         &self.records
     }
 

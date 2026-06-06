@@ -142,24 +142,25 @@ impl SkillTriggerEngine {
         text: &str,
         embedding: &RwLock<EmbeddingService>,
     ) -> Result<Vec<f32>, String> {
-        // 先在一个独立的作用域中读取远程配置，以使 RwLockReadGuard 锁在 await 发生前自动释放
-        let remote_config = {
+        // 在一个独立作用域中读取远程配置 + 客户端，使锁在 await 前自动释放
+        let remote_info = {
             let emb = embedding.read().map_err(|e| e.to_string())?;
             if emb.is_remote() {
-                Some(
-                    emb.remote_config()
-                        .cloned()
-                        .ok_or("远程配置不存在".to_string()),
-                )
+                let config = emb
+                    .remote_config()
+                    .cloned()
+                    .ok_or("远程配置不存在".to_string())?;
+                // clone 是 O(1)（内部 Arc），避免锁跨 await 持有
+                let client = emb.http_client().clone();
+                Some((config, client))
             } else {
                 None
             }
         };
 
-        if let Some(config_res) = remote_config {
-            // 远程模式：跨越 await 不持有任何锁
-            let config = config_res?;
-            crate::services::embedding::remote_embed(&config, text).await
+        if let Some((config, client)) = remote_info {
+            // 远程模式：跨越 await 不持有任何锁，复用全局连接池
+            crate::services::embedding::remote_embed(&client, &config, text).await
         } else {
             // 本地模式：无需 await，获取写锁同步计算并释放
             let mut emb_mut = embedding.write().map_err(|e| e.to_string())?;

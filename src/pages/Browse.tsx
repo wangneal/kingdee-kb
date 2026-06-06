@@ -40,9 +40,24 @@ export default function Browse() {
   const [importModalOpen, setImportModalOpen] = useState(false)
   const [recompiling, setRecompiling] = useState(false)
   const [recompileMessage, setRecompileMessage] = useState<string | null>(null)
+  // 非重编译相关的反馈消息（用于批量删除等操作后的提示），3 秒后自动清除
+  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   // 内容视图：current 已批准；candidate 候选全文；diff 行级对比
   const [viewMode, setViewMode] = useState<"current" | "candidate" | "diff">("current")
+  // 候选内容为空时自动从 diff 回退到 current 模式
+  useEffect(() => {
+    if (viewMode === "diff" && selectedWiki?.content_candidate == null) {
+      setViewMode("current")
+    }
+  }, [viewMode, selectedWiki?.content_candidate])
+
+  // 反馈消息 3 秒后自动清除
+  useEffect(() => {
+    if (feedbackMessage == null) return
+    const timer = setTimeout(() => setFeedbackMessage(null), 3000)
+    return () => clearTimeout(timer)
+  }, [feedbackMessage])
 
   const refreshWikiPages = useCallback(async () => {
     if (currentProjectId == null) {
@@ -123,6 +138,35 @@ export default function Browse() {
     }
   }, [currentProjectId, refreshWikiPages])
 
+  // 强制重编译全部源：清掉所有 ingest/analysis cache 后走完整流程。
+  // 用于"删 wiki 后想原地重生成"等场景——失败项入口看不到被删的源。
+  const handleRecompileAll = useCallback(async () => {
+    if (currentProjectId == null) return
+    if (
+      !window.confirm(
+        "强制重编译将清空所有源的编译缓存并重新生成 wiki 页面，可能耗时数分钟。是否继续？",
+      )
+    )
+      return
+    setRecompiling(true)
+    setRecompileMessage(null)
+    try {
+      const result = await recompileFailedKbSources(currentProjectId, true)
+      setRecompileMessage(
+        result.failed.length > 0
+          ? `强制重编译完成：成功 ${result.succeeded}/${result.retried} 项，失败 ${result.failed.length} 项`
+          : `强制重编译完成：成功 ${result.succeeded}/${result.retried} 项`,
+      )
+      await refreshWikiPages()
+    } catch (error) {
+      setRecompileMessage(
+        `强制重编译失败：${error instanceof Error ? error.message : String(error)}`,
+      )
+    } finally {
+      setRecompiling(false)
+    }
+  }, [currentProjectId, refreshWikiPages])
+
   const pageTypeLabel = (type: string) => {
     if (type === "entity") return "实体"
     if (type === "concept") return "概念"
@@ -159,7 +203,7 @@ export default function Browse() {
 
   const handleBatchDelete = useCallback(async () => {
     if (selectedIds.size === 0) return
-    if (!confirm(`确认批量删除 ${selectedIds.size} 个 Wiki 页面及其关联数据？`)) return
+    if (!confirm(`确认批量删除 ${selectedIds.size} 个 Wiki 页面？将清理编译缓存，但保留源文档与向量索引。`)) return
     const count = await batchDeleteWikiPages(Array.from(selectedIds))
     setSelectedIds(new Set())
     if (selectedWiki && selectedIds.has(selectedWiki.id)) {
@@ -167,8 +211,7 @@ export default function Browse() {
       setNeighbors([])
     }
     await refreshWikiPages()
-    // 显示反馈（可选）
-    console.log(`已删除 ${count} 个页面`)
+    setFeedbackMessage(`已删除 ${count} 个 Wiki 页面`)
   }, [selectedIds, selectedWiki, refreshWikiPages])
 
   const allSelected = wikiPages.length > 0 && selectedIds.size === wikiPages.length
@@ -201,12 +244,22 @@ export default function Browse() {
                 <RefreshCw className={`h-3 w-3 ${recompiling ? "animate-spin" : ""}`} />
                 重编译失败项
               </button>
+              <button
+                type="button"
+                onClick={handleRecompileAll}
+                disabled={currentProjectId == null || recompiling}
+                title="清空所有编译缓存并重新生成 wiki（含被删除的源）"
+                className="inline-flex items-center gap-1 rounded-md border border-orange-200 bg-orange-50 px-2 py-1 text-xs text-orange-700 transition-colors hover:bg-orange-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3 w-3 ${recompiling ? "animate-spin" : ""}`} />
+                强制重编译全部
+              </button>
             </div>
           </div>
 
-          {recompileMessage && (
+          {(recompileMessage || feedbackMessage) && (
             <div className="mb-3 rounded-md border border-amber-100 bg-amber-50 px-2 py-1.5 text-xs text-amber-700">
-              {recompileMessage}
+              {recompileMessage || feedbackMessage}
             </div>
           )}
 
@@ -355,7 +408,12 @@ export default function Browse() {
                 <button
                   type="button"
                   onClick={async () => {
-                    if (!confirm(`确认删除 Wiki 页面「${selectedWiki.title}」？`)) return
+                    if (
+                      !confirm(
+                        `确认删除 Wiki 页面「${selectedWiki.title}」？将清理编译缓存，但保留源文档与向量索引。`,
+                      )
+                    )
+                      return
                     await deleteWikiPage(selectedWiki.id)
                     setSelectedWiki(null)
                     setNeighbors([])

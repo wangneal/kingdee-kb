@@ -34,6 +34,7 @@ pub struct WikiPage {
     pub content: String,
     pub content_candidate: Option<String>,
     pub candidate_status: Option<String>,
+    pub sources_candidate: Option<String>,
     pub frontmatter: String,
     pub sources: String,
     pub wikilinks: String,
@@ -69,6 +70,7 @@ pub struct UpdateWikiPage {
     pub content: Option<String>,
     pub content_candidate: Option<String>,
     pub candidate_status: Option<String>,
+    pub sources_candidate: Option<String>,
     pub frontmatter: Option<String>,
     pub sources: Option<String>,
     pub wikilinks: Option<String>,
@@ -105,6 +107,7 @@ impl WikiPageStore {
                 content            TEXT NOT NULL,
                 content_candidate  TEXT,
                 candidate_status   TEXT CHECK(candidate_status IN ('auto','conflict','pending')),
+                sources_candidate  TEXT,
                 frontmatter        TEXT NOT NULL DEFAULT '{}',
                 sources            TEXT NOT NULL DEFAULT '[]',
                 wikilinks          TEXT NOT NULL DEFAULT '[]',
@@ -121,6 +124,7 @@ impl WikiPageStore {
         ").map_err(|e| format!("创建 wiki_pages 表失败: {}", e))?;
 
         self.ensure_column("wiki_pages", "project_id", "INTEGER")?;
+        self.ensure_column("wiki_pages", "sources_candidate", "TEXT")?;
         self.backfill_project_id("wiki_pages")?;
         self.db
             .execute_batch(
@@ -169,6 +173,7 @@ impl WikiPageStore {
                 content            TEXT NOT NULL,
                 content_candidate  TEXT,
                 candidate_status   TEXT CHECK(candidate_status IN ('auto','conflict','pending')),
+                sources_candidate  TEXT,
                 frontmatter        TEXT NOT NULL DEFAULT '{}',
                 sources            TEXT NOT NULL DEFAULT '[]',
                 wikilinks          TEXT NOT NULL DEFAULT '[]',
@@ -185,7 +190,7 @@ impl WikiPageStore {
             );
             INSERT INTO wiki_pages_new (
                 id, project_id, slug, title, page_type, content, content_candidate,
-                candidate_status, frontmatter, sources, wikilinks, tags, page_metadata,
+                candidate_status, sources_candidate, frontmatter, sources, wikilinks, tags, page_metadata,
                 candidate_version, page_status, version, created_at, updated_at
             )
             SELECT id,
@@ -195,7 +200,7 @@ impl WikiPageStore {
                        (SELECT id FROM projects WHERE status = 'active' ORDER BY id ASC LIMIT 1)
                    ),
                    slug, title, page_type, content, content_candidate,
-                   candidate_status, frontmatter, sources, wikilinks, tags, page_metadata,
+                   candidate_status, NULL, frontmatter, sources, wikilinks, tags, page_metadata,
                    candidate_version, page_status, version, created_at, updated_at
             FROM wiki_pages;
             DROP TABLE wiki_pages;
@@ -277,7 +282,7 @@ impl WikiPageStore {
     pub fn get_by_id(&self, id: i64) -> Result<WikiPage, String> {
         self.query_one(
             "SELECT id, project_id, slug, title, page_type, content, content_candidate,
-                    candidate_status, frontmatter, sources, wikilinks, tags, page_metadata,
+                    candidate_status, sources_candidate, frontmatter, sources, wikilinks, tags, page_metadata,
                     candidate_version, page_status, version, created_at, updated_at
              FROM wiki_pages WHERE id = ?1",
             params![id],
@@ -289,7 +294,7 @@ impl WikiPageStore {
     pub fn get_by_slug(&self, project_id: i64, slug: &str) -> Result<Option<WikiPage>, String> {
         self.query_one(
             "SELECT id, project_id, slug, title, page_type, content, content_candidate,
-                    candidate_status, frontmatter, sources, wikilinks, tags, page_metadata,
+                    candidate_status, sources_candidate, frontmatter, sources, wikilinks, tags, page_metadata,
                     candidate_version, page_status, version, created_at, updated_at
              FROM wiki_pages WHERE project_id = ?1 AND slug = ?2",
             params![project_id, slug],
@@ -307,7 +312,7 @@ impl WikiPageStore {
         if let Some(status) = page_status {
             self.query_list(
                 "SELECT id, project_id, slug, title, page_type, content, content_candidate,
-                        candidate_status, frontmatter, sources, wikilinks, tags, page_metadata,
+                        candidate_status, sources_candidate, frontmatter, sources, wikilinks, tags, page_metadata,
                         candidate_version, page_status, version, created_at, updated_at
                  FROM wiki_pages
                  WHERE project_id = ?1 AND page_status = ?2
@@ -317,7 +322,7 @@ impl WikiPageStore {
         } else {
             self.query_list(
                 "SELECT id, project_id, slug, title, page_type, content, content_candidate,
-                        candidate_status, frontmatter, sources, wikilinks, tags, page_metadata,
+                        candidate_status, sources_candidate, frontmatter, sources, wikilinks, tags, page_metadata,
                         candidate_version, page_status, version, created_at, updated_at
                  FROM wiki_pages
                  WHERE project_id = ?1
@@ -340,6 +345,10 @@ impl WikiPageStore {
             .candidate_status
             .as_deref()
             .or(existing.candidate_status.as_deref());
+        let sources_candidate: Option<&str> = input
+            .sources_candidate
+            .as_deref()
+            .or(existing.sources_candidate.as_deref());
         let frontmatter = input
             .frontmatter
             .as_deref()
@@ -360,15 +369,16 @@ impl WikiPageStore {
             .execute(
                 "UPDATE wiki_pages SET
                 title = ?1, content = ?2, content_candidate = ?3, candidate_status = ?4,
-                frontmatter = ?5, sources = ?6, wikilinks = ?7, tags = ?8,
-                page_metadata = ?9, candidate_version = ?10, page_status = ?11,
-                version = ?12, updated_at = datetime('now')
-             WHERE id = ?13",
+                sources_candidate = ?5, frontmatter = ?6, sources = ?7, wikilinks = ?8, tags = ?9,
+                page_metadata = ?10, candidate_version = ?11, page_status = ?12,
+                version = ?13, updated_at = datetime('now')
+             WHERE id = ?14",
                 params![
                     title,
                     content,
                     content_candidate,
                     candidate_status,
+                    sources_candidate,
                     frontmatter,
                     sources,
                     wikilinks,
@@ -396,19 +406,24 @@ impl WikiPageStore {
         Ok(())
     }
 
-    /// 批准候选内容：将 content_candidate 提升为 content，重置候选字段，版本递增
+    /// 批准候选内容：将 content_candidate 和 sources_candidate 一起提升，重置候选字段，版本递增
     pub fn approve_candidate(&self, id: i64) -> Result<WikiPage, String> {
         let existing = self.get_by_id(id)?;
         let candidate = existing
             .content_candidate
             .ok_or_else(|| "没有待批准的候选内容".to_string())?;
+        let sources = existing
+            .sources_candidate
+            .as_deref()
+            .unwrap_or(&existing.sources);
         self.db
             .execute(
                 "UPDATE wiki_pages SET
                 content = ?1, content_candidate = NULL, candidate_status = NULL,
+                sources = ?2, sources_candidate = NULL,
                 candidate_version = NULL, version = version + 1, updated_at = datetime('now')
-             WHERE id = ?2 AND content_candidate IS NOT NULL",
-                params![candidate, id],
+             WHERE id = ?3 AND content_candidate IS NOT NULL",
+                params![candidate, sources, id],
             )
             .map_err(|e| format!("批准 wiki_page 候选内容失败: {}", e))?;
         self.get_by_id(id)
@@ -420,7 +435,7 @@ impl WikiPageStore {
             .execute(
                 "UPDATE wiki_pages SET
                 content_candidate = NULL, candidate_status = NULL,
-                candidate_version = NULL, updated_at = datetime('now')
+                sources_candidate = NULL, candidate_version = NULL, updated_at = datetime('now')
              WHERE id = ?1",
                 params![id],
             )
@@ -713,16 +728,17 @@ impl WikiPageStore {
             content: row.get(5)?,
             content_candidate: row.get(6)?,
             candidate_status: row.get(7)?,
-            frontmatter: row.get(8)?,
-            sources: row.get(9)?,
-            wikilinks: row.get(10)?,
-            tags: row.get(11)?,
-            page_metadata: row.get(12)?,
-            candidate_version: row.get(13)?,
-            page_status: row.get(14)?,
-            version: row.get(15)?,
-            created_at: row.get(16)?,
-            updated_at: row.get(17)?,
+            sources_candidate: row.get(8)?,
+            frontmatter: row.get(9)?,
+            sources: row.get(10)?,
+            wikilinks: row.get(11)?,
+            tags: row.get(12)?,
+            page_metadata: row.get(13)?,
+            candidate_version: row.get(14)?,
+            page_status: row.get(15)?,
+            version: row.get(16)?,
+            created_at: row.get(17)?,
+            updated_at: row.get(18)?,
         })
     }
 

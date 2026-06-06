@@ -1,9 +1,34 @@
+use std::path::Path;
 use tauri::State;
 
 use crate::app_state::AppState;
 use crate::services::wiki_page::{
     CreateWikiPage, UpdateWikiPage, WikiLinkTarget, WikiPage, WikiPageBrief,
 };
+
+/// 从文件路径中提取文件名（如 "C:/.../需求.docx" → "需求.docx"）
+/// raw_source_identity 缺失时，用 source_path 兜底
+fn extract_filename(path: &str) -> Option<String> {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+}
+
+/// 从文档元数据构造 cache 清理用的 source_identity
+/// 优先级：raw_source_identity（带扩展名）→ source_path 提取文件名 → doc.title 兜底
+/// 关键：必须用带扩展名的 identity（与 ingest_cache/analysis_cache 实际写入 key 一致），
+/// 不能用无扩展名的 title，否则 cache key 永远不匹配
+fn resolve_source_identity_for_cache(
+    raw_source_identity: Option<&str>,
+    source_path: Option<&str>,
+    title: &str,
+) -> String {
+    raw_source_identity
+        .map(|s| s.to_string())
+        .or_else(|| source_path.and_then(extract_filename))
+        .unwrap_or_else(|| title.to_string())
+}
 
 /// 创建维基页面。
 #[tauri::command]
@@ -74,12 +99,10 @@ pub async fn update_wiki_page(
 
 /// 内部辅助：删除单个 wiki 页面及其关联的源文档、向量、缓存。
 /// 同时清除 ingest_cache 和 analysis_cache，确保重新导入时能完整走流程。
-fn delete_single_wiki_page(
-    state: &State<'_, AppState>,
-    id: i64,
-) -> Result<(), String> {
-    // 1. 读取 wiki 页面，解析 sources JSON 获取 document_id 和缓存清理信息
-    let (document_ids, project_id, cache_keys) = {
+fn delete_single_wiki_page(state: &State<'_, AppState>, id: i64) -> Result<(), String> {
+    // 1. 读取 wiki 页面，解析 sources JSON 获取缓存清理信息
+    //    注意：document_ids 不再用于级联删除（documents 是摄入基础设施，与 wiki 解耦）
+    let (_document_ids, project_id, cache_keys) = {
         let store = state
             .wiki_pages
             .lock()
@@ -87,8 +110,8 @@ fn delete_single_wiki_page(
         let page = store.get_by_id(id)?;
         let pid = page.project_id;
         let page_slug = page.slug.clone();
-        let sources_data: Vec<serde_json::Value> = serde_json::from_str(&page.sources)
-            .unwrap_or_default();
+        let sources_data: Vec<serde_json::Value> =
+            serde_json::from_str(&page.sources).unwrap_or_default();
 
         // 提取 document_id
         let doc_ids: Vec<i64> = sources_data
@@ -97,12 +120,20 @@ fn delete_single_wiki_page(
             .collect();
 
         // 从文档元数据提取 SHA256 + source_identity，用于清理缓存
+        // 关键：cache key 必须用 raw_source_identity（带扩展名的文件名，如 "需求.docx"），
+        // 不能用 doc.title（无扩展名，如 "需求"），否则与 ingest_cache/analysis_cache 的实际
+        // 写入 key 不匹配，导致缓存清理失败，删 wiki 后重导入/重编译仍会命中陈旧缓存。
         let mut cache_keys: Vec<(String, String)> = Vec::new();
         if let Ok(meta) = state.metadata.lock() {
             for &doc_id in &doc_ids {
                 if let Ok(Some(doc)) = meta.get_document(doc_id) {
                     if let Some(ref sha) = doc.sha256 {
-                        cache_keys.push((doc.title.clone(), sha.clone()));
+                        let source_identity = resolve_source_identity_for_cache(
+                            doc.raw_source_identity.as_deref(),
+                            doc.source_path.as_deref(),
+                            &doc.title,
+                        );
+                        cache_keys.push((source_identity, sha.clone()));
                     }
                 }
             }
@@ -113,9 +144,8 @@ fn delete_single_wiki_page(
         if cache_keys.is_empty() {
             if let Ok(ingest) = state.ingest_cache_store.lock() {
                 if let Ok(caches) = ingest.list_by_project(pid) {
-                    let matched = crate::services::ingest_cache::find_cache_keys_by_slug(
-                        &caches, &page_slug,
-                    );
+                    let matched =
+                        crate::services::ingest_cache::find_cache_keys_by_slug(&caches, &page_slug);
                     for (source_identity, sha256) in matched {
                         tracing::info!(
                             "通过 slug 反查命中 ingest_cache: source={}, slug={}",
@@ -131,38 +161,11 @@ fn delete_single_wiki_page(
         (doc_ids, pid, cache_keys)
     };
 
-    // 2. 级联删除关联的源文档（向量 + BM25 + SQLite 元数据）
-    for doc_id in document_ids {
-        let vector_keys = {
-            let meta = state.metadata.lock().map_err(|e| e.to_string())?;
-            match meta.get_vector_keys_by_document_ids(&[doc_id]) {
-                Ok(keys) => keys,
-                Err(e) => {
-                    tracing::warn!("获取文档 {} 的 vector_keys 失败: {}", doc_id, e);
-                    continue;
-                }
-            }
-        };
-        if let Ok(idx) = state.vector_index.write() {
-            if let Err(e) = idx.remove_keys(&vector_keys) {
-                tracing::warn!("usearch 删除失败(doc_id={}): {}", doc_id, e);
-            }
-        }
-        if let Ok(bm25) = state.bm25.write() {
-            if let Err(e) = bm25.remove_chunks(&vector_keys) {
-                tracing::warn!("BM25 删除失败(doc_id={}): {}", doc_id, e);
-            }
-        }
-        {
-            let meta = state.metadata.lock().map_err(|e| e.to_string())?;
-            if let Err(e) = meta.delete_document(doc_id, Some(project_id)) {
-                tracing::warn!("SQLite 删除源文档失败(doc_id={}): {}", doc_id, e);
-            }
-        }
-        tracing::info!("已级联删除源文档: doc_id={}", doc_id);
-    }
-
-    // 3. 清除 ingest_cache 和 analysis_cache（关键修复：否则重新导入无法重新编译）
+    // 2. 清除 ingest_cache 和 analysis_cache（关键修复：否则重新导入无法重新编译）
+    //    注意：不再级联删除 documents/chunks/vectors。
+    //    理由：documents 是摄入基础设施，与 wiki 页面解耦。
+    //    - 保留 documents 后，"删 wiki → 强制重编译"路径才能通过 lookup_document_id 找回真实 document_id
+    //    - 用户若想彻底删除某个源，应在 source 管理页用独立入口（避免误删基础设施数据）
     for (source_identity, sha256) in cache_keys {
         if let Ok(ingest) = state.ingest_cache_store.lock() {
             if let Ok(Some(cache)) = ingest.get_by_key(project_id, &source_identity, &sha256) {
@@ -178,7 +181,7 @@ fn delete_single_wiki_page(
         }
     }
 
-    // 4. 删除 wiki 页面本身
+    // 3. 删除 wiki 页面本身
     {
         let store = state
             .wiki_pages
@@ -190,9 +193,15 @@ fn delete_single_wiki_page(
     Ok(())
 }
 
-/// 删除维基页面，同时级联删除关联的源文档、向量、BM25 数据。
+/// 删除维基页面，**不再级联删除关联的 documents/chunks/vectors**。
 ///
-/// 删除后可重新导入同一文件，完整走摄入+编译流程。
+/// 设计原则：documents 是摄入基础设施（被向量搜索、KB 编译、来源追溯共用），
+/// 与 wiki 页面解耦。删除 wiki 不应销毁这些数据，否则：
+/// - "删 wiki → 强制重编译"无法找回 document_id（lookup_document_id 返回 None）
+/// - 向量索引/BM25 数据被一并删除，下次需要重新摄入（耗时）
+///
+/// 重新生成 wiki 页面：通过强制重编译按钮（清空 compile cache 后从 raw_sources 重建）。
+/// 彻底删除源数据：通过 source 管理页的独立删除入口。
 #[tauri::command]
 pub async fn delete_wiki_page(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     delete_single_wiki_page(&state, id)
@@ -293,6 +302,98 @@ pub async fn remove_wikilink(
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
     store.remove_wikilink(page_id, &target_slug)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── extract_filename 单元测试 ───
+
+    #[test]
+    fn extract_filename_full_windows_path() {
+        assert_eq!(
+            extract_filename(r"C:\Users\Neal\原始资料\需求.docx"),
+            Some("需求.docx".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_filename_unix_path() {
+        assert_eq!(
+            extract_filename("/home/user/docs/report.pdf"),
+            Some("report.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_filename_bare_filename() {
+        assert_eq!(extract_filename("需求.docx"), Some("需求.docx".to_string()));
+    }
+
+    #[test]
+    fn extract_filename_with_chinese_extension() {
+        assert_eq!(
+            extract_filename("D:/资料/01需求分析报告.docx"),
+            Some("01需求分析报告.docx".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_filename_empty_string() {
+        assert_eq!(extract_filename(""), None);
+    }
+
+    // ─── resolve_source_identity_for_cache 单元测试（Issue 1 回归）───
+    // 关键：cache key 必须用带扩展名的 identity（"需求.docx"），不能用无扩展名的 title（"需求"）
+
+    #[test]
+    fn resolve_source_identity_prefers_raw_source_identity() {
+        // 正常路径：raw_source_identity 已写入 → 直接用
+        assert_eq!(
+            resolve_source_identity_for_cache(Some("需求.docx"), Some("C:/old/需求.docx"), "需求"),
+            "需求.docx"
+        );
+    }
+
+    #[test]
+    fn resolve_source_identity_falls_back_to_source_path() {
+        // 旧数据：raw_source_identity 为 None，但 source_path 存在
+        assert_eq!(
+            resolve_source_identity_for_cache(None, Some("C:/原始资料/需求.docx"), "需求"),
+            "需求.docx"
+        );
+    }
+
+    #[test]
+    fn resolve_source_identity_falls_back_to_title() {
+        // 最差情况：两个都 None → 只能 title 兜底（cache key 会失配，但至少不 panic）
+        assert_eq!(
+            resolve_source_identity_for_cache(None, None, "需求"),
+            "需求"
+        );
+    }
+
+    #[test]
+    fn resolve_source_identity_title_inequivalent_to_raw() {
+        // 关键回归测试：旧 bug 是用 title 代替 raw_source_identity
+        // 这个测试现在会失败（如果有人再改回去）
+        // 用 docx 场景，title 是"需求"，raw 是"需求.docx" → 必须返回 "需求.docx"
+        let result = resolve_source_identity_for_cache(Some("需求.docx"), None, "需求");
+        assert_ne!(result, "需求", "不能用 title 代替 raw_source_identity");
+        assert_eq!(result, "需求.docx");
+    }
+
+    #[test]
+    fn resolve_source_identity_xlsx_real_world() {
+        // 真实场景：05需求跟踪矩阵_模板（for V10.0）.xlsx
+        let raw = "05需求跟踪矩阵_模板（for V10.0）.xlsx";
+        let title = "05需求跟踪矩阵_模板（for V10.0）";
+        assert_eq!(
+            resolve_source_identity_for_cache(Some(raw), Some("C:/原始/需求.xlsx"), title),
+            raw
+        );
+    }
 }
 
 /// 获取 wikilink 目标页面详情（按项目过滤，批量查询被引页面的标题/slug/type/status）。

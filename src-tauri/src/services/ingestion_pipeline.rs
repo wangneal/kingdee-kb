@@ -454,7 +454,14 @@ fn write_or_update_wiki_page(
                 content: None,
                 content_candidate: Some(content.to_string()),
                 candidate_status: Some(candidate_status.to_string()),
+                sources_candidate: sources.clone(),
                 frontmatter: None,
+                // 关键：候选阶段不覆盖正式 sources，只写 sources_candidate。
+                // 理由：sources 是文档级引用元数据（指向 documents/chunks/vectors），
+                // 与 wiki 正文版（content）一一对应。若在候选阶段就覆盖 sources：
+                // 1. 拒绝候选时无法恢复（reject 只清候选字段）→ 元数据不一致
+                // 2. 候选与已批准内容会暂时指向不同 documents → 中间态易错乱
+                // 正确做法：sources 在 approve_candidate 时与 content 一起提交；拒绝时 sources 不变。
                 sources: None,
                 wikilinks: None,
                 tags: None,
@@ -472,7 +479,7 @@ fn write_or_update_wiki_page(
             page_type: "summary".to_string(),
             content: String::new(),
             frontmatter: Some("{}".to_string()),
-            sources: sources.or(Some("[]".to_string())),
+            sources: sources.clone().or(Some("[]".to_string())),
             wikilinks: Some("[]".to_string()),
             tags: Some(tags.to_string()),
             page_metadata: Some("{}".to_string()),
@@ -489,6 +496,7 @@ fn write_or_update_wiki_page(
                     content: None,
                     content_candidate: Some(content.to_string()),
                     candidate_status: Some("pending".to_string()),
+                    sources_candidate: sources.clone(),
                     frontmatter: None,
                     sources: None,
                     wikilinks: None,
@@ -714,4 +722,7 @@ mod tests {
         assert_eq!(tags, "");
         assert!(body.contains("纯正文"));
     }
+
+    // 单元测试说明：Issue 2 修复后，sources_has_valid_document_id + 8 个相关测试已移除
+    // （设计决策改为 sources 永远不通过候选路径覆盖）
 }

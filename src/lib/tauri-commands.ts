@@ -212,8 +212,27 @@ export interface RecompileFailedSourcesResult {
 
 export async function recompileFailedKbSources(
   projectId: number,
+  force: boolean = false,
 ): Promise<RecompileFailedSourcesResult> {
-  return invoke("recompile_failed_kb_sources", { projectId })
+  return invoke("recompile_failed_kb_sources", { projectId, force })
+}
+
+/// 强制重编译指定的源（用于"删 wiki 后原地重生成"场景）
+/// 流程：按 source_id 取出 raw_source → 重读文件 → 清 ingest/analysis cache →
+/// 调 process_with_kb_compilation(force_recompile=true) 跳过 Step 0 cache 命中
+export interface ForceRecompileResult {
+  analysis?: unknown
+  engine: string
+  cache_hit: boolean
+  generated_pages: string[]
+  compilation_done: boolean
+}
+
+export async function forceRecompileKbSource(
+  projectId: number,
+  sourceId: number,
+): Promise<ForceRecompileResult> {
+  return invoke<ForceRecompileResult>("force_recompile_kb_source", { projectId, sourceId })
 }
 
 export async function listDocuments(projectId?: number | null): Promise<DocumentMeta[]> {
@@ -1143,6 +1162,7 @@ export interface WikiPage {
   content: string
   content_candidate: string | null
   candidate_status: string | null
+  sources_candidate: string | null
   frontmatter: string
   sources: string
   wikilinks: string
@@ -1302,10 +1322,7 @@ export async function getGraphStats(projectId: number): Promise<GraphStats> {
 }
 
 /** 获取节点邻居（关联页面） */
-export async function getGraphNeighbors(
-  projectId: number,
-  slug: string,
-): Promise<GraphNeighbor[]> {
+export async function getGraphNeighbors(projectId: number, slug: string): Promise<GraphNeighbor[]> {
   return invoke("get_graph_neighbors", { projectId, slug })
 }
 

@@ -938,8 +938,8 @@ pub struct EmbeddingService {
     model: Option<TextEmbedding>,
     /// 在线 Embedding 配置（None = 本地模式）
     remote_config: Option<RemoteEmbeddingConfig>,
-    /// HTTP 客户端（用于远程调用）
-    client: Option<reqwest::Client>,
+    /// HTTP 客户端（连接池复用，全局共享）
+    client: reqwest::Client,
     /// Cached embedding dimension (detected via probe embed on model injection)
     /// bge-small-zh-v1.5 = 512, all-MiniLM-L6-v2 = 384
     cached_dimension: usize,
@@ -967,7 +967,7 @@ impl EmbeddingService {
         Self {
             model: Some(model),
             remote_config: None,
-            client: None,
+            client: reqwest::Client::new(),
             cached_dimension: dim,
             batch_size: 64,
             last_used: Instant::now(),
@@ -979,7 +979,7 @@ impl EmbeddingService {
         Self {
             model: None,
             remote_config: None,
-            client: None,
+            client: reqwest::Client::new(),
             cached_dimension: DEFAULT_BGE_DIMENSION,
             batch_size: 64,
             last_used: Instant::now(),
@@ -991,11 +991,8 @@ impl EmbeddingService {
         if config.is_some() {
             // 切换到远程模式时，释放本地模型
             self.model = None;
-            self.client = Some(reqwest::Client::new());
             // 远程模型维度因提供商而异，默认 1024（BGE-M3）
             self.cached_dimension = DEFAULT_REMOTE_DIMENSION;
-        } else {
-            self.client = None;
         }
         self.remote_config = config;
     }
@@ -1068,7 +1065,6 @@ impl EmbeddingService {
     pub fn set_model(&mut self, mut model: TextEmbedding) {
         // 切换到本地模式时清除远程配置
         self.remote_config = None;
-        self.client = None;
         self.cached_dimension = probe_dimension(&mut model);
         self.model = Some(model);
         self.last_used = Instant::now();
@@ -1099,6 +1095,11 @@ impl EmbeddingService {
     pub fn idle_seconds(&self) -> u64 {
         self.last_used.elapsed().as_secs()
     }
+
+    /// 获取全局 HTTP 客户端（连接池复用）
+    pub fn http_client(&self) -> &reqwest::Client {
+        &self.client
+    }
 }
 
 // ─── 远程 Embedding API 调用（异步） ───
@@ -1119,8 +1120,13 @@ struct EmbeddingData {
 /// 所有支持的提供商（OpenAI、SiliconFlow、Zhipu、DashScope）都使用相同的 API 格式：
 /// POST {base_url}/embeddings
 /// Cohere 使用 v2 兼容格式。
-pub async fn remote_embed(config: &RemoteEmbeddingConfig, text: &str) -> Result<Vec<f32>, String> {
-    let client = reqwest::Client::new();
+///
+/// `client` 应传入全局共享的 reqwest::Client 以复用连接池，避免每次新建 TCP/SSL 连接。
+pub async fn remote_embed(
+    client: &reqwest::Client,
+    config: &RemoteEmbeddingConfig,
+    text: &str,
+) -> Result<Vec<f32>, String> {
     let url = format!("{}/embeddings", config.base_url.trim_end_matches('/'));
 
     let body = serde_json::json!({
@@ -1164,11 +1170,13 @@ pub async fn remote_embed(config: &RemoteEmbeddingConfig, text: &str) -> Result<
 /// 批量调用在线 Embedding API（OpenAI 兼容格式）
 ///
 /// 一次请求嵌入多个文本，减少网络开销。
+///
+/// `client` 应传入全局共享的 reqwest::Client 以复用连接池，避免每次新建 TCP/SSL 连接。
 pub async fn remote_embed_batch(
+    client: &reqwest::Client,
     config: &RemoteEmbeddingConfig,
     texts: &[&str],
 ) -> Result<Vec<Vec<f32>>, String> {
-    let client = reqwest::Client::new();
     let url = format!("{}/embeddings", config.base_url.trim_end_matches('/'));
 
     let body = serde_json::json!({

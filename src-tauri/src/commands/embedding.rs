@@ -135,15 +135,18 @@ pub async fn set_embedding_model_config(
 
 #[tauri::command]
 pub async fn embed_text(state: State<'_, AppState>, text: String) -> Result<Vec<f32>, String> {
-    // 检查是否为远程模式
-    let remote_config = {
+    // 检查是否为远程模式，同时获取共享 HTTP 客户端
+    let remote_info = {
         let emb = state.embedding.read().map_err(|e| e.to_string())?;
-        emb.remote_config().cloned()
+        emb.remote_config().cloned().map(|config| {
+            let client = emb.http_client().clone(); // O(1) clone（内部 Arc）
+            (config, client)
+        })
     };
 
-    if let Some(config) = remote_config {
-        // 远程模式：调用在线 Embedding API
-        crate::services::embedding::remote_embed(&config, &text).await
+    if let Some((config, client)) = remote_info {
+        // 远程模式：调用在线 Embedding API（复用连接池）
+        crate::services::embedding::remote_embed(&client, &config, &text).await
     } else {
         // 本地模式：使用本地 ONNX 模型
         let mut emb = state.embedding.write().map_err(|e| e.to_string())?;
@@ -157,16 +160,19 @@ pub async fn embed_batch(
     state: State<'_, AppState>,
     texts: Vec<String>,
 ) -> Result<Vec<Vec<f32>>, String> {
-    // 检查是否为远程模式
-    let remote_config = {
+    // 检查是否为远程模式，同时获取共享 HTTP 客户端
+    let remote_info = {
         let emb = state.embedding.read().map_err(|e| e.to_string())?;
-        emb.remote_config().cloned()
+        emb.remote_config().cloned().map(|config| {
+            let client = emb.http_client().clone(); // O(1) clone（内部 Arc）
+            (config, client)
+        })
     };
 
-    if let Some(config) = remote_config {
-        // 远程模式：调用在线 Embedding API
+    if let Some((config, client)) = remote_info {
+        // 远程模式：调用在线 Embedding API（复用连接池）
         let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        crate::services::embedding::remote_embed_batch(&config, &refs).await
+        crate::services::embedding::remote_embed_batch(&client, &config, &refs).await
     } else {
         // 本地模式：使用本地 ONNX 模型
         let mut emb = state.embedding.write().map_err(|e| e.to_string())?;

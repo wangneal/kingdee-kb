@@ -1,12 +1,17 @@
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, RwLock};
 use tauri::{AppHandle, State};
 
 use crate::app_state::AppState;
+use crate::services::analysis_cache::AnalysisCacheStore;
+use crate::services::ingest_cache::IngestCacheStore;
 use crate::services::ingestion::{
     ingest_directory as ingest_directory_fn, ingest_file as ingest_file_fn,
     ingest_text as ingest_text_fn, DirectoryIngestionResult, IngestionResult,
 };
 use crate::services::ingestion_pipeline::process_with_kb_compilation;
+use crate::services::llm_providers::LLMProviderManager;
+use crate::services::wiki_page::WikiPageStore;
 
 /// 从全局状态克隆 ImageProcessor 配置（不持锁，避免 Send 问题）
 fn clone_image_processor(
@@ -65,6 +70,45 @@ fn resolve_kb_compilation(state: &State<'_, AppState>, param: Option<bool>) -> b
         .unwrap_or(false)
 }
 
+/// 执行 KB 编译并返回 (engine, error) 元组
+///
+/// 抽取公共逻辑消除四处重复的 process_with_kb_compilation 调用模式。
+async fn run_kb_compilation(
+    text: &str,
+    source_identity: &str,
+    sha256: &str,
+    project_id: i64,
+    title: &str,
+    document_id: i64,
+    analysis_cache: Arc<Mutex<AnalysisCacheStore>>,
+    llm_providers: Arc<RwLock<LLMProviderManager>>,
+    wiki_pages: Arc<Mutex<WikiPageStore>>,
+    ingest_cache_store: Arc<Mutex<IngestCacheStore>>,
+) -> (Option<String>, Option<String>) {
+    match process_with_kb_compilation(
+        text,
+        source_identity,
+        sha256,
+        project_id,
+        title,
+        true,
+        analysis_cache,
+        llm_providers,
+        wiki_pages,
+        ingest_cache_store,
+        Some(document_id),
+        false,
+    )
+    .await
+    {
+        Ok(compilation) => (Some(compilation.engine), None),
+        Err(e) => {
+            tracing::warn!("KB 编译失败（{}）: {}", title, e);
+            (None, Some(format!("{}", e)))
+        }
+    }
+}
+
 /// 摄入纯文本（来自粘贴或文本框）
 ///
 /// 首次调用时会自动加载 embedding 模型（懒加载）。
@@ -100,37 +144,21 @@ pub async fn ingest_text(
 
     // 知识编译
     if resolve_kb_compilation(&state, enable_kb_compilation) {
-        let cache_store = state.analysis_cache.clone();
-        let provider_manager = state.llm_providers.clone();
-        let wiki_pages = state.wiki_pages.clone();
-        let ingest_cache = state.ingest_cache_store.clone();
-
-        // source_identity 关联 raw_sources.identity，而非 sha256
-        match process_with_kb_compilation(
+        let (engine, error) = run_kb_compilation(
             &text,
             &source_identity,
             &result.sha256,
             project_id,
             &title,
-            true,
-            cache_store,
-            provider_manager,
-            wiki_pages,
-            ingest_cache,
-            Some(result.document_id),
-            false,
+            result.document_id,
+            state.analysis_cache.clone(),
+            state.llm_providers.clone(),
+            state.wiki_pages.clone(),
+            state.ingest_cache_store.clone(),
         )
-        .await
-        {
-            Ok(compilation) => {
-                result.kb_analysis_engine = Some(compilation.engine);
-            }
-            Err(e) => {
-                tracing::warn!("KB 编译失败（文本导入）: {}", e);
-                // 导入本身已成功，将编译失败记录在结构化字段中
-                result.kb_compilation_error = Some(format!("{}", e));
-            }
-        }
+        .await;
+        result.kb_analysis_engine = engine;
+        result.kb_compilation_error = error;
     }
 
     Ok(result)
@@ -197,37 +225,27 @@ pub async fn ingest_file(
 
         // KB 编译
         if resolve_kb_compilation(&state, enable_kb_compilation) {
-            let sha256 = result.sha256.clone();
             let source_identity = path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown")
                 .to_string();
 
-            match process_with_kb_compilation(
+            let (engine, error) = run_kb_compilation(
                 &image_text,
                 &source_identity,
-                &sha256,
+                &result.sha256,
                 project_id,
                 &title,
-                true,
+                result.document_id,
                 state.analysis_cache.clone(),
                 state.llm_providers.clone(),
                 state.wiki_pages.clone(),
                 state.ingest_cache_store.clone(),
-                Some(result.document_id),
-                false,
             )
-            .await
-            {
-                Ok(compilation) => {
-                    result.kb_analysis_engine = Some(compilation.engine);
-                }
-                Err(e) => {
-                    tracing::warn!("KB 编译失败（图片导入）: {}", e);
-                    result.kb_compilation_error = Some(format!("{}", e));
-                }
-            }
+            .await;
+            result.kb_analysis_engine = engine;
+            result.kb_compilation_error = error;
         }
 
         return Ok(result);
@@ -250,7 +268,6 @@ pub async fn ingest_file(
     if resolve_kb_compilation(&state, enable_kb_compilation) {
         let text = crate::services::file_extractor::extract_text(&path)
             .map_err(|e| format!("读取文件内容失败: {}", e))?;
-        let sha256 = result.sha256.clone();
         let title = result.title.clone();
         let source_identity = path
             .file_name()
@@ -258,30 +275,21 @@ pub async fn ingest_file(
             .unwrap_or("unknown")
             .to_string();
 
-        match process_with_kb_compilation(
+        let (engine, error) = run_kb_compilation(
             &text,
             &source_identity,
-            &sha256,
+            &result.sha256,
             project_id,
             &title,
-            true,
+            result.document_id,
             state.analysis_cache.clone(),
             state.llm_providers.clone(),
             state.wiki_pages.clone(),
             state.ingest_cache_store.clone(),
-            Some(result.document_id),
-            false,
         )
-        .await
-        {
-            Ok(compilation) => {
-                result.kb_analysis_engine = Some(compilation.engine);
-            }
-            Err(e) => {
-                tracing::warn!("KB 编译失败（文件导入）: {}", e);
-                result.kb_compilation_error = Some(format!("{}", e));
-            }
-        }
+        .await;
+        result.kb_analysis_engine = engine;
+        result.kb_compilation_error = error;
     }
 
     Ok(result)
@@ -468,30 +476,21 @@ pub async fn ingest_directory(
                     .unwrap_or("unknown")
                     .to_string();
 
-                match process_with_kb_compilation(
+                let (engine, error) = run_kb_compilation(
                     &text,
                     &source_identity,
                     &sha256,
                     project_id,
                     &title,
-                    true,
+                    imported.document_id,
                     state.analysis_cache.clone(),
                     state.llm_providers.clone(),
                     state.wiki_pages.clone(),
                     state.ingest_cache_store.clone(),
-                    Some(imported.document_id),
-                    false,
                 )
-                .await
-                {
-                    Ok(compilation) => {
-                        imported.kb_analysis_engine = Some(compilation.engine);
-                    }
-                    Err(e) => {
-                        tracing::warn!("KB 编译失败: {}: {}", title, e);
-                        imported.kb_compilation_error = Some(format!("{}", e));
-                    }
-                }
+                .await;
+                imported.kb_analysis_engine = engine;
+                imported.kb_compilation_error = error;
             }
         }
     }

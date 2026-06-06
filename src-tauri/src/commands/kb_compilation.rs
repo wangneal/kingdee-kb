@@ -4,6 +4,7 @@ use crate::app_state::AppState;
 use crate::services::ingestion_pipeline::{process_with_kb_compilation, KbCompilationResult};
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RecompileFailedSourceError {
@@ -102,21 +103,41 @@ pub async fn recompile_failed_kb_sources(
 
         // force 模式下：先清掉 cache，让后续 process_with_kb_compilation 不会命中旧 cache
         if force {
-            if let Ok(ingest) = state.ingest_cache_store.lock() {
-                if let Ok(Some(cache)) =
-                    ingest.get_by_key(project_id, &source.identity, &source.sha256)
-                {
-                    let _ = ingest.delete(cache.id);
+            match state.ingest_cache_store.lock() {
+                Ok(ingest) => {
+                    if let Ok(Some(cache)) =
+                        ingest.get_by_key(project_id, &source.identity, &source.sha256)
+                    {
+                        let _ = ingest.delete(cache.id);
+                    }
                 }
+                Err(e) => tracing::warn!("获取 ingest_cache 锁失败 (force 清理): {}", e),
             }
-            if let Ok(analysis) = state.analysis_cache.lock() {
-                if let Ok(Some(cache)) =
-                    analysis.get_by_key(project_id, &source.identity, &source.sha256)
-                {
-                    let _ = analysis.delete(cache.id);
+            match state.analysis_cache.lock() {
+                Ok(analysis) => {
+                    if let Ok(Some(cache)) =
+                        analysis.get_by_key(project_id, &source.identity, &source.sha256)
+                    {
+                        let _ = analysis.delete(cache.id);
+                    }
                 }
+                Err(e) => tracing::warn!("获取 analysis_cache 锁失败 (force 清理): {}", e),
             }
         }
+
+        // 关键：反查 document_id，让 process_with_kb_compilation 写入正确的 sources.document_id
+        // （之前固定传 None，导致新 wiki 页面 sources.document_id=null，触发原 bug）
+        // 反查失败时不终止整个批量流程，回退到 None 继续处理其他源
+        let document_id = lookup_document_id(
+            &state.metadata,
+            project_id,
+            &source.sha256,
+            &source.identity,
+        )
+        .unwrap_or_else(|e| {
+            tracing::warn!("反查 document_id 失败 (source={}): {}，继续处理", source.identity, e);
+            None
+        });
 
         let compilation = process_with_kb_compilation(
             &text,
@@ -129,7 +150,7 @@ pub async fn recompile_failed_kb_sources(
             state.llm_providers.clone(),
             state.wiki_pages.clone(),
             state.ingest_cache_store.clone(),
-            None,
+            document_id,
             force, // force 模式传递 true，跳过 Step 0 cache 命中
         )
         .await;
@@ -165,6 +186,28 @@ fn source_title(identity: &str) -> String {
         .to_string()
 }
 
+/// 按 (project_id, sha256, raw_source_identity) 反查 documents 表的 document_id
+/// 用于"删 wiki 后强制重编译"场景：原 document 记录被删，但 raw_sources 还在
+/// 关联键：documents.sha256 = source.sha256 AND documents.project_id = source.project_id
+///        AND documents.raw_source_identity = source.identity
+pub(crate) fn lookup_document_id(
+    metadata: &Arc<Mutex<crate::services::metadata::MetadataStore>>,
+    project_id: i64,
+    sha256: &str,
+    raw_source_identity: &str,
+) -> Result<Option<i64>, String> {
+    let meta = metadata
+        .lock()
+        .map_err(|e| format!("获取 metadata 锁失败: {}", e))?;
+    Ok(meta
+        .get_document_by_sha256(sha256)?
+        .filter(|doc| {
+            doc.project_id == project_id
+                && doc.raw_source_identity.as_deref() == Some(raw_source_identity)
+        })
+        .map(|doc| doc.id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,10 +239,7 @@ mod tests {
     #[test]
     fn source_title_strips_path_prefix() {
         // identity 可能含路径前缀
-        assert_eq!(
-            source_title("C:/Users/Neal/原始资料/需求.docx"),
-            "需求"
-        );
+        assert_eq!(source_title("C:/Users/Neal/原始资料/需求.docx"), "需求");
     }
 
     #[test]
@@ -249,18 +289,12 @@ pub async fn force_recompile_kb_source(
     // 3. 反查 document_id（确保新建 wiki 页面 sources 含真实 document_id，避免 null）
     //    关联键：documents.sha256 = source.sha256 AND documents.project_id = source.project_id
     //    AND documents.raw_source_identity = source.identity
-    let document_id: Option<i64> = {
-        let meta = state
-            .metadata
-            .lock()
-            .map_err(|e| format!("获取 metadata 锁失败: {}", e))?;
-        meta.get_document_by_sha256(&source.sha256)?
-            .filter(|doc| {
-                doc.project_id == project_id
-                    && doc.raw_source_identity.as_deref() == Some(source.identity.as_str())
-            })
-            .map(|doc| doc.id)
-    };
+    let document_id: Option<i64> = lookup_document_id(
+        &state.metadata,
+        project_id,
+        &source.sha256,
+        &source.identity,
+    )?;
 
     // 4. 重新读取并提取文本
     let text = crate::services::file_extractor::extract_text(Path::new(&source.storage_path))
