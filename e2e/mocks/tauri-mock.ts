@@ -47,6 +47,34 @@ const MOCK_RESPONSES: Record<string, unknown> = {
   create_project: 2,
   archive_project: null,
   restore_project: null,
+  get_project_phases: [
+    {
+      id: 1,
+      project_id: 1,
+      phase_key: "startup",
+      phase_name: "启动阶段",
+      phase_index: 0,
+      status: "current",
+      planned_start: null,
+      planned_end: null,
+      actual_start: null,
+      actual_end: null,
+      notes: "",
+    },
+    {
+      id: 2,
+      project_id: 1,
+      phase_key: "survey",
+      phase_name: "调研阶段",
+      phase_index: 1,
+      status: "pending",
+      planned_start: null,
+      planned_end: null,
+      actual_start: null,
+      actual_end: null,
+      notes: "",
+    },
+  ],
 
   // Products
   list_products: [],
@@ -140,6 +168,7 @@ const MOCK_RESPONSES: Record<string, unknown> = {
   // Agent
   agent_chat: "session_123",
   answer_question: null,
+  reject_question: null,
 
   // Embedding model
   init_model: true,
@@ -190,8 +219,13 @@ const MOCK_RESPONSES: Record<string, unknown> = {
 
   // Whisper
   load_whisper_model: null,
-  get_whisper_status: { model_loaded: false, model_size: "tiny", language: "zh" },
+  get_whisper_status: { model_loaded: false, model_size: "base", language: "zh" },
+  list_audio_input_devices: [
+    { id: "Wasapi::默认麦克风", name: "默认麦克风", host: "Wasapi", is_default: true },
+  ],
   start_whisper_recording: null,
+  transcribe_whisper_recording_chunk: { text: "", sample_count: 0, processing_time_ms: 0 },
+  review_transcription_text: "",
   stop_whisper_recording: { text: "", segments: [], confidence: 0, processing_time_ms: 0 },
 
   // Video transcription
@@ -282,6 +316,29 @@ const MOCK_RESPONSES: Record<string, unknown> = {
   },
   save_asr_config: null,
   get_asr_config_status: { tencent_configured: false, xfyun_configured: false },
+  save_tencent_meeting_token: null,
+  get_tencent_meeting_config_status: { configured: false },
+  list_tencent_meeting_tools: { result: { tools: [] } },
+  call_tencent_meeting_tool: { tool_name: "", content_text: "", raw: {} },
+  fetch_tencent_meeting_transcript: {
+    record_file_id: "",
+    transcript: "",
+    minutes: null,
+    records_raw: null,
+    transcript_raw: {},
+    minutes_raw: null,
+  },
+
+  // Skill / provider config
+  list_llm_providers: [],
+  fetch_llm_endpoint_models: { models: ["deepseek-chat", "deepseek-reasoner"], cached: false },
+  add_llm_provider: null,
+  update_llm_provider: null,
+  delete_llm_provider: null,
+  set_default_llm_provider: null,
+  probe_all_providers: [],
+  get_ocr_config: null,
+  save_ocr_config: null,
 }
 
 /**

@@ -26,7 +26,7 @@ import {
   X,
   Zap,
 } from "lucide-react"
-import { memo, useCallback, useEffect, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import { useNavigate } from "react-router-dom"
 import remarkGfm from "remark-gfm"
@@ -44,7 +44,14 @@ import { useProject } from "../contexts/ProjectContext"
 import { extractFilesFromDropEvent, extractFilesFromPasteEvent } from "../lib/clipboard-files"
 import { listLLMProviders } from "../lib/skill-commands"
 import type { LLMProviderConfig } from "../lib/skill-types"
-import { countTokens, isLLMConfigured, saveChatMemory } from "../lib/tauri-commands"
+import {
+  type ClarificationPayload,
+  type ClarificationQuestion,
+  countTokens,
+  isLLMConfigured,
+  type QuestionOption,
+  saveChatMemory,
+} from "../lib/tauri-commands"
 
 interface ChatAttachment {
   id: string
@@ -56,7 +63,7 @@ interface ChatAttachment {
   extractedText?: string
   charCount?: number
   error?: string
-  /** data URL for preview (temp files that convertFileSrc can't access) */
+  /** 预览用 data URL（临时文件可能无法通过 convertFileSrc 访问） */
   previewUrl?: string
 }
 
@@ -82,9 +89,9 @@ const DOCUMENT_EXTENSIONS = new Set([
 ])
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "bmp", "gif"])
 
-function loadChatHistory(): AgentMessage[] {
+function loadChatHistory(storageKey: string): AgentMessage[] {
   try {
-    const raw = localStorage.getItem(CHAT_STORAGE_KEY)
+    const raw = localStorage.getItem(storageKey)
     if (!raw) return []
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
@@ -94,12 +101,12 @@ function loadChatHistory(): AgentMessage[] {
   }
 }
 
-function saveChatHistory(messages: AgentMessage[]) {
+function saveChatHistory(storageKey: string, messages: AgentMessage[]) {
   try {
     const clean = messages.map((m) => ({ ...m, streaming: false }))
     const trimmed =
       clean.length > MAX_STORED_MESSAGES ? clean.slice(clean.length - MAX_STORED_MESSAGES) : clean
-    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(trimmed))
+    localStorage.setItem(storageKey, JSON.stringify(trimmed))
   } catch {
     // 忽略
   }
@@ -198,6 +205,7 @@ function PlanTimeline({ trace }: { trace: ReActTrace }) {
 
 export default function Chat() {
   const { currentProjectId } = useProject()
+  const chatStorageKey = `${CHAT_STORAGE_KEY}:${currentProjectId ?? "none"}`
   const agent = useAgent()
   const navigate = useNavigate()
   const slot = agent.slots.get("chat") ?? DEFAULT_SLOT
@@ -238,19 +246,14 @@ export default function Chat() {
     }
   }, [])
 
-
-  // 从 localStorage 加载聊天历史到 slot
-  const didLoadRef = useRef(false)
+  // 从 localStorage 加载当前项目的聊天历史到 slot
+  const loadedStorageKeyRef = useRef<string | null>(null)
   useEffect(() => {
-    if (didLoadRef.current) return
-    didLoadRef.current = true
-    if (slot.messages.length === 0) {
-      const history = loadChatHistory()
-      if (history.length > 0) {
-        agent.updateMessages("chat", () => history)
-      }
-    }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+    if (loadedStorageKeyRef.current === chatStorageKey) return
+    loadedStorageKeyRef.current = chatStorageKey
+    const history = loadChatHistory(chatStorageKey)
+    agent.updateMessages("chat", () => history)
+  }, [agent, chatStorageKey])
 
   // 挂载时检查 LLM 配置
   useEffect(() => {
@@ -263,9 +266,10 @@ export default function Chat() {
   useEffect(() => {
     listLLMProviders()
       .then((fetchedProviders) => {
-        setProviders(fetchedProviders)
+        const safeProviders = Array.isArray(fetchedProviders) ? fetchedProviders : []
+        setProviders(safeProviders)
         // 预选默认供应商和模型
-        const defaultProvider = fetchedProviders.find((p) => p.is_default) || fetchedProviders[0]
+        const defaultProvider = safeProviders.find((p) => p.is_default) || safeProviders[0]
         if (defaultProvider) {
           setSelectedProviderId(defaultProvider.id)
           const defaultModel =
@@ -306,7 +310,7 @@ export default function Chat() {
     if (isAutoScrollingRef.current) {
       el.scrollTop = el.scrollHeight
     }
-  }, [messages, currentTrace])
+  })
 
   // 使用 ResizeObserver 监听聊天内容容器的尺寸变化
   // 只要内容高度改变（如图片加载完成、Markdown 渲染展开等）且处于自动滚动状态，就强制置底
@@ -331,7 +335,7 @@ export default function Chat() {
     }
   }, [])
 
-  // Update token count（禁止在 streaming 中运行，2 秒节流）
+  // 更新 token 计数（禁止在 streaming 中运行，2 秒节流）
   const countTokensRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     if (loading || messages.length === 0) {
@@ -407,10 +411,21 @@ export default function Chat() {
       history,
       projectId: currentProjectId,
       providerId: selectedProviderId || undefined,
+      modelId: selectedModelId || undefined,
       attachments: attachmentInfos,
       fileAttachments,
     })
-  }, [input, attachments, loading, attaching, messages, agent, currentProjectId, selectedProviderId, llmReady])
+  }, [
+    input,
+    attachments,
+    loading,
+    messages,
+    agent,
+    currentProjectId,
+    selectedProviderId,
+    selectedModelId,
+    llmReady,
+  ])
 
   // 重试最后失败的消息
   const handleRetry = useCallback(async () => {
@@ -477,7 +492,7 @@ export default function Chat() {
         },
       ])
     }
-  }, [loading, attaching, agent])
+  }, [loading, agent])
 
   const removeAttachment = useCallback((id: string) => {
     setAttachments((prev) => prev.filter((a) => a.id !== id))
@@ -553,6 +568,14 @@ export default function Chat() {
     [agent],
   )
 
+  // 取消待处理的澄清问题
+  const handleRejectClarification = useCallback(
+    async (questionId: string) => {
+      await agent.rejectClarification("chat", questionId)
+    },
+    [agent],
+  )
+
   // 仅在流完成后保存到本地存储
   const prevLoadingRef = useRef(loading)
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -564,22 +587,22 @@ export default function Chat() {
     if (prevLoadingRef.current && !loading) {
       // 流完成 → 延迟 500ms 落盘，避免频繁写入本地存储
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
-      saveTimeoutRef.current = setTimeout(() => saveChatHistory(messages), 500)
+      saveTimeoutRef.current = setTimeout(() => saveChatHistory(chatStorageKey, messages), 500)
     }
     prevLoadingRef.current = loading
     return () => {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
     }
-  }, [loading])
+  }, [loading, messages, chatStorageKey])
 
   // 会话完成后保存聊天记忆 (loading transitions true → false)
   const prevLoadingRef2 = useRef(loading)
   useEffect(() => {
     if (prevLoadingRef2.current && !loading && messages.length > 0) {
       const lastMsg = messages[messages.length - 1]
-      if (lastMsg.role === "assistant" && !lastMsg.error) {
+      if (lastMsg.role === "assistant" && !lastMsg.error && !lastMsg.cancelled) {
         const conversation = messages
-          .filter((m) => !m.error)
+          .filter((m) => !m.error && !m.cancelled)
           .map((m) => ({ role: m.role, content: m.content }))
         saveChatMemory(conversation, currentProjectId).catch((e) =>
           console.warn("[Chat] Failed to save chat memory:", e),
@@ -591,9 +614,9 @@ export default function Chat() {
 
   const handleClear = useCallback(() => {
     agent.clearSlot("chat")
-    localStorage.removeItem(CHAT_STORAGE_KEY)
+    localStorage.removeItem(chatStorageKey)
     isAutoScrollingRef.current = true
-  }, [agent])
+  }, [agent, chatStorageKey])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -622,7 +645,7 @@ export default function Chat() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
+      {/* 页头 */}
       <div className="flex h-14 items-center justify-between border-b border-neutral-200 px-6">
         <div className="flex items-center gap-2">
           <Brain className="h-5 w-5 text-amber-600" />
@@ -650,7 +673,7 @@ export default function Chat() {
         </button>
       </div>
 
-      {/* Messages */}
+      {/* 消息列表 */}
       <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-6 py-4">
         <div className="space-y-4">
           {messages.length === 0 && !loading ? (
@@ -675,13 +698,14 @@ export default function Chat() {
                 key={msg.id}
                 message={msg}
                 onClarify={handleClarify}
+                onRejectClarification={handleRejectClarification}
                 onRetry={handleRetry}
                 onNavigateSettings={handleNavigateSettings}
               />
             ))
           )}
 
-          {/* ReAct Trace (while loading) */}
+          {/* ReAct 执行轨迹（加载时显示） */}
           {loading &&
             (currentTrace.thinking || currentTrace.toolCalls.length > 0 || currentTrace.plan) && (
               <div className="space-y-2 border-l-2 border-amber-200 pl-4">
@@ -692,12 +716,12 @@ export default function Chat() {
                       ?? 推理过程
                     </summary>
                     {currentTrace.thinking.length > 2000
-                      ? "..." + currentTrace.thinking.slice(-2000)
+                      ? `...${currentTrace.thinking.slice(-2000)}`
                       : currentTrace.thinking}
                   </details>
                 )}
                 {currentTrace.toolCalls.map((tc, i) => (
-                  <div key={i}>
+                  <div key={`${tc.name}-${tc.args}`}>
                     <details
                       className="rounded-lg border border-amber-200 bg-amber-50 text-xs"
                       open={i === currentTrace.toolCalls.length - 1}
@@ -723,8 +747,9 @@ export default function Chat() {
         </div>
       </div>
 
-      {/* Input bar */}
-      <div
+      {/* 输入栏 */}
+      <section
+        aria-label="消息输入与附件拖放区"
         className={`relative border-t border-neutral-200 bg-white p-4 transition-colors ${
           isDragging ? "border-blue-400 bg-blue-50/50" : ""
         }`}
@@ -767,7 +792,7 @@ export default function Chat() {
               )}
             </button>
 
-            {/* Model Selector */}
+            {/* 模型选择器 */}
             {providers.length > 0 && (
               <div ref={dropdownRef} className="relative shrink-0">
                 <button
@@ -804,7 +829,7 @@ export default function Chat() {
                   </svg>
                 </button>
 
-                {/* Auto-routing indicator */}
+                {/* 自动路由提示 */}
                 {attachments.some((a) => a.kind === "image") &&
                   selectedModel &&
                   selectedModel.is_multimodal !== true && (
@@ -883,7 +908,7 @@ export default function Chat() {
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
-              placeholder="输入问题，或先添加文档/图片附件…"
+              placeholder="输入问题，或先添加文档/图片附件..."
               rows={1}
               disabled={loading}
               className="flex-1 resize-none rounded-lg border border-neutral-200 bg-white px-4 py-2.5 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 disabled:opacity-50"
@@ -912,7 +937,7 @@ export default function Chat() {
             )}
           </div>
         </div>
-      </div>
+      </section>
     </div>
   )
 }
@@ -1049,9 +1074,22 @@ function isImageFile(name: string): boolean {
 function FileBubble({ attachment }: { attachment: FileAttachment }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [actionMessage, setActionMessage] = useState<{
+    type: "success" | "error"
+    text: string
+  } | null>(null)
+  const actionMessageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isImage = isImageFile(attachment.name)
   const Icon = isImage ? ImageIcon : getFileIcon(attachment.name)
   const src = isImage && attachment.path ? convertFileSrc(attachment.path) : undefined
+
+  const showActionMessage = useCallback((type: "success" | "error", text: string) => {
+    if (actionMessageTimerRef.current) {
+      clearTimeout(actionMessageTimerRef.current)
+    }
+    setActionMessage({ type, text })
+    actionMessageTimerRef.current = setTimeout(() => setActionMessage(null), 2400)
+  }, [])
 
   useEffect(() => {
     if (!previewOpen) return
@@ -1062,21 +1100,30 @@ function FileBubble({ attachment }: { attachment: FileAttachment }) {
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [previewOpen])
 
+  useEffect(() => {
+    return () => {
+      if (actionMessageTimerRef.current) {
+        clearTimeout(actionMessageTimerRef.current)
+      }
+    }
+  }, [])
+
   const handleClick = useCallback(() => {
     if (isImage) {
       setPreviewOpen(true)
     } else {
-      openPath(attachment.path).catch((err) => console.error("Failed to open file:", err))
+      openPath(attachment.path).catch((err) => showActionMessage("error", `打开文件失败：${err}`))
     }
-  }, [isImage, attachment.path])
+  }, [isImage, attachment.path, showActionMessage])
 
   const handleCopyPath = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(attachment.path)
+      showActionMessage("success", "路径已复制")
     } catch (err) {
-      console.error("Failed to copy path:", err)
+      showActionMessage("error", `复制路径失败：${err}`)
     }
-  }, [attachment.path])
+  }, [attachment.path, showActionMessage])
 
   const handleSaveAs = useCallback(async () => {
     try {
@@ -1086,11 +1133,12 @@ function FileBubble({ attachment }: { attachment: FileAttachment }) {
       })
       if (dest) {
         await invoke("save_attachment_as", { source: attachment.path, dest })
+        showActionMessage("success", `已保存到：${dest}`)
       }
     } catch (err) {
-      console.error("Failed to save file:", err)
+      showActionMessage("error", `另存失败：${err}`)
     }
-  }, [attachment.path, attachment.name])
+  }, [attachment.path, attachment.name, showActionMessage])
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -1101,10 +1149,11 @@ function FileBubble({ attachment }: { attachment: FileAttachment }) {
 
   return (
     <div className="relative">
-      <div
+      <button
+        type="button"
         onClick={handleClick}
         onContextMenu={handleContextMenu}
-        className="flex items-center gap-3 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2.5 cursor-pointer hover:bg-neutral-100 transition-colors max-w-[280px]"
+        className="flex max-w-[280px] cursor-pointer items-center gap-3 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-left transition-colors hover:bg-neutral-100"
       >
         {src ? (
           <img src={src} alt="" className="h-12 w-12 rounded object-cover shrink-0" />
@@ -1124,13 +1173,34 @@ function FileBubble({ attachment }: { attachment: FileAttachment }) {
         ) : (
           <ExternalLink className="h-4 w-4 shrink-0 text-neutral-400" />
         )}
-      </div>
+      </button>
 
-      {/* Image Lightbox */}
+      {actionMessage && (
+        <div
+          className={`mt-1 max-w-[280px] break-all rounded px-2 py-1 text-[10px] ${
+            actionMessage.type === "error"
+              ? "bg-red-50 text-red-600"
+              : "bg-emerald-50 text-emerald-700"
+          }`}
+        >
+          {actionMessage.text}
+        </div>
+      )}
+
+      {/* 图片预览浮层 */}
       {previewOpen && src && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={attachment.name}
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
-          onClick={() => setPreviewOpen(false)}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setPreviewOpen(false)
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") setPreviewOpen(false)
+          }}
+          tabIndex={-1}
         >
           <button
             type="button"
@@ -1143,15 +1213,19 @@ function FileBubble({ attachment }: { attachment: FileAttachment }) {
             src={src}
             alt={attachment.name}
             className="max-h-[90vh] max-w-[90vw] rounded object-contain"
-            onClick={(e) => e.stopPropagation()}
           />
         </div>
       )}
 
-      {/* Context Menu */}
+      {/* 右键菜单 */}
       {contextMenu && (
         <>
-          <div className="fixed inset-0 z-40" onClick={closeContextMenu} />
+          <button
+            type="button"
+            aria-label="关闭附件菜单"
+            className="fixed inset-0 z-40 cursor-default"
+            onClick={closeContextMenu}
+          />
           <div
             className="fixed z-50 min-w-[140px] rounded-lg border border-neutral-200 bg-white py-1 shadow-lg"
             style={{ left: contextMenu.x, top: contextMenu.y }}
@@ -1211,16 +1285,26 @@ function ImagePreview({ src, alt }: { src: string; alt: string }) {
 
   return (
     <>
-      <img
-        src={src}
-        alt={alt}
+      <button
+        type="button"
         onClick={() => setOpen(true)}
-        className="cursor-pointer rounded border border-neutral-200 hover:opacity-90 transition-opacity"
-      />
+        className="block rounded border border-neutral-200 hover:opacity-90 transition-opacity"
+      >
+        <img src={src} alt={alt} />
+      </button>
       {open && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={alt || "图片预览"}
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
-          onClick={() => setOpen(false)}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setOpen(false)
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") setOpen(false)
+          }}
+          tabIndex={-1}
         >
           <button
             type="button"
@@ -1229,12 +1313,7 @@ function ImagePreview({ src, alt }: { src: string; alt: string }) {
           >
             <X className="h-5 w-5" />
           </button>
-          <img
-            src={src}
-            alt={alt}
-            className="max-h-[90vh] max-w-[90vw] rounded object-contain"
-            onClick={(e) => e.stopPropagation()}
-          />
+          <img src={src} alt={alt} className="max-h-[90vh] max-w-[90vw] rounded object-contain" />
         </div>
       )}
     </>
@@ -1246,16 +1325,18 @@ function ImagePreview({ src, alt }: { src: string; alt: string }) {
 const MessageBubble = memo(function MessageBubble({
   message,
   onClarify,
+  onRejectClarification,
   onRetry,
   onNavigateSettings,
 }: {
   message: AgentMessage
   onClarify: (questionId: string, answer: string) => void
+  onRejectClarification: (questionId: string) => void
   onRetry: () => void
   onNavigateSettings: (section?: string) => void
 }) {
   const isUser = message.role === "user"
-  const [freeInput, setFreeInput] = useState("")
+  const clarification = message.clarification
 
   const isLLMError =
     message.error && /未配置|api.?key|llm|模型|unauthorized|401/i.test(message.content)
@@ -1264,7 +1345,7 @@ const MessageBubble = memo(function MessageBubble({
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div className={`max-w-[80%] ${isUser ? "" : "w-full"}`}>
-        {/* Avatar */}
+        {/* 头像 */}
         <div
           className={`mb-1 flex items-center gap-1.5 text-xs ${
             isUser ? "justify-end text-neutral-400" : "text-amber-600"
@@ -1276,7 +1357,7 @@ const MessageBubble = memo(function MessageBubble({
           <span className="font-medium">{isUser ? "你" : "AI 助手"}</span>
         </div>
 
-        {/* Message */}
+        {/* 消息 */}
         <div
           className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
             isUser
@@ -1330,7 +1411,7 @@ const MessageBubble = memo(function MessageBubble({
             <VerificationBadge report={message.verificationReport} />
           )}
 
-          {/* File Attachments */}
+          {/* 文件附件 */}
           {message.attachments && message.attachments.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-2">
               {message.attachments.map((att) => (
@@ -1339,7 +1420,7 @@ const MessageBubble = memo(function MessageBubble({
             </div>
           )}
 
-          {/* Error action buttons */}
+          {/* 错误操作按钮 */}
           {message.error && !message.streaming && (
             <div className="mt-3 flex flex-wrap gap-2 border-t border-red-200 pt-3">
               {(isLLMError || isTimeoutError) && (
@@ -1358,76 +1439,24 @@ const MessageBubble = memo(function MessageBubble({
                 className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 transition-colors"
               >
                 <RefreshCw className="h-3 w-3" />
-                重试
+                恢复输入
               </button>
             </div>
           )}
 
-          {/* RAG Sources */}
+          {/* RAG 来源 */}
           {!isUser && !message.error && message.sources && message.sources.length > 0 && (
             <SourcesDisplay sources={message.sources} />
           )}
 
-          {/* Clarification options */}
-          {message.clarification && !message.clarificationAnswered && (
-            <div className="mt-3 border-t border-neutral-100 pt-3 space-y-2">
-              {/* Single choice: clickable buttons */}
-              {message.clarification.mode === "single_choice" && (
-                <div className="flex flex-wrap gap-2">
-                  {message.clarification.options.map((opt) => (
-                    <button
-                      key={opt}
-                      type="button"
-                      onClick={() => onClarify(message.clarification!.question_id, opt)}
-                      className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100 transition-colors"
-                    >
-                      {opt}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {/* Multi choice: checkboxes + confirm */}
-              {message.clarification.mode === "multi_choice" && (
-                <MultiChoiceOptions
-                  options={message.clarification.options}
-                  questionId={message.clarification.question_id}
-                  onConfirm={onClarify}
-                />
-              )}
-
-              {/* Free input: text box + submit */}
-              {message.clarification.mode === "free_input" && (
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={freeInput}
-                    onChange={(e) => setFreeInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && freeInput.trim()) {
-                        onClarify(message.clarification!.question_id, freeInput.trim())
-                        setFreeInput("")
-                      }
-                    }}
-                    placeholder="输入你的回答..."
-                    className="flex-1 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs outline-none focus:border-amber-500"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (freeInput.trim()) {
-                        onClarify(message.clarification!.question_id, freeInput.trim())
-                        setFreeInput("")
-                      }
-                    }}
-                    disabled={!freeInput.trim()}
-                    className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors"
-                  >
-                    发送
-                  </button>
-                </div>
-              )}
-            </div>
+          {/* 澄清问题 */}
+          {clarification && !message.clarificationAnswered && (
+            <ClarificationTabs
+              key={clarification.question_id}
+              clarification={clarification}
+              onClarify={onClarify}
+              onReject={onRejectClarification}
+            />
           )}
         </div>
       </div>
@@ -1435,7 +1464,7 @@ const MessageBubble = memo(function MessageBubble({
   )
 })
 
-/** Collapsible RAG sources display */
+/** 可折叠的 RAG 来源展示 */
 function SourcesDisplay({ sources }: { sources: RAGSource[] }) {
   const [expanded, setExpanded] = useState(false)
 
@@ -1456,8 +1485,11 @@ function SourcesDisplay({ sources }: { sources: RAGSource[] }) {
       </button>
       {expanded && (
         <div className="mt-2 space-y-1.5">
-          {sources.map((src, i) => (
-            <div key={i} className="rounded-lg border border-neutral-100 bg-neutral-50 px-3 py-2">
+          {sources.map((src) => (
+            <div
+              key={`${src.title}-${src.section_path ?? ""}-${src.content_snippet ?? ""}-${src.score}`}
+              className="rounded-lg border border-neutral-100 bg-neutral-50 px-3 py-2"
+            >
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-medium text-neutral-700 truncate">{src.title}</span>
                 {src.score > 0 && (
@@ -1484,54 +1516,266 @@ function SourcesDisplay({ sources }: { sources: RAGSource[] }) {
   )
 }
 
-/** Multi-choice checkbox group with confirm button */
-function MultiChoiceOptions({
-  options,
-  questionId,
-  onConfirm,
+function ClarificationTabs({
+  clarification,
+  onClarify,
+  onReject,
 }: {
-  options: string[]
-  questionId: string
-  onConfirm: (questionId: string, answer: string) => void
+  clarification: ClarificationPayload
+  onClarify: (questionId: string, answer: string) => void
+  onReject: (questionId: string) => void
 }) {
-  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const questions = useMemo(
+    () =>
+      clarification.questions && clarification.questions.length > 0
+        ? clarification.questions
+        : [
+            {
+              prompt: clarification.prompt,
+              header: clarification.header || "问题",
+              mode: clarification.mode,
+              options: clarification.options,
+              multiple: clarification.multiple,
+              custom: clarification.custom,
+            },
+          ],
+    [
+      clarification.questions,
+      clarification.prompt,
+      clarification.header,
+      clarification.mode,
+      clarification.options,
+      clarification.multiple,
+      clarification.custom,
+    ],
+  )
+  const [active, setActive] = useState(0)
+  const [answers, setAnswers] = useState<string[][]>(() => questions.map(() => []))
+  const [customValues, setCustomValues] = useState<string[]>(() => questions.map(() => ""))
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const activeQuestion = questions[Math.min(active, questions.length - 1)]
+  const tabBaseId = `clarification-${clarification.question_id.replace(/[^a-zA-Z0-9_-]/g, "-")}`
 
-  const toggle = (opt: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(opt)) next.delete(opt)
-      else next.add(opt)
-      return next
-    })
+  const setQuestionAnswer = (index: number, value: string[]) => {
+    setAnswers((prev) => prev.map((item, i) => (i === index ? value : item)))
+  }
+
+  const answeredCount = answers.filter((items) => items.length > 0).length
+  const canSubmit = answeredCount === questions.length
+
+  const submit = () => {
+    if (!canSubmit) return
+    onClarify(clarification.question_id, JSON.stringify(answers))
+  }
+
+  const activateTab = (index: number, focus = true) => {
+    const next = (index + questions.length) % questions.length
+    setActive(next)
+    if (focus) {
+      requestAnimationFrame(() => tabRefs.current[next]?.focus())
+    }
+  }
+
+  const moveTab = (direction: -1 | 1) => {
+    activateTab(active + direction)
+  }
+
+  return (
+    <div className="mt-3 border-t border-neutral-100 pt-3">
+      {questions.length > 1 && (
+        <div
+          role="tablist"
+          aria-label="澄清问题"
+          className="mb-3 flex gap-1 overflow-x-auto border-b border-neutral-100"
+          onKeyDown={(event) => {
+            if (event.key === "ArrowRight") {
+              event.preventDefault()
+              moveTab(1)
+            } else if (event.key === "ArrowLeft") {
+              event.preventDefault()
+              moveTab(-1)
+            } else if (event.key === "Home") {
+              event.preventDefault()
+              activateTab(0)
+            } else if (event.key === "End") {
+              event.preventDefault()
+              activateTab(questions.length - 1)
+            } else if (event.key === "Tab") {
+              event.preventDefault()
+              moveTab(event.shiftKey ? -1 : 1)
+            }
+          }}
+        >
+          {questions.map((question, index) => (
+            <button
+              key={`${question.header}-${question.prompt}`}
+              ref={(element) => {
+                tabRefs.current[index] = element
+              }}
+              type="button"
+              role="tab"
+              id={`${tabBaseId}-tab-${index}`}
+              aria-selected={active === index}
+              aria-controls={`${tabBaseId}-panel`}
+              tabIndex={active === index ? 0 : -1}
+              onClick={() => activateTab(index, false)}
+              className={`shrink-0 border-b-2 px-3 py-2 text-xs font-medium transition-colors ${
+                active === index
+                  ? "border-amber-500 text-amber-700"
+                  : answers[index]?.length
+                    ? "border-transparent text-emerald-700 hover:text-amber-700"
+                    : "border-transparent text-neutral-500 hover:text-neutral-700"
+              }`}
+            >
+              {question.header || `问题 ${index + 1}`}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div
+        id={`${tabBaseId}-panel`}
+        role="tabpanel"
+        aria-labelledby={questions.length > 1 ? `${tabBaseId}-tab-${active}` : undefined}
+        className="space-y-3"
+      >
+        <div>
+          <div className="text-xs font-medium text-neutral-500">
+            {questions.length > 1 ? `${active + 1}/${questions.length}` : "需要确认"}
+          </div>
+          <div className="mt-1 text-sm font-medium text-neutral-800">{activeQuestion.prompt}</div>
+        </div>
+
+        <QuestionAnswerInput
+          question={activeQuestion}
+          answer={answers[active] ?? []}
+          customValue={customValues[active] ?? ""}
+          onAnswer={(value) => setQuestionAnswer(active, value)}
+          onCustomValue={(value) =>
+            setCustomValues((prev) => prev.map((item, index) => (index === active ? value : item)))
+          }
+          onSubmit={submit}
+        />
+
+        <div className="flex items-center justify-between gap-3 pt-1">
+          <span className="text-xs text-neutral-400">
+            已回答 {answeredCount}/{questions.length}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onReject(clarification.question_id)}
+              className="rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-600 transition-colors hover:border-neutral-300 hover:bg-neutral-50"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={submit}
+              disabled={!canSubmit}
+              className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-50"
+            >
+              提交回答
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function QuestionAnswerInput({
+  question,
+  answer,
+  customValue,
+  onAnswer,
+  onCustomValue,
+  onSubmit,
+}: {
+  question: ClarificationQuestion
+  answer: string[]
+  customValue: string
+  onAnswer: (answer: string[]) => void
+  onCustomValue: (value: string) => void
+  onSubmit: () => void
+}) {
+  const toggleOption = (option: QuestionOption) => {
+    if (question.mode === "multi_choice" || question.multiple) {
+      onAnswer(
+        answer.includes(option.label)
+          ? answer.filter((item) => item !== option.label)
+          : [...answer, option.label],
+      )
+    } else {
+      onAnswer([option.label])
+    }
+  }
+
+  const commitCustom = () => {
+    const value = customValue.trim()
+    if (!value) return
+    onAnswer(question.multiple ? [...answer.filter((item) => item !== value), value] : [value])
+    onCustomValue("")
   }
 
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap gap-2">
-        {options.map((opt) => (
+      {question.options.length > 0 && (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {question.options.map((option) => {
+            const selected = answer.includes(option.label)
+            return (
+              <button
+                key={option.label}
+                type="button"
+                onClick={() => toggleOption(option)}
+                className={`min-h-[58px] rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
+                  selected
+                    ? "border-amber-500 bg-amber-50 text-amber-800"
+                    : "border-neutral-200 bg-white text-neutral-600 hover:border-amber-200"
+                }`}
+              >
+                <span className="block font-medium">{option.label}</span>
+                {option.description && (
+                  <span className="mt-0.5 block leading-snug text-neutral-500">
+                    {option.description}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      {(question.custom || question.mode === "free_input") && (
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={customValue}
+            onChange={(event) => onCustomValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault()
+                if (customValue.trim()) {
+                  commitCustom()
+                } else {
+                  onSubmit()
+                }
+              }
+            }}
+            placeholder="输入自定义回答..."
+            className="min-w-0 flex-1 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs outline-none focus:border-amber-500"
+          />
           <button
-            key={opt}
             type="button"
-            onClick={() => toggle(opt)}
-            className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
-              selected.has(opt)
-                ? "border-amber-500 bg-amber-100 text-amber-800"
-                : "border-neutral-200 bg-white text-neutral-600 hover:border-amber-200"
-            }`}
+            onClick={commitCustom}
+            disabled={!customValue.trim()}
+            className="rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 transition-colors hover:border-amber-200 disabled:opacity-50"
           >
-            {selected.has(opt) ? "✓ " : ""}
-            {opt}
+            添加
           </button>
-        ))}
-      </div>
-      <button
-        type="button"
-        onClick={() => onConfirm(questionId, Array.from(selected).join(", "))}
-        disabled={selected.size === 0}
-        className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50 transition-colors"
-      >
-        确认选择 ({selected.size})
-      </button>
+        </div>
+      )}
     </div>
   )
 }
