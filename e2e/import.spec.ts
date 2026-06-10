@@ -58,9 +58,11 @@ test.describe("Import page", () => {
     await expect(page.getByText(/Whisper \(本地\)/)).toBeVisible();
   });
 
-  test("should have project selector", async ({ page }) => {
+  test("should follow the global project instead of showing a local project selector", async ({
+    page,
+  }) => {
     await page.goto("/import");
-    const selects = page.locator("select");
-    await expect(selects.first()).toBeVisible();
+    await expect(page.locator("select")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "导入" })).toBeVisible();
   });
 });

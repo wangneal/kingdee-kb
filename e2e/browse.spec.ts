@@ -66,10 +66,17 @@ test.describe("Browse page", () => {
   test("should recompile failed kb sources and refresh wiki list", async ({ page }) => {
     await mockTauriApis(page, {
       responses: {
-        recompile_failed_kb_sources: {
+        start_kb_recompile: {
+          status: "completed",
+          project_id: 1,
+          force: false,
           retried: 1,
           succeeded: 1,
           failed: [],
+          completed_source_keys: ["retry-doc"],
+          message: "重编译完成：成功 1/1 项",
+          started_at: "2026-06-06T00:00:00Z",
+          finished_at: "2026-06-06T00:00:01Z",
         },
       },
       sequences: {
@@ -89,7 +96,7 @@ test.describe("Browse page", () => {
     await expect
       .poll(async () => {
         const calls = await page.evaluate(() => Reflect.get(globalThis, "__TAURI_MOCK_CALLS__"))
-        const recompileCalls = Reflect.get(calls, "recompile_failed_kb_sources") as
+        const recompileCalls = Reflect.get(calls, "start_kb_recompile") as
           | Record<string, unknown>[]
           | undefined
         return recompileCalls?.at(-1)?.projectId

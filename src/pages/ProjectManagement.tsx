@@ -73,11 +73,12 @@ export default function ProjectManagement() {
     void refresh()
   }, [refresh])
 
-  async function run(action: () => Promise<void>, success: string) {
+  async function run(action: () => Promise<boolean>, success: string) {
     setBusy(true)
     setMessage("")
     try {
-      await action()
+      const completed = await action()
+      if (!completed) return
       await refresh()
       setMessage(success)
     } catch (error) {
@@ -154,6 +155,7 @@ export default function ProjectManagement() {
             run(async () => {
               await updateProject(project.id, name, clientName, description)
               await refreshProjects()
+              return true
             }, "项目详情已保存")
           }
         />
@@ -163,10 +165,10 @@ export default function ProjectManagement() {
           phases={phases}
           busy={busy}
           onSave={(phaseKey, start, end) =>
-            run(
-              () => updateProjectPhasePlan(project.id, phaseKey, start || null, end || null),
-              "阶段计划已保存",
-            )
+            run(async () => {
+              await updateProjectPhasePlan(project.id, phaseKey, start || null, end || null)
+              return true
+            }, "阶段计划已保存")
           }
         />
       )}
@@ -183,20 +185,23 @@ export default function ProjectManagement() {
                 multiple: false,
                 directory: false,
               })
-              if (!path) return
+              if (!path) return false
               const identity = path.split(/[\\/]/).pop() ?? "source"
               await createRawSource(project.id, identity, path)
+              return true
             }, "原始资料已导入")
           }
           onQueue={(identity) =>
             run(async () => {
               await enqueueIngestion(project.id, identity)
+              return true
             }, "已加入摄入队列")
           }
           onDelete={(id) =>
             run(async () => {
-              if (!window.confirm("确认移除这条原始资料记录吗？")) return
+              if (!window.confirm("确认移除这条原始资料记录吗？")) return false
               await softDeleteRawSource(id)
+              return true
             }, "原始资料已移除")
           }
         />
@@ -208,11 +213,13 @@ export default function ProjectManagement() {
           onProcess={() =>
             run(async () => {
               await processIngestionQueue(project.id)
+              return true
             }, "摄入队列处理完成")
           }
           onRetry={() =>
             run(async () => {
               await retryFailedIngestions(project.id)
+              return true
             }, "失败任务已重置为待处理")
           }
         />

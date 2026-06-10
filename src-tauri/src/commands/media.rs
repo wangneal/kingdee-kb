@@ -3,11 +3,64 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::app_state::AppState;
 use crate::services::asr_provider::FileAsr;
+use crate::services::audio_capture::AudioCapture;
+use crate::services::llm_service::{truncate_to_tokens, ChatMessage};
 use crate::services::model_downloader;
 use crate::services::video_transcriber::{
     MeetingMinutesResult, VideoPipelineResult, VideoTranscriptionResult,
 };
 use crate::services::whisper_service::{TranscriptionResult, WhisperStatus};
+
+const WHISPER_SAMPLE_RATE: usize = 16000;
+const REALTIME_MIN_SAMPLES: usize = WHISPER_SAMPLE_RATE * 5;
+const MIN_SPEECH_SAMPLES: usize = WHISPER_SAMPLE_RATE;
+const MIN_SPEECH_RMS: f32 = 0.008;
+
+fn pcm_rms(pcm_data: &[f32]) -> f32 {
+    if pcm_data.is_empty() {
+        return 0.0;
+    }
+    (pcm_data.iter().map(|sample| sample * sample).sum::<f32>() / pcm_data.len() as f32).sqrt()
+}
+
+fn collect_speech_pcm(
+    pcm_data: &[f32],
+    speech_segments: &[(usize, usize)],
+    padding_ms: usize,
+) -> Vec<f32> {
+    if speech_segments.is_empty() {
+        return Vec::new();
+    }
+
+    let padding_samples = WHISPER_SAMPLE_RATE * padding_ms / 1000;
+    let gap_samples = WHISPER_SAMPLE_RATE / 5;
+    let mut merged_segments: Vec<(usize, usize)> = Vec::new();
+
+    for (start, end) in speech_segments {
+        let padded_start = start.saturating_sub(padding_samples);
+        let padded_end = (end + padding_samples).min(pcm_data.len());
+        if padded_end <= padded_start {
+            continue;
+        }
+
+        if let Some((_, last_end)) = merged_segments.last_mut() {
+            if padded_start <= *last_end {
+                *last_end = (*last_end).max(padded_end);
+                continue;
+            }
+        }
+        merged_segments.push((padded_start, padded_end));
+    }
+
+    let mut speech_pcm = Vec::new();
+    for (index, (start, end)) in merged_segments.iter().enumerate() {
+        if index > 0 {
+            speech_pcm.extend(std::iter::repeat(0.0).take(gap_samples));
+        }
+        speech_pcm.extend_from_slice(&pcm_data[*start..*end]);
+    }
+    speech_pcm
+}
 
 /// 加载 Whisper 模型用于语音转录。
 #[tauri::command]
@@ -31,11 +84,189 @@ pub fn get_whisper_status(state: State<'_, AppState>) -> Result<WhisperStatus, S
     Ok(whisper.status())
 }
 
+#[derive(Serialize)]
+pub struct AudioInputDeviceInfo {
+    id: String,
+    name: String,
+    host: String,
+    is_default: bool,
+}
+
+/// 列出系统可见的麦克风输入设备。
+#[tauri::command]
+pub fn list_audio_input_devices() -> Result<Vec<AudioInputDeviceInfo>, String> {
+    let devices = AudioCapture::input_devices()?;
+    Ok(devices
+        .into_iter()
+        .map(|device| AudioInputDeviceInfo {
+            id: device.id,
+            name: device.name,
+            host: device.host,
+            is_default: device.is_default,
+        })
+        .collect())
+}
+
 /// 开始麦克风录音。
 #[tauri::command]
-pub fn start_whisper_recording(state: State<'_, AppState>) -> Result<(), String> {
-    let capture = state.audio_capture.write().map_err(|e| e.to_string())?;
-    capture.start_recording()
+pub async fn start_whisper_recording(
+    state: State<'_, AppState>,
+    device_name: Option<String>,
+) -> Result<(), String> {
+    let mut candidates: Vec<Option<String>> = Vec::new();
+    if let Some(device_key) = device_name {
+        candidates.push(Some(device_key));
+    } else {
+        candidates.push(None);
+        for device in AudioCapture::input_devices().unwrap_or_default() {
+            if !device.is_default {
+                candidates.push(Some(device.id));
+            }
+        }
+    }
+
+    let mut tried = Vec::new();
+    for candidate in candidates {
+        let label = candidate
+            .clone()
+            .unwrap_or_else(|| "系统默认输入设备".to_string());
+        tried.push(label.clone());
+        let capture = state.audio_capture.write().map_err(|e| e.to_string())?;
+        match capture.start_recording(candidate.as_deref()) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                tried.push(format!("{}({})", label, error));
+                continue;
+            }
+        }
+    }
+
+    Err(format!(
+        "未能启动任何麦克风输入流，请检查系统麦克风权限、输入设备或是否被其他程序占用。已尝试: {}",
+        tried.join("、")
+    ))
+}
+
+#[derive(Serialize)]
+pub struct RecordingPreviewResult {
+    text: String,
+    sample_count: usize,
+    processing_time_ms: u64,
+}
+
+/// 转写录音中的新增片段，用于前端实时预览。
+#[tauri::command]
+pub async fn transcribe_whisper_recording_chunk(
+    state: State<'_, AppState>,
+    from_sample: usize,
+) -> Result<RecordingPreviewResult, String> {
+    let (is_recording, pcm_data) = {
+        let capture = state.audio_capture.read().map_err(|e| e.to_string())?;
+        capture.recording_snapshot()?
+    };
+    if !is_recording {
+        return Ok(RecordingPreviewResult {
+            text: String::new(),
+            sample_count: pcm_data.len(),
+            processing_time_ms: 0,
+        });
+    }
+
+    let start_sample = from_sample.min(pcm_data.len());
+    let pending = &pcm_data[start_sample..];
+    if pending.len() < REALTIME_MIN_SAMPLES {
+        return Ok(RecordingPreviewResult {
+            text: String::new(),
+            sample_count: start_sample,
+            processing_time_ms: 0,
+        });
+    }
+
+    let speech_segments = crate::services::audio_capture::AudioCapture::detect_speech_segments(
+        pending,
+        WHISPER_SAMPLE_RATE as u32,
+        500,
+        0.015,
+    );
+    if speech_segments.is_empty() {
+        return Ok(RecordingPreviewResult {
+            text: String::new(),
+            sample_count: start_sample,
+            processing_time_ms: 0,
+        });
+    }
+
+    let speech_pcm = collect_speech_pcm(pending, &speech_segments, 300);
+    if speech_pcm.len() < MIN_SPEECH_SAMPLES || pcm_rms(&speech_pcm) < MIN_SPEECH_RMS {
+        return Ok(RecordingPreviewResult {
+            text: String::new(),
+            sample_count: start_sample,
+            processing_time_ms: 0,
+        });
+    }
+
+    let whisper_result = {
+        let whisper = state.whisper_service.write().map_err(|e| e.to_string())?;
+        if !whisper.is_model_loaded() {
+            return Err("Whisper 模型未加载。请先加载语音模型。".to_string());
+        }
+        whisper.transcribe(&speech_pcm)?
+    };
+    let processed_text =
+        crate::services::chinese_postprocess::postprocess_chinese(&whisper_result.text);
+
+    Ok(RecordingPreviewResult {
+        text: processed_text,
+        sample_count: pcm_data.len(),
+        processing_time_ms: whisper_result.processing_time_ms,
+    })
+}
+
+/// 使用当前 LLM 对语音转写稿做保守校订。
+#[tauri::command]
+pub async fn review_transcription_text(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<String, String> {
+    let raw_text = text.trim();
+    if raw_text.is_empty() {
+        return Ok(String::new());
+    }
+
+    if !state.llm.is_configured() {
+        return Ok(raw_text.to_string());
+    }
+
+    let config = state.llm.get_active_config()?;
+    let clipped_text = truncate_to_tokens(raw_text, 6000);
+    let messages = vec![
+        ChatMessage {
+            role: "system".to_string(),
+            content: [
+                "你是调研访谈语音转写校订器。",
+                "只能修正明显 ASR 错字、断句、标点、繁简混用和重复幻觉片段。",
+                "禁止新增用户没有说过的业务事实，禁止扩写、总结、改写成会议纪要。",
+                "遇到不确定内容保留原意或标为[听不清]。",
+                "只输出校订后的转写正文，不要解释，不要 Markdown。",
+            ]
+            .join("\n"),
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: format!(
+                "请校订以下语音转写稿。若出现连续重复的无意义短句或噪声幻觉，只保留一次有意义内容，无法判断就删去噪声。\n\n{}",
+                clipped_text
+            ),
+        },
+    ];
+
+    let reviewed = state.llm.chat_completion(&messages, &config).await?;
+    let reviewed = reviewed.trim();
+    if reviewed.is_empty() {
+        Ok(raw_text.to_string())
+    } else {
+        Ok(reviewed.to_string())
+    }
 }
 
 /// 停止录音并转录音频。
@@ -117,7 +348,10 @@ pub async fn stop_whisper_recording(
 
     // 语音活动检测：提取有效语音片段
     let speech_segments = crate::services::audio_capture::AudioCapture::detect_speech_segments(
-        &pcm_data, 16000, 500, 0.01,
+        &pcm_data,
+        WHISPER_SAMPLE_RATE as u32,
+        500,
+        0.012,
     );
 
     if speech_segments.is_empty() {
@@ -129,10 +363,15 @@ pub async fn stop_whisper_recording(
         });
     }
 
-    let speech_pcm: Vec<f32> = speech_segments
-        .iter()
-        .flat_map(|(start, end)| pcm_data[*start..*end].to_vec())
-        .collect();
+    let speech_pcm = collect_speech_pcm(&pcm_data, &speech_segments, 300);
+    if speech_pcm.len() < MIN_SPEECH_SAMPLES || pcm_rms(&speech_pcm) < MIN_SPEECH_RMS {
+        return Ok(TranscriptionResult {
+            text: String::new(),
+            segments: Vec::new(),
+            confidence: 0.0,
+            processing_time_ms: 0,
+        });
+    }
 
     let whisper_result = {
         let whisper = state.whisper_service.write().map_err(|e| e.to_string())?;

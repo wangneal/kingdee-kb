@@ -8,6 +8,7 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::error::Error;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Duration;
 use tracing::{info, warn};
@@ -35,6 +36,28 @@ fn build_http_client(base_url: &str) -> Result<reqwest::Client, String> {
         .timeout(Duration::from_secs(LLM_ANALYSIS_TIMEOUT_SECS))
         .build()
         .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))
+}
+
+fn format_reqwest_error(error: &reqwest::Error) -> String {
+    let mut details = vec![error.to_string()];
+
+    if error.is_timeout() {
+        details.push("类型=超时".to_string());
+    }
+    if error.is_connect() {
+        details.push("类型=连接失败".to_string());
+    }
+    if error.is_request() {
+        details.push("类型=请求发送失败".to_string());
+    }
+    if let Some(status) = error.status() {
+        details.push(format!("状态码={}", status.as_u16()));
+    }
+    if let Some(source) = error.source() {
+        details.push(format!("来源={}", source));
+    }
+
+    details.join("；")
 }
 
 // ─── 静态正则（LazyLock，避免每次调用重新编译） ───
@@ -76,8 +99,11 @@ use crate::services::llm_providers::LLMProviderManager;
 
 // ─── 常量 ───
 
-/// LLM 分析超时时间（60 秒）
-const LLM_ANALYSIS_TIMEOUT_SECS: u64 = 60;
+/// LLM 分析超时时间（180 秒）
+const LLM_ANALYSIS_TIMEOUT_SECS: u64 = 180;
+
+/// LLM 分析最多发送的正文字符数
+const LLM_ANALYSIS_MAX_PROMPT_CHARS: usize = 60_000;
 
 /// 分析器版本号，缓存失效用
 const ANALYZER_VERSION: &str = "1";
@@ -244,13 +270,56 @@ impl std::error::Error for LlmCallError {}
 
 // ─── Rust 分析引擎 ───
 
+fn normalize_title(raw: &str) -> String {
+    raw.trim()
+        .trim_start_matches('#')
+        .trim_start_matches(|c: char| c.is_whitespace())
+        .trim()
+        .to_string()
+}
+
+fn is_usable_title(title: &str) -> bool {
+    let title = title.trim();
+    !title.is_empty()
+        && title.chars().count() <= 120
+        && !title.contains('\u{FFFD}')
+        && !title.chars().any(|c| c.is_control())
+}
+
+fn bounded_analysis_text(text: &str) -> String {
+    let total_chars = text.chars().count();
+    if total_chars <= LLM_ANALYSIS_MAX_PROMPT_CHARS {
+        return text.to_string();
+    }
+
+    let head_chars = LLM_ANALYSIS_MAX_PROMPT_CHARS / 2;
+    let tail_chars = LLM_ANALYSIS_MAX_PROMPT_CHARS - head_chars;
+    let head: String = text.chars().take(head_chars).collect();
+    let tail: String = text
+        .chars()
+        .rev()
+        .take(tail_chars)
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    format!(
+        "{}\n\n[中间内容已省略：原文共 {} 字符，LLM 分析仅使用前后 {} 字符]\n\n{}",
+        head, total_chars, LLM_ANALYSIS_MAX_PROMPT_CHARS, tail
+    )
+}
+
 /// Rust 本地分析引擎（纯词法/正则分析，不依赖 LLM）
 pub struct RustAnalysisEngine;
 
 impl RustAnalysisEngine {
     /// 对清理后的文档文本执行全面分析
     pub fn analyze(text: &str, source_identity: &str, sha256: &str) -> DocumentAnalysis {
-        let title = Self::extract_title(text);
+        let mut title = Self::extract_title(text);
+        if !text.trim().is_empty() && !is_usable_title(&title) {
+            title = source_identity.to_string();
+        }
         let headings = Self::parse_headings(text);
         let keywords = Self::extract_keywords_tfidf(text);
         // 规格要求：entities 是 LLM 引擎专属字段，Rust 引擎输出为空数组
@@ -278,12 +347,16 @@ impl RustAnalysisEngine {
     fn extract_title(text: &str) -> String {
         // 尝试匹配 # 一级标题
         if let Some(cap) = RE_H1_TITLE.captures(text) {
-            return cap[1].trim().to_string();
+            let title = normalize_title(cap[1].trim());
+            if is_usable_title(&title) {
+                return title;
+            }
         }
         // 退回到第一行非空文本
         text.lines()
             .find(|l| !l.trim().is_empty())
-            .map(|l| l.trim().to_string())
+            .map(|l| normalize_title(l.trim()))
+            .filter(|l| is_usable_title(l))
             .unwrap_or_default()
     }
 
@@ -573,6 +646,7 @@ pub struct LlmAnalysisEngine;
 impl LlmAnalysisEngine {
     /// 组装 LLM 分析提示词
     pub fn build_prompt(text: &str, source_identity: &str) -> String {
+        let analysis_text = bounded_analysis_text(text);
         format!(
             r#"你是一个文档分析专家。请分析以下文档内容，以 JSON 格式输出分析结果。
 
@@ -617,7 +691,7 @@ source_identity: {source_identity}
 {text}
 ---"#,
             source_identity = source_identity,
-            text = text,
+            text = analysis_text,
         )
     }
 
@@ -636,8 +710,9 @@ source_identity: {source_identity}
         analysis.source_identity = source_identity.to_string();
         analysis.sha256 = sha256.to_string();
 
-        // 确保字段不为空
-        if analysis.title.is_empty() {
+        // 确保标题可用于页面名称
+        analysis.title = normalize_title(&analysis.title);
+        if !is_usable_title(&analysis.title) {
             analysis.title = source_identity.to_string();
         }
 
@@ -715,7 +790,7 @@ impl AnalysisOrchestrator {
 
         // 2. 尝试 LLM 引擎
         if enable_kb_compilation {
-            let llm_config: Option<(String, String, String, LLMProtocol)> = {
+            let llm_config: Option<(String, String, String, LLMProtocol, bool)> = {
                 let mgr = match self.provider_manager.read() {
                     Ok(m) => m,
                     Err(e) => {
@@ -724,17 +799,30 @@ impl AnalysisOrchestrator {
                     }
                 };
                 match mgr.get_default_provider() {
-                    Some(p) if p.is_configured() => Some((
-                        p.base_url.clone(),
-                        p.get_default_key_value(),
-                        p.get_default_model_name(),
-                        p.protocol.clone(),
-                    )),
+                    Some(p) if p.is_configured() => {
+                        let model = p.get_default_model();
+                        let model_name = model.map(|m| m.name.clone()).unwrap_or_default();
+                        let supports_thinking = model
+                            .and_then(|m| m.supports_thinking)
+                            .or_else(|| {
+                                super::model_metadata::from_builtin_db(&model_name)
+                                    .map(|m| m.supports_thinking)
+                            })
+                            .unwrap_or(false);
+
+                        Some((
+                            p.base_url.clone(),
+                            p.get_default_key_value(),
+                            model_name,
+                            p.protocol.clone(),
+                            supports_thinking,
+                        ))
+                    }
                     _ => None,
                 }
             };
 
-            let (base_url, api_key, model_name, protocol) = match llm_config {
+            let (base_url, api_key, model_name, protocol, supports_thinking) = match llm_config {
                 Some(c) => c,
                 None => {
                     warn!("LLM 供应商未配置，降级到 Rust 引擎");
@@ -765,13 +853,14 @@ impl AnalysisOrchestrator {
                 LLMProtocol::Anthropic => ANTHROPIC_MAX_TOKENS,
                 _ => 4096u64,
             };
-            // 仅 Anthropic 协议开启 extended thinking
+            // 仅模型明确支持时开启 extended thinking
             // 重试时会切换为 Disabled，把全部 max_tokens 配额给 text 块
-            let mut thinking_mode = if matches!(protocol, LLMProtocol::Anthropic) {
-                ThinkingMode::Enabled
-            } else {
-                ThinkingMode::Disabled
-            };
+            let mut thinking_mode =
+                if matches!(protocol, LLMProtocol::Anthropic) && supports_thinking {
+                    ThinkingMode::Enabled
+                } else {
+                    ThinkingMode::Disabled
+                };
 
             // LLM 调用 + token 耗尽重试循环
             let mut retry_count: u32 = 0;
@@ -921,7 +1010,7 @@ impl AnalysisOrchestrator {
                 .json(body)
                 .send()
                 .await
-                .map_err(|e| LlmCallError::Http(e.to_string()))?
+                .map_err(|e| LlmCallError::Http(format_reqwest_error(&e)))?
         } else {
             client
                 .post(chat_url)
@@ -930,7 +1019,7 @@ impl AnalysisOrchestrator {
                 .json(body)
                 .send()
                 .await
-                .map_err(|e| LlmCallError::Http(e.to_string()))?
+                .map_err(|e| LlmCallError::Http(format_reqwest_error(&e)))?
         };
 
         if !response.status().is_success() {
@@ -954,9 +1043,7 @@ impl AnalysisOrchestrator {
                     .unwrap_or("unknown");
 
                 let content_arr = &response_json["content"];
-                if content_arr.is_null()
-                    || content_arr.as_array().map_or(true, |a| a.is_empty())
-                {
+                if content_arr.is_null() || content_arr.as_array().map_or(true, |a| a.is_empty()) {
                     warn!(
                         "Anthropic 响应 content 为空: {}",
                         serde_json::to_string(&response_json).unwrap_or_default()
@@ -1119,6 +1206,21 @@ mod tests {
     fn test_extract_title() {
         let text = "# 测试标题\n\n一些内容";
         assert_eq!(RustAnalysisEngine::extract_title(text), "测试标题");
+    }
+
+    #[test]
+    fn test_extract_title_rejects_mojibake() {
+        let text = "���乱码标题\n\n普通内容";
+        let analysis = RustAnalysisEngine::analyze(text, "源文件.doc", "000");
+        assert_eq!(analysis.title, "源文件.doc");
+    }
+
+    #[test]
+    fn test_bounded_analysis_text_truncates_long_input() {
+        let text = "甲".repeat(LLM_ANALYSIS_MAX_PROMPT_CHARS + 100);
+        let bounded = bounded_analysis_text(&text);
+        assert!(bounded.chars().count() < text.chars().count());
+        assert!(bounded.contains("中间内容已省略"));
     }
 
     #[test]

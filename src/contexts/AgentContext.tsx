@@ -16,6 +16,7 @@ import {
   cancelAgentStream,
   listenReActEvents,
   type PlanStep,
+  rejectQuestion,
   runVerification,
 } from "../lib/tauri-commands"
 
@@ -50,6 +51,7 @@ export interface AgentMessage {
   /** 流式响应首包到达前展示的当前处理状态 */
   statusText?: string
   error?: boolean
+  cancelled?: boolean
   hiddenContext?: string
   clarification?: ClarificationPayload
   clarificationAnswered?: boolean
@@ -112,8 +114,9 @@ export const DEFAULT_SLOT: AgentSlot = createDefaultSlot()
 export interface SendMessageOptions {
   projectId?: number | null
   providerId?: string
+  modelId?: string
   history?: ChatMessage[]
-  /** Override the text shown as user message (defaults to outbound text) */
+  /** 覆盖用户消息气泡展示文本，默认使用发送文本 */
   displayText?: string
   attachments?: AttachmentInfo[]
   /** 文件附件（用于在消息中显示） */
@@ -129,6 +132,9 @@ export interface AgentContextValue {
 
   /** Answer a clarification question for a slot. */
   answerClarification: (slotId: string, questionId: string, answer: string) => Promise<void>
+
+  /** Reject a clarification question for a slot. */
+  rejectClarification: (slotId: string, questionId: string) => Promise<void>
 
   /** Cancel the active agent stream for a slot. */
   cancelSession: (slotId: string) => Promise<void>
@@ -256,7 +262,7 @@ function extractFilesFromToolResult(_toolName: string, result: string): FileAtta
 /** Build conversation history for multi-turn agent context. */
 export function buildAgentHistory(messages: AgentMessage[]): ChatMessage[] {
   return messages
-    .filter((m) => !m.streaming && !m.error && !m.clarification)
+    .filter((m) => !m.streaming && !m.error && !m.cancelled && !m.clarification)
     .map((m) => {
       const hidden = m.hiddenContext ? `\n\n【上一轮工具上下文】\n${m.hiddenContext}` : ""
       return { role: m.role, content: `${m.content}${hidden}`.trim() }
@@ -292,11 +298,34 @@ function trimMessages(msgs: AgentMessage[]): AgentMessage[] {
   return msgs.slice(overflow)
 }
 
+function formatClarificationAnswer(answer: string): string {
+  try {
+    const parsed = JSON.parse(answer) as unknown
+    if (
+      Array.isArray(parsed) &&
+      parsed.every(
+        (items) => Array.isArray(items) && items.every((item) => typeof item === "string"),
+      )
+    ) {
+      return parsed
+        .map((items, index) => {
+          const text = items.length > 0 ? items.join("、") : "未回答"
+          return parsed.length > 1 ? `${index + 1}. ${text}` : text
+        })
+        .join("\n")
+    }
+  } catch {
+    // 非 JSON 回答直接展示原文
+  }
+  return answer
+}
+
 // ── 提供者 ────────────────────────────────────────────────────────────────
 
 export function AgentProvider({ children }: { children: ReactNode }) {
   const [slots, setSlots] = useState<Map<string, SlotInternal>>(new Map())
   const sessionToSlot = useRef<Map<string, string>>(new Map())
+  const cancelledSlots = useRef<Set<string>>(new Set())
   const latestSlots = useRef(slots)
   latestSlots.current = slots
 
@@ -330,6 +359,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       updateSlots((prev) => {
         const next = new Map(prev)
         for (const [sid, buf] of snapshot) {
+          if (cancelledSlots.current.has(sid)) continue
           const internal = next.get(sid)
           if (!internal) continue
           const slot: AgentSlot = {
@@ -384,6 +414,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       if (!eventSessionId) return
       const slotId = sessionToSlot.current.get(eventSessionId)
       if (!slotId) return
+      if (cancelledSlots.current.has(slotId)) return
 
       // text_delta / thinking → 入缓冲，rAF 批量 flush
       if (event.type === "text_delta") {
@@ -532,7 +563,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
               m.streaming
                 ? {
                     ...m,
-                    content: m.content || "请求失败：" + event.message,
+                    content: m.content || `请求失败：${event.message}`,
                     streaming: false,
                     statusText: undefined,
                     error: true,
@@ -645,6 +676,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 
   const sendMessage = useCallback(
     async (slotId: string, text: string, options?: SendMessageOptions) => {
+      cancelledSlots.current.delete(slotId)
       const sid = nextId()
       const displayText = options?.displayText ?? text
       const userMsg: AgentMessage = {
@@ -694,6 +726,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           options?.projectId,
           options?.history,
           options?.providerId,
+          options?.modelId,
           options?.attachments,
         )
       } catch (err) {
@@ -706,7 +739,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
             m.id === assistantMsg.id
               ? {
                   ...m,
-                  content: "请求失败：" + errorMsg,
+                  content: `请求失败：${errorMsg}`,
                   streaming: false,
                   statusText: undefined,
                   error: true,
@@ -739,7 +772,11 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       })
 
       // 2. 添加答案 + 占位消息
-      const answerMsg: AgentMessage = { id: nextId(), role: "user", content: answer }
+      const answerMsg: AgentMessage = {
+        id: nextId(),
+        role: "user",
+        content: formatClarificationAnswer(answer),
+      }
       const assistantMsg: AgentMessage = {
         id: nextId(),
         role: "assistant",
@@ -775,7 +812,8 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 
       // 3. 发送到后端
       try {
-        await answerQuestion(questionId, answer)
+        const sessionId = latestSlots.current.get(slotId)?.slot.sessionId ?? null
+        await answerQuestion(questionId, answer, sessionId)
       } catch (err) {
         console.error("[AgentContext] Failed to answer question:", err)
         updateSlots((prev) => {
@@ -790,18 +828,119 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     [updateSlots],
   )
 
-  const cancelSession = useCallback(async (slotId: string) => {
-    const internal = latestSlots.current.get(slotId)
-    if (!internal?.slot.sessionId) return
-    try {
-      await cancelAgentStream(internal.slot.sessionId)
-    } catch (err) {
-      console.warn("[AgentContext] Failed to cancel:", err)
-    }
-  }, [])
+  const rejectClarification = useCallback(
+    async (slotId: string, questionId: string) => {
+      updateSlots((prev) => {
+        const next = new Map(prev)
+        const internal = next.get(slotId)
+        if (!internal) return prev
+        const msgs = internal.slot.messages.map((m) =>
+          m.clarification?.question_id === questionId ? { ...m, clarificationAnswered: true } : m,
+        )
+        const answerMsg: AgentMessage = {
+          id: nextId(),
+          role: "user",
+          content: "已取消回答该澄清问题。",
+        }
+        const assistantMsg: AgentMessage = {
+          id: nextId(),
+          role: "assistant",
+          content: "",
+          streaming: true,
+          statusText: "正在继续处理...",
+        }
+        next.set(slotId, {
+          ...internal,
+          slot: {
+            ...internal.slot,
+            messages: trimMessages([...msgs, answerMsg, assistantMsg]),
+            loading: true,
+            currentTrace: {
+              thinking: "",
+              toolCalls: [],
+              plan: null,
+              currentStepIndex: null,
+              totalSteps: 0,
+              stepResults: {},
+              replanReason: null,
+              plannerTimeoutMessage: null,
+            },
+          },
+        })
+        return next
+      })
+
+      try {
+        const sessionId = latestSlots.current.get(slotId)?.slot.sessionId ?? null
+        await rejectQuestion(questionId, sessionId)
+      } catch (err) {
+        console.error("[AgentContext] Failed to reject question:", err)
+        updateSlots((prev) => {
+          const next = new Map(prev)
+          const internal = next.get(slotId)
+          if (!internal) return prev
+          next.set(slotId, { ...internal, slot: { ...internal.slot, loading: false } })
+          return next
+        })
+      }
+    },
+    [updateSlots],
+  )
+
+  const cancelSession = useCallback(
+    async (slotId: string) => {
+      const internal = latestSlots.current.get(slotId)
+      if (!internal?.slot.sessionId) return
+      const sessionId = internal.slot.sessionId
+      cancelledSlots.current.add(slotId)
+      sessionToSlot.current.delete(sessionId)
+      updateSlots((prev) => {
+        const next = new Map(prev)
+        const current = next.get(slotId)
+        if (!current) return prev
+        next.set(slotId, {
+          ...current,
+          slot: {
+            ...current.slot,
+            loading: false,
+            sessionId: null,
+            messages: current.slot.messages.map((m) =>
+              m.streaming
+                ? {
+                    ...m,
+                    content: m.content || "已取消生成。",
+                    streaming: false,
+                    statusText: undefined,
+                    cancelled: true,
+                  }
+                : m,
+            ),
+            currentTrace: {
+              thinking: "",
+              toolCalls: [],
+              plan: null,
+              currentStepIndex: null,
+              totalSteps: 0,
+              stepResults: {},
+              replanReason: null,
+              plannerTimeoutMessage: null,
+            },
+          },
+        })
+        return next
+      })
+      try {
+        await cancelAgentStream(sessionId)
+      } catch (err) {
+        console.warn("[AgentContext] Failed to cancel:", err)
+      }
+    },
+    [updateSlots],
+  )
 
   const clearSlot = useCallback(
     (slotId: string) => {
+      cancelledSlots.current.delete(slotId)
       updateSlots((prev) => {
         const next = new Map(prev)
         const internal = next.get(slotId)
@@ -841,6 +980,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     slots: reactiveSlots,
     sendMessage,
     answerClarification,
+    rejectClarification,
     cancelSession,
     clearSlot,
     updateMessages,

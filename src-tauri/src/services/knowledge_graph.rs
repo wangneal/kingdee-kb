@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// 知识图谱边记录
 #[derive(Debug, Clone)]
@@ -166,7 +167,7 @@ impl GraphStore {
         let mut insert_err: Option<String> = None;
         for row in rows {
             let (slug, wikilinks_json) = row.map_err(|e| format!("读取 wikilink 行失败: {}", e))?;
-            let targets: Vec<String> = serde_json::from_str(&wikilinks_json).unwrap_or_default();
+            let targets = parse_string_array("wikilinks", &wikilinks_json)?;
             for target in targets {
                 if target.is_empty() || target == slug {
                     continue;
@@ -238,7 +239,7 @@ impl GraphStore {
 
     /// S3: source 共源信号。引用同一 raw_source 的页面两两关联（weight=0.4）
     fn build_signal_source(&self, project_id: i64) -> Result<usize, String> {
-        let source_map = self.collect_field_map(project_id, "sources")?;
+        let source_map = self.collect_sources_map(project_id)?;
         let pairs = Self::generate_co_occurrence_pairs(&source_map);
 
         self.db
@@ -654,11 +655,34 @@ impl GraphStore {
         let mut map: HashMap<String, Vec<String>> = HashMap::new();
         for row in rows {
             let (slug, json_str) = row.map_err(|e| format!("读取 {} 行失败: {}", field, e))?;
-            let values: Vec<String> = serde_json::from_str(&json_str).unwrap_or_default();
+            let values = parse_string_array(field, &json_str)?;
             for val in values {
                 if !val.is_empty() {
                     map.entry(val).or_default().push(slug.clone());
                 }
+            }
+        }
+        Ok(map)
+    }
+
+    /// 收集项目的 sources 对象数组，返回 source_key → [slug, ...] 映射
+    fn collect_sources_map(&self, project_id: i64) -> Result<HashMap<String, Vec<String>>, String> {
+        let mut stmt = self
+            .db
+            .prepare("SELECT slug, sources FROM wiki_pages WHERE project_id = ?1")
+            .map_err(|e| format!("准备 sources 查询失败: {}", e))?;
+        let rows = stmt
+            .query_map(params![project_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| format!("执行 sources 查询失败: {}", e))?;
+
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for row in rows {
+            let (slug, json_str) = row.map_err(|e| format!("读取 sources 行失败: {}", e))?;
+            let source_keys = parse_source_keys(&json_str)?;
+            for key in source_keys {
+                map.entry(key).or_default().push(slug.clone());
             }
         }
         Ok(map)
@@ -757,5 +781,87 @@ impl GraphStore {
             map.insert(slug, (title, page_type));
         }
         Ok(map)
+    }
+}
+
+fn parse_string_array(field: &str, json_str: &str) -> Result<Vec<String>, String> {
+    let value: Value =
+        serde_json::from_str(json_str).map_err(|e| format!("解析 {} 字段失败: {}", field, e))?;
+    let array = value
+        .as_array()
+        .ok_or_else(|| format!("{} 字段必须是 JSON 数组", field))?;
+
+    let mut result = Vec::new();
+    for item in array {
+        let text = item
+            .as_str()
+            .ok_or_else(|| format!("{} 字段数组元素必须是字符串", field))?;
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            result.push(trimmed.to_string());
+        }
+    }
+    Ok(result)
+}
+
+fn parse_source_keys(json_str: &str) -> Result<Vec<String>, String> {
+    let value: Value =
+        serde_json::from_str(json_str).map_err(|e| format!("解析 sources 字段失败: {}", e))?;
+    let array = value
+        .as_array()
+        .ok_or_else(|| "sources 字段必须是 JSON 数组".to_string())?;
+
+    let mut result = Vec::new();
+    for item in array {
+        let object = item
+            .as_object()
+            .ok_or_else(|| "sources 字段数组元素必须是对象".to_string())?;
+        if let Some(source_id) = source_value_to_key("source_id", object.get("source_id")) {
+            result.push(source_id);
+            continue;
+        }
+        if let Some(document_id) = source_value_to_key("document_id", object.get("document_id")) {
+            result.push(document_id);
+        }
+    }
+    result.sort();
+    result.dedup();
+    Ok(result)
+}
+
+fn source_value_to_key(prefix: &str, value: Option<&Value>) -> Option<String> {
+    match value {
+        Some(Value::Number(n)) => Some(format!("{}:{}", prefix, n)),
+        Some(Value::String(s)) if !s.trim().is_empty() => Some(format!("{}:{}", prefix, s.trim())),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_string_array_rejects_yaml_like_tags() {
+        assert!(parse_string_array("tags", "[ERP, 财务]").is_err());
+    }
+
+    #[test]
+    fn parse_string_array_accepts_json_tags() {
+        let values = parse_string_array("tags", r#"["ERP","财务"]"#).unwrap();
+        assert_eq!(values, vec!["ERP".to_string(), "财务".to_string()]);
+    }
+
+    #[test]
+    fn parse_source_keys_uses_document_id_when_source_id_is_null() {
+        let keys =
+            parse_source_keys(r#"[{"source_id":null,"document_id":42,"chunks":[]}]"#).unwrap();
+        assert_eq!(keys, vec!["document_id:42".to_string()]);
+    }
+
+    #[test]
+    fn parse_source_keys_prefers_source_id() {
+        let keys = parse_source_keys(r#"[{"source_id":7,"document_id":42,"chunks":[]}]"#).unwrap();
+        assert_eq!(keys, vec!["source_id:7".to_string()]);
     }
 }

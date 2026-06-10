@@ -8,6 +8,7 @@ import {
   Tag,
 } from "lucide-react"
 import { useCallback, useMemo, useState } from "react"
+import { useProject } from "../contexts/ProjectContext"
 import { type HybridSearchResult, hybridSearch } from "../lib/tauri-commands"
 
 function highlightText(text: string, query: string): React.ReactNode {
@@ -17,20 +18,26 @@ function highlightText(text: string, query: string): React.ReactNode {
     .filter(Boolean)
     .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
   if (words.length === 0) return text
-  const regex = new RegExp(`(${words.join("|")})`, "gi")
-  const parts = text.split(regex)
-  return parts.map((part) =>
-    regex.test(part) ? (
-      <mark key={part} className="bg-yellow-200 text-neutral-800 rounded-sm px-0.5">
+  const splitRegex = new RegExp(`(${words.join("|")})`, "gi")
+  const matchRegex = new RegExp(`^(${words.join("|")})$`, "i")
+  const parts = text.split(splitRegex)
+  const occurrences = new Map<string, number>()
+  return parts.map((part) => {
+    const count = occurrences.get(part) ?? 0
+    occurrences.set(part, count + 1)
+    const key = `${part}-${count}`
+    return matchRegex.test(part) ? (
+      <mark key={key} className="bg-yellow-200 text-neutral-800 rounded-sm px-0.5">
         {part}
       </mark>
     ) : (
-      part
-    ),
-  )
+      <span key={key}>{part}</span>
+    )
+  })
 }
 
 export default function Search() {
+  const { currentProjectId } = useProject()
   const [query, setQuery] = useState("")
   const [results, setResults] = useState<HybridSearchResult[]>([])
   const [loading, setLoading] = useState(false)
@@ -46,7 +53,7 @@ export default function Search() {
       setSearched(true)
       setSearchError(null)
       try {
-        const res = await hybridSearch(query.trim(), null, 30)
+        const res = await hybridSearch(query.trim(), currentProjectId, 30)
         setResults(res)
         setSearchError(null)
       } catch (err) {
@@ -57,7 +64,7 @@ export default function Search() {
         setLoading(false)
       }
     },
-    [query],
+    [query, currentProjectId],
   )
 
   const filteredResults = useMemo(() => {
@@ -73,7 +80,7 @@ export default function Search() {
     <div className="p-6">
       <h1 className="text-lg font-semibold text-neutral-800 mb-4">知识检索</h1>
 
-      {/* Search form */}
+      {/* 搜索表单 */}
       <form onSubmit={handleSearch} className="mb-6">
         <div className="flex gap-2">
           <div className="relative flex-1">
@@ -96,7 +103,7 @@ export default function Search() {
         </div>
       </form>
 
-      {/* Tag filter */}
+      {/* 标签筛选 */}
       {results.length > 0 && (
         <div className="mb-4 flex items-center gap-2">
           <Tag className="h-4 w-4 text-neutral-400" />
@@ -115,7 +122,7 @@ export default function Search() {
         </div>
       )}
 
-      {/* Results */}
+      {/* 搜索结果 */}
       {loading ? (
         <div className="flex items-center justify-center py-12 text-neutral-400">
           <Loader2 className="mr-2 h-5 w-5 animate-spin" />
@@ -147,7 +154,7 @@ export default function Search() {
               key={result.chunk_id}
               className="rounded-lg border border-neutral-200 bg-white p-4 transition-shadow hover:shadow-sm"
             >
-              {/* Header: title + score */}
+              {/* 标题和评分 */}
               <div className="mb-2 flex items-start justify-between gap-3">
                 <div className="flex items-center gap-2 min-w-0">
                   <FileText className="h-4 w-4 shrink-0 text-[#1A6BD8]" />
@@ -166,7 +173,7 @@ export default function Search() {
                 </span>
               </div>
 
-              {/* Source annotation */}
+              {/* 来源信息 */}
               <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-neutral-500">
                 <span className="flex items-center gap-1">
                   <Hash className="h-3 w-3" />
@@ -180,7 +187,7 @@ export default function Search() {
                 <span className="text-neutral-400">{result.source}</span>
               </div>
 
-              {/* Content with keyword highlighting */}
+              {/* 带关键词高亮的正文 */}
               <pre className="whitespace-pre-wrap text-sm leading-relaxed text-neutral-600 font-sans">
                 {highlightText(result.content, query)}
               </pre>

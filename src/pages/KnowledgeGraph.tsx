@@ -4,21 +4,16 @@
  * 展示项目的知识图谱统计、节点列表和关联推荐。
  * 支持手动构建/重建图谱。
  */
-import {
-  BookOpen,
-  Loader2,
-  Network,
-  RefreshCw,
-} from "lucide-react"
+import { BookOpen, Loader2, Network, RefreshCw } from "lucide-react"
 import { useEffect, useState } from "react"
-import GraphRecommendations from "../components/wiki/GraphRecommendations"
 import { useToast } from "../components/Toast"
+import GraphRecommendations from "../components/wiki/GraphRecommendations"
 import { useProject } from "../contexts/ProjectContext"
 import {
   buildKnowledgeGraph,
+  type GraphStats,
   getGraphStats,
   listWikiPages,
-  type GraphStats,
   type WikiPageBrief,
 } from "../lib/tauri-commands"
 
@@ -46,9 +41,16 @@ export default function KnowledgeGraph() {
   // 加载统计和页面列表
   useEffect(() => {
     if (currentProjectId == null) {
+      setStats(null)
+      setPages([])
+      setSelectedSlug(null)
       setLoading(false)
       return
     }
+    setLoading(true)
+    setStats(null)
+    setPages([])
+    setSelectedSlug(null)
     Promise.all([
       getGraphStats(currentProjectId)
         .then(setStats)
@@ -66,12 +68,17 @@ export default function KnowledgeGraph() {
     try {
       const edges = await buildKnowledgeGraph(currentProjectId)
       toast.success(`知识图谱构建完成，共 ${edges} 条边`)
-      const s = await getGraphStats(currentProjectId)
+      const [s, pageList] = await Promise.all([
+        getGraphStats(currentProjectId),
+        listWikiPages(currentProjectId),
+      ])
       setStats(s)
+      setPages(pageList)
     } catch (err) {
-      toast.error("构建失败: " + String(err))
+      toast.error(`构建失败: ${String(err)}`)
+    } finally {
+      setBuilding(false)
     }
-    setBuilding(false)
   }
 
   // 加载状态
@@ -142,13 +149,8 @@ export default function KnowledgeGraph() {
                   <p className="mb-1.5 text-[10px] font-medium text-neutral-500">信号分布</p>
                   <div className="space-y-1">
                     {Object.entries(stats.signal_breakdown).map(([signal, count]) => (
-                      <div
-                        key={signal}
-                        className="flex items-center justify-between text-xs"
-                      >
-                        <span className="text-neutral-600">
-                          {SIGNAL_LABELS[signal] || signal}
-                        </span>
+                      <div key={signal} className="flex items-center justify-between text-xs">
+                        <span className="text-neutral-600">{SIGNAL_LABELS[signal] || signal}</span>
                         <span className="font-mono text-neutral-400">{count}</span>
                       </div>
                     ))}
@@ -168,9 +170,7 @@ export default function KnowledgeGraph() {
           <div>
             <h3 className="mb-2 text-xs font-semibold text-neutral-700">
               知识页面
-              <span className="ml-1 font-normal text-neutral-400">
-                ({pages.length})
-              </span>
+              <span className="ml-1 font-normal text-neutral-400">({pages.length})</span>
             </h3>
             {pages.length === 0 ? (
               <div className="py-6 text-center">

@@ -174,8 +174,14 @@ fn download_model(size: &WhisperModelSize, target_path: &Path) -> Result<(), Str
     eprintln!("[ModelDownloader] Starting download from {}", url);
 
     let expected_size = size.expected_size();
+    let tmp_path = target_path.with_extension("bin.tmp");
 
-    // Use ureq for download (already in Cargo.toml)
+    // 如果残留了旧临时文件，先清理
+    if tmp_path.exists() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+
+    // 使用 ureq 发起下载（已引入于 Cargo.toml）
     let response = ureq::get(&url)
         .call()
         .map_err(|e| format!("Failed to start model download: {}", e))?;
@@ -193,9 +199,9 @@ fn download_model(size: &WhisperModelSize, target_path: &Path) -> Result<(), Str
         content_length / 1_000_000
     );
 
-    // Read response body to file
+    // 读取响应体并流式写入临时文件
     let mut reader = response.into_body().into_reader();
-    let mut file = std::fs::File::create(target_path)
+    let mut file = std::fs::File::create(&tmp_path)
         .map_err(|e| format!("Failed to create model file: {}", e))?;
 
     let mut downloaded: u64 = 0;
@@ -216,7 +222,7 @@ fn download_model(size: &WhisperModelSize, target_path: &Path) -> Result<(), Str
 
         downloaded += bytes_read as u64;
 
-        // Log progress every ~10%
+        // 每大约 10% 记录一次进度
         let percent = if content_length > 0 {
             (downloaded as f32 / content_length as f32 * 100.0) as u32
         } else {
@@ -240,16 +246,21 @@ fn download_model(size: &WhisperModelSize, target_path: &Path) -> Result<(), Str
     file.flush()
         .map_err(|e| format!("Failed to flush model file: {}", e))?;
 
-    // Validate download
-    let file_size = std::fs::metadata(target_path).map(|m| m.len()).unwrap_or(0);
+    // 校验下载文件大小
+    let file_size = std::fs::metadata(&tmp_path).map(|m| m.len()).unwrap_or(0);
 
     if file_size < size.expected_size() / 2 {
+        let _ = std::fs::remove_file(&tmp_path);
         return Err(format!(
             "Downloaded file too small ({} bytes, expected ~{}). Download may have failed.",
             file_size,
             size.expected_size()
         ));
     }
+
+    // 原子重命名为正式模型文件名
+    std::fs::rename(&tmp_path, target_path)
+        .map_err(|e| format!("Failed to rename temporary model file: {}", e))?;
 
     eprintln!(
         "[ModelDownloader] Download complete: {} ({} bytes)",

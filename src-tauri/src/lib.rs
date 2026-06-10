@@ -243,6 +243,8 @@ pub fn run() {
             commands::kb_compilation::get_kb_compilation_enabled,
             commands::kb_compilation::set_kb_compilation_enabled,
             commands::kb_compilation::recompile_failed_kb_sources,
+            commands::kb_compilation::start_kb_recompile,
+            commands::kb_compilation::get_kb_recompile_status,
             commands::kb_compilation::force_recompile_kb_source,
             // Phase 2: 持久化摄入队列
             commands::ingestion_queue::enqueue_ingestion,
@@ -263,27 +265,11 @@ pub fn run() {
             // Phase 6: LLM Integration
             commands::search_llm::save_chat_memory,
             commands::search_llm::count_tokens,
-            // Phase 9: Template Engine
-            commands::template_doc::scan_templates,
-            commands::template_doc::extract_template_fields,
-            commands::template_doc::get_template_schema,
-            commands::template_doc::generate_templates_index,
-            // Phase 10: Document Generation
-            commands::template_doc::fill_template,
-            commands::template_doc::generate_doc,
-            commands::template_doc::generate_recipe_doc_cmd,
-            commands::template_doc::generate_from_research,
-            commands::template_doc::generate_from_meeting,
-            // Phase 11: Smart Completion
-            commands::template_doc::smart_fill,
-            commands::template_doc::probe_missing_fields,
-            commands::template_doc::get_deliverable_recipe,
             // Phase 12: Product Management
             commands::product::list_products,
             commands::product::get_product,
             commands::product::delete_product,
             commands::product::export_product,
-            commands::product::regenerate_product,
             // Unified Project Management
             commands::project::ensure_default_project,
             commands::project::create_project,
@@ -299,7 +285,10 @@ pub fn run() {
             // Phase 12: Whisper Voice Recognition
             commands::media::load_whisper_model,
             commands::media::get_whisper_status,
+            commands::media::list_audio_input_devices,
             commands::media::start_whisper_recording,
+            commands::media::transcribe_whisper_recording_chunk,
+            commands::media::review_transcription_text,
             commands::media::stop_whisper_recording,
             // ASR Provider management
             commands::media::list_asr_providers,
@@ -309,6 +298,12 @@ pub fn run() {
             commands::media::transcribe_video_file,
             commands::media::transcribe_and_ingest_video,
             commands::media::generate_meeting_minutes_from_transcript,
+            // Tencent Meeting MCP
+            commands::tencent_meeting::save_tencent_meeting_token,
+            commands::tencent_meeting::get_tencent_meeting_config_status,
+            commands::tencent_meeting::list_tencent_meeting_tools,
+            commands::tencent_meeting::call_tencent_meeting_tool,
+            commands::tencent_meeting::fetch_tencent_meeting_transcript,
             // Phase 9: Research Edition Commands
             commands::research::get_current_edition,
             commands::research::set_edition,
@@ -353,8 +348,19 @@ pub fn run() {
             commands::risk_blueprint::remove_sensitive_keyword,
             commands::risk_blueprint::extract_blueprint,
             commands::risk_blueprint::analyze_fit_gap,
+            commands::agent::list_agent_tool_profiles,
+            commands::agent::list_agent_tool_audit,
+            commands::agent::list_agent_tool_audit_summary,
+            commands::agent::get_agent_tool_config,
+            commands::agent::set_agent_tool_config,
+            commands::agent::read_agent_tool_output,
+            commands::agent::list_skill_permission_rules,
+            commands::agent::revoke_skill_permission_rule,
+            commands::agent::get_latest_agent_session,
+            commands::agent::get_agent_session,
             commands::risk_blueprint::agent_chat,
             commands::risk_blueprint::answer_question,
+            commands::risk_blueprint::reject_question,
             commands::risk_blueprint::cancel_agent_stream,
             // Skill system
             commands::skill::list_skills,
@@ -384,6 +390,10 @@ pub fn run() {
             commands::skill::probe_llm_multimodal,
             // LLM Provider Management
             commands::llm_provider::list_llm_providers,
+            commands::llm_provider::list_runtime_llm_providers,
+            commands::llm_provider::get_provider_policy,
+            commands::llm_provider::set_provider_policy,
+            commands::llm_provider::fetch_llm_endpoint_models,
             commands::llm_provider::add_llm_provider,
             commands::llm_provider::update_llm_provider,
             commands::llm_provider::delete_llm_provider,
@@ -421,6 +431,7 @@ pub fn run() {
             commands::wiki_page::delete_wiki_page,
             commands::wiki_page::batch_delete_wiki_pages,
             commands::wiki_page::approve_wiki_page,
+            commands::wiki_page::approve_auto_wiki_pages,
             commands::wiki_page::reject_wiki_page,
             commands::wiki_page::seed_demo_wiki_pages,
             // Phase 5: Wikilink 编辑器

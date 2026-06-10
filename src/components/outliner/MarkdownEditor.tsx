@@ -60,10 +60,10 @@ export default function MarkdownEditor({ sessionId, insertTextTrigger }: Markdow
       const after = text.substring(end, text.length)
       const insertedText = insertTextTrigger.text
       const newText = before + insertedText + after
-      
+
       setContent(newText)
       isEditingRef.current = true
-      
+
       // 触发防抖保存
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
       saveTimerRef.current = setTimeout(async () => {
@@ -113,7 +113,7 @@ export default function MarkdownEditor({ sessionId, insertTextTrigger }: Markdow
       await importMarkdown(content)
       toast.success("大纲已同步保存")
     } catch (err) {
-      toast.error("保存失败: " + String(err))
+      toast.error(`保存失败: ${String(err)}`)
     }
   }, [content, importMarkdown, toast])
 
@@ -166,7 +166,9 @@ export default function MarkdownEditor({ sessionId, insertTextTrigger }: Markdow
       {/* 编辑区 */}
       <div className="flex flex-1 overflow-hidden">
         {/* Markdown 编辑 */}
-        <div className={`flex-1 overflow-hidden ${showPreview ? "border-r border-neutral-200" : ""}`}>
+        <div
+          className={`flex-1 overflow-hidden ${showPreview ? "border-r border-neutral-200" : ""}`}
+        >
           <textarea
             ref={textareaRef}
             value={content}

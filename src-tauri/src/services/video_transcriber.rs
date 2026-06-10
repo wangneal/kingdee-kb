@@ -132,7 +132,7 @@ pub fn extract_audio_to_file(
             temp_str,
         ])
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .status()
         .map_err(|e| format!("FFmpeg 进程启动失败: {}", e))?;
 

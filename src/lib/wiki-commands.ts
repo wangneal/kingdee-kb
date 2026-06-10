@@ -17,6 +17,7 @@ export interface WikiPage {
   content: string
   content_candidate: string | null
   candidate_status: string | null
+  sources_candidate: string | null
   frontmatter: string
   sources: string
   /** JSON 数组格式的链接目标 slug 列表 */

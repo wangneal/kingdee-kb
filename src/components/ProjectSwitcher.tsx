@@ -24,6 +24,7 @@ export default function ProjectSwitcher() {
   const [open, setOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState("")
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const activeProjects = useMemo(
     () => projects.filter((project) => project.status === "active"),
@@ -37,6 +38,7 @@ export default function ProjectSwitcher() {
   async function handleCreateProject() {
     const trimmedName = name.trim()
     if (!trimmedName) return
+    setActionError(null)
     setCreating(true)
     try {
       const projectId = await createProject(trimmedName)
@@ -44,6 +46,8 @@ export default function ProjectSwitcher() {
       setCurrentProjectId(projectId)
       setName("")
       setOpen(false)
+    } catch (err) {
+      setActionError(`新建项目失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setCreating(false)
     }
@@ -53,26 +57,39 @@ export default function ProjectSwitcher() {
     if (!window.confirm(`确认归档项目“${projectName}”吗？归档后将不再显示在项目切换列表中。`)) {
       return
     }
-    await archiveProject(projectId)
-    await refreshProjects()
+    setActionError(null)
+    try {
+      await archiveProject(projectId)
+      await refreshProjects()
+    } catch (err) {
+      setActionError(`归档项目失败：${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   async function handleRestoreProject(projectId: number) {
-    await restoreProject(projectId)
-    await refreshProjects()
+    setActionError(null)
+    try {
+      await restoreProject(projectId)
+      await refreshProjects()
+    } catch (err) {
+      setActionError(`恢复项目失败：${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   return (
     <div className="border-b border-neutral-200 p-3">
       <button
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          setActionError(null)
+          setOpen((value) => !value)
+        }}
         className="flex w-full items-center gap-2 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-left text-sm text-neutral-700 transition-colors hover:border-neutral-300 hover:bg-neutral-50"
         title="切换项目"
       >
         <FolderKanban className="h-4 w-4 shrink-0 text-[#1A6BD8]" />
         <span className="min-w-0 flex-1 truncate font-medium">
-          {loading ? "加载项目中" : currentProject?.name ?? "未选择项目"}
+          {loading ? "加载项目中" : (currentProject?.name ?? "未选择项目")}
         </span>
         <ChevronsUpDown className="h-4 w-4 shrink-0 text-neutral-400" />
       </button>
@@ -80,7 +97,10 @@ export default function ProjectSwitcher() {
       {open && (
         <div className="mt-2 rounded-lg border border-neutral-200 bg-white p-1 shadow-sm">
           {activeProjects.map((project) => (
-            <div key={project.id} className="group flex items-center rounded-md hover:bg-neutral-50">
+            <div
+              key={project.id}
+              className="group flex items-center rounded-md hover:bg-neutral-50"
+            >
               <button
                 type="button"
                 onClick={() => {
@@ -161,7 +181,9 @@ export default function ProjectSwitcher() {
             </button>
           </div>
 
-          {error && <div className="px-2 pb-1 text-xs text-red-600">{error}</div>}
+          {(actionError || error) && (
+            <div className="px-2 pb-1 text-xs text-red-600">{actionError || error}</div>
+          )}
         </div>
       )}
     </div>

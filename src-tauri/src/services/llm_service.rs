@@ -29,7 +29,7 @@ use crate::services::rig_provider::{
 use crate::services::vector_index::VectorIndex;
 use rig_core::agent::{MultiTurnStreamItem, StreamingResult as RigStreamingResult};
 use rig_core::client::CompletionClient;
-use rig_core::completion::{Chat as RigChat, Message as RigMessage};
+use rig_core::completion::Message as RigMessage;
 use rig_core::streaming::{StreamedAssistantContent, StreamingChat};
 
 use crate::services::verification::pipeline::VerificationPipeline;
@@ -51,6 +51,12 @@ const DEFAULT_MAX_CONTEXT_TOKENS: u32 = 4096;
 
 /// 为助手响应保留的 token 数
 const RESPONSE_TOKENS: u32 = 1024;
+
+/// 非流式结构化任务的输出预算，避免推理模型只返回 thinking 不返回正文
+const NON_STREAM_RESPONSE_TOKENS: u32 = 4096;
+
+/// 推理模型只返回 thinking 时的重试输出预算
+const NON_STREAM_THINKING_RETRY_TOKENS: u32 = 8192;
 
 /// 对话压缩的 token 阈值
 const COMPRESS_THRESHOLD: u32 = 2000;
@@ -114,6 +120,52 @@ fn combine_system_prompts(primary: &str, secondary: &str) -> String {
         (true, false) => secondary.to_string(),
         (false, true) => primary.to_string(),
         (false, false) => format!("{}\n\n{}", primary, secondary),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anthropic_text_extraction_skips_thinking_blocks() {
+        let response = serde_json::json!({
+            "content": [
+                {"type": "thinking", "thinking": "内部推理", "signature": "sig"},
+                {"type": "text", "text": "[{\"category\":\"实施范围\"}]"}
+            ]
+        });
+
+        assert!(LLMService::anthropic_response_has_thinking(&response));
+        assert_eq!(
+            LLMService::extract_anthropic_text(&response),
+            "[{\"category\":\"实施范围\"}]"
+        );
+    }
+
+    #[test]
+    fn anthropic_thinking_continuation_preserves_content_blocks() {
+        let original_messages = vec![serde_json::json!({
+            "role": "user",
+            "content": "提取合同范围"
+        })];
+        let response = serde_json::json!({
+            "content": [
+                {"type": "thinking", "thinking": "内部推理", "signature": "sig"}
+            ],
+            "stop_reason": "max_tokens"
+        });
+
+        let messages = LLMService::build_anthropic_thinking_continuation_messages(
+            &original_messages,
+            &response,
+        )
+        .unwrap();
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[1]["content"][0]["signature"], "sig");
+        assert_eq!(messages[2]["role"], "user");
     }
 }
 
@@ -638,66 +690,6 @@ impl LLMService {
         }
     }
 
-    async fn chat_completion_rig(
-        &self,
-        messages: &[ChatMessage],
-        config: &LLMProviderConfig,
-    ) -> Result<String, String> {
-        let (system_prompt, mut history, prompt) = Self::split_rig_chat_messages(messages);
-        let model = config.get_default_model_name();
-        let temperature = config.temperature as f64;
-        let max_tokens = RESPONSE_TOKENS as u64;
-
-        let request_future = async {
-            match config.protocol {
-                LLMProtocol::OpenAI => {
-                    let client = build_openai_client(config)?
-                        .completions_api()
-                        .agent(&model)
-                        .preamble(&system_prompt)
-                        .temperature(temperature)
-                        .max_tokens(max_tokens)
-                        .build();
-
-                    client
-                        .chat(prompt, &mut history)
-                        .await
-                        .map_err(|e| format!("Rig chat completion failed: {}", e))
-                }
-                LLMProtocol::Local => {
-                    let client = build_ollama_client(config)?
-                        .agent(&model)
-                        .preamble(&system_prompt)
-                        .temperature(temperature)
-                        .max_tokens(max_tokens)
-                        .build();
-
-                    client
-                        .chat(prompt, &mut history)
-                        .await
-                        .map_err(|e| format!("Rig Ollama chat completion failed: {}", e))
-                }
-                LLMProtocol::Anthropic => {
-                    let client = build_anthropic_client(config)?
-                        .agent(&model)
-                        .preamble(&system_prompt)
-                        .temperature(temperature)
-                        .max_tokens(max_tokens)
-                        .build();
-
-                    client
-                        .chat(prompt, &mut history)
-                        .await
-                        .map_err(|e| format!("Rig chat completion failed: {}", e))
-                }
-            }
-        };
-
-        tokio::time::timeout(Duration::from_secs(LLM_CALL_TIMEOUT_SECS), request_future)
-            .await
-            .map_err(|_| "LLM 调用超时，请检查网络连接或稍后重试".to_string())?
-    }
-
     async fn rag_query_rig(
         &self,
         config: &LLMProviderConfig,
@@ -1100,15 +1092,15 @@ impl LLMService {
         }
     }
 
-    /// Get the active provider config from the default provider.
+    /// 获取默认供应商配置。
     pub fn get_active_config(&self) -> Result<LLMProviderConfig, String> {
         let mgr = self.providers.read().map_err(|e| e.to_string())?;
-        mgr.get_default_provider()
-            .cloned()
-            .ok_or_else(|| "未配置默认 LLM 供应商".to_string())
+        mgr.get_default_runtime_provider().cloned().ok_or_else(|| {
+            "未配置可用的 LLM 供应商，或所有供应商已被 Provider Policy 禁用".to_string()
+        })
     }
 
-    /// Get config for a specific provider by ID, falling back to default if not found.
+    /// 按供应商 ID 获取配置，未指定时使用默认供应商。
     pub fn get_config_for_provider(
         &self,
         provider_id: Option<&str>,
@@ -1116,12 +1108,43 @@ impl LLMService {
         match provider_id {
             Some(id) => {
                 let mgr = self.providers.read().map_err(|e| e.to_string())?;
-                mgr.get_provider(id)
+                let provider = mgr
+                    .get_provider(id)
                     .cloned()
-                    .ok_or_else(|| format!("供应商 '{}' 不存在", id))
+                    .ok_or_else(|| format!("供应商 '{}' 不存在", id))?;
+                mgr.assert_provider_allowed(&provider.id, None)?;
+                Ok(provider)
             }
             None => self.get_active_config(),
         }
+    }
+
+    /// 按供应商和模型 ID 获取本次调用配置。
+    pub fn get_config_for_provider_model(
+        &self,
+        provider_id: Option<&str>,
+        model_id: Option<&str>,
+    ) -> Result<LLMProviderConfig, String> {
+        let mut config = self.get_config_for_provider(provider_id)?;
+        if let Some(model_id) = model_id.map(str::trim).filter(|id| !id.is_empty()) {
+            if !config.models.iter().any(|model| model.id == model_id) {
+                return Err(format!(
+                    "模型 '{}' 不属于供应商 '{}'",
+                    model_id, config.name
+                ));
+            }
+            {
+                let mgr = self.providers.read().map_err(|e| e.to_string())?;
+                mgr.assert_provider_allowed(&config.id, Some(model_id))?;
+            }
+            for model in &mut config.models {
+                model.is_default = model.id == model_id;
+            }
+        } else if let Some(default_model) = config.get_default_model() {
+            let mgr = self.providers.read().map_err(|e| e.to_string())?;
+            mgr.assert_provider_allowed(&config.id, Some(&default_model.id))?;
+        }
+        Ok(config)
     }
 
     /// Synchronous text generation (non-streaming) for internal backend use.
@@ -1481,7 +1504,29 @@ impl LLMService {
         messages: &[ChatMessage],
         config: &LLMProviderConfig,
     ) -> Result<String, String> {
-        let (desensitized_messages, master_mapping) = self.desensitize_messages(messages);
+        self.chat_completion_internal(messages, config, true).await
+    }
+
+    /// 非流式文本生成，不执行脱敏占位替换。
+    pub async fn chat_completion_unmasked(
+        &self,
+        messages: &[ChatMessage],
+        config: &LLMProviderConfig,
+    ) -> Result<String, String> {
+        self.chat_completion_internal(messages, config, false).await
+    }
+
+    async fn chat_completion_internal(
+        &self,
+        messages: &[ChatMessage],
+        config: &LLMProviderConfig,
+        enable_desensitize: bool,
+    ) -> Result<String, String> {
+        let (request_messages, master_mapping) = if enable_desensitize {
+            self.desensitize_messages(messages)
+        } else {
+            (messages.to_vec(), std::collections::HashMap::new())
+        };
 
         let mut attempts = 0;
         let mut current_config = config.clone();
@@ -1493,7 +1538,7 @@ impl LLMService {
             }
 
             let result = self
-                .chat_completion_rig(&desensitized_messages, &current_config)
+                .chat_completion_native(&request_messages, &current_config)
                 .await;
 
             if let Err(ref e) = result {
@@ -1520,8 +1565,12 @@ impl LLMService {
 
             return match result {
                 Ok(text) => {
-                    if let Some(ref ds) = self.desensitizer {
-                        Ok(ds.restore(&text, &master_mapping))
+                    if enable_desensitize {
+                        if let Some(ref ds) = self.desensitizer {
+                            Ok(ds.restore(&text, &master_mapping))
+                        } else {
+                            Ok(text)
+                        }
                     } else {
                         Ok(text)
                     }
@@ -1531,10 +1580,33 @@ impl LLMService {
         }
     }
 
-    /// Chat completion with OpenAI-style function calling support (迁移期间预留).
-    /// Returns the raw content string (strips tool_calls).
-    /// If `tools` is non-empty, sends with `tool_choice: "auto"`.
-    #[allow(dead_code)]
+    async fn chat_completion_native(
+        &self,
+        messages: &[ChatMessage],
+        config: &LLMProviderConfig,
+    ) -> Result<String, String> {
+        match config.protocol {
+            LLMProtocol::OpenAI => {
+                self.chat_completion_openai_with_tools(messages, config, &[], false)
+                    .await
+            }
+            LLMProtocol::Anthropic => self.chat_completion_anthropic(messages, config).await,
+            LLMProtocol::Local => self.chat_completion_local(messages, config).await,
+        }
+    }
+
+    fn json_response_preview(json: &serde_json::Value) -> String {
+        let text = json.to_string();
+        let preview: String = text.chars().take(800).collect();
+        if text.chars().count() > 800 {
+            format!("{}...", preview)
+        } else {
+            preview
+        }
+    }
+    /// OpenAI 兼容非流式文本生成，保留工具调用参数能力。
+    /// 返回原始内容字符串，不返回工具调用。
+    /// 当 tools 非空时，使用自动工具选择。
     async fn chat_completion_openai_with_tools(
         &self,
         messages: &[ChatMessage],
@@ -1557,6 +1629,7 @@ impl LLMService {
         let mut body = serde_json::json!({
             "model": config.get_default_model_name(),
             "messages": api_messages,
+            "max_tokens": NON_STREAM_RESPONSE_TOKENS,
             "temperature": config.temperature,
             "stream": false
         });
@@ -1599,7 +1672,10 @@ impl LLMService {
                 .to_string();
 
             if content.is_empty() {
-                return Err("OpenAI returned empty response".to_string());
+                return Err(format!(
+                    "OpenAI 兼容端点返回空内容，原始响应预览: {}",
+                    Self::json_response_preview(&json)
+                ));
             }
 
             Ok(content)
@@ -1610,11 +1686,7 @@ impl LLMService {
             .map_err(|_| "LLM 调用超时，请检查网络连接或稍后重试".to_string())?
     }
 
-    /// Anthropic non-streaming chat completion — POST /messages（迁移期间预留）
-    ///
-    /// Anthropic requires `system` as a top-level field, not in messages.
-    /// Response format: `{"content":[{"type":"text","text":"..."}]}`
-    #[allow(dead_code)]
+    /// Anthropic 非流式文本生成，使用 /messages。
     async fn chat_completion_anthropic(
         &self,
         messages: &[ChatMessage],
@@ -1622,7 +1694,7 @@ impl LLMService {
     ) -> Result<String, String> {
         let url = anthropic_messages_url(&config.base_url);
 
-        // Extract system prompt from messages (if any) and filter it out
+        // 提取 system 消息，Anthropic 要求放在顶层字段。
         let system_prompt: String = messages
             .iter()
             .filter(|m| m.role == "system")
@@ -1643,23 +1715,172 @@ impl LLMService {
 
         let mut body = serde_json::json!({
             "model": config.get_default_model_name(),
-            "max_tokens": RESPONSE_TOKENS,
+            "max_tokens": NON_STREAM_RESPONSE_TOKENS,
             "temperature": config.temperature,
-            "messages": api_messages
+            "messages": api_messages.clone()
         });
 
-        // Anthropic: system is a top-level field, required even if empty
         if !system_prompt.is_empty() {
             body["system"] = serde_json::json!(system_prompt);
         }
 
         let request_future = async {
             let api_key = config.get_default_key_value();
-            let response = with_anthropic_headers(self.client.post(&url), &url, &api_key)
+            let mut last_thinking_response: Option<serde_json::Value> = None;
+            let mut continued_from_thinking = false;
+
+            for _attempt in 0..=1 {
+                let response = with_anthropic_headers(self.client.post(&url), &url, &api_key)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| format!("Anthropic request failed: {}", e))?;
+
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let body_text = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "<unreadable>".to_string());
+                    return Err(format!("Anthropic API error ({}): {}", status, body_text));
+                }
+
+                let json: serde_json::Value = response
+                    .json()
+                    .await
+                    .map_err(|e| format!("Failed to parse Anthropic response: {}", e))?;
+
+                let content = Self::extract_anthropic_text(&json);
+                if !content.trim().is_empty() {
+                    return Ok(content);
+                }
+
+                if Self::anthropic_response_has_thinking(&json) {
+                    last_thinking_response = Some(json.clone());
+                    if !continued_from_thinking {
+                        body["max_tokens"] = serde_json::json!(NON_STREAM_THINKING_RETRY_TOKENS);
+                        body["messages"] = serde_json::json!(
+                            Self::build_anthropic_thinking_continuation_messages(
+                                &api_messages,
+                                &json
+                            )?
+                        );
+                        let extra =
+                            "请基于上一条 assistant 的 thinking 继续完成最终回答，在 text 中输出用户要求的结果。";
+                        let next_system = body
+                            .get("system")
+                            .and_then(|value| value.as_str())
+                            .map(|system| format!("{}\n\n{}", system, extra))
+                            .unwrap_or_else(|| extra.to_string());
+                        body["system"] = serde_json::json!(next_system);
+                        continued_from_thinking = true;
+                        continue;
+                    }
+                }
+
+                return Err(format!(
+                    "Anthropic 兼容端点返回空内容，可能是协议选择或响应格式不匹配。原始响应预览: {}",
+                    Self::json_response_preview(&json)
+                ));
+            }
+
+            if let Some(json) = last_thinking_response {
+                let stop_reason = json["stop_reason"].as_str().unwrap_or("未知");
+                return Err(format!(
+                    "Anthropic 兼容端点返回 thinking 后仍未返回最终 text。stop_reason={}。请检查模型输出预算、reasoning 配置或端点响应格式。原始响应预览: {}",
+                    stop_reason,
+                    Self::json_response_preview(&json)
+                ));
+            }
+
+            Err("Anthropic 兼容端点返回空内容".to_string())
+        };
+
+        tokio::time::timeout(Duration::from_secs(LLM_CALL_TIMEOUT_SECS), request_future)
+            .await
+            .map_err(|_| "LLM 调用超时，请检查网络连接或稍后重试".to_string())?
+    }
+
+    fn extract_anthropic_text(json: &serde_json::Value) -> String {
+        json["content"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|block| block.get("text").and_then(|text| text.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .unwrap_or_default()
+    }
+
+    fn anthropic_response_has_thinking(json: &serde_json::Value) -> bool {
+        json["content"]
+            .as_array()
+            .map(|arr| {
+                arr.iter().any(|block| {
+                    block.get("thinking").is_some()
+                        || block.get("type").and_then(|value| value.as_str()) == Some("thinking")
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    fn build_anthropic_thinking_continuation_messages(
+        original_messages: &[serde_json::Value],
+        response_json: &serde_json::Value,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let content = response_json
+            .get("content")
+            .and_then(|value| value.as_array())
+            .filter(|items| !items.is_empty())
+            .ok_or_else(|| "Anthropic thinking 续写失败：响应缺少 content 数组".to_string())?;
+
+        let mut messages = original_messages.to_vec();
+        messages.push(serde_json::json!({
+            "role": "assistant",
+            "content": content
+        }));
+        messages.push(serde_json::json!({
+            "role": "user",
+            "content": "请继续完成刚才的回答，直接输出最终 text 内容。若任务要求 JSON，只输出 JSON，不要重复思考过程。"
+        }));
+        Ok(messages)
+    }
+
+    /// 本地模型非流式文本生成，使用 Ollama /api/chat。
+    async fn chat_completion_local(
+        &self,
+        messages: &[ChatMessage],
+        config: &LLMProviderConfig,
+    ) -> Result<String, String> {
+        let url = format!("{}/api/chat", config.base_url.trim_end_matches('/'));
+        let api_messages: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role,
+                    "content": m.content
+                })
+            })
+            .collect();
+
+        let body = serde_json::json!({
+            "model": config.get_default_model_name(),
+            "messages": api_messages,
+            "options": {
+                "num_predict": NON_STREAM_RESPONSE_TOKENS
+            },
+            "stream": false
+        });
+
+        let request_future = async {
+            let response = self
+                .client_for_config(config)?
+                .post(&url)
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| format!("Anthropic request failed: {}", e))?;
+                .map_err(|e| format!("本地模型请求失败: {}", e))?;
 
             if !response.status().is_success() {
                 let status = response.status();
@@ -1667,25 +1888,25 @@ impl LLMService {
                     .text()
                     .await
                     .unwrap_or_else(|_| "<unreadable>".to_string());
-                return Err(format!("Anthropic API error ({}): {}", status, body_text));
+                return Err(format!("本地模型 API 返回错误 ({})：{}", status, body_text));
             }
 
             let json: serde_json::Value = response
                 .json()
                 .await
-                .map_err(|e| format!("Failed to parse Anthropic response: {}", e))?;
+                .map_err(|e| format!("解析本地模型响应失败: {}", e))?;
 
-            // Anthropic response: content[0].text
-            let content = json["content"]
-                .as_array()
-                .and_then(|arr| arr.first())
-                .and_then(|block| block.get("text"))
-                .and_then(|t| t.as_str())
+            let content = json["message"]["content"]
+                .as_str()
+                .or_else(|| json["response"].as_str())
                 .unwrap_or("")
                 .to_string();
 
-            if content.is_empty() {
-                return Err("Anthropic returned empty response".to_string());
+            if content.trim().is_empty() {
+                return Err(format!(
+                    "本地模型返回空内容，原始响应预览: {}",
+                    Self::json_response_preview(&json)
+                ));
             }
 
             Ok(content)
@@ -1693,7 +1914,7 @@ impl LLMService {
 
         tokio::time::timeout(Duration::from_secs(LLM_CALL_TIMEOUT_SECS), request_future)
             .await
-            .map_err(|_| "LLM 调用超时，请检查网络连接或稍后重试".to_string())?
+            .map_err(|_| "本地模型调用超时，请检查模型服务是否正常".to_string())?
     }
 
     /// RAG query with channel-based streaming.

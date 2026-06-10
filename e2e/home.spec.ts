@@ -13,16 +13,16 @@ test.describe("Home page", () => {
 
   test("should display stats cards", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByText("模板数量")).toBeVisible();
+    await expect(page.getByText("项目阶段")).toBeVisible();
     await expect(page.getByText("生成产物", { exact: true })).toBeVisible();
     await expect(page.getByText("知识库文档")).toBeVisible();
   });
 
   test("should display quick action buttons", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByText("浏览知识库")).toBeVisible();
-    await expect(page.getByText("检索").first()).toBeVisible();
-    await expect(page.getByRole("button", { name: "生成文档 使用模板生成实施文档" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "浏览知识库 查看已导入的文档和知识片段" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "检索 搜索知识库中的相关内容" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "AI 生成交付物 在对话中调用官方技能生成文档、PPT 和清单" })).toBeVisible();
     await expect(page.getByRole("button", { name: "AI 对话 基于知识库的智能问答" })).toBeVisible();
     await expect(page.getByRole("button", { name: "调研助手 语音转录 + 会话管理 + 蓝图导出" })).toBeVisible();
     await expect(page.getByRole("button", { name: "风险把控 范围预警 + 项目健康 + 防身话术" })).toBeVisible();
@@ -36,13 +36,13 @@ test.describe("Home page", () => {
 
   test("should navigate to browse page via quick action", async ({ page }) => {
     await page.goto("/");
-    await page.getByText("浏览知识库").click();
+    await page.getByRole("button", { name: "浏览知识库 查看已导入的文档和知识片段" }).click();
     await expect(page).toHaveURL("/browse");
   });
 
   test("should navigate to search page via quick action", async ({ page }) => {
     await page.goto("/");
-    await page.getByText("检索").first().click();
+    await page.getByRole("button", { name: "检索 搜索知识库中的相关内容" }).click();
     await expect(page).toHaveURL("/search");
   });
 

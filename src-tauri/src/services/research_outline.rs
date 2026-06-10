@@ -98,16 +98,22 @@ pub fn parse_doc_file(filepath: &std::path::Path) -> Result<String, String> {
     let escaped = path_str.replace('\'', "''");
     let script = format!(
         concat!(
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ",
+            "$OutputEncoding = [System.Text.Encoding]::UTF8; ",
             "$word = New-Object -ComObject Word.Application; ",
             "$word.Visible = $false; ",
+            "$doc = $null; ",
+            "try {{ ",
             "$doc = $word.Documents.Open('{path}'); ",
             "$content = $doc.Content.Text; ",
-            "$doc.Close(); ",
+            "[Console]::Out.Write($content); ",
+            "}} finally {{ ",
+            "if ($doc -ne $null) {{ $doc.Close($false) | Out-Null; [System.Runtime.Interopservices.Marshal]::ReleaseComObject($doc) | Out-Null; }} ",
             "$word.Quit(); ",
             "[System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null; ",
             "[System.GC]::Collect(); ",
             "[System.GC]::WaitForPendingFinalizers(); ",
-            "Write-Output $content",
+            "}}",
         ),
         path = escaped
     );
@@ -121,7 +127,8 @@ pub fn parse_doc_file(filepath: &std::path::Path) -> Result<String, String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("PowerShell error: {}", stderr));
     }
-    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let text =
+        String::from_utf8(output.stdout).map_err(|e| format!("DOC 输出不是有效 UTF-8: {}", e))?;
     if text.trim().is_empty() {
         return Err("No content read from DOC file".to_string());
     }

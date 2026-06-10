@@ -29,10 +29,7 @@ impl IngestCache {
 }
 
 /// 从缓存列表中查找包含目标 slug 的缓存项，返回 (source_identity, sha256) 元组列表
-pub fn find_cache_keys_by_slug(
-    caches: &[IngestCache],
-    page_slug: &str,
-) -> Vec<(String, String)> {
+pub fn find_cache_keys_by_slug(caches: &[IngestCache], page_slug: &str) -> Vec<(String, String)> {
     caches
         .iter()
         .filter(|c| c.contains_slug(page_slug))

@@ -133,7 +133,7 @@ export default function ImportModal({
         filters: [
           {
             name: "文档",
-            extensions: ["md", "txt", "html", "pdf", "docx", "xlsx", "xls"],
+            extensions: ["md", "txt", "html", "pdf", "docx", "xlsx", "xls", "vsdx", "vsd"],
           },
         ],
       })
@@ -330,7 +330,7 @@ export default function ImportModal({
           {activeTab === "file" && (
             <div className="space-y-3">
               <p className="text-xs text-neutral-500">
-                支持格式：md、txt、html、pdf、docx、xlsx、xls
+                支持格式：md、txt、html、pdf、docx、xlsx、xls、vsdx、vsd
               </p>
               <button
                 type="button"

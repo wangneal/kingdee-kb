@@ -56,6 +56,7 @@ export default function MindmapView({ sessionId }: MindmapViewProps) {
 
   // 会话切换或大纲节点变化时重新加载
   useEffect(() => {
+    void nodes.length
     loadMarkdown()
   }, [loadMarkdown, nodes.length])
 
@@ -131,7 +132,7 @@ export default function MindmapView({ sessionId }: MindmapViewProps) {
         URL.revokeObjectURL(url)
       }, "image/png")
     }
-    img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgData)))
+    img.src = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgData)))}`
   }, [])
 
   return (

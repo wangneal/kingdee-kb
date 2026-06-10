@@ -45,6 +45,8 @@ export interface DataQualityReport {
   score: number // 0-100
 }
 
+const CONTROL_CHARS_PATTERN = "[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]"
+
 // ─── 清洗规则 ──────────────────────────────────────────────
 
 export const CLEANING_RULES: CleaningRule[] = [
@@ -261,7 +263,7 @@ export function cleanText(text: string, rules?: CleaningRule[]): CleaningResult 
   // 7. 移除特殊字符
   if (enabledRules.some((r) => r.id === "remove_special_chars")) {
     const before = cleaned
-    cleaned = cleaned.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    cleaned = cleaned.replace(new RegExp(CONTROL_CHARS_PATTERN, "g"), "")
     const count = before.length - cleaned.length
     if (count > 0) {
       changes.push({
@@ -363,7 +365,6 @@ export function convertToMarkdown(text: string, sourceFormat: "html" | "plain" |
       return htmlToMarkdown(text)
     case "json":
       return jsonToMarkdown(text)
-    case "plain":
     default:
       return text
   }
@@ -480,7 +481,7 @@ export function checkDataQuality(text: string): DataQualityReport {
   }
 
   // 检查特殊字符
-  const specialChars = text.match(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g)
+  const specialChars = text.match(new RegExp(CONTROL_CHARS_PATTERN, "g"))
   if (specialChars && specialChars.length > 0) {
     issues.push({
       type: "special_characters",

@@ -14,7 +14,7 @@ export default function Spotlight() {
   const overlayRef = useRef<HTMLDivElement>(null)
   const spotSessionRef = useRef<string | null>(null)
 
-  // Listen for Alt+Space via Tauri global-shortcut event
+  // 监听 Tauri 全局快捷键 Alt+Space 事件
   useEffect(() => {
     let unlisten: (() => void) | null = null
 
@@ -28,7 +28,7 @@ export default function Spotlight() {
       })
     })()
 
-    // Also keep local Escape handler for closing
+    // 保留本地 Escape 关闭处理
     const escHandler = (e: KeyboardEvent) => {
       if (e.key === "Escape" && visible) {
         setVisible(false)
@@ -42,24 +42,29 @@ export default function Spotlight() {
     }
   }, [visible])
 
-  // Auto-focus input when visible
+  // 浮层显示时自动聚焦输入框
   useEffect(() => {
     if (visible && inputRef.current) {
       setTimeout(() => inputRef.current?.focus(), 50)
     }
   }, [visible])
 
-  // Listen for ReAct events (filtered by session)
+  // 监听 ReAct 事件（按会话过滤）
   useEffect(() => {
     let cancelled = false
     const unlistenRef: { current: (() => void) | null } = { current: null }
     listenReActEvents((event) => {
-      // Support both snake_case and camelCase (Tauri v2 may convert)
-      const eventSessionId = event.session_id || (event as any).sessionId
+      // 同时支持 snake_case 和 camelCase（Tauri v2 可能转换）
+      const eventSessionId = event.session_id || event.sessionId
       if (eventSessionId !== spotSessionRef.current) return
       if (event.type === "text_delta") {
         resultRef.current += event.content
         setResult(resultRef.current)
+      }
+      if (event.type === "error") {
+        const message = event.message || "AI 请求失败"
+        resultRef.current = message
+        setResult(message)
       }
       if (event.type === "done" || event.type === "error") {
         setLoading(false)
@@ -85,12 +90,15 @@ export default function Spotlight() {
     setResult("")
     resultRef.current = ""
     try {
-      // Generate session ID first before calling agentChat
       const sid = `spot_${Date.now()}`
       spotSessionRef.current = sid
       await agentChat(text, sid, currentProjectId)
-    } catch {
+    } catch (error) {
+      const message = `AI 请求失败：${String(error)}`
+      resultRef.current = message
+      setResult(message)
       setLoading(false)
+      spotSessionRef.current = null
     }
   }, [currentProjectId, input, loading])
 
@@ -106,13 +114,20 @@ export default function Spotlight() {
   return (
     <div
       ref={overlayRef}
+      role="dialog"
+      tabIndex={-1}
+      aria-modal="true"
+      aria-label="全局搜索"
       className="fixed inset-0 z-[9999] flex items-start justify-center bg-black/30 pt-[15vh]"
       onClick={(e) => {
         if (e.target === overlayRef.current) setVisible(false)
       }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") setVisible(false)
+      }}
     >
       <div className="w-full max-w-xl rounded-xl bg-white shadow-2xl border border-neutral-200 overflow-hidden">
-        {/* Search bar */}
+        {/* 搜索栏 */}
         <div className="flex items-center gap-3 border-b border-neutral-100 px-4 py-3">
           <Search className="h-5 w-5 text-neutral-400 shrink-0" />
           <input
@@ -143,7 +158,7 @@ export default function Spotlight() {
           </button>
         </div>
 
-        {/* Results */}
+        {/* 结果 */}
         {result && (
           <div className="max-h-60 overflow-y-auto px-4 py-3">
             <div className="text-xs leading-relaxed text-neutral-700 whitespace-pre-wrap">
@@ -152,7 +167,7 @@ export default function Spotlight() {
           </div>
         )}
 
-        {/* Hint */}
+        {/* 提示 */}
         {!input && !result && (
           <div className="px-4 py-3 text-xs text-neutral-400 flex items-center gap-3">
             <span>Alt+Space 切换</span>

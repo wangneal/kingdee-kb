@@ -3,7 +3,7 @@
 //! Manages documents and chunks tables with SHA256 dedup,
 //! project_id filtering, and WAL journal mode.
 
-use rusqlite::{params, Connection, Result as SqlResult};
+use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -41,6 +41,79 @@ pub struct KnowledgeStats {
     pub document_count: i64,
     pub chunk_count: i64,
     pub db_path: String,
+}
+
+/// Agent 会话记录
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSessionRecord {
+    pub id: String,
+    pub project_id: i64,
+    pub slot: String,
+    pub status: String,
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub started_at: String,
+    pub updated_at: String,
+    pub ended_at: Option<String>,
+}
+
+/// Agent 消息记录
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMessageRecord {
+    pub id: String,
+    pub session_id: String,
+    pub role: String,
+    pub content: String,
+    pub status: String,
+    pub parent_message_id: Option<String>,
+    pub created_at: String,
+}
+
+/// Agent 工具调用记录
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentToolCallRecord {
+    pub id: String,
+    pub session_id: String,
+    pub assistant_message_id: Option<String>,
+    pub tool_name: String,
+    pub tool_revision: String,
+    pub effect: String,
+    pub args_json: String,
+    pub status: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+}
+
+/// Agent 工具结果记录
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentToolResultRecord {
+    pub id: String,
+    pub tool_call_id: String,
+    pub result_json: String,
+    pub preview_text: String,
+    pub output_ref: Option<String>,
+    pub status: String,
+    pub created_at: String,
+}
+
+/// Agent 事件记录
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentEventRecord {
+    pub id: String,
+    pub session_id: String,
+    pub event_type: String,
+    pub payload_json: String,
+    pub created_at: String,
+}
+
+/// Agent 会话快照
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSessionSnapshot {
+    pub session: AgentSessionRecord,
+    pub messages: Vec<AgentMessageRecord>,
+    pub tool_calls: Vec<AgentToolCallRecord>,
+    pub tool_results: Vec<AgentToolResultRecord>,
+    pub events: Vec<AgentEventRecord>,
 }
 
 /// SQLite-based metadata store
@@ -119,6 +192,59 @@ impl MetadataStore {
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
+            CREATE TABLE IF NOT EXISTS agent_sessions (
+                id TEXT PRIMARY KEY,
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                slot TEXT NOT NULL,
+                status TEXT NOT NULL,
+                provider_id TEXT,
+                model_id TEXT,
+                started_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                ended_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_messages (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                status TEXT NOT NULL,
+                parent_message_id TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_tool_calls (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+                assistant_message_id TEXT,
+                tool_name TEXT NOT NULL,
+                tool_revision TEXT NOT NULL,
+                effect TEXT NOT NULL,
+                args_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_tool_results (
+                id TEXT PRIMARY KEY,
+                tool_call_id TEXT NOT NULL REFERENCES agent_tool_calls(id) ON DELETE CASCADE,
+                result_json TEXT NOT NULL,
+                preview_text TEXT NOT NULL,
+                output_ref TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_events (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
             ",
             )
             .map_err(|e| format!("Failed to initialize schema: {}", e))?;
@@ -145,6 +271,11 @@ impl MetadataStore {
             CREATE INDEX IF NOT EXISTS idx_documents_project_id ON documents(project_id);
             CREATE INDEX IF NOT EXISTS idx_documents_scope ON documents(document_scope);
             CREATE INDEX IF NOT EXISTS idx_documents_chat_session_id ON documents(chat_session_id);
+            CREATE INDEX IF NOT EXISTS idx_agent_sessions_project_slot ON agent_sessions(project_id, slot, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_agent_messages_session ON agent_messages(session_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_session ON agent_tool_calls(session_id, started_at);
+            CREATE INDEX IF NOT EXISTS idx_agent_tool_results_call ON agent_tool_results(tool_call_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_agent_events_session ON agent_events(session_id, created_at);
             ",
             )
             .map_err(|e| format!("Failed to initialize schema indexes: {}", e))?;
@@ -240,9 +371,12 @@ impl MetadataStore {
             )
             .map_err(|e| format!("Failed to insert document: {}", e))?;
 
-        // If sha256 was provided and already existed, return existing ID
+        // 按 (sha256, project_id, raw_source_identity) 三字段精确定位已有文档
+        // 避免两份内容相同但来源不同的文档（如复制品）的 document_id 混淆
         if let Some(hash) = sha256 {
-            if let Some(doc) = self.get_document_by_sha256(hash)? {
+            if let Some(doc) =
+                self.get_document_by_source_key(hash, project_id, raw_source_identity)?
+            {
                 return Ok(doc.id);
             }
         }
@@ -271,6 +405,45 @@ impl MetadataStore {
             "SELECT id, title, source_path, sha256, created_at, project_id, document_scope, chat_session_id, raw_source_identity
              FROM documents WHERE sha256 = ?1",
             params![sha256],
+        )
+    }
+
+    /// 按 (sha256, project_id, raw_source_identity) 三字段精确定位文档
+    ///
+    /// 用于同名重复内容文件的寻址防错：两份内容一致但来源不同的文档（如复制品）
+    /// 不会因仅用 sha256 查询而混淆 document_id。
+    pub fn get_document_by_source_key(
+        &self,
+        sha256: &str,
+        project_id: i64,
+        raw_source_identity: Option<&str>,
+    ) -> Result<Option<DocumentMeta>, String> {
+        match raw_source_identity {
+            Some(identity) => self.query_one_document(
+                "SELECT id, title, source_path, sha256, created_at, project_id, document_scope, chat_session_id, raw_source_identity
+                 FROM documents WHERE sha256 = ?1 AND project_id = ?2 AND raw_source_identity = ?3",
+                params![sha256, project_id, identity],
+            ),
+            None => self.query_one_document(
+                "SELECT id, title, source_path, sha256, created_at, project_id, document_scope, chat_session_id, raw_source_identity
+                 FROM documents WHERE sha256 = ?1 AND project_id = ?2 AND raw_source_identity IS NULL",
+                params![sha256, project_id],
+            ),
+        }
+    }
+
+    /// 按 (sha256, project_id, raw_source_identity) 查找所有关联文档
+    /// 用于 raw_source 级联删除时定位待清除的 documents/chunks/vectors
+    pub fn list_documents_by_source_key(
+        &self,
+        sha256: &str,
+        project_id: i64,
+        raw_source_identity: &str,
+    ) -> Result<Vec<DocumentMeta>, String> {
+        self.query_documents(
+            "SELECT id, title, source_path, sha256, created_at, project_id, document_scope, chat_session_id, raw_source_identity
+             FROM documents WHERE sha256 = ?1 AND project_id = ?2 AND raw_source_identity = ?3",
+            params![sha256, project_id, raw_source_identity],
         )
     }
 
@@ -779,7 +952,405 @@ impl MetadataStore {
         Ok(())
     }
 
+    // ─── Agent Session Ledger ───
+
+    /// 创建 Agent 会话账本
+    pub fn create_agent_session(
+        &self,
+        id: &str,
+        project_id: i64,
+        slot: &str,
+        provider_id: Option<&str>,
+        model_id: Option<&str>,
+    ) -> Result<(), String> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.db
+            .execute(
+                "INSERT OR REPLACE INTO agent_sessions
+                 (id, project_id, slot, status, provider_id, model_id, started_at, updated_at, ended_at)
+                 VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?6, NULL)",
+                params![id, project_id, slot, provider_id, model_id, now],
+            )
+            .map_err(|e| format!("创建 Agent 会话账本失败: {}", e))?;
+        Ok(())
+    }
+
+    /// 更新 Agent 会话状态
+    pub fn update_agent_session_status(
+        &self,
+        session_id: &str,
+        status: &str,
+        ended: bool,
+    ) -> Result<(), String> {
+        let now = chrono::Utc::now().to_rfc3339();
+        if ended {
+            self.db
+                .execute(
+                    "UPDATE agent_sessions SET status = ?1, updated_at = ?2, ended_at = ?2 WHERE id = ?3",
+                    params![status, now, session_id],
+                )
+                .map_err(|e| format!("更新 Agent 会话状态失败: {}", e))?;
+        } else {
+            self.db
+                .execute(
+                    "UPDATE agent_sessions SET status = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![status, now, session_id],
+                )
+                .map_err(|e| format!("更新 Agent 会话状态失败: {}", e))?;
+        }
+        Ok(())
+    }
+
+    /// 写入 Agent 消息
+    pub fn insert_agent_message(
+        &self,
+        id: &str,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        status: &str,
+        parent_message_id: Option<&str>,
+    ) -> Result<(), String> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.db
+            .execute(
+                "INSERT OR REPLACE INTO agent_messages
+                 (id, session_id, role, content, status, parent_message_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    id,
+                    session_id,
+                    role,
+                    content,
+                    status,
+                    parent_message_id,
+                    now
+                ],
+            )
+            .map_err(|e| format!("写入 Agent 消息失败: {}", e))?;
+        self.touch_agent_session(session_id)?;
+        Ok(())
+    }
+
+    /// 更新 Agent 消息正文和状态
+    pub fn update_agent_message(
+        &self,
+        id: &str,
+        content: &str,
+        status: &str,
+    ) -> Result<(), String> {
+        self.db
+            .execute(
+                "UPDATE agent_messages SET content = ?1, status = ?2 WHERE id = ?3",
+                params![content, status, id],
+            )
+            .map_err(|e| format!("更新 Agent 消息失败: {}", e))?;
+        if let Some(session_id) = self.session_id_for_agent_message(id)? {
+            self.touch_agent_session(&session_id)?;
+        }
+        Ok(())
+    }
+
+    /// 写入 Agent 工具调用
+    pub fn insert_agent_tool_call(
+        &self,
+        id: &str,
+        session_id: &str,
+        assistant_message_id: Option<&str>,
+        tool_name: &str,
+        tool_revision: &str,
+        effect: &str,
+        args_json: &str,
+    ) -> Result<(), String> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.db
+            .execute(
+                "INSERT OR REPLACE INTO agent_tool_calls
+                 (id, session_id, assistant_message_id, tool_name, tool_revision, effect, args_json, status, started_at, ended_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'running', ?8, NULL)",
+                params![
+                    id,
+                    session_id,
+                    assistant_message_id,
+                    tool_name,
+                    tool_revision,
+                    effect,
+                    args_json,
+                    now
+                ],
+            )
+            .map_err(|e| format!("写入 Agent 工具调用失败: {}", e))?;
+        self.touch_agent_session(session_id)?;
+        Ok(())
+    }
+
+    /// 更新 Agent 工具调用状态
+    pub fn finish_agent_tool_call(&self, id: &str, status: &str) -> Result<(), String> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.db
+            .execute(
+                "UPDATE agent_tool_calls SET status = ?1, ended_at = ?2 WHERE id = ?3",
+                params![status, now, id],
+            )
+            .map_err(|e| format!("更新 Agent 工具调用失败: {}", e))?;
+        Ok(())
+    }
+
+    /// 写入 Agent 工具结果
+    pub fn insert_agent_tool_result(
+        &self,
+        id: &str,
+        tool_call_id: &str,
+        result_json: &str,
+        preview_text: &str,
+        output_ref: Option<&str>,
+        status: &str,
+    ) -> Result<(), String> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.db
+            .execute(
+                "INSERT OR REPLACE INTO agent_tool_results
+                 (id, tool_call_id, result_json, preview_text, output_ref, status, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    id,
+                    tool_call_id,
+                    result_json,
+                    preview_text,
+                    output_ref,
+                    status,
+                    now
+                ],
+            )
+            .map_err(|e| format!("写入 Agent 工具结果失败: {}", e))?;
+        Ok(())
+    }
+
+    /// 写入 Agent 事件
+    pub fn insert_agent_event(
+        &self,
+        id: &str,
+        session_id: &str,
+        event_type: &str,
+        payload_json: &str,
+    ) -> Result<(), String> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.db
+            .execute(
+                "INSERT OR REPLACE INTO agent_events
+                 (id, session_id, event_type, payload_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, session_id, event_type, payload_json, now],
+            )
+            .map_err(|e| format!("写入 Agent 事件失败: {}", e))?;
+        self.touch_agent_session(session_id)?;
+        Ok(())
+    }
+
+    /// 获取指定 Agent 会话快照
+    pub fn get_agent_session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<AgentSessionSnapshot>, String> {
+        let Some(session) = self.query_agent_session_by_id(session_id)? else {
+            return Ok(None);
+        };
+        Ok(Some(AgentSessionSnapshot {
+            messages: self.query_agent_messages(session_id)?,
+            tool_calls: self.query_agent_tool_calls(session_id)?,
+            tool_results: self.query_agent_tool_results(session_id)?,
+            events: self.query_agent_events(session_id)?,
+            session,
+        }))
+    }
+
+    /// 获取项目和 slot 下最近一次 Agent 会话快照
+    pub fn get_latest_agent_session_snapshot(
+        &self,
+        project_id: i64,
+        slot: &str,
+    ) -> Result<Option<AgentSessionSnapshot>, String> {
+        let session_id: Option<String> = self
+            .db
+            .query_row(
+                "SELECT id FROM agent_sessions
+                 WHERE project_id = ?1 AND slot = ?2
+                 ORDER BY updated_at DESC, started_at DESC
+                 LIMIT 1",
+                params![project_id, slot],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("查询最近 Agent 会话失败: {}", e))?;
+        match session_id {
+            Some(id) => self.get_agent_session_snapshot(&id),
+            None => Ok(None),
+        }
+    }
+
     // ─── Private helpers ───
+
+    fn touch_agent_session(&self, session_id: &str) -> Result<(), String> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.db
+            .execute(
+                "UPDATE agent_sessions SET updated_at = ?1 WHERE id = ?2",
+                params![now, session_id],
+            )
+            .map_err(|e| format!("刷新 Agent 会话时间失败: {}", e))?;
+        Ok(())
+    }
+
+    fn session_id_for_agent_message(&self, message_id: &str) -> Result<Option<String>, String> {
+        self.db
+            .query_row(
+                "SELECT session_id FROM agent_messages WHERE id = ?1",
+                params![message_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("查询 Agent 消息会话失败: {}", e))
+    }
+
+    fn query_agent_session_by_id(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<AgentSessionRecord>, String> {
+        self.db
+            .query_row(
+                "SELECT id, project_id, slot, status, provider_id, model_id, started_at, updated_at, ended_at
+                 FROM agent_sessions WHERE id = ?1",
+                params![session_id],
+                Self::row_to_agent_session,
+            )
+            .optional()
+            .map_err(|e| format!("查询 Agent 会话失败: {}", e))
+    }
+
+    fn query_agent_messages(&self, session_id: &str) -> Result<Vec<AgentMessageRecord>, String> {
+        let mut stmt = self
+            .db
+            .prepare(
+                "SELECT id, session_id, role, content, status, parent_message_id, created_at
+                 FROM agent_messages WHERE session_id = ?1 ORDER BY created_at ASC",
+            )
+            .map_err(|e| format!("准备查询 Agent 消息失败: {}", e))?;
+        let rows = stmt
+            .query_map(params![session_id], Self::row_to_agent_message)
+            .map_err(|e| format!("查询 Agent 消息失败: {}", e))?;
+        collect_sql_rows(rows, "读取 Agent 消息失败")
+    }
+
+    fn query_agent_tool_calls(&self, session_id: &str) -> Result<Vec<AgentToolCallRecord>, String> {
+        let mut stmt = self
+            .db
+            .prepare(
+                "SELECT id, session_id, assistant_message_id, tool_name, tool_revision, effect, args_json, status, started_at, ended_at
+                 FROM agent_tool_calls WHERE session_id = ?1 ORDER BY started_at ASC",
+            )
+            .map_err(|e| format!("准备查询 Agent 工具调用失败: {}", e))?;
+        let rows = stmt
+            .query_map(params![session_id], Self::row_to_agent_tool_call)
+            .map_err(|e| format!("查询 Agent 工具调用失败: {}", e))?;
+        collect_sql_rows(rows, "读取 Agent 工具调用失败")
+    }
+
+    fn query_agent_tool_results(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<AgentToolResultRecord>, String> {
+        let mut stmt = self
+            .db
+            .prepare(
+                "SELECT r.id, r.tool_call_id, r.result_json, r.preview_text, r.output_ref, r.status, r.created_at
+                 FROM agent_tool_results r
+                 JOIN agent_tool_calls c ON c.id = r.tool_call_id
+                 WHERE c.session_id = ?1
+                 ORDER BY r.created_at ASC",
+            )
+            .map_err(|e| format!("准备查询 Agent 工具结果失败: {}", e))?;
+        let rows = stmt
+            .query_map(params![session_id], Self::row_to_agent_tool_result)
+            .map_err(|e| format!("查询 Agent 工具结果失败: {}", e))?;
+        collect_sql_rows(rows, "读取 Agent 工具结果失败")
+    }
+
+    fn query_agent_events(&self, session_id: &str) -> Result<Vec<AgentEventRecord>, String> {
+        let mut stmt = self
+            .db
+            .prepare(
+                "SELECT id, session_id, event_type, payload_json, created_at
+                 FROM agent_events WHERE session_id = ?1 ORDER BY created_at ASC",
+            )
+            .map_err(|e| format!("准备查询 Agent 事件失败: {}", e))?;
+        let rows = stmt
+            .query_map(params![session_id], Self::row_to_agent_event)
+            .map_err(|e| format!("查询 Agent 事件失败: {}", e))?;
+        collect_sql_rows(rows, "读取 Agent 事件失败")
+    }
+
+    fn row_to_agent_session(row: &rusqlite::Row) -> SqlResult<AgentSessionRecord> {
+        Ok(AgentSessionRecord {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            slot: row.get(2)?,
+            status: row.get(3)?,
+            provider_id: row.get(4)?,
+            model_id: row.get(5)?,
+            started_at: row.get(6)?,
+            updated_at: row.get(7)?,
+            ended_at: row.get(8)?,
+        })
+    }
+
+    fn row_to_agent_message(row: &rusqlite::Row) -> SqlResult<AgentMessageRecord> {
+        Ok(AgentMessageRecord {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            role: row.get(2)?,
+            content: row.get(3)?,
+            status: row.get(4)?,
+            parent_message_id: row.get(5)?,
+            created_at: row.get(6)?,
+        })
+    }
+
+    fn row_to_agent_tool_call(row: &rusqlite::Row) -> SqlResult<AgentToolCallRecord> {
+        Ok(AgentToolCallRecord {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            assistant_message_id: row.get(2)?,
+            tool_name: row.get(3)?,
+            tool_revision: row.get(4)?,
+            effect: row.get(5)?,
+            args_json: row.get(6)?,
+            status: row.get(7)?,
+            started_at: row.get(8)?,
+            ended_at: row.get(9)?,
+        })
+    }
+
+    fn row_to_agent_tool_result(row: &rusqlite::Row) -> SqlResult<AgentToolResultRecord> {
+        Ok(AgentToolResultRecord {
+            id: row.get(0)?,
+            tool_call_id: row.get(1)?,
+            result_json: row.get(2)?,
+            preview_text: row.get(3)?,
+            output_ref: row.get(4)?,
+            status: row.get(5)?,
+            created_at: row.get(6)?,
+        })
+    }
+
+    fn row_to_agent_event(row: &rusqlite::Row) -> SqlResult<AgentEventRecord> {
+        Ok(AgentEventRecord {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            event_type: row.get(2)?,
+            payload_json: row.get(3)?,
+            created_at: row.get(4)?,
+        })
+    }
 
     fn row_to_document(row: &rusqlite::Row) -> SqlResult<DocumentMeta> {
         Ok(DocumentMeta {
@@ -891,6 +1462,17 @@ impl MetadataStore {
         }
         Ok(results)
     }
+}
+
+fn collect_sql_rows<T>(
+    rows: rusqlite::MappedRows<'_, impl FnMut(&rusqlite::Row<'_>) -> SqlResult<T>>,
+    message: &str,
+) -> Result<Vec<T>, String> {
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row.map_err(|e| format!("{}: {}", message, e))?);
+    }
+    Ok(results)
 }
 
 #[cfg(test)]

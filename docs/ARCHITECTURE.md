@@ -1,6 +1,6 @@
 # KingdeeKB 架构文档
 
-> 最后更新：2026-05-31
+> 最后更新：2026-06-06
 
 ## 1. 项目概览
 
@@ -15,7 +15,7 @@ KingdeeKB 是一个基于 Tauri 的桌面 AI 助手应用，面向金蝶 ERP 开
 | 层 | 技术 |
 |---|------|
 | 桌面框架 | Tauri 2.x (Rust + WebView) |
-| 前端 | React 18 + TypeScript + Vite |
+| 前端 | React 19 + TypeScript + Vite |
 | 后端 | Rust (tokio 异步运行时) |
 | Agent 框架 | rig-core (Rust LLM 框架) |
 | 向量检索 | fastembed (BGE-Small-ZH) + custom BM25 |
@@ -205,7 +205,6 @@ pub struct LLMProviderConfig {
 | 工具 | 类 | 有副作用 | 有重试 |
 |------|-----|---------|--------|
 | `search-knowledge` | SearchKnowledgeTool | 否 | ✅ 3次指数退避 |
-| `generate-doc` | GenerateDocTool | ✅ | ❌ 不重试 |
 | `check-scope-creep` | CheckScopeCreepTool | 否 | ✅ |
 | `analyze-fit-gap` | AnalyzeFitGapTool | 否 | ✅ |
 | `get-project-health` | GetProjectHealthTool | 否 | ✅ |
@@ -253,8 +252,8 @@ pub struct LLMProviderConfig {
 管道 C (技能提示词):
   SkillManager.match_best → 手动拼接 → 作为 system_extra 注入 Agent
 
-管道 D (文档生成):
-  assemble_kb_context → truncate_to_tokens → LLM
+管道 D (交付物生成):
+  use-skill → run-skill-script → 沙箱输出目录 → ProductStore
 ```
 
 ### 7.2 核心问题

@@ -6,6 +6,7 @@ use tauri::State;
 use crate::app_state::AppState;
 use crate::services::llm_providers::{
     ApiKeyConfig, LLMProtocol, LLMProviderConfig, ModelConfig, OcrProviderConfig, OcrProviderType,
+    ProviderPolicyConfig,
 };
 
 // ─── LLM 供应商命令 ───
@@ -14,7 +15,10 @@ use crate::services::llm_providers::{
 #[tauri::command]
 pub async fn is_llm_configured(state: State<'_, AppState>) -> Result<bool, String> {
     let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
-    Ok(manager.list_providers().iter().any(|p| p.is_configured()))
+    Ok(manager
+        .list_runtime_providers()
+        .iter()
+        .any(|p| p.is_configured()))
 }
 
 /// 获取所有 LLM 供应商
@@ -24,6 +28,79 @@ pub async fn list_llm_providers(
 ) -> Result<Vec<LLMProviderConfig>, String> {
     let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
     Ok(manager.list_providers().to_vec())
+}
+
+/// 获取运行态允许使用的 LLM 供应商
+#[tauri::command]
+pub async fn list_runtime_llm_providers(
+    state: State<'_, AppState>,
+) -> Result<Vec<LLMProviderConfig>, String> {
+    let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
+    Ok(manager.list_runtime_providers())
+}
+
+/// 获取 Provider Policy
+#[tauri::command]
+pub async fn get_provider_policy(
+    state: State<'_, AppState>,
+) -> Result<ProviderPolicyConfig, String> {
+    let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
+    Ok(manager.get_provider_policy())
+}
+
+/// 保存 Provider Policy
+#[tauri::command]
+pub async fn set_provider_policy(
+    state: State<'_, AppState>,
+    policy: ProviderPolicyConfig,
+) -> Result<ProviderPolicyConfig, String> {
+    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
+    manager.set_provider_policy(policy)?;
+    sync_image_processor(&state, &manager);
+    Ok(manager.get_provider_policy())
+}
+
+/// 获取端点可用模型列表（结果短期缓存在内存中）
+#[tauri::command]
+pub async fn fetch_llm_endpoint_models(
+    state: State<'_, AppState>,
+    protocol: String,
+    base_url: String,
+    api_key: Option<String>,
+) -> Result<RemoteModelListResult, String> {
+    let protocol = match protocol.to_lowercase().as_str() {
+        "openai" => LLMProtocol::OpenAI,
+        "anthropic" => LLMProtocol::Anthropic,
+        "local" => LLMProtocol::Local,
+        _ => return Err(format!("不支持的协议: {}", protocol)),
+    };
+    let api_key = api_key.unwrap_or_default();
+
+    {
+        let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
+        if let Some(models) = manager.cached_remote_models(&protocol, &base_url, &api_key) {
+            return Ok(RemoteModelListResult {
+                models,
+                cached: true,
+            });
+        }
+    }
+
+    let models =
+        crate::services::llm_providers::LLMProviderManager::fetch_remote_models_from_endpoint(
+            &protocol, &base_url, &api_key,
+        )
+        .await?;
+
+    {
+        let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
+        manager.remember_remote_models(&protocol, &base_url, &api_key, models.clone());
+    }
+
+    Ok(RemoteModelListResult {
+        models,
+        cached: false,
+    })
 }
 
 /// 添加 LLM 供应商
@@ -132,6 +209,7 @@ pub async fn set_default_llm_provider(
     id: String,
 ) -> Result<(), String> {
     let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
+    manager.assert_provider_allowed(&id, None)?;
     manager.set_default(&id)?;
 
     // 同步 ImageProcessor 的 LLM 配置
@@ -519,7 +597,7 @@ fn sync_image_processor(
     state: &AppState,
     manager: &crate::services::llm_providers::LLMProviderManager,
 ) {
-    if let Some(default) = manager.get_default_provider() {
+    if let Some(default) = manager.get_default_runtime_provider() {
         let api_key = default.get_default_key_value();
         let base_url = default.base_url.clone();
         let model = default.get_default_model_name();
@@ -568,4 +646,10 @@ pub struct AvailableModelResult {
 pub struct NextApiKeyResult {
     pub key_id: String,
     pub key_value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteModelListResult {
+    pub models: Vec<String>,
+    pub cached: bool,
 }

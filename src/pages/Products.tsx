@@ -35,6 +35,7 @@ export default function Products() {
   const [exportDialog, setExportDialog] = useState<ProductMeta | null>(null)
   const [exportDir, setExportDir] = useState("")
   const [exportResult, setExportResult] = useState<string | null>(null)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
   // Group products by project
   const projectGroups = useMemo<ProjectGroup[]>(() => {
@@ -59,6 +60,7 @@ export default function Products() {
   // Load products on mount
   useEffect(() => {
     ;(async () => {
+      setErrorMessage(null)
       try {
         const prods = await listProducts(currentProjectId)
         setProducts(prods)
@@ -68,6 +70,7 @@ export default function Products() {
         }
       } catch (e) {
         console.error("Failed to load products:", e)
+        setErrorMessage(`加载产物失败：${e instanceof Error ? e.message : String(e)}`)
       } finally {
         setLoading(false)
       }
@@ -102,12 +105,14 @@ export default function Products() {
     if (!confirm(`确定删除产物「${product.template_name}」？\n输出路径: ${product.output_path}`))
       return
     setDeleting(product.id)
+    setErrorMessage(null)
     try {
       await deleteProduct(product.id, product.project_id)
       setProducts((prev) => prev.filter((p) => p.id !== product.id))
       if (expandedProduct === product.id) setExpandedProduct(null)
     } catch (e) {
       console.error("Delete failed:", e)
+      setErrorMessage(`删除产物失败：${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setDeleting(null)
     }
@@ -170,6 +175,12 @@ export default function Products() {
             产物管理
           </h2>
           <p className="text-xs text-neutral-400 mt-0.5">{products.length} 个产物</p>
+          {errorMessage && (
+            <div className="mt-2 flex items-start gap-1.5 rounded-md bg-red-50 px-2 py-1.5 text-xs text-red-600">
+              <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+              <span>{errorMessage}</span>
+            </div>
+          )}
         </div>
 
         {loading ? (
@@ -181,7 +192,7 @@ export default function Products() {
           <div className="flex flex-col items-center justify-center p-8 text-center">
             <Package className="h-10 w-10 text-neutral-300 mb-3" />
             <p className="text-sm text-neutral-500">暂无产物</p>
-            <p className="text-xs text-neutral-400 mt-1">请先通过文档生成向导创建产物</p>
+            <p className="text-xs text-neutral-400 mt-1">请先在 AI 对话中生成交付物</p>
           </div>
         ) : (
           <div className="py-1">
@@ -278,7 +289,7 @@ export default function Products() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
             <h3 className="text-lg font-semibold text-neutral-800 mb-4">导出产物</h3>
-            <p className="text-sm text-neutral-600 mb-2">模板: {exportDialog.template_name}</p>
+            <p className="text-sm text-neutral-600 mb-2">产物: {exportDialog.template_name}</p>
             <p className="text-xs text-neutral-400 mb-4 break-all">
               源路径: {exportDialog.output_path}
             </p>
@@ -301,8 +312,13 @@ export default function Products() {
               <button
                 type="button"
                 onClick={async () => {
-                  const selected = await open({ directory: true })
-                  if (selected) setExportDir(selected)
+                  setExportResult(null)
+                  try {
+                    const selected = await open({ directory: true })
+                    if (selected) setExportDir(selected)
+                  } catch (e) {
+                    setExportResult(`选择目录失败: ${e instanceof Error ? e.message : String(e)}`)
+                  }
                 }}
                 className="flex items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-600 hover:bg-neutral-50 transition-colors"
               >

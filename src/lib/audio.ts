@@ -54,6 +54,18 @@ export interface AsrProviderInfo {
   supports_file: boolean
 }
 
+/** 麦克风输入设备信息 */
+export interface AudioInputDeviceInfo {
+  /** 跨 Host 的设备标识 */
+  id: string
+  /** 系统设备名称 */
+  name: string
+  /** cpal Host 名称 */
+  host: string
+  /** 是否为系统默认输入设备 */
+  is_default: boolean
+}
+
 // ── 命令封装 ─────────────────────────────────────────────────────────────
 
 /**
@@ -61,8 +73,8 @@ export interface AsrProviderInfo {
  *
  * 调用后进入录音状态，需配合 stopRecording 停止并获取转录结果。
  */
-export async function startRecording(): Promise<void> {
-  return invoke("start_whisper_recording")
+export async function startRecording(deviceName?: string): Promise<void> {
+  return invoke("start_whisper_recording", { deviceName: deviceName ?? null })
 }
 
 /**
@@ -91,6 +103,15 @@ export async function loadWhisperModel(modelSize: string = "base"): Promise<void
  */
 export async function getWhisperStatus(): Promise<WhisperStatus> {
   return invoke("get_whisper_status")
+}
+
+/**
+ * 列出系统可见的麦克风输入设备
+ *
+ * @returns 输入设备信息列表
+ */
+export async function listAudioInputDevices(): Promise<AudioInputDeviceInfo[]> {
+  return invoke("list_audio_input_devices")
 }
 
 /**

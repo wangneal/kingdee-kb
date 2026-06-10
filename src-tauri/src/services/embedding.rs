@@ -102,7 +102,8 @@ impl EmbeddingProvider {
             ProviderInfo {
                 provider: EmbeddingProvider::Custom,
                 name: "自定义 (OpenAI 兼容)".to_string(),
-                description: "任意兼容 OpenAI /embeddings 的端点，自定义 base_url 和模型".to_string(),
+                description: "任意兼容 OpenAI /embeddings 的端点，自定义 base_url 和模型"
+                    .to_string(),
                 default_base_url: None,
                 default_model: None,
                 requires_api_key: true,

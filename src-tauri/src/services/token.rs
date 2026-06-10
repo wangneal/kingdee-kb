@@ -1,21 +1,26 @@
-//! 统一 Token 计数模块
-//! 全项目所有 token 计算统一通过此模块，替代现有三套标准。
+//! 统一词元计数模块
+//! 全项目所有词元计算统一通过此模块，替代现有三套标准。
 
-/// Token 计数错误
+use std::sync::OnceLock;
+
+static CL100K_BASE: OnceLock<Result<tiktoken_rs::CoreBPE, String>> = OnceLock::new();
+
+/// 词元计数错误
 #[derive(Debug)]
 pub enum TokenError {
     TiktokenInitFailed(String),
 }
 
-/// 精确 token 计数（基于 tiktoken cl100k_base）
+/// 精确词元计数（基于 tiktoken cl100k_base）
 /// 失败返回 Result，不静默降级
 pub fn count_tokens(text: &str) -> Result<u32, TokenError> {
-    tiktoken_rs::cl100k_base()
-        .map(|b| b.encode_with_special_tokens(text).len() as u32)
-        .map_err(|e| TokenError::TiktokenInitFailed(e.to_string()))
+    match CL100K_BASE.get_or_init(|| tiktoken_rs::cl100k_base().map_err(|e| e.to_string())) {
+        Ok(bpe) => Ok(bpe.encode_with_special_tokens(text).len() as u32),
+        Err(error) => Err(TokenError::TiktokenInitFailed(error.clone())),
+    }
 }
 
-/// 带回退的 token 计数（用于非关键路径）
+/// 带回退的词元计数（用于非关键路径）
 /// 回退公式区分中英文比例：中文 ~1.5 字符/token，英文 ~4 字符/token
 pub fn count_tokens_with_fallback(text: &str) -> u32 {
     count_tokens(text).unwrap_or_else(|_| {
@@ -25,7 +30,7 @@ pub fn count_tokens_with_fallback(text: &str) -> u32 {
     })
 }
 
-/// Token 级截断（二分查找，UTF-8 边界安全）
+/// 词元级截断（二分查找，UTF-8 边界安全）
 pub fn truncate_to_tokens(text: &str, max_tokens: u32) -> String {
     let total = count_tokens_with_fallback(text);
     if total <= max_tokens {

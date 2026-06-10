@@ -169,6 +169,8 @@ const MOCK_RESPONSES: Record<string, unknown> = {
   agent_chat: "session_123",
   answer_question: null,
   reject_question: null,
+  get_latest_agent_session: null,
+  get_agent_session: null,
 
   // Embedding model
   init_model: true,
@@ -331,6 +333,9 @@ const MOCK_RESPONSES: Record<string, unknown> = {
 
   // Skill / provider config
   list_llm_providers: [],
+  list_runtime_llm_providers: [],
+  get_provider_policy: { default_effect: "allow", rules: [] },
+  set_provider_policy: { default_effect: "allow", rules: [] },
   fetch_llm_endpoint_models: { models: ["deepseek-chat", "deepseek-reasoner"], cached: false },
   add_llm_provider: null,
   update_llm_provider: null,

@@ -43,6 +43,44 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex, RwLock};
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct KbRecompileFailure {
+    pub source_id: i64,
+    pub title: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct KbRecompileStatus {
+    pub status: String,
+    pub project_id: Option<i64>,
+    pub force: bool,
+    pub retried: usize,
+    pub succeeded: usize,
+    pub failed: Vec<KbRecompileFailure>,
+    pub completed_source_keys: Vec<String>,
+    pub message: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+impl Default for KbRecompileStatus {
+    fn default() -> Self {
+        Self {
+            status: "idle".to_string(),
+            project_id: None,
+            force: false,
+            retried: 0,
+            succeeded: 0,
+            failed: Vec::new(),
+            completed_source_keys: Vec::new(),
+            message: None,
+            started_at: None,
+            finished_at: None,
+        }
+    }
+}
+
 /// 所有 Tauri 命令共享的全局应用状态
 pub struct AppState {
     /// 应用数据目录（~/.kingdee-kb/）
@@ -109,6 +147,8 @@ pub struct AppState {
     pub llm_providers: Arc<RwLock<LLMProviderManager>>,
     /// 持久化摄入队列（JSON 文件 + 崩溃恢复）
     pub ingest_queue: Mutex<IngestionQueue>,
+    /// 知识编译后台任务状态（跨页面恢复）
+    pub kb_recompile_status: Arc<Mutex<KbRecompileStatus>>,
     /// Agent 会话取消标志（session_id → cancel flag）
     pub cancel_flags: Arc<RwLock<HashMap<String, Arc<AtomicBool>>>>,
     /// Cross-Encoder Reranker（精排服务，延迟懒加载）
@@ -303,6 +343,7 @@ impl AppState {
             image_processor: Arc::new(RwLock::new(image_processor)),
             llm_providers,
             ingest_queue,
+            kb_recompile_status: Arc::new(Mutex::new(KbRecompileStatus::default())),
             cancel_flags: Arc::new(RwLock::new(HashMap::new())),
             reranker: RwLock::new(None),
         })
@@ -488,6 +529,7 @@ impl AppState {
             ))),
             llm_providers,
             ingest_queue,
+            kb_recompile_status: Arc::new(Mutex::new(KbRecompileStatus::default())),
             cancel_flags: Arc::new(RwLock::new(HashMap::new())),
             reranker: RwLock::new(None),
         }

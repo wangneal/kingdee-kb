@@ -63,6 +63,7 @@ export default function Skills() {
   const [triggerQuery, setTriggerQuery] = useState("")
   const [triggerResults, setTriggerResults] = useState<SkillMatch[]>([])
   const [triggerLoading, setTriggerLoading] = useState(false)
+  const [triggerSearched, setTriggerSearched] = useState(false)
   const [showPrompt, setShowPrompt] = useState(false)
   const [promptText, setPromptText] = useState<string | null>(null)
   const [promptLoading, setPromptLoading] = useState(false)
@@ -89,27 +90,30 @@ export default function Skills() {
 
   useEffect(() => {
     refresh()
-  }, [])
+  }, [refresh])
 
   const handleSearch = useCallback(() => refresh(query), [query, refresh])
   const handleRescan = useCallback(async () => {
     setScanning(true)
+    setError(null)
     try {
       await rescanSkills()
       await refresh()
     } catch (e) {
       setError(String(e))
+    } finally {
+      setScanning(false)
     }
-    setScanning(false)
   }, [refresh])
 
   const handleImport = useCallback(async () => {
-    const selected = await open({
-      multiple: false,
-      filters: [{ name: "技能包 ZIP", extensions: ["zip"] }],
-    })
-    if (!selected) return
+    setError(null)
     try {
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: "技能包 ZIP", extensions: ["zip"] }],
+      })
+      if (!selected) return
       await importSkill(selected as string)
       await refresh()
       setError(null)
@@ -119,23 +123,32 @@ export default function Skills() {
   }, [refresh])
 
   const handleCardClick = useCallback(async (name: string) => {
-    const full = await getSkillFull(name)
-    setSkillFull(full)
-    setDetail(full?.skill ?? null)
-    setFileContent(null)
+    setError(null)
+    try {
+      const full = await getSkillFull(name)
+      setSkillFull(full)
+      setDetail(full?.skill ?? null)
+      setFileContent(null)
+    } catch (e) {
+      setError(`加载技能详情失败：${String(e)}`)
+    }
   }, [])
 
   // Phase 2: Trigger Match handlers
   const handleTriggerMatch = useCallback(async () => {
     if (!triggerQuery.trim()) return
     setTriggerLoading(true)
+    setTriggerSearched(true)
+    setError(null)
     try {
       const matches = await matchSkillCandidates(triggerQuery, 5)
       setTriggerResults(matches)
     } catch (e) {
       setError(String(e))
+      setTriggerResults([])
+    } finally {
+      setTriggerLoading(false)
     }
-    setTriggerLoading(false)
   }, [triggerQuery])
 
   const handleShowPrompt = useCallback(async () => {
@@ -198,6 +211,7 @@ export default function Skills() {
             {detail.metadata.icon || "📄"} {detail.name}
           </h2>
           <button
+            type="button"
             onClick={() => {
               setDetail(null)
               setSkillFull(null)
@@ -246,6 +260,7 @@ export default function Skills() {
                       {files.map((f) => (
                         <div key={f.path} className="flex items-center gap-1">
                           <button
+                            type="button"
                             onClick={async () => {
                               setLoadingFile(true)
                               setFileContent(null)
@@ -267,6 +282,7 @@ export default function Skills() {
                           </button>
                           {type === "script" && (
                             <button
+                              type="button"
                               onClick={(e) => {
                                 e.stopPropagation()
                                 handleExecuteScript(detail.name, f.path)
@@ -297,6 +313,7 @@ export default function Skills() {
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-medium text-neutral-500">文件内容</span>
                 <button
+                  type="button"
                   onClick={() => setFileContent(null)}
                   className="text-xs text-neutral-400 hover:text-neutral-600"
                 >
@@ -330,6 +347,7 @@ export default function Skills() {
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] text-neutral-400">{scriptResult.duration_ms}ms</span>
                   <button
+                    type="button"
                     onClick={() => setScriptResult(null)}
                     className="text-xs text-neutral-400 hover:text-neutral-600"
                   >
@@ -383,6 +401,7 @@ export default function Skills() {
             {detail.metadata.icon || "📄"} {detail.name}
           </h2>
           <button
+            type="button"
             onClick={() => setDetail(null)}
             className="flex h-7 w-7 items-center justify-center rounded-md text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600"
           >
@@ -437,6 +456,7 @@ export default function Skills() {
             />
           </div>
           <button
+            type="button"
             onClick={handleImport}
             className="flex h-8 items-center gap-1 rounded-md bg-[#1A6BD8] px-3 text-xs text-white hover:bg-[#1555B0]"
           >
@@ -444,6 +464,7 @@ export default function Skills() {
             导入
           </button>
           <button
+            type="button"
             onClick={handleRescan}
             disabled={scanning}
             className="flex h-8 items-center gap-1 rounded-md border border-neutral-200 px-2.5 text-xs text-neutral-600 hover:bg-neutral-50 disabled:opacity-50"
@@ -467,6 +488,7 @@ export default function Skills() {
             技能触发匹配
           </h3>
           <button
+            type="button"
             onClick={handleShowPrompt}
             className="flex items-center gap-1 text-xs text-neutral-500 hover:text-[#1A6BD8]"
           >
@@ -478,12 +500,16 @@ export default function Skills() {
           <input
             type="text"
             value={triggerQuery}
-            onChange={(e) => setTriggerQuery(e.target.value)}
+            onChange={(e) => {
+              setTriggerQuery(e.target.value)
+              setTriggerSearched(false)
+            }}
             onKeyDown={(e) => e.key === "Enter" && handleTriggerMatch()}
             placeholder="输入查询，测试技能匹配..."
             className="flex-1 h-8 rounded-md border border-neutral-200 bg-white px-3 text-xs placeholder:text-neutral-400 focus:border-[#1A6BD8] focus:outline-none"
           />
           <button
+            type="button"
             onClick={handleTriggerMatch}
             disabled={triggerLoading || !triggerQuery.trim()}
             className="flex h-8 items-center gap-1 rounded-md bg-[#1A6BD8] px-3 text-xs text-white hover:bg-[#1555B0] disabled:opacity-50"
@@ -528,7 +554,7 @@ export default function Skills() {
           </div>
         )}
 
-        {triggerResults.length === 0 && triggerQuery && !triggerLoading && (
+        {triggerSearched && triggerResults.length === 0 && triggerQuery && !triggerLoading && (
           <p className="mt-2 text-xs text-neutral-400">未找到匹配的技能</p>
         )}
       </div>
@@ -540,6 +566,7 @@ export default function Skills() {
             <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
               <h3 className="text-sm font-semibold text-neutral-800">系统提示（技能列表）</h3>
               <button
+                type="button"
                 onClick={() => {
                   setShowPrompt(false)
                   setPromptText(null)
@@ -564,7 +591,7 @@ export default function Skills() {
         </div>
       )}
 
-      {/* Card Grid */}
+      {/* 卡片网格 */}
       <div className="flex-1 overflow-y-auto p-6">
         {loading ? (
           <div className="flex items-center justify-center py-20">
@@ -594,7 +621,7 @@ export default function Skills() {
   )
 }
 
-// ── Skill Card ──
+// ── 技能卡片 ──
 function SkillCard({
   skill,
   expanded,
@@ -611,11 +638,8 @@ function SkillCard({
   const hasExtras = skill.scripts.length > 0 || skill.references.length > 0
 
   return (
-    <div
-      className="group cursor-pointer rounded-lg border border-neutral-200 bg-white p-4 transition-all hover:border-[#1A6BD8]/30 hover:shadow-sm"
-      onClick={onClick}
-    >
-      {/* Header */}
+    <div className="group rounded-lg border border-neutral-200 bg-white p-4 transition-all hover:border-[#1A6BD8]/30 hover:shadow-sm">
+      {/* 页头 */}
       <div className="flex items-start justify-between mb-2">
         <span className="text-2xl">{skill.metadata.icon || "📄"}</span>
         <span className="rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-500">
@@ -623,19 +647,20 @@ function SkillCard({
         </span>
       </div>
 
-      {/* Name */}
+      {/* 名称 */}
       <h3 className="mb-1 text-sm font-semibold text-neutral-800">{skill.name}</h3>
 
-      {/* Description */}
+      {/* 描述 */}
       {skill.metadata.description && (
         <p className="mb-3 text-xs leading-relaxed text-neutral-500 line-clamp-2">
           {skill.metadata.description}
         </p>
       )}
 
-      {/* Expand toggle */}
+      {/* 展开切换 */}
       <div className="flex items-center justify-between">
         <button
+          type="button"
           onClick={onExpand}
           className="flex items-center gap-1 text-[11px] text-neutral-400 hover:text-neutral-600"
         >
@@ -643,6 +668,7 @@ function SkillCard({
           详情
         </button>
         <button
+          type="button"
           onClick={(e) => {
             e.stopPropagation()
             onClick()
@@ -653,7 +679,7 @@ function SkillCard({
         </button>
       </div>
 
-      {/* Expanded detail */}
+      {/* 展开详情 */}
       {expanded && (
         <div className="mt-3 border-t border-neutral-100 pt-3 text-xs text-neutral-500">
           {skill.metadata.version && <p className="mb-1">版本: {skill.metadata.version}</p>}

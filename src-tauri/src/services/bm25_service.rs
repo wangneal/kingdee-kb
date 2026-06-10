@@ -616,9 +616,9 @@ impl BM25Service {
                 .map_err(|e| format!("Failed to index chunk {}: {}", chunk_id, e))?;
         }
 
-            writer
-                .commit()
-                .map_err(|e| format!("Failed to commit BM25 rebuild: {}", e))?;
+        writer
+            .commit()
+            .map_err(|e| format!("Failed to commit BM25 rebuild: {}", e))?;
         drop(writer);
 
         inner

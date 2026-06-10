@@ -262,9 +262,11 @@ export function detectAIPatterns(text: string): HumanizeResult["detectedPatterns
     // 重置正则状态
     pattern.regex.lastIndex = 0
 
-    while ((match = pattern.regex.exec(text)) !== null) {
+    match = pattern.regex.exec(text)
+    while (match !== null) {
       matches.push(match[0])
       if (!pattern.regex.global) break
+      match = pattern.regex.exec(text)
     }
 
     if (matches.length > 0) {

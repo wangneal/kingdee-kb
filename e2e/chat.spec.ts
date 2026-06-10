@@ -1,8 +1,12 @@
 import { test, expect } from "@playwright/test";
 import { mockTauriApis } from "./mocks/tauri-mock";
 
-test.beforeEach(async ({ page }) => {
-  await mockTauriApis(page);
+test.beforeEach(async ({ page }, testInfo) => {
+  await mockTauriApis(page, {
+    responses: {
+      is_llm_configured: !testInfo.title.includes("LLM not configured"),
+    },
+  });
 });
 
 test.describe("Chat page", () => {

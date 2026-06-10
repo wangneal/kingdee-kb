@@ -14,6 +14,8 @@ import type {
   ModelProbeResult,
   NextApiKeyResult,
   OcrProviderConfig,
+  ProviderPolicyConfig,
+  RemoteModelListResult,
   SharedResource,
   Skill,
   SkillFile,
@@ -169,6 +171,32 @@ export type LLMProviderInput = {
 /** 获取所有 LLM 供应商 */
 export async function listLLMProviders(): Promise<LLMProviderConfig[]> {
   return invoke("list_llm_providers")
+}
+
+/** 获取运行态允许使用的 LLM 供应商 */
+export async function listRuntimeLLMProviders(): Promise<LLMProviderConfig[]> {
+  return invoke("list_runtime_llm_providers")
+}
+
+/** 获取 Provider Policy */
+export async function getProviderPolicy(): Promise<ProviderPolicyConfig> {
+  return invoke("get_provider_policy")
+}
+
+/** 保存 Provider Policy */
+export async function setProviderPolicy(
+  policy: ProviderPolicyConfig,
+): Promise<ProviderPolicyConfig> {
+  return invoke("set_provider_policy", { policy })
+}
+
+/** 从端点获取可用模型列表 */
+export async function fetchLLMEndpointModels(params: {
+  protocol: string
+  baseUrl: string
+  apiKey?: string
+}): Promise<RemoteModelListResult> {
+  return invoke("fetch_llm_endpoint_models", params)
 }
 
 /** 添加 LLM 供应商 */

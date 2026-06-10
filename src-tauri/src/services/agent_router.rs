@@ -7,7 +7,7 @@ use crate::services::llm_service::ChatMessage;
 use crate::services::types::AgentMode;
 
 /// 复杂度阈值：超过此分数触发 Plan-Execute 模式
-pub const COMPLEXITY_THRESHOLD: u32 = 30;
+pub const COMPLEXITY_THRESHOLD: u32 = 24;
 
 /// 计算用户消息的复杂度分数
 ///

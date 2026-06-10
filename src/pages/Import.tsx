@@ -58,20 +58,14 @@ export default function Import() {
   // 文本导入状态
   const [textTitle, setTextTitle] = useState("")
   const [textContent, setTextContent] = useState("")
-  const [textProject, setTextProject] = useState("default")
-  const [textCustomProject, setTextCustomProject] = useState("")
   const [textFeedback, setTextFeedback] = useState<ImportFeedback | null>(null)
 
   // 文件和文件夹导入状态
   const [fileFeedback, setFileFeedback] = useState<ImportFeedback | null>(null)
-  const [fileProject, setFileProject] = useState("default")
-  const [fileCustomProject, setFileCustomProject] = useState("")
   const [isDragging, setIsDragging] = useState(false)
 
   // 视频转写状态
   const [videoFeedback, setVideoFeedback] = useState<ImportFeedback | null>(null)
-  const [videoProject, setVideoProject] = useState("default")
-  const [videoCustomProject, setVideoCustomProject] = useState("")
   const [videoGeneratingMinutes, setVideoGeneratingMinutes] = useState(true)
   const [videoResult, setVideoResult] = useState<VideoPipelineResult | null>(null)
   const [whisperReady, setWhisperReady] = useState(false)
@@ -119,7 +113,7 @@ export default function Import() {
     setWhisperLoading(true)
     setWhisperError(null)
     try {
-      await loadWhisperModel("tiny")
+      await loadWhisperModel("base")
       const status = await getWhisperStatus()
       setWhisperReady(status.model_loaded)
     } catch (err) {
@@ -141,14 +135,6 @@ export default function Import() {
       setKbCompilationSaving(false)
     }
   }, [])
-
-  // 项目选项
-  const projectOptions = [
-    { value: "default", label: "默认" },
-    { value: "enterprise", label: "企业版" },
-    { value: "flagship", label: "旗舰版" },
-    { value: "custom", label: "自定义..." },
-  ]
 
   // 文本导入
   const handleTextImport = useCallback(async () => {
@@ -189,7 +175,7 @@ export default function Import() {
         filters: [
           {
             name: "文档",
-            extensions: ["md", "txt", "html", "pdf", "docx", "xlsx", "xls"],
+            extensions: ["md", "txt", "html", "pdf", "docx", "xlsx", "xls", "vsdx", "vsd"],
           },
         ],
       })
@@ -373,29 +359,33 @@ export default function Import() {
 
   // 视频转写导入
   const handleVideoImport = useCallback(async () => {
-    const defaultPath = await getImportDialogDefaultPath()
-    const filePath = await open({
-      title: "选择要转写的视频或音频文件",
-      defaultPath,
-      multiple: false,
-      filters: [
-        {
-          name: "视频/音频文件",
-          extensions: ["mp4", "webm", "avi", "mov", "mkv", "flv", "wmv", "m4a", "mp3", "wav"],
-        },
-      ],
-    })
-    if (!filePath) return
-
-    if (currentProjectId == null) {
-      setVideoFeedback({ status: "error", message: "当前项目未就绪" })
-      return
-    }
-    setVideoFeedback({ status: "loading", message: "正在准备..." })
-    setVideoResult(null)
-    setVideoProgress(null)
-
+    setVideoFeedback({ status: "loading", message: "正在选择视频/音频文件…" })
     try {
+      const defaultPath = await getImportDialogDefaultPath()
+      const filePath = await open({
+        title: "选择要转写的视频或音频文件",
+        defaultPath,
+        multiple: false,
+        filters: [
+          {
+            name: "视频/音频文件",
+            extensions: ["mp4", "webm", "avi", "mov", "mkv", "flv", "wmv", "m4a", "mp3", "wav"],
+          },
+        ],
+      })
+      if (!filePath) {
+        setVideoFeedback(null)
+        return
+      }
+
+      if (currentProjectId == null) {
+        setVideoFeedback({ status: "error", message: "当前项目未就绪" })
+        return
+      }
+      setVideoFeedback({ status: "loading", message: "正在准备..." })
+      setVideoResult(null)
+      setVideoProgress(null)
+
       const result = await transcribeAndIngestVideo(
         filePath as string,
         currentProjectId,
@@ -409,7 +399,7 @@ export default function Import() {
     } catch (err) {
       setVideoFeedback({
         status: "error",
-        message: String(err),
+        message: `视频/音频处理失败：${err}`,
       })
     }
   }, [currentProjectId, videoGeneratingMinutes])
@@ -420,22 +410,23 @@ export default function Import() {
       await navigator.clipboard.writeText(text)
       setCopyOk(label)
       setTimeout(() => setCopyOk(null), 2000)
-    } catch {
-      /* 剪贴板不可用 */
+    } catch (err) {
+      setVideoFeedback({ status: "error", message: `复制失败：${err}` })
     }
   }, [])
 
   // 导出文本
   const exportToFile = useCallback(async (text: string, filename: string) => {
-    const dest = await save({
-      defaultPath: filename,
-      filters: [{ name: "Markdown", extensions: ["md", "txt"] }],
-    })
-    if (!dest) return
     try {
+      const dest = await save({
+        defaultPath: filename,
+        filters: [{ name: "Markdown", extensions: ["md", "txt"] }],
+      })
+      if (!dest) return
       await invoke("export_report", { content: text, filePath: dest })
+      setVideoFeedback({ status: "success", message: `已导出到：${dest}` })
     } catch (err) {
-      console.error("导出失败:", err)
+      setVideoFeedback({ status: "error", message: `导出失败：${err}` })
     }
   }, [])
 
@@ -478,28 +469,6 @@ export default function Import() {
             onChange={(e) => setTextTitle(e.target.value)}
             className="w-full rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
           />
-          <div className="flex items-center gap-2">
-            <select
-              value={textProject}
-              onChange={(e) => setTextProject(e.target.value)}
-              className="rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-            >
-              {projectOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-            {textProject === "custom" && (
-              <input
-                type="text"
-                placeholder="输入项目名称"
-                value={textCustomProject}
-                onChange={(e) => setTextCustomProject(e.target.value)}
-                className="flex-1 rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-              />
-            )}
-          </div>
           <textarea
             placeholder="粘贴文本内容…"
             value={textContent}
@@ -580,33 +549,11 @@ export default function Import() {
           />
           <p className="text-sm text-neutral-600">拖拽文件到此处</p>
           <p className="text-xs text-neutral-400 mt-1">
-            支持 Markdown、TXT、HTML、PDF、DOCX、Excel
+            支持 Markdown、TXT、HTML、PDF、DOCX、Excel、Visio
           </p>
         </div>
 
         {/* 文件选择按钮 */}
-        <div className="flex items-center gap-3 mb-3">
-          <select
-            value={fileProject}
-            onChange={(e) => setFileProject(e.target.value)}
-            className="rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-          >
-            {projectOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-          {fileProject === "custom" && (
-            <input
-              type="text"
-              placeholder="输入项目名称"
-              value={fileCustomProject}
-              onChange={(e) => setFileCustomProject(e.target.value)}
-              className="flex-1 rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-            />
-          )}
-        </div>
         <div className="flex gap-3">
           <button
             type="button"
@@ -732,30 +679,6 @@ export default function Import() {
             <p className="text-[10px] text-red-500 truncate max-w-lg mt-1" title={whisperError}>
               错误: {whisperError}
             </p>
-          )}
-        </div>
-
-        {/* 项目选择器 */}
-        <div className="flex items-center gap-2 mb-3">
-          <select
-            value={videoProject}
-            onChange={(e) => setVideoProject(e.target.value)}
-            className="rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400/20"
-          >
-            {projectOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-          {videoProject === "custom" && (
-            <input
-              type="text"
-              placeholder="输入项目名称"
-              value={videoCustomProject}
-              onChange={(e) => setVideoCustomProject(e.target.value)}
-              className="flex-1 rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400/20"
-            />
           )}
         </div>
 

@@ -25,7 +25,7 @@ pub async fn list_ingestion_queue(state: State<'_, AppState>) -> Result<Vec<Queu
         .ingest_queue
         .lock()
         .map_err(|e| format!("获取队列锁失败: {}", e))?;
-    Ok(queue.all_items().to_vec())
+    Ok(queue.visible_items())
 }
 
 /// 重试所有失败的摄入任务

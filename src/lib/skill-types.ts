@@ -211,6 +211,22 @@ export interface LLMProviderConfig {
   models: ModelConfig[]
 }
 
+/** Provider 策略效果 */
+export type ProviderPolicyEffect = "allow" | "deny"
+
+/** Provider 使用策略规则 */
+export interface ProviderPolicyRule {
+  effect: ProviderPolicyEffect
+  action: "provider.use"
+  resource: string
+}
+
+/** Provider 使用策略配置 */
+export interface ProviderPolicyConfig {
+  default_effect: ProviderPolicyEffect
+  rules: ProviderPolicyRule[]
+}
+
 /** OCR 供应商配置 */
 export interface OcrProviderConfig {
   id: string
@@ -250,6 +266,12 @@ export interface AvailableModel {
   model_name: string
   is_default: boolean
   is_multimodal: boolean | null
+}
+
+/** 端点模型列表 */
+export interface RemoteModelListResult {
+  models: string[]
+  cached: boolean
 }
 
 /** 下一个可用 API Key */

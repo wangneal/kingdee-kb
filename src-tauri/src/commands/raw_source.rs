@@ -74,14 +74,76 @@ pub async fn list_raw_sources(
     store.list_by_project(project_id)
 }
 
-/// 软删除一个原始文件记录（标记为 deleted）。
+/// 软删除一个原始文件记录，同时级联清除关联的文档、分块、向量和全文索引。
+///
+/// 级联流程：
+/// 1. 读取 raw_source 记录，获取 (sha256, project_id, identity)
+/// 2. 按三字段定位关联的 documents，收集 vector_keys
+/// 3. 从 usearch 删除向量
+/// 4. 从 BM25/tantivy 删除全文索引
+/// 5. 从 SQLite 删除 documents + chunks
+/// 6. 软删除 raw_source 本身
+///
+/// 防止已删除的敏感文件仍被 AI 问答召回。
 #[tauri::command]
 pub async fn soft_delete_raw_source(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    let store = state
-        .raw_sources
-        .lock()
-        .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.soft_delete(id)
+    // 1. 读取 raw_source 记录
+    let source = {
+        let store = state
+            .raw_sources
+            .lock()
+            .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+        store.get_by_id(id)?
+    };
+
+    // 2. 查找关联文档并收集 vector_keys
+    let (document_ids, all_vector_keys) = {
+        let meta = state.metadata.lock().map_err(|e| e.to_string())?;
+        let docs =
+            meta.list_documents_by_source_key(&source.sha256, source.project_id, &source.identity)?;
+        let doc_ids: Vec<i64> = docs.iter().map(|d| d.id).collect();
+        let keys = if doc_ids.is_empty() {
+            Vec::new()
+        } else {
+            meta.get_vector_keys_by_document_ids(&doc_ids)?
+        };
+        (doc_ids, keys)
+    };
+
+    // 3. 从 usearch 删除向量
+    if !all_vector_keys.is_empty() {
+        if let Ok(idx) = state.vector_index.write() {
+            if let Err(e) = idx.remove_keys(&all_vector_keys) {
+                tracing::warn!("usearch 向量删除失败 (raw_source={}): {}", id, e);
+            }
+        }
+    }
+
+    // 4. 从 BM25/tantivy 删除全文索引
+    if !all_vector_keys.is_empty() {
+        let _ = state.get_or_init_bm25();
+        if let Ok(bm25) = state.bm25.write() {
+            if let Err(e) = bm25.remove_chunks(&all_vector_keys) {
+                tracing::warn!("BM25 索引删除失败 (raw_source={}): {}", id, e);
+            }
+        }
+    }
+
+    // 5. 从 SQLite 删除文档 + 分块（失败时阻止软删除，防止数据残留）
+    if !document_ids.is_empty() {
+        let meta = state.metadata.lock().map_err(|e| e.to_string())?;
+        meta.delete_documents_batch(document_ids, Some(source.project_id))
+            .map_err(|e| format!("级联删除文档失败 (raw_source={}): {}", id, e))?;
+    }
+
+    // 6. 软删除 raw_source 本身
+    {
+        let store = state
+            .raw_sources
+            .lock()
+            .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+        store.soft_delete(id)
+    }
 }
 
 /// 校验项目 ID 目录名，避免路径逃逸数据目录。

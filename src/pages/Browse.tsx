@@ -9,23 +9,31 @@ import {
   Square,
   Trash2,
 } from "lucide-react"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ContextMenu, { type ContextMenuItem } from "../components/ContextMenu"
 import ImportModal from "../components/ImportModal"
 import WikiLinkEditor from "../components/wiki/WikiLinkEditor"
 import { useProject } from "../contexts/ProjectContext"
 import {
+  approveAutoWikiPages,
   approveWikiPage,
   batchDeleteWikiPages,
+  buildKnowledgeGraph,
   deleteWikiPage,
   getGraphNeighbors,
+  getKbRecompileStatus,
   getWikiPage,
+  type KbRecompileStatus,
   listWikiPages,
-  recompileFailedKbSources,
   rejectWikiPage,
+  startKbRecompile,
   type WikiPage,
   type WikiPageBrief,
 } from "../lib/tauri-commands"
+
+function formatOperationError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
 
 export default function Browse() {
   const { currentProjectId } = useProject()
@@ -38,8 +46,9 @@ export default function Browse() {
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [importModalOpen, setImportModalOpen] = useState(false)
-  const [recompiling, setRecompiling] = useState(false)
-  const [recompileMessage, setRecompileMessage] = useState<string | null>(null)
+  const [recompileStatus, setRecompileStatus] = useState<KbRecompileStatus | null>(null)
+  const lastHandledRecompileFinishRef = useRef<string | null>(null)
+  const [autoApproving, setAutoApproving] = useState(false)
   // 非重编译相关的反馈消息（用于批量删除等操作后的提示），3 秒后自动清除
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
@@ -98,6 +107,36 @@ export default function Browse() {
     void refreshWikiPages()
   }, [refreshWikiPages])
 
+  useEffect(() => {
+    if (currentProjectId == null) return
+    let cancelled = false
+
+    async function pollStatus() {
+      try {
+        const status = await getKbRecompileStatus()
+        if (cancelled) return
+        setRecompileStatus(status)
+        if (
+          status.project_id === currentProjectId &&
+          status.finished_at &&
+          status.finished_at !== lastHandledRecompileFinishRef.current
+        ) {
+          lastHandledRecompileFinishRef.current = status.finished_at
+          await refreshWikiPages()
+        }
+      } catch {
+        if (!cancelled) setRecompileStatus(null)
+      }
+    }
+
+    void pollStatus()
+    const interval = window.setInterval(pollStatus, 3000)
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [currentProjectId, refreshWikiPages])
+
   const handleContextMenu = useCallback((event: React.MouseEvent) => {
     const target = event.target as HTMLElement
     if (target.closest("button, a, input, textarea, select, pre, code, [contenteditable]")) return
@@ -121,22 +160,22 @@ export default function Browse() {
 
   const handleRecompileFailed = useCallback(async () => {
     if (currentProjectId == null) return
-    setRecompiling(true)
-    setRecompileMessage(null)
     try {
-      const result = await recompileFailedKbSources(currentProjectId)
-      setRecompileMessage(
-        result.failed.length > 0
-          ? `重编译完成：成功 ${result.succeeded}/${result.retried} 项，失败 ${result.failed.length} 项`
-          : `重编译完成：成功 ${result.succeeded}/${result.retried} 项`,
-      )
-      await refreshWikiPages()
+      const status = await startKbRecompile(currentProjectId)
+      setRecompileStatus(status)
     } catch (error) {
-      setRecompileMessage(`重编译失败：${error instanceof Error ? error.message : String(error)}`)
-    } finally {
-      setRecompiling(false)
+      setRecompileStatus({
+        status: "failed",
+        project_id: currentProjectId,
+        force: false,
+        retried: 0,
+        succeeded: 0,
+        failed: [],
+        completed_source_keys: [],
+        message: `重编译失败：${error instanceof Error ? error.message : String(error)}`,
+      })
     }
-  }, [currentProjectId, refreshWikiPages])
+  }, [currentProjectId])
 
   // 强制重编译全部源：清掉所有 ingest/analysis cache 后走完整流程。
   // 用于"删 wiki 后想原地重生成"等场景——失败项入口看不到被删的源。
@@ -148,24 +187,58 @@ export default function Browse() {
       )
     )
       return
-    setRecompiling(true)
-    setRecompileMessage(null)
     try {
-      const result = await recompileFailedKbSources(currentProjectId, true)
-      setRecompileMessage(
+      const status = await startKbRecompile(currentProjectId, true)
+      setRecompileStatus(status)
+    } catch (error) {
+      setRecompileStatus({
+        status: "failed",
+        project_id: currentProjectId,
+        force: true,
+        retried: 0,
+        succeeded: 0,
+        failed: [],
+        completed_source_keys: [],
+        message: `强制重编译失败：${error instanceof Error ? error.message : String(error)}`,
+      })
+    }
+  }, [currentProjectId])
+
+  const handleApproveAutoCandidates = useCallback(async () => {
+    if (currentProjectId == null || autoApproving) return
+    setAutoApproving(true)
+    try {
+      const result = await approveAutoWikiPages(currentProjectId)
+      setFeedbackMessage(
         result.failed.length > 0
-          ? `强制重编译完成：成功 ${result.succeeded}/${result.retried} 项，失败 ${result.failed.length} 项`
-          : `强制重编译完成：成功 ${result.succeeded}/${result.retried} 项`,
+          ? `自动批准完成：成功 ${result.approved} 项，失败 ${result.failed.length} 项`
+          : `自动批准完成：成功 ${result.approved} 项`,
       )
       await refreshWikiPages()
+      if (selectedWiki) {
+        try {
+          const updated = await getWikiPage(selectedWiki.id)
+          setSelectedWiki(updated)
+          if (updated.candidate_status == null) setViewMode("current")
+        } catch {
+          setSelectedWiki(null)
+        }
+      }
+      try {
+        await buildKnowledgeGraph(currentProjectId)
+        if (selectedWiki) {
+          const nextNeighbors = await getGraphNeighbors(currentProjectId, selectedWiki.slug)
+          setNeighbors(nextNeighbors)
+        }
+      } catch {
+        setNeighbors([])
+      }
     } catch (error) {
-      setRecompileMessage(
-        `强制重编译失败：${error instanceof Error ? error.message : String(error)}`,
-      )
+      setFeedbackMessage(`自动批准失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
-      setRecompiling(false)
+      setAutoApproving(false)
     }
-  }, [currentProjectId, refreshWikiPages])
+  }, [autoApproving, currentProjectId, refreshWikiPages, selectedWiki])
 
   const pageTypeLabel = (type: string) => {
     if (type === "entity") return "实体"
@@ -203,18 +276,85 @@ export default function Browse() {
 
   const handleBatchDelete = useCallback(async () => {
     if (selectedIds.size === 0) return
-    if (!confirm(`确认批量删除 ${selectedIds.size} 个 Wiki 页面？将清理编译缓存，但保留源文档与向量索引。`)) return
-    const count = await batchDeleteWikiPages(Array.from(selectedIds))
-    setSelectedIds(new Set())
-    if (selectedWiki && selectedIds.has(selectedWiki.id)) {
-      setSelectedWiki(null)
-      setNeighbors([])
+    if (
+      !confirm(
+        `确认批量删除 ${selectedIds.size} 个 Wiki 页面？将清理编译缓存，但保留源文档与向量索引。`,
+      )
+    )
+      return
+    try {
+      const count = await batchDeleteWikiPages(Array.from(selectedIds))
+      setSelectedIds(new Set())
+      if (selectedWiki && selectedIds.has(selectedWiki.id)) {
+        setSelectedWiki(null)
+        setNeighbors([])
+      }
+      await refreshWikiPages()
+      setFeedbackMessage(`已删除 ${count} 个 Wiki 页面`)
+    } catch (error) {
+      setFeedbackMessage(`批量删除失败：${formatOperationError(error)}`)
     }
-    await refreshWikiPages()
-    setFeedbackMessage(`已删除 ${count} 个 Wiki 页面`)
   }, [selectedIds, selectedWiki, refreshWikiPages])
 
+  const handleApproveSelected = useCallback(async () => {
+    if (!selectedWiki) return
+    if (!confirm("确认批准候选内容？此操作将覆盖当前已批准版本。")) return
+    try {
+      const updated = await approveWikiPage(selectedWiki.id)
+      setSelectedWiki(updated)
+      setViewMode("current")
+      await refreshWikiPages()
+      setFeedbackMessage("候选内容已批准")
+    } catch (error) {
+      setFeedbackMessage(`批准失败：${formatOperationError(error)}`)
+    }
+  }, [selectedWiki, refreshWikiPages])
+
+  const handleRejectSelected = useCallback(async () => {
+    if (!selectedWiki) return
+    if (!confirm("确认拒绝候选内容？此操作将丢弃 LLM 生成的新版本，保留已批准版本。")) return
+    try {
+      const updated = await rejectWikiPage(selectedWiki.id)
+      setSelectedWiki(updated)
+      setViewMode("current")
+      await refreshWikiPages()
+      setFeedbackMessage("候选内容已拒绝")
+    } catch (error) {
+      setFeedbackMessage(`拒绝失败：${formatOperationError(error)}`)
+    }
+  }, [selectedWiki, refreshWikiPages])
+
+  const handleDeleteSelected = useCallback(async () => {
+    if (!selectedWiki) return
+    if (
+      !confirm(
+        `确认删除 Wiki 页面「${selectedWiki.title}」？将清理编译缓存，但保留源文档与向量索引。`,
+      )
+    ) {
+      return
+    }
+    try {
+      await deleteWikiPage(selectedWiki.id)
+      setSelectedWiki(null)
+      setNeighbors([])
+      await refreshWikiPages()
+      setFeedbackMessage("Wiki 页面已删除")
+    } catch (error) {
+      setFeedbackMessage(`删除失败：${formatOperationError(error)}`)
+    }
+  }, [selectedWiki, refreshWikiPages])
+
   const allSelected = wikiPages.length > 0 && selectedIds.size === wikiPages.length
+  const recompiling = recompileStatus?.status === "running"
+  const recompileMessage =
+    recompileStatus?.project_id === currentProjectId
+      ? recompileStatus.message
+      : recompileStatus?.status === "running"
+        ? `项目 ${recompileStatus.project_id ?? "未知"} 正在执行知识编译`
+        : null
+  const approvedContentEmpty = selectedWiki != null && selectedWiki.content.trim().length === 0
+  const hasCandidateContent =
+    selectedWiki?.content_candidate != null && selectedWiki.content_candidate.trim().length > 0
 
   return (
     <>
@@ -223,38 +363,55 @@ export default function Browse() {
         <div className="w-72 shrink-0 border-r border-neutral-200 pr-4">
           <div className="mb-3 flex items-center justify-between gap-2">
             <h3 className="text-sm font-medium text-neutral-600">知识页面</h3>
-            <div className="flex items-center gap-2">
-              {selectedIds.size > 0 && (
-                <button
-                  type="button"
-                  onClick={handleBatchDelete}
-                  className="inline-flex items-center gap-1 rounded-md border border-red-200 px-2 py-1 text-xs text-red-500 transition-colors hover:bg-red-50"
-                >
-                  <Trash2 className="h-3 w-3" />
-                  删除({selectedIds.size})
-                </button>
-              )}
-              <span className="text-xs text-neutral-400">{wikiPages.length} 页</span>
+            <span className="text-xs text-neutral-400">{wikiPages.length} 页</span>
+          </div>
+
+          <div className="mb-3 grid grid-cols-2 gap-1.5">
+            {selectedIds.size > 0 && (
               <button
                 type="button"
-                onClick={handleRecompileFailed}
-                disabled={currentProjectId == null || recompiling}
-                className="inline-flex items-center gap-1 rounded-md border border-neutral-200 px-2 py-1 text-xs text-neutral-500 transition-colors hover:border-amber-200 hover:bg-amber-50 hover:text-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={handleBatchDelete}
+                title={`删除已选 ${selectedIds.size} 页`}
+                aria-label={`删除已选 ${selectedIds.size} 页`}
+                className="inline-flex h-8 items-center justify-center gap-1 rounded-md border border-red-200 px-2 text-xs text-red-500 transition-colors hover:bg-red-50"
               >
-                <RefreshCw className={`h-3 w-3 ${recompiling ? "animate-spin" : ""}`} />
-                重编译失败项
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>删除 {selectedIds.size}</span>
               </button>
-              <button
-                type="button"
-                onClick={handleRecompileAll}
-                disabled={currentProjectId == null || recompiling}
-                title="清空所有编译缓存并重新生成 wiki（含被删除的源）"
-                className="inline-flex items-center gap-1 rounded-md border border-orange-200 bg-orange-50 px-2 py-1 text-xs text-orange-700 transition-colors hover:bg-orange-100 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <RefreshCw className={`h-3 w-3 ${recompiling ? "animate-spin" : ""}`} />
-                强制重编译全部
-              </button>
-            </div>
+            )}
+            <button
+              type="button"
+              onClick={handleApproveAutoCandidates}
+              disabled={currentProjectId == null || autoApproving}
+              title="自动批准低风险候选"
+              aria-label="自动批准低风险候选"
+              className="inline-flex h-8 items-center justify-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 text-xs text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <CheckCircle className="h-3.5 w-3.5" />
+              <span>{autoApproving ? "批准中" : "自动批准"}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleRecompileFailed}
+              disabled={currentProjectId == null || recompiling}
+              title="重编译失败项"
+              aria-label="重编译失败项"
+              className="inline-flex h-8 items-center justify-center gap-1 rounded-md border border-neutral-200 px-2 text-xs text-neutral-500 transition-colors hover:border-amber-200 hover:bg-amber-50 hover:text-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${recompiling ? "animate-spin" : ""}`} />
+              <span>失败项</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleRecompileAll}
+              disabled={currentProjectId == null || recompiling}
+              title="强制重编译全部"
+              aria-label="强制重编译全部"
+              className="inline-flex h-8 items-center justify-center gap-1 rounded-md border border-orange-200 bg-orange-50 px-2 text-xs text-orange-700 transition-colors hover:bg-orange-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${recompiling ? "animate-spin" : ""}`} />
+              <span>全部重编</span>
+            </button>
           </div>
 
           {(recompileMessage || feedbackMessage) && (
@@ -374,31 +531,14 @@ export default function Browse() {
                     </div>
                     <button
                       type="button"
-                      onClick={async () => {
-                        if (!confirm("确认批准候选内容？此操作将覆盖当前已批准版本。")) return
-                        const updated = await approveWikiPage(selectedWiki.id)
-                        setSelectedWiki(updated)
-                        setViewMode("current")
-                        await refreshWikiPages()
-                      }}
+                      onClick={() => void handleApproveSelected()}
                       className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs text-white hover:bg-amber-600"
                     >
                       批准内容
                     </button>
                     <button
                       type="button"
-                      onClick={async () => {
-                        if (
-                          !confirm(
-                            "确认拒绝候选内容？此操作将丢弃 LLM 生成的新版本，保留已批准版本。",
-                          )
-                        )
-                          return
-                        const updated = await rejectWikiPage(selectedWiki.id)
-                        setSelectedWiki(updated)
-                        setViewMode("current")
-                        await refreshWikiPages()
-                      }}
+                      onClick={() => void handleRejectSelected()}
                       className="rounded-lg border border-neutral-300 px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50"
                     >
                       拒绝候选
@@ -407,18 +547,7 @@ export default function Browse() {
                 )}
                 <button
                   type="button"
-                  onClick={async () => {
-                    if (
-                      !confirm(
-                        `确认删除 Wiki 页面「${selectedWiki.title}」？将清理编译缓存，但保留源文档与向量索引。`,
-                      )
-                    )
-                      return
-                    await deleteWikiPage(selectedWiki.id)
-                    setSelectedWiki(null)
-                    setNeighbors([])
-                    await refreshWikiPages()
-                  }}
+                  onClick={() => void handleDeleteSelected()}
                   className="rounded-lg border border-red-200 px-3 py-1.5 text-xs text-red-500 hover:bg-red-50 hover:text-red-600"
                 >
                   <Trash2 className="inline-block h-3 w-3 mr-1" />
@@ -447,11 +576,28 @@ export default function Browse() {
                 )
               ) : (
                 <div className="prose prose-sm max-w-none prose-headings:text-neutral-800 prose-a:text-amber-600 prose-code:bg-neutral-100 prose-pre:bg-neutral-900 prose-pre:text-neutral-100 [&_pre_code]:bg-transparent [&_pre_code]:text-inherit">
-                  <pre className="whitespace-pre-wrap text-sm leading-relaxed">
-                    {viewMode === "candidate" && selectedWiki.content_candidate
-                      ? selectedWiki.content_candidate
-                      : selectedWiki.content}
-                  </pre>
+                  {viewMode === "current" && approvedContentEmpty ? (
+                    <div className="rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                      {hasCandidateContent
+                        ? "当前还没有已批准内容。请切到候选视图检查内容，确认后点击批准内容。"
+                        : "当前还没有已批准内容，也没有待批准候选。"}
+                      {hasCandidateContent && (
+                        <button
+                          type="button"
+                          onClick={() => setViewMode("candidate")}
+                          className="ml-2 rounded-md border border-amber-200 bg-white px-2 py-0.5 text-amber-700 hover:bg-amber-100"
+                        >
+                          查看候选
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <pre className="whitespace-pre-wrap text-sm leading-relaxed">
+                      {viewMode === "candidate" && selectedWiki.content_candidate
+                        ? selectedWiki.content_candidate
+                        : selectedWiki.content}
+                    </pre>
+                  )}
                 </div>
               )}
 
@@ -468,9 +614,18 @@ export default function Browse() {
                           ? { ...current, wikilinks: JSON.stringify(slugs) }
                           : current,
                       )
-                      getGraphNeighbors(currentProjectId, selectedWiki.slug)
-                        .then(setNeighbors)
-                        .catch(() => setNeighbors([]))
+                      void (async () => {
+                        try {
+                          await buildKnowledgeGraph(currentProjectId)
+                          const nextNeighbors = await getGraphNeighbors(
+                            currentProjectId,
+                            selectedWiki.slug,
+                          )
+                          setNeighbors(nextNeighbors)
+                        } catch {
+                          setNeighbors([])
+                        }
+                      })()
                     }}
                   />
                 </div>
@@ -478,7 +633,7 @@ export default function Browse() {
 
               {neighbors.length > 0 && currentProjectId != null && (
                 <div className="mt-6 border-t border-neutral-200 pt-4">
-                  <h3 className="mb-3 text-sm font-medium text-neutral-600">关联页面</h3>
+                  <h3 className="mb-3 text-sm font-medium text-neutral-600">图谱关联页面</h3>
                   <div className="flex flex-wrap gap-2">
                     {neighbors.map((neighbor) => (
                       <button

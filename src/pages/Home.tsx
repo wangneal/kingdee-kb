@@ -1,10 +1,10 @@
 import {
+  AlertCircle,
   ArrowRight,
   BookOpen,
   Calendar,
   Check,
   ClipboardList,
-  FileEdit,
   FileText,
   FolderOpen,
   Loader2,
@@ -18,16 +18,14 @@ import { useNavigate } from "react-router-dom"
 import { useProject } from "../contexts/ProjectContext"
 import {
   getProjectPhases,
-  setCurrentProjectPhase,
   type ProjectPhase,
+  setCurrentProjectPhase,
 } from "../lib/project-commands"
 import {
   getStats,
   type KnowledgeStats,
   listProducts,
   type ProductMeta,
-  scanTemplates,
-  type TemplateInfo,
 } from "../lib/tauri-commands"
 
 export default function Home() {
@@ -35,35 +33,51 @@ export default function Home() {
   const navigate = useNavigate()
   const [stats, setStats] = useState<KnowledgeStats | null>(null)
   const [products, setProducts] = useState<ProductMeta[]>([])
-  const [templates, setTemplates] = useState<TemplateInfo[]>([])
   const [projectPhases, setProjectPhases] = useState<ProjectPhase[]>([])
   const [updatingPhase, setUpdatingPhase] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [dashboardError, setDashboardError] = useState<string | null>(null)
+  const [phaseError, setPhaseError] = useState<string | null>(null)
 
   useEffect(() => {
     ;(async () => {
+      setLoading(true)
+      setDashboardError(null)
+      setPhaseError(null)
       try {
-        const [statsData, productsData, templatesData, phasesData] = await Promise.all([
-          getStats(currentProjectId).catch(() => null),
-          listProducts(currentProjectId).catch(() => []),
-          scanTemplates().catch(() => []),
+        const loadErrors: string[] = []
+        const [statsData, productsData, phasesData] = await Promise.all([
+          getStats(currentProjectId).catch((err) => {
+            loadErrors.push(`知识统计加载失败：${err}`)
+            return null
+          }),
+          listProducts(currentProjectId).catch((err) => {
+            loadErrors.push(`产物列表加载失败：${err}`)
+            return []
+          }),
           currentProjectId == null
             ? Promise.resolve([])
-            : getProjectPhases(currentProjectId).catch(() => []),
+            : getProjectPhases(currentProjectId).catch((err) => {
+                loadErrors.push(`项目阶段加载失败：${err}`)
+                return []
+              }),
         ])
         setStats(statsData)
         setProducts(productsData)
-        setTemplates(templatesData)
         setProjectPhases(phasesData)
+        setDashboardError(loadErrors.length > 0 ? loadErrors.join("；") : null)
       } catch (e) {
-        console.error("Failed to load dashboard data:", e)
+        setStats(null)
+        setProducts([])
+        setProjectPhases([])
+        setDashboardError(`概览加载失败：${e}`)
       } finally {
         setLoading(false)
       }
     })()
   }, [currentProjectId])
 
-  const recentProducts = products
+  const recentProducts = [...products]
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
     .slice(0, 5)
 
@@ -79,9 +93,12 @@ export default function Home() {
     const confirmed = window.confirm(`确认将当前项目阶段切换为“${phase.phase_name}”吗？`)
     if (!confirmed) return
     setUpdatingPhase(phase.phase_key)
+    setPhaseError(null)
     try {
       await setCurrentProjectPhase(currentProjectId, phase.phase_key)
       setProjectPhases(await getProjectPhases(currentProjectId))
+    } catch (err) {
+      setPhaseError(`阶段切换失败：${err}`)
     } finally {
       setUpdatingPhase(null)
     }
@@ -116,11 +133,11 @@ export default function Home() {
       color: "bg-emerald-600",
     },
     {
-      icon: FileEdit,
-      label: "生成文档",
-      description: "使用模板生成实施文档",
-      path: "/templates",
-      color: "bg-purple-600",
+      icon: FileText,
+      label: "AI 生成交付物",
+      description: "在对话中调用官方技能生成文档、PPT 和清单",
+      path: "/chat",
+      color: "bg-violet-600",
     },
     {
       icon: MessageSquare,
@@ -156,7 +173,7 @@ export default function Home() {
 
   return (
     <div className="p-6 w-full">
-      {/* Header */}
+      {/* 页头 */}
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-neutral-800">概览</h1>
         <p className="mt-1 text-sm text-neutral-500">
@@ -164,16 +181,23 @@ export default function Home() {
         </p>
       </div>
 
-      {/* Stats cards */}
+      {(dashboardError || phaseError) && (
+        <div className="mb-6 flex items-start gap-2 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-600">
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>{phaseError ?? dashboardError}</span>
+        </div>
+      )}
+
+      {/* 统计卡片 */}
       <div className="grid grid-cols-3 gap-4 mb-8">
         <div className="rounded-lg border border-neutral-200 bg-white p-5">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#1A6BD8]/10">
-              <FileEdit className="h-5 w-5 text-[#1A6BD8]" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-violet-100">
+              <ClipboardList className="h-5 w-5 text-violet-600" />
             </div>
             <div>
-              <p className="text-2xl font-semibold text-neutral-800">{templates.length}</p>
-              <p className="text-xs text-neutral-500">模板数量</p>
+              <p className="text-2xl font-semibold text-neutral-800">{projectPhases.length || 7}</p>
+              <p className="text-xs text-neutral-500">项目阶段</p>
             </div>
           </div>
         </div>
@@ -243,7 +267,9 @@ export default function Home() {
                 onClick={() => void handlePhaseChange(phase)}
                 disabled={updatingPhase !== null || isCurrent}
                 className="min-w-0 rounded-md py-1 text-center transition-colors hover:bg-neutral-50 disabled:cursor-default disabled:hover:bg-transparent"
-                title={isCurrent ? `当前阶段：${phase.phase_name}` : `切换到${phase.phase_name}阶段`}
+                title={
+                  isCurrent ? `当前阶段：${phase.phase_name}` : `切换到${phase.phase_name}阶段`
+                }
               >
                 <div
                   className={`mx-auto flex h-7 w-7 items-center justify-center rounded-full border text-xs ${
@@ -270,13 +296,13 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Quick actions */}
+      {/* 快捷操作 */}
       <div className="mb-8">
         <h2 className="text-sm font-semibold text-neutral-700 mb-4">快捷操作</h2>
         <div className="grid grid-cols-4 gap-3">
           {quickActions.map((action) => (
             <button
-              key={action.path}
+              key={`${action.path}-${action.label}`}
               type="button"
               onClick={() => navigate(action.path)}
               className="group rounded-lg border border-neutral-200 bg-white p-4 text-left transition-all hover:border-[#1A6BD8]/30 hover:shadow-sm"
@@ -293,7 +319,7 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Recent products */}
+      {/* 最近产物 */}
       <div>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-semibold text-neutral-700">最近产物</h2>
@@ -313,14 +339,15 @@ export default function Home() {
           <div className="rounded-lg border border-dashed border-neutral-200 bg-white p-8 text-center">
             <Package className="mx-auto h-8 w-8 text-neutral-300" />
             <p className="mt-2 text-sm text-neutral-500">暂无产物</p>
-            <p className="text-xs text-neutral-400 mt-1">前往文档生成页面创建您的第一个产物</p>
+            <p className="text-xs text-neutral-400 mt-1">
+              在 AI 对话中说明要生成的交付物，系统会优先调用官方技能
+            </p>
             <button
               type="button"
-              onClick={() => navigate("/templates")}
+              onClick={() => navigate("/chat")}
               className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-[#1A6BD8] px-3 py-1.5 text-xs text-white hover:bg-[#1558B0]"
             >
-              <FileEdit className="h-3.5 w-3.5" />
-              去生成文档
+              <MessageSquare className="h-3.5 w-3.5" />去 AI 对话
             </button>
           </div>
         ) : (

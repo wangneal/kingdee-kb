@@ -76,6 +76,23 @@ impl ImageProcessor {
         self.protocol = Some(protocol);
     }
 
+    /// 克隆当前处理器的可复用配置，避免异步调用时持有全局锁。
+    pub fn clone_configured(&self) -> Self {
+        let mut processor = Self::new(
+            self.llm_api_key.clone(),
+            self.llm_base_url.clone(),
+            self.llm_model.clone(),
+        );
+        processor.set_llm_multimodal(self.is_llm_multimodal());
+        if let Some(ocr) = self.ocr_config.clone() {
+            processor.set_ocr_config(ocr);
+        }
+        if let Some(protocol) = self.protocol.clone() {
+            processor.set_protocol(protocol);
+        }
+        processor
+    }
+
     /// 当前配置是否需要 API 密钥才能调用 vision/probe
     /// Local 协议（如 Ollama）不需要密钥
     pub fn requires_api_key(&self) -> bool {
@@ -267,7 +284,7 @@ impl ImageProcessor {
     }
 
     pub fn can_process_images(&self) -> bool {
-        self.is_llm_multimodal() || self.ocr_config.is_some()
+        self.is_llm_multimodal() || self.ocr_config.is_some() || !self.requires_api_key()
     }
 
     pub fn get_ocr_provider(&self) -> Option<String> {

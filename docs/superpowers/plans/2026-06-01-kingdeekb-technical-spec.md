@@ -67,8 +67,6 @@ KingdeeKB/
 │   │   ├── RiskControl.tsx         # 风险控制
 │   │   ├── Settings.tsx            # 设置
 │   │   ├── Skills.tsx              # 技能管理
-│   │   ├── Templates.tsx           # 模板列表
-│   │   ├── Wizard.tsx              # 文档生成向导
 │   │   ├── Products.tsx            # 产物管理
 │   │   └── Browse.tsx              # 文档浏览
 │   │
@@ -112,7 +110,6 @@ KingdeeKB/
 │   │   │   ├── search_llm.rs       # 搜索
 │   │   │   ├── media.rs            # 语音/视频
 │   │   │   ├── research.rs         # 调研管理
-│   │   │   ├── template_doc.rs     # 模板/文档生成
 │   │   │   ├── product.rs          # 产物管理
 │   │   │   ├── risk_blueprint.rs   # 风控/蓝图
 │   │   │   ├── skill.rs            # 技能系统
@@ -139,10 +136,7 @@ KingdeeKB/
 │   │       ├── research_indexer.rs # 大纲索引
 │   │       ├── risk_control.rs     # 风控服务
 │   │       ├── skill*.rs           # 技能系统（~10模块）
-│   │       ├── template_*.rs       # 模板引擎（~8模块）
-│   │       ├── docx_filler.rs      # DOCX 填充
-│   │       ├── xlsx_filler.rs      # XLSX 填充
-│   │       ├── pptx_*.rs           # PPTX 处理
+│   │       ├── template_*.rs       # DOCX/XLSX 填充与技能模板清单
 │   │       ├── whisper_service.rs  # Whisper 语音识别
 │   │       ├── audio_capture.rs    # 音频采集
 │   │       ├── tencent_asr.rs      # 腾讯语音识别
@@ -189,7 +183,7 @@ KingdeeKB/
 ```
 用户输入 → AgentContext.sendMessage → agentChat (Tauri)
   → rig_agent (ReAct 引擎) → LLM 流式调用
-  → 工具调用 (search-knowledge, generate-doc, use-skill, question 等)
+  → 工具调用 (search-knowledge, use-skill, run-skill-script, question 等)
   → SSE 流式事件 → 前端渲染
 ```
 
@@ -227,14 +221,14 @@ AI 辅助 → AgentContext.sendMessage("research") → 知识库检索 + LLM 生
 脚本执行 → run-skill-script → 沙箱目录输出
 ```
 
-### 4.6 模板/文档生成子系统
+### 4.6 技能交付物生成子系统
 
-**职责**：模板管理、智能填充、文档生成
+**职责**：通过官方技能生成文档、PPT、清单等实施交付物
 
 ```
-模板扫描 → scanTemplates → template_manifest
-模板填充 → smartFill (LLM 辅助) → fill_template (DOCX/XLSX/PPTX)
-生成配方 → generate_recipe_doc → 调研报告/周报/蓝图等
+用户请求 → AI 对话 → use-skill 匹配官方技能
+技能指引 → run-skill-script 受控执行 → 沙箱输出目录
+产物记录 → ProductStore / 产物管理页
 ```
 
 ### 4.7 语音/视频子系统
@@ -294,7 +288,7 @@ ingest_queue           (id, project, source_identity, status, retry_count, ...)
 │                        用户操作                                    │
 ├────────┬────────┬────────┬────────┬────────┬────────┬──────────┤
 │ 导入   │ 对话   │ 搜索   │ 调研   │ 生成   │ 风控   │ 技能    │
-│ 文档   │ Chat   │ Search │Research│ Wizard │ Risk   │ Skills  │
+│ 文档   │ Chat   │ Search │Research│ Chat   │ Risk   │ Skills  │
 └───┬────┴───┬────┴───┬────┴───┬────┴───┬────┴───┬────┴───┬──────┘
     │        │        │        │        │        │        │
     ▼        ▼        ▼        ▼        ▼        ▼        ▼
@@ -331,7 +325,6 @@ lib.rs 中注册了约 **130+** 命令，按子系统分组：
 | KB Compilation | 2 | `commands::kb_compilation::*` |
 | Document | 5 | `commands::document::*` |
 | Search | 3 | `commands::search_llm::*` |
-| Template/DocGen | 9 | `commands::template_doc::*` |
 | Product | 5 | `commands::product::*` |
 | Media (Whisper/ASR/Video) | 9 | `commands::media::*` |
 | Research | 17 | `commands::research::*` |

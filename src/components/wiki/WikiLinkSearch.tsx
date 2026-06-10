@@ -79,11 +79,6 @@ export default function WikiLinkSearch({
     [onSelect],
   )
 
-  // 阻止点击内部时关闭弹窗
-  const handleContentClick = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation()
-  }, [])
-
   // 页面类型对应的中文标签
   const pageTypeLabel = useCallback((pageType: string): string => {
     const map: Record<string, string> = {
@@ -101,14 +96,20 @@ export default function WikiLinkSearch({
   return (
     // 遮罩层
     <div
+      role="dialog"
+      tabIndex={-1}
+      aria-modal="true"
+      aria-label="维基链接搜索"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-      onClick={onClose}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") onClose()
+      }}
     >
       {/* 弹窗主体 */}
-      <div
-        className="mx-4 w-full max-w-md rounded-xl bg-white shadow-lg"
-        onClick={handleContentClick}
-      >
+      <div className="mx-4 w-full max-w-md rounded-xl bg-white shadow-lg">
         {/* 搜索栏 */}
         <div className="flex items-center gap-2 border-b border-neutral-200 px-4 py-3">
           <Search className="h-4 w-4 text-neutral-400" />

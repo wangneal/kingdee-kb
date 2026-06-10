@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn test_whitelist_enforcement() {
         let mut checker = ToolConstraintChecker::new();
-        let whitelist = vec!["search-knowledge".to_string(), "generate-doc".to_string()];
+        let whitelist = vec!["search-knowledge".to_string(), "use-skill".to_string()];
 
         let result = enforce_tool_constraint(
             &mut checker,

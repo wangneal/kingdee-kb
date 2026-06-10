@@ -213,12 +213,12 @@ async fn run_llm_compilation(
     provider_manager: &Arc<RwLock<LLMProviderManager>>,
     document_id: Option<i64>,
 ) -> Result<Vec<String>, String> {
-    let page_slug = slugify(&analysis.title);
     let page_title = if analysis.title.is_empty() {
         analysis.source_identity.clone()
     } else {
         analysis.title.clone()
     };
+    let page_slug = slugify(&page_title);
 
     let prompt = build_compilation_prompt(analysis);
 
@@ -371,11 +371,7 @@ async fn call_llm_for_compilation(
 
     // 解析响应：提取 tags 和正文
     let (tags_str, markdown_body) = parse_compilation_response(&content);
-    let tags_json = if tags_str.is_empty() {
-        "[]".to_string()
-    } else {
-        tags_str
-    };
+    let tags_json = normalize_tags_json(&tags_str)?;
 
     Ok((markdown_body, tags_json))
 }
@@ -406,6 +402,27 @@ fn parse_compilation_response(text: &str) -> (String, String) {
     };
 
     (tags, body)
+}
+
+/// 将 LLM 返回的 YAML 标签列表转换为持久化 JSON 字符串数组
+fn normalize_tags_json(tags: &str) -> Result<String, String> {
+    let trimmed = tags.trim();
+    if trimmed.is_empty() {
+        return Ok("[]".to_string());
+    }
+
+    let inner = trimmed
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .ok_or_else(|| format!("tags 必须是数组格式: {}", tags))?;
+
+    let values: Vec<String> = inner
+        .split(',')
+        .map(|item| item.trim().trim_matches('"').trim_matches('\'').to_string())
+        .filter(|item| !item.is_empty())
+        .collect();
+
+    serde_json::to_string(&values).map_err(|e| format!("序列化 tags 失败: {}", e))
 }
 
 // ─── Wiki 页面写入 ───
@@ -713,6 +730,17 @@ mod tests {
         assert_eq!(tags, "[ERP, 财务, 管理]");
         assert!(body.contains("概述"));
         assert!(body.contains("测试内容"));
+    }
+
+    #[test]
+    fn test_normalize_tags_json_yaml_array() {
+        let tags = normalize_tags_json("[ERP, 财务, 管理]").unwrap();
+        assert_eq!(tags, r#"["ERP","财务","管理"]"#);
+    }
+
+    #[test]
+    fn test_normalize_tags_json_rejects_non_array() {
+        assert!(normalize_tags_json("ERP, 财务").is_err());
     }
 
     #[test]

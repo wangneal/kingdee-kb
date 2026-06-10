@@ -42,12 +42,14 @@ import {
 } from "../contexts/AgentContext"
 import { useProject } from "../contexts/ProjectContext"
 import { extractFilesFromDropEvent, extractFilesFromPasteEvent } from "../lib/clipboard-files"
-import { listLLMProviders } from "../lib/skill-commands"
+import { listRuntimeLLMProviders } from "../lib/skill-commands"
 import type { LLMProviderConfig } from "../lib/skill-types"
+import type { AgentSessionSnapshot } from "../lib/tauri-commands"
 import {
   type ClarificationPayload,
   type ClarificationQuestion,
   countTokens,
+  getLatestAgentSession,
   isLLMConfigured,
   type QuestionOption,
   saveChatMemory,
@@ -110,6 +112,20 @@ function saveChatHistory(storageKey: string, messages: AgentMessage[]) {
   } catch {
     // 忽略
   }
+}
+
+function messagesFromLedger(snapshot: AgentSessionSnapshot): AgentMessage[] {
+  return snapshot.messages
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => ({
+      id: message.id,
+      role: message.role as "user" | "assistant",
+      content: message.content,
+      streaming: false,
+      error: message.status === "error",
+      cancelled: message.status === "cancelled",
+    }))
+    .filter((message) => message.content.trim().length > 0)
 }
 
 function summarizeToolArgs(args: string): string {
@@ -246,14 +262,33 @@ export default function Chat() {
     }
   }, [])
 
-  // 从 localStorage 加载当前项目的聊天历史到 slot
+  // 从后端账本加载当前项目的聊天历史，失败时回退到 localStorage
   const loadedStorageKeyRef = useRef<string | null>(null)
   useEffect(() => {
     if (loadedStorageKeyRef.current === chatStorageKey) return
     loadedStorageKeyRef.current = chatStorageKey
-    const history = loadChatHistory(chatStorageKey)
-    agent.updateMessages("chat", () => history)
-  }, [agent, chatStorageKey])
+    let cancelled = false
+    const fallback = () => loadChatHistory(chatStorageKey)
+
+    if (currentProjectId == null) {
+      agent.updateMessages("chat", () => fallback())
+      return
+    }
+
+    getLatestAgentSession(currentProjectId, "chat")
+      .then((snapshot) => {
+        if (cancelled) return
+        const history = snapshot ? messagesFromLedger(snapshot) : fallback()
+        agent.updateMessages("chat", () => (history.length > 0 ? history : fallback()))
+      })
+      .catch(() => {
+        if (!cancelled) agent.updateMessages("chat", () => fallback())
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [agent, chatStorageKey, currentProjectId])
 
   // 挂载时检查 LLM 配置
   useEffect(() => {
@@ -264,7 +299,7 @@ export default function Chat() {
 
   // 挂载时加载 LLM 供应商
   useEffect(() => {
-    listLLMProviders()
+    listRuntimeLLMProviders()
       .then((fetchedProviders) => {
         const safeProviders = Array.isArray(fetchedProviders) ? fetchedProviders : []
         setProviders(safeProviders)

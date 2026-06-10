@@ -50,8 +50,8 @@ export function VerificationBadge({ report }: { report: VerificationReport }) {
       </div>
       {suggested_labels.length > 0 && (
         <div className="mt-1 space-y-0.5">
-          {suggested_labels.map((label, i) => (
-            <div key={i} className="opacity-80">
+          {suggested_labels.map((label) => (
+            <div key={label} className="opacity-80">
               • {label}
             </div>
           ))}

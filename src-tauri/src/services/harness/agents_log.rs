@@ -51,17 +51,14 @@ impl AgentsLog {
     ///
     /// 自动去重（相同 `failure_type + reason` 不重复记录），
     /// 超过 `max_records` 时淘汰最旧的记录。
-    pub fn record_failure(
-        &mut self,
-        failure_type: &str,
-        reason: &str,
-        session_id: &str,
-    ) {
+    pub fn record_failure(&mut self, failure_type: &str, reason: &str, session_id: &str) {
         // 去重：检查是否已有相同模式
         let dedup_key = format!("{}:{}", failure_type, reason);
-        if self.records.iter().any(|r| {
-            format!("{}:{}", r.failure_type, r.reason) == dedup_key
-        }) {
+        if self
+            .records
+            .iter()
+            .any(|r| format!("{}:{}", r.failure_type, r.reason) == dedup_key)
+        {
             tracing::debug!("Agent 失败模式已存在，跳过: {}", dedup_key);
             return;
         }
@@ -152,9 +149,7 @@ impl AgentsLog {
                 // 重新规划 → 提取流程约束
                 format!("任务执行受阻时应重新评估方案: {}", truncate(reason, 80))
             }
-            "timeout" => {
-                "单次工具调用超时时，应切换备选方案而非无限等待".to_string()
-            }
+            "timeout" => "单次工具调用超时时，应切换备选方案而非无限等待".to_string(),
             _ => {
                 format!("注意: {}", truncate(reason, 80))
             }

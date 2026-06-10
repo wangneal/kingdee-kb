@@ -37,7 +37,9 @@ function parseWikilinks(value?: string): string[] {
   if (!value) return []
   try {
     const parsed = JSON.parse(value)
-    return Array.isArray(parsed) ? normalizeSlugs(parsed.filter((item) => typeof item === "string")) : []
+    return Array.isArray(parsed)
+      ? normalizeSlugs(parsed.filter((item) => typeof item === "string"))
+      : []
   } catch {
     return []
   }
@@ -63,6 +65,7 @@ export default function WikiLinkEditor({
   const [targets, setTargets] = useState<WikiLinkTarget[]>([])
   const [backlinks, setBacklinks] = useState<WikiPageBrief[]>([])
   const [showSearch, setShowSearch] = useState(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const loadedRequestKeyRef = useRef("")
   const localLinksKeyRef = useRef("")
 
@@ -94,6 +97,7 @@ export default function WikiLinkEditor({
     loadedRequestKeyRef.current = nextRequestKey
     localLinksKeyRef.current = nextLinksKey
     setLinkSlugs(parsed)
+    setErrorMessage(null)
 
     // 批量获取目标详情
     if (parsed.length > 0) {
@@ -129,7 +133,8 @@ export default function WikiLinkEditor({
         const updated = await removeWikilink(pageId, slug)
         // 从返回的 WikiPage 解析最新 slugs
         const parsed = parseWikilinks(updated.wikilinks)
-        const newSlugs = parsed.length > 0 ? parsed : normalizeSlugs(linkSlugs.filter((s) => s !== slug))
+        const newSlugs =
+          parsed.length > 0 ? parsed : normalizeSlugs(linkSlugs.filter((s) => s !== slug))
         setLinkSlugs(newSlugs)
         localLinksKeyRef.current = linksKey(newSlugs)
         loadedRequestKeyRef.current = requestKey(project, pageSlug, newSlugs)
@@ -142,7 +147,7 @@ export default function WikiLinkEditor({
         }
         onWikilinksChange?.(newSlugs)
       } catch {
-        // 静默处理错误
+        setErrorMessage("移除链接失败，请稍后重试")
       }
     },
     [pageId, project, pageSlug, linkSlugs, onWikilinksChange],
@@ -169,7 +174,7 @@ export default function WikiLinkEditor({
         setShowSearch(false)
         onWikilinksChange?.(newSlugs)
       } catch {
-        // 静默处理错误
+        setErrorMessage("添加链接失败，请稍后重试")
       }
     },
     [pageId, project, pageSlug, linkSlugs, onWikilinksChange],
@@ -194,12 +199,17 @@ export default function WikiLinkEditor({
       {/* 标题 */}
       <div className="mb-3 flex items-center gap-2">
         <Link2 className="h-4 w-4 text-neutral-500" />
-        <h3 className="text-sm font-medium text-neutral-800">页面链接</h3>
+        <h3 className="text-sm font-medium text-neutral-800">本页链接到</h3>
       </div>
+      {errorMessage && (
+        <div className="mb-3 rounded-md border border-red-100 bg-red-50 px-2 py-1.5 text-xs text-red-600">
+          {errorMessage}
+        </div>
+      )}
 
       {/* 已链接页面列表 */}
       <div className="mb-3">
-        <p className="mb-1.5 text-xs text-neutral-500">已链接页面</p>
+        <p className="mb-1.5 text-xs text-neutral-500">目标页面</p>
         {linkSlugs.length === 0 ? (
           <p className="text-xs text-neutral-400">暂无链接</p>
         ) : (
@@ -241,7 +251,7 @@ export default function WikiLinkEditor({
         className="mb-4 flex items-center gap-1.5 rounded-lg border border-dashed border-neutral-300 px-3 py-2 text-xs text-neutral-500 hover:border-[#1A6BD8] hover:text-[#1A6BD8] transition-colors"
       >
         <Plus className="h-3.5 w-3.5" />
-        添加链接
+        添加目标页面
       </button>
 
       {/* 反向链接区域 */}
@@ -249,7 +259,7 @@ export default function WikiLinkEditor({
         <div className="mb-1.5 flex items-center gap-2">
           <ArrowLeft className="h-3.5 w-3.5 text-neutral-400" />
           <p className="text-xs text-neutral-500">
-            反向链接
+            引用本页的页面
             {backlinks.length > 0 && (
               <span className="ml-1 text-neutral-400">· {backlinks.length} 个页面引用此页</span>
             )}

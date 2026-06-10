@@ -1,8 +1,8 @@
 [package]
 name = "kingdee-kb"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "AI-assisted Kingdee ERP implementation knowledge base"
+authors = ["KingdeeKB Team"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -15,6 +15,7 @@ name = "kingdee_kb_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dev-dependencies]
+filetime = "0.2"
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros"] }
 
@@ -59,6 +60,7 @@ serde_yaml = "0.9"
 pdf-extract = "0.7"
 calamine = "0.26"
 image = "0.25"
+cfb = "0.10"
 
 # Phase 12: Whisper Voice Recognition
 whisper-rs = { version = "0.16", features = [] }

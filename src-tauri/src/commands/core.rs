@@ -273,45 +273,6 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
     // 嵌入模型改为"首次使用时懒加载"，不占用启动时间。
     println!("Embedding model will be loaded on first use (lazy load).");
 
-    // 确保模板目录存在，如果为空则同步内置模板
-    let template_dir = data_dir.join("templates");
-    if !template_dir.exists() {
-        if let Err(e) = std::fs::create_dir_all(&template_dir) {
-            eprintln!("Failed to create templates directory: {}", e);
-        } else {
-            println!("Created templates directory at: {:?}", template_dir);
-        }
-    }
-
-    // 如果模板目录为空，从应用包中复制内置模板
-    if template_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&template_dir) {
-            let is_empty = entries.filter_map(|e| e.ok()).next().is_none();
-            if is_empty {
-                if let Ok(exe_path) = std::env::current_exe() {
-                    if let Some(exe_dir) = exe_path.parent() {
-                        let resource_dir = exe_dir.join("templates");
-                        if resource_dir.exists() {
-                            if let Err(e) = copy_dir_recursive(&resource_dir, &template_dir) {
-                                eprintln!("Warning: Failed to copy built-in templates: {}", e);
-                            } else {
-                                println!("Copied built-in templates to {:?}", template_dir);
-                            }
-                        }
-                    }
-                }
-                let dev_template_dir = std::path::PathBuf::from("../templates");
-                if dev_template_dir.exists() {
-                    if let Err(e) = copy_dir_recursive(&dev_template_dir, &template_dir) {
-                        eprintln!("Warning: Failed to copy dev templates: {}", e);
-                    } else {
-                        println!("Copied dev templates to {:?}", template_dir);
-                    }
-                }
-            }
-        }
-    }
-
     // 无论后台异步同步任务是否发生非致命错误，都必须调用 set_complete，以防前端白屏挂死
     let _ = set_complete(
         app.clone(),
@@ -340,7 +301,10 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
             std::thread::sleep(std::time::Duration::from_secs(CHECK_INTERVAL_SECS));
             if let Some(state) = app_for_idle.try_state::<AppState>() {
                 if state.unload_idle_embedding(IDLE_TIMEOUT_SECS) {
-                    println!("后台检查：本地 Embedding 模型空闲超过 {}秒，已自动释放内存", IDLE_TIMEOUT_SECS);
+                    println!(
+                        "后台检查：本地 Embedding 模型空闲超过 {}秒，已自动释放内存",
+                        IDLE_TIMEOUT_SECS
+                    );
                 }
             }
         }
@@ -377,21 +341,27 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
                         })
                     })
                     .collect();
-                let _ = app_for_entropy.emit("entropy-warning", serde_json::json!({
-                    "kind": "stale-skills",
-                    "count": items.len(),
-                    "items": items
-                }));
+                let _ = app_for_entropy.emit(
+                    "entropy-warning",
+                    serde_json::json!({
+                        "kind": "stale-skills",
+                        "count": items.len(),
+                        "items": items
+                    }),
+                );
                 println!("后台熵检查：发现 {} 个过期技能", stale_skills.len());
             }
 
             // 扫描索引漂移
             let drifts = mgr.scan_index_drift("sources", "index");
             if !drifts.is_empty() {
-                let _ = app_for_entropy.emit("entropy-warning", serde_json::json!({
-                    "kind": "index-drift",
-                    "count": drifts.len()
-                }));
+                let _ = app_for_entropy.emit(
+                    "entropy-warning",
+                    serde_json::json!({
+                        "kind": "index-drift",
+                        "count": drifts.len()
+                    }),
+                );
                 println!("后台熵检查：发现 {} 个索引漂移", drifts.len());
             }
         }

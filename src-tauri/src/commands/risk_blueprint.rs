@@ -586,6 +586,7 @@ pub async fn agent_chat(
     _risk_project_id: Option<i64>,
     history: Option<Vec<crate::services::llm_service::ChatMessage>>,
     provider_id: Option<String>,
+    model_id: Option<String>,
     attachments: Option<Vec<crate::services::types::AttachmentInfo>>,
 ) -> Result<(), String> {
     use tauri::Manager;
@@ -599,8 +600,25 @@ pub async fn agent_chat(
     let (tx, mut rx) = mpsc::unbounded_channel::<ReActEvent>();
 
     let sid = session_id;
-    let pid = project_id;
+    let ledger_project_id = match project_id {
+        Some(pid) => pid,
+        None => {
+            let store = state.project_store.lock().map_err(|e| e.to_string())?;
+            store.ensure_default_project()?
+        }
+    };
+    let pid = Some(ledger_project_id);
     let history = history.unwrap_or_default();
+
+    initialize_agent_ledger(
+        &state,
+        &sid,
+        ledger_project_id,
+        "chat",
+        &message,
+        provider_id.as_deref(),
+        model_id.as_deref(),
+    )?;
 
     let pending = state.pending_questions.clone();
     let llm = state.llm.clone();
@@ -615,6 +633,7 @@ pub async fn agent_chat(
     let skill_manager = state.skill_manager.clone();
     let image_processor = state.image_processor.clone();
     let llm_providers = state.llm_providers.clone();
+    let ledger_metadata = state.metadata.clone();
 
     // 注册取消标志
     let cancel_flag = state.register_cancel_flag(&sid);
@@ -645,6 +664,7 @@ pub async fn agent_chat(
             skill_manager,
             Some(cancel_flag),
             provider_id.as_deref(),
+            model_id.as_deref(),
             attachments,
             image_processor,
             llm_providers,
@@ -655,8 +675,26 @@ pub async fn agent_chat(
 
     let event_app = app_handle.clone();
     tauri::async_runtime::spawn(async move {
+        let mut assistant_message_id: Option<String> = None;
+        let mut assistant_content = String::new();
+        let mut active_tool_call_id: Option<String> = None;
+
         while let Some(event) = rx.recv().await {
             let payload = serde_json::to_value(&event).unwrap_or_default();
+            persist_agent_event(
+                &ledger_metadata,
+                &cleanup_sid,
+                event_type_name(&event),
+                &payload.to_string(),
+            );
+            update_agent_ledger_from_event(
+                &ledger_metadata,
+                &cleanup_sid,
+                &event,
+                &mut assistant_message_id,
+                &mut assistant_content,
+                &mut active_tool_call_id,
+            );
             if event_app.emit("react-event", payload).is_err() {
                 break;
             }
@@ -680,13 +718,40 @@ pub async fn answer_question(
     app_handle: tauri::AppHandle,
     question_id: String,
     answer: String,
+    session_id: Option<String>,
     _project_id: Option<i64>,
 ) -> Result<(), String> {
     use tauri::Manager;
     let state = app_handle
         .try_state::<AppState>()
         .ok_or("后端尚未初始化完成")?;
+    if let Some(session_id) = session_id.as_deref() {
+        persist_agent_user_reply(&state, session_id, "clarification_answered", &answer);
+    }
     question_tool::answer_question(&state.pending_questions, &question_id, &answer).await
+}
+
+/// 取消问题工具的待处理问题
+#[tauri::command]
+pub async fn reject_question(
+    app_handle: tauri::AppHandle,
+    question_id: String,
+    session_id: Option<String>,
+    _project_id: Option<i64>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let state = app_handle
+        .try_state::<AppState>()
+        .ok_or("后端尚未初始化完成")?;
+    if let Some(session_id) = session_id.as_deref() {
+        persist_agent_user_reply(
+            state.inner(),
+            session_id,
+            "clarification_rejected",
+            "已取消回答该澄清问题。",
+        );
+    }
+    question_tool::reject_question(&state.pending_questions, &question_id).await
 }
 
 /// 取消正在运行的 agent 流式会话
@@ -696,5 +761,236 @@ pub async fn cancel_agent_stream(
     session_id: String,
 ) -> Result<(), String> {
     state.cancel_agent_session(&session_id);
+    if let Ok(metadata) = state.metadata.lock() {
+        let _ = metadata.insert_agent_event(
+            &uuid::Uuid::new_v4().to_string(),
+            &session_id,
+            "cancel_requested",
+            &serde_json::json!({ "session_id": session_id }).to_string(),
+        );
+        let _ = metadata.update_agent_session_status(&session_id, "cancelled", true);
+    }
     Ok(())
+}
+
+fn initialize_agent_ledger(
+    state: &AppState,
+    session_id: &str,
+    project_id: i64,
+    slot: &str,
+    message: &str,
+    provider_id: Option<&str>,
+    model_id: Option<&str>,
+) -> Result<(), String> {
+    let metadata = state.metadata.lock().map_err(|e| e.to_string())?;
+    metadata.create_agent_session(session_id, project_id, slot, provider_id, model_id)?;
+    metadata.insert_agent_message(
+        &uuid::Uuid::new_v4().to_string(),
+        session_id,
+        "user",
+        message,
+        "complete",
+        None,
+    )?;
+    metadata.insert_agent_event(
+        &uuid::Uuid::new_v4().to_string(),
+        session_id,
+        "session_started",
+        &serde_json::json!({
+            "session_id": session_id,
+            "project_id": project_id,
+            "slot": slot,
+            "provider_id": provider_id,
+            "model_id": model_id
+        })
+        .to_string(),
+    )?;
+    Ok(())
+}
+
+fn persist_agent_user_reply(state: &AppState, session_id: &str, event_type: &str, content: &str) {
+    if let Ok(metadata) = state.metadata.lock() {
+        let _ = metadata.insert_agent_message(
+            &uuid::Uuid::new_v4().to_string(),
+            session_id,
+            "user",
+            content,
+            "complete",
+            None,
+        );
+        let _ = metadata.insert_agent_event(
+            &uuid::Uuid::new_v4().to_string(),
+            session_id,
+            event_type,
+            &serde_json::json!({ "session_id": session_id, "content": content }).to_string(),
+        );
+        let _ = metadata.update_agent_session_status(session_id, "running", false);
+    }
+}
+
+fn persist_agent_event(
+    metadata: &std::sync::Arc<std::sync::Mutex<crate::services::metadata::MetadataStore>>,
+    session_id: &str,
+    event_type: &str,
+    payload_json: &str,
+) {
+    if let Ok(metadata) = metadata.lock() {
+        if let Err(e) = metadata.insert_agent_event(
+            &uuid::Uuid::new_v4().to_string(),
+            session_id,
+            event_type,
+            payload_json,
+        ) {
+            tracing::warn!("写入 Agent 事件失败: {}", e);
+        }
+    }
+}
+
+fn update_agent_ledger_from_event(
+    metadata: &std::sync::Arc<std::sync::Mutex<crate::services::metadata::MetadataStore>>,
+    session_id: &str,
+    event: &ReActEvent,
+    assistant_message_id: &mut Option<String>,
+    assistant_content: &mut String,
+    active_tool_call_id: &mut Option<String>,
+) {
+    let Ok(metadata) = metadata.lock() else {
+        return;
+    };
+    match event {
+        ReActEvent::TextDelta { content, .. } => {
+            let message_id = ensure_assistant_message(
+                &metadata,
+                session_id,
+                assistant_message_id,
+                assistant_content,
+            );
+            assistant_content.push_str(content);
+            let _ = metadata.update_agent_message(&message_id, assistant_content, "streaming");
+        }
+        ReActEvent::ToolCall { name, args, .. } => {
+            let message_id = ensure_assistant_message(
+                &metadata,
+                session_id,
+                assistant_message_id,
+                assistant_content,
+            );
+            let tool_call_id = uuid::Uuid::new_v4().to_string();
+            let _ = metadata.insert_agent_tool_call(
+                &tool_call_id,
+                session_id,
+                Some(&message_id),
+                name,
+                "rig-tool-profile-v1",
+                "unknown",
+                args,
+            );
+            *active_tool_call_id = Some(tool_call_id);
+        }
+        ReActEvent::ToolResult { name, result, .. } => {
+            if let Some(tool_call_id) = active_tool_call_id.as_deref() {
+                let preview = truncate_agent_ledger_text(result, 2000);
+                let result_json = serde_json::json!({ "tool": name, "result": result }).to_string();
+                let _ = metadata.insert_agent_tool_result(
+                    &uuid::Uuid::new_v4().to_string(),
+                    tool_call_id,
+                    &result_json,
+                    &preview,
+                    None,
+                    "ok",
+                );
+                let _ = metadata.finish_agent_tool_call(tool_call_id, "ok");
+            }
+        }
+        ReActEvent::Clarification { payload, .. } => {
+            let message_id = ensure_assistant_message(
+                &metadata,
+                session_id,
+                assistant_message_id,
+                assistant_content,
+            );
+            *assistant_content = payload.prompt.clone();
+            let _ = metadata.update_agent_message(&message_id, assistant_content, "waiting_user");
+            let _ = metadata.update_agent_session_status(session_id, "waiting_user", false);
+            *assistant_message_id = None;
+            assistant_content.clear();
+        }
+        ReActEvent::Done { .. } => {
+            if let Some(message_id) = assistant_message_id.as_deref() {
+                let _ = metadata.update_agent_message(message_id, assistant_content, "complete");
+            }
+            let _ = metadata.update_agent_session_status(session_id, "complete", true);
+        }
+        ReActEvent::Error { message, .. } => {
+            let message_id = ensure_assistant_message(
+                &metadata,
+                session_id,
+                assistant_message_id,
+                assistant_content,
+            );
+            if assistant_content.is_empty() {
+                *assistant_content = format!("请求失败：{}", message);
+            }
+            let _ = metadata.update_agent_message(&message_id, assistant_content, "error");
+            let status = if message.contains("取消") {
+                "cancelled"
+            } else {
+                "error"
+            };
+            let _ = metadata.update_agent_session_status(session_id, status, true);
+        }
+        ReActEvent::Thinking { .. }
+        | ReActEvent::PlanGenerated { .. }
+        | ReActEvent::StepStart { .. }
+        | ReActEvent::StepResult { .. }
+        | ReActEvent::Replan { .. }
+        | ReActEvent::PlannerTimeout { .. } => {}
+    }
+}
+
+fn ensure_assistant_message(
+    metadata: &crate::services::metadata::MetadataStore,
+    session_id: &str,
+    assistant_message_id: &mut Option<String>,
+    assistant_content: &mut String,
+) -> String {
+    if let Some(id) = assistant_message_id.as_ref() {
+        return id.clone();
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let _ = metadata.insert_agent_message(
+        &id,
+        session_id,
+        "assistant",
+        assistant_content,
+        "streaming",
+        None,
+    );
+    *assistant_message_id = Some(id.clone());
+    id
+}
+
+fn event_type_name(event: &ReActEvent) -> &'static str {
+    match event {
+        ReActEvent::Thinking { .. } => "thinking",
+        ReActEvent::ToolCall { .. } => "tool_call",
+        ReActEvent::ToolResult { .. } => "tool_result",
+        ReActEvent::TextDelta { .. } => "text_delta",
+        ReActEvent::Error { .. } => "error",
+        ReActEvent::Done { .. } => "done",
+        ReActEvent::Clarification { .. } => "clarification",
+        ReActEvent::PlanGenerated { .. } => "plan_generated",
+        ReActEvent::StepStart { .. } => "step_start",
+        ReActEvent::StepResult { .. } => "step_result",
+        ReActEvent::Replan { .. } => "replan",
+        ReActEvent::PlannerTimeout { .. } => "planner_timeout",
+    }
+}
+
+fn truncate_agent_ledger_text(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        value.to_string()
+    } else {
+        value.chars().take(max_chars).collect()
+    }
 }

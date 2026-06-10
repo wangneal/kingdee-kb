@@ -9,6 +9,25 @@ use std::path::PathBuf;
 use std::time::Instant;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+const CHINESE_TRANSCRIPTION_PROMPT: &str =
+    "以下是中文普通话录音。请只按实际听到的内容逐字转写，不要翻译，不要补全，不要输出点赞、关注、订阅、字幕组等模板口播。";
+
+const BOILERPLATE_HALLUCINATION_PHRASES: &[&str] = &[
+    "请点赞",
+    "点赞",
+    "请关注",
+    "关注",
+    "订阅",
+    "转发",
+    "一键三连",
+    "下期再见",
+    "感谢观看",
+    "谢谢观看",
+    "字幕组",
+    "字幕提供",
+    "字幕由",
+];
+
 // --- Types ---
 
 /// Full transcription output with segments and timing
@@ -72,7 +91,7 @@ impl WhisperService {
             ctx: None,
             model_path: None,
             language: "zh".to_string(),
-            model_size: "tiny".to_string(),
+            model_size: "base".to_string(),
         }
     }
 
@@ -148,12 +167,19 @@ impl WhisperService {
         // Configure transcription parameters
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(Some(&self.language));
+        params.set_translate(false);
+        params.set_no_context(false);
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
         params.set_n_threads(4); // Use 4 threads for transcription
         params.set_single_segment(false); // Get all segments
+        params.set_suppress_blank(true);
+        params.set_suppress_nst(true);
+        params.set_temperature(0.0);
+        params.set_temperature_inc(0.0);
+        params.set_initial_prompt(CHINESE_TRANSCRIPTION_PROMPT);
 
         // Create a fresh state for this transcription
         let mut state = ctx
@@ -187,6 +213,10 @@ impl WhisperService {
             // Timestamps are in centiseconds — convert to milliseconds
             let start_ms = (seg.start_timestamp() as u64) * 10;
             let end_ms = (seg.end_timestamp() as u64) * 10;
+
+            if is_boilerplate_hallucination(&text) {
+                continue;
+            }
 
             segments.push(TranscriptionSegment {
                 start_ms,
@@ -226,5 +256,47 @@ impl WhisperService {
             .join("models")
             .join("whisper")
             .join(format!("ggml-{}.bin", model_size))
+    }
+}
+
+fn is_boilerplate_hallucination(text: &str) -> bool {
+    let normalized = normalize_for_hallucination_check(text);
+    if normalized.is_empty() {
+        return false;
+    }
+
+    let char_count = normalized.chars().count();
+    let phrase_hits = BOILERPLATE_HALLUCINATION_PHRASES
+        .iter()
+        .filter(|phrase| normalized.contains(**phrase))
+        .count();
+
+    if phrase_hits == 0 {
+        return false;
+    }
+
+    phrase_hits >= 2 || char_count <= 36
+}
+
+fn normalize_for_hallucination_check(text: &str) -> String {
+    text.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(ch))
+        .collect()
+}
+
+#[cfg(test)]
+mod hallucination_tests {
+    use super::*;
+
+    #[test]
+    fn filters_short_subtitle_boilerplate() {
+        assert!(is_boilerplate_hallucination("请点赞、关注、订阅，谢谢观看"));
+    }
+
+    #[test]
+    fn keeps_real_sentence_without_boilerplate() {
+        assert!(!is_boilerplate_hallucination(
+            "客户说采购入库以后需要自动生成应付单"
+        ));
     }
 }

@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod core;
 pub mod document;
 pub mod embedding;
@@ -15,6 +16,6 @@ pub mod research;
 pub mod risk_blueprint;
 pub mod search_llm;
 pub mod skill;
-pub mod template_doc;
+pub mod tencent_meeting;
 pub mod verification;
 pub mod wiki_page;

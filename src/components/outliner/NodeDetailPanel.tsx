@@ -77,7 +77,7 @@ export default function NodeDetailPanel({ node, sessionId }: NodeDetailPanelProp
         await navigator.clipboard.writeText(content)
         toast.success("已复制到剪贴板")
       } catch (err) {
-        toast.error("导出失败: " + String(err))
+        toast.error(`导出失败: ${String(err)}`)
       }
     },
     [sessionId, toast],

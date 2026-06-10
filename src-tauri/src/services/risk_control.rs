@@ -1,8 +1,8 @@
-//! 双轨风险把控舱 — Scope Creep 预警 + 爆雷预警 + 防身话术库
+//! 双轨风险把控舱 — 范围蔓延预警 + 爆雷预警 + 防身话术库
 //!
-//! P1.1 需求蔓延警报器: 新需求 vs 合同范围 → 红黄绿评级
-//! P1.2 实施爆雷预警: 周报/缺席率/数据延迟 → 延期概率计算
-//! P1.3 顾问防身话术库: 场景匹配 → 专业话术生成
+//! 第一项 需求蔓延警报器: 新需求对比合同范围 → 红黄绿评级
+//! 第二项 实施爆雷预警: 周报/缺席率/数据延迟 → 延期概率计算
+//! 第三项 顾问防身话术库: 场景匹配 → 专业话术生成
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,12 @@ use std::sync::Mutex;
 use super::llm_service::{ChatMessage, LLMService};
 use crate::services::verification::types::ScenarioType;
 
-/// RAII guard：作用域结束时自动清理临时文件
+const MAX_SCOPE_EXTRACTION_BATCH_TOKENS: u32 = 900;
+const MIN_SCOPE_EXTRACTION_BATCH_TOKENS: u32 = 450;
+const SCOPE_EXTRACTION_PROMPT_OVERHEAD_TOKENS: u32 = 650;
+const SCOPE_EXTRACTION_OUTPUT_RESERVE_TOKENS: u32 = 900;
+
+/// 临时文件守卫：作用域结束时自动清理临时文件
 struct TempFileGuard(PathBuf);
 impl Drop for TempFileGuard {
     fn drop(&mut self) {
@@ -28,7 +33,7 @@ pub struct ContractScopeItem {
     pub id: i64,
     pub category: String,    // 模块/功能分类
     pub description: String, // 范围描述
-    pub is_in_scope: bool,   // true=在范围内, false=明确排除
+    pub is_in_scope: bool,   // 是否属于合同范围内
     pub detail: String,      // 详细说明/合同条款引用
     pub created_at: String,
 }
@@ -137,7 +142,7 @@ impl RiskControlStore {
         Ok(store)
     }
 
-    /// Create an in-memory store (for fallback when DB is corrupted).
+    /// 创建内存存储，用于数据库损坏时兜底
     pub fn new_in_memory() -> Result<Self, String> {
         let conn = Connection::open_in_memory()
             .map_err(|e| format!("Failed to create in-memory risk control DB: {}", e))?;
@@ -688,54 +693,442 @@ impl RiskControlStore {
         llm: &LLMService,
         chunks: &[super::metadata::ChunkMeta],
     ) -> Result<Vec<CandidateScopeItem>, String> {
-        let doc_content: String = chunks
-            .iter()
-            .map(|c| c.content.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
-            .chars()
-            .take(8000)
-            .collect();
+        let config = llm.get_active_config()?;
+        let batch_token_budget = Self::scope_extraction_batch_token_budget(config.max_tokens);
+        let contexts = Self::build_scope_extraction_batches(chunks, batch_token_budget);
+        if contexts.is_empty() {
+            return Err("文档内容为空，无法提取合同范围".to_string());
+        }
 
-        let prompt = format!(
-            "你是一个 ERP 实施项目的合同审计员。分析以下合同/SOW 文档内容，提取所有明确属于\"实施范围内\"和\"明确排除\"的功能模块。对每项给出原文依据引用。\n\n文档内容：\n{}\n\n严格按照以下 JSON 数组格式返回，不要其他文字：\n[\n  {{\"category\": \"FI\", \"description\": \"总账模块实施\", \"is_in_scope\": true, \"detail\": \"合同第3.1条：包含总账、应收应付\", \"confidence\": 0.95}},\n  {{\"category\": \"FI\", \"description\": \"银企直连\", \"is_in_scope\": false, \"detail\": \"排除项清单第5条\", \"confidence\": 0.9}}\n]",
-            doc_content
-        );
+        let mut extracted_items = Vec::new();
+        let mut empty_response_count = 0usize;
+        let mut parse_errors = Vec::new();
 
-        let messages = vec![
+        for (index, context) in contexts.iter().enumerate() {
+            let messages =
+                Self::build_scope_extraction_messages(context, index + 1, contexts.len());
+            let response = llm.chat_completion_unmasked(&messages, &config).await?;
+            let response = if response.trim().is_empty() {
+                let retry_messages = Self::build_scope_extraction_retry_messages(context);
+                llm.chat_completion_unmasked(&retry_messages, &config)
+                    .await?
+            } else {
+                response
+            };
+
+            if response.trim().is_empty() {
+                empty_response_count += 1;
+                continue;
+            }
+
+            match Self::extract_json_from_llm_response(&response) {
+                Ok(items) => extracted_items.extend(items),
+                Err(parse_error) => {
+                    let repair_messages = Self::build_scope_json_repair_messages(&response);
+                    let repaired = llm
+                        .chat_completion_unmasked(&repair_messages, &config)
+                        .await?;
+                    if repaired.trim().is_empty() {
+                        parse_errors.push(format!(
+                            "片段 {} JSON 修复响应为空，原始响应预览: {}",
+                            index + 1,
+                            Self::response_preview(&response)
+                        ));
+                        continue;
+                    }
+                    match Self::extract_json_from_llm_response(&repaired) {
+                        Ok(items) => extracted_items.extend(items),
+                        Err(_) => parse_errors.push(format!(
+                            "片段 {} {}，原始响应预览: {}",
+                            index + 1,
+                            parse_error,
+                            Self::response_preview(&response)
+                        )),
+                    }
+                }
+            }
+        }
+
+        let merged_items = Self::normalize_candidate_items(extracted_items);
+        if !merged_items.is_empty() {
+            return Ok(merged_items);
+        }
+
+        if empty_response_count == contexts.len() {
+            return Err(
+                "LLM 对所有 SOW 分块都返回空响应，无法提取合同范围。请先在设置中测试 LLM 连通性，或换用输出更稳定的模型。"
+                    .to_string(),
+            );
+        }
+
+        let diagnostics = if parse_errors.is_empty() {
+            "模型未从任何分块中识别出明确范围项".to_string()
+        } else {
+            parse_errors.join("；")
+        };
+        Err(format!("未提取到可确认的合同范围项。{}", diagnostics))
+    }
+
+    fn build_scope_extraction_messages(
+        doc_content: &str,
+        chunk_index: usize,
+        total_chunks: usize,
+    ) -> Vec<ChatMessage> {
+        vec![
             ChatMessage {
                 role: "system".to_string(),
-                content: "你是 ERP 实施合同审计专家。严格基于文档内容提取范围定义，不编造信息。"
-                    .to_string(),
+                content: "你是 ERP 实施合同/SOW 范围审计专家。严格基于文档内容抽取范围定义，不编造信息，只输出 JSON 数组。".to_string(),
             },
             ChatMessage {
                 role: "user".to_string(),
-                content: prompt,
+                content: format!(
+                    "请从以下 SOW/合同文档片段中提取合同范围基线。本片段是第 {}/{} 段。\n\n\
+                     提取对象包括但不限于：实施范围、服务范围、工作范围、系统模块、功能点、接口、报表、数据迁移、培训、上线支持、交付物、客户责任、假设前提、明确排除项、不包含事项。\n\
+                     不要依赖固定表头或固定写法，按语义判断；只提取片段中明确写出的内容，不要推断或补充。\n\
+                     每项 detail 必须写出可追溯的原文依据或章节名称。\n\
+                     最多提取 6 项，优先保留范围边界最清楚的条款。\n\
+                     如果本片段没有明确范围条款，返回 []。\n\n\
+                     文档片段：\n{}\n\n\
+                     严格输出 JSON 数组，不要 Markdown，不要解释。数组元素格式：\n\
+                     {{\"category\":\"实施范围/排除项/交付物/接口/培训/数据迁移/其他\",\"description\":\"范围描述\",\"is_in_scope\":true,\"detail\":\"原文依据：...\",\"confidence\":0.8}}",
+                    chunk_index, total_chunks, doc_content
+                ),
             },
-        ];
-        let config = llm.get_active_config()?;
-        let (response, _report) = llm
-            .verified_chat_completion(&messages, &config, ScenarioType::RiskReport)
-            .await?;
-        Self::extract_json_from_llm_response(&response)
+        ]
+    }
+
+    fn build_scope_extraction_retry_messages(doc_content: &str) -> Vec<ChatMessage> {
+        vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: "你是合同/SOW 范围提取器。必须只输出 JSON 数组，不要解释。".to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: format!(
+                    "从以下文档摘录中提取 SOW/合同范围项。字段必须为 category、description、is_in_scope、detail、confidence。\
+                     不要依赖固定表头，按语义判断；只输出 JSON 数组；没有结果输出 []；最多 6 项。\n\n{}",
+                    doc_content
+                ),
+            },
+        ]
+    }
+
+    fn build_scope_json_repair_messages(response: &str) -> Vec<ChatMessage> {
+        vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: "你是 JSON 修复器。只输出合法 JSON 数组，不要解释。".to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: format!(
+                    "把下面内容转换为合法 JSON 数组。数组元素字段必须为 category、description、is_in_scope、detail、confidence。\
+                     如果没有可转换的范围项，输出 []。\n\n{}",
+                    response
+                ),
+            },
+        ]
+    }
+
+    fn response_preview(response: &str) -> String {
+        let preview: String = response.chars().take(500).collect();
+        if response.chars().count() > 500 {
+            format!("{}...", preview)
+        } else {
+            preview
+        }
+    }
+
+    fn scope_extraction_batch_token_budget(model_context_tokens: u32) -> u32 {
+        let available = model_context_tokens
+            .saturating_sub(SCOPE_EXTRACTION_PROMPT_OVERHEAD_TOKENS)
+            .saturating_sub(SCOPE_EXTRACTION_OUTPUT_RESERVE_TOKENS);
+        if available == 0 {
+            MIN_SCOPE_EXTRACTION_BATCH_TOKENS
+        } else {
+            available.clamp(
+                MIN_SCOPE_EXTRACTION_BATCH_TOKENS,
+                MAX_SCOPE_EXTRACTION_BATCH_TOKENS,
+            )
+        }
+    }
+
+    fn build_scope_extraction_batches(
+        chunks: &[super::metadata::ChunkMeta],
+        max_context_tokens: u32,
+    ) -> Vec<String> {
+        let max_context_tokens = max_context_tokens.max(1);
+        let mut batches = Vec::new();
+        let mut current = String::new();
+
+        for (index, chunk) in chunks.iter().enumerate() {
+            let content = chunk.content.trim();
+            if content.is_empty() {
+                continue;
+            }
+
+            let section = chunk
+                .section_path
+                .as_deref()
+                .filter(|section| !section.trim().is_empty())
+                .unwrap_or("未标注章节");
+            let prefix = format!("[文档分块 {}]\n章节：{}\n", index + 1, section);
+            let prefix_tokens = Self::estimate_scope_tokens(&prefix);
+            let content_budget = max_context_tokens
+                .saturating_sub(prefix_tokens)
+                .max(MIN_SCOPE_EXTRACTION_BATCH_TOKENS / 2);
+
+            for part in Self::split_text_by_token_budget(content, content_budget) {
+                let labeled = format!("{}{}\n", prefix, part.trim());
+                if labeled.trim().is_empty() {
+                    continue;
+                }
+                let labeled = if Self::estimate_scope_tokens(&labeled) > max_context_tokens {
+                    Self::truncate_scope_text_to_token_budget(&labeled, max_context_tokens)
+                } else {
+                    labeled
+                };
+                let labeled_tokens = Self::estimate_scope_tokens(&labeled);
+                let current_tokens = Self::estimate_scope_tokens(&current);
+
+                if !current.trim().is_empty()
+                    && current_tokens + labeled_tokens > max_context_tokens
+                {
+                    batches.push(current.trim().to_string());
+                    current.clear();
+                }
+                current.push_str(&labeled);
+                current.push('\n');
+            }
+        }
+
+        if !current.trim().is_empty() {
+            batches.push(current.trim().to_string());
+        }
+
+        batches
+    }
+
+    fn split_text_by_token_budget(text: &str, max_tokens: u32) -> Vec<String> {
+        let max_tokens = max_tokens.max(1);
+        let mut result = Vec::new();
+        let mut current = String::new();
+
+        for line in text.lines() {
+            let line = format!("{}\n", line);
+            let line_tokens = Self::estimate_scope_tokens(&line);
+            if line_tokens > max_tokens {
+                if !current.trim().is_empty() {
+                    result.push(current.trim().to_string());
+                    current.clear();
+                }
+                result.extend(Self::split_long_text_by_token_budget(&line, max_tokens));
+                continue;
+            }
+
+            let current_tokens = Self::estimate_scope_tokens(&current);
+            if !current.trim().is_empty() && current_tokens + line_tokens > max_tokens {
+                result.push(current.trim().to_string());
+                current.clear();
+            }
+            current.push_str(&line);
+        }
+
+        if !current.trim().is_empty() {
+            result.push(current.trim().to_string());
+        }
+        result
+    }
+
+    fn split_long_text_by_token_budget(text: &str, max_tokens: u32) -> Vec<String> {
+        let mut parts = Vec::new();
+        let mut remaining = text.trim();
+
+        while !remaining.is_empty() {
+            let part = Self::truncate_scope_text_to_token_budget(remaining, max_tokens);
+            if part.is_empty() {
+                if let Some(ch) = remaining.chars().next() {
+                    parts.push(ch.to_string());
+                    remaining = remaining[ch.len_utf8()..].trim_start();
+                } else {
+                    break;
+                }
+                continue;
+            }
+
+            let consumed = part.len();
+            parts.push(part.trim().to_string());
+            remaining = remaining[consumed..].trim_start();
+        }
+
+        parts
+    }
+
+    fn estimate_scope_tokens(text: &str) -> u32 {
+        let non_ascii_chars = text.chars().filter(|ch| !ch.is_ascii()).count();
+        let ascii_chars = text.len().saturating_sub(non_ascii_chars);
+        ((non_ascii_chars as f32 / 1.2) + (ascii_chars as f32 / 3.5)).ceil() as u32
+    }
+
+    fn truncate_scope_text_to_token_budget(text: &str, max_tokens: u32) -> String {
+        let mut result = String::new();
+        for ch in text.chars() {
+            result.push(ch);
+            if Self::estimate_scope_tokens(&result) > max_tokens {
+                result.pop();
+                break;
+            }
+        }
+        result
     }
 
     /// 从 LLM 响应中提取 JSON（支持 markdown 代码块包裹）
     fn extract_json_from_llm_response(response: &str) -> Result<Vec<CandidateScopeItem>, String> {
+        if response.trim().is_empty() {
+            return Err("LLM 返回空响应".to_string());
+        }
         // 尝试直接解析
-        if let Ok(items) = serde_json::from_str(response) {
-            return Ok(items);
+        if let Ok(items) = Self::parse_scope_items_json(response) {
+            return Ok(Self::normalize_candidate_items(items));
         }
         // 尝试提取 markdown 代码块中的 JSON
         if let Some(start) = response.find('[') {
             if let Some(end) = response.rfind(']') {
                 let json_str = &response[start..=end];
-                if let Ok(items) = serde_json::from_str(json_str) {
-                    return Ok(items);
+                if let Ok(items) = Self::parse_scope_items_json(json_str) {
+                    return Ok(Self::normalize_candidate_items(items));
                 }
             }
         }
-        Err(format!("LLM 返回格式错误 — 原始响应: {}", response))
+        if let Some(start) = response.find('{') {
+            if let Some(end) = response.rfind('}') {
+                let json_str = &response[start..=end];
+                if let Ok(items) = Self::parse_scope_items_json(json_str) {
+                    return Ok(Self::normalize_candidate_items(items));
+                }
+            }
+        }
+        let partial_items = Self::parse_partial_scope_items(response);
+        if !partial_items.is_empty() {
+            return Ok(Self::normalize_candidate_items(partial_items));
+        }
+        Err(format!(
+            "LLM 返回格式错误 — 原始响应预览: {}",
+            Self::response_preview(response)
+        ))
+    }
+
+    fn parse_scope_items_json(json: &str) -> Result<Vec<CandidateScopeItem>, serde_json::Error> {
+        if let Ok(items) = serde_json::from_str::<Vec<CandidateScopeItem>>(json) {
+            return Ok(items);
+        }
+
+        let value = serde_json::from_str::<serde_json::Value>(json)?;
+        if let Some(array) = value.as_array() {
+            return serde_json::from_value(serde_json::Value::Array(array.clone()));
+        }
+
+        if let Some(object) = value.as_object() {
+            for key in ["items", "scope_items", "scopes", "data", "result"] {
+                if let Some(items_value) = object.get(key) {
+                    if items_value.is_array() {
+                        return serde_json::from_value(items_value.clone());
+                    }
+                }
+            }
+            if let Ok(item) = serde_json::from_value::<CandidateScopeItem>(value.clone()) {
+                return Ok(vec![item]);
+            }
+        }
+
+        serde_json::from_value(value)
+    }
+
+    fn parse_partial_scope_items(response: &str) -> Vec<CandidateScopeItem> {
+        let mut items = Vec::new();
+        let mut object_start: Option<usize> = None;
+        let mut brace_depth = 0i32;
+        let mut in_string = false;
+        let mut escaped = false;
+
+        for (index, ch) in response.char_indices() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+
+            match ch {
+                '"' => in_string = true,
+                '{' => {
+                    if brace_depth == 0 {
+                        object_start = Some(index);
+                    }
+                    brace_depth += 1;
+                }
+                '}' => {
+                    if brace_depth > 0 {
+                        brace_depth -= 1;
+                        if brace_depth == 0 {
+                            if let Some(start) = object_start.take() {
+                                let end = index + ch.len_utf8();
+                                if let Ok(item) = serde_json::from_str::<CandidateScopeItem>(
+                                    &response[start..end],
+                                ) {
+                                    items.push(item);
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        items
+    }
+
+    fn normalize_candidate_items(items: Vec<CandidateScopeItem>) -> Vec<CandidateScopeItem> {
+        let mut seen = std::collections::BTreeSet::new();
+        items
+            .into_iter()
+            .filter_map(|item| {
+                let category = item.category.trim().to_string();
+                let description = item.description.trim().to_string();
+                let detail = item.detail.trim().to_string();
+                if description.is_empty() {
+                    return None;
+                }
+                let normalized_category = if category.is_empty() {
+                    "未分类".to_string()
+                } else {
+                    category
+                };
+                let dedupe_key = format!(
+                    "{}|{}|{}",
+                    normalized_category.to_lowercase(),
+                    description.to_lowercase(),
+                    item.is_in_scope
+                );
+                if !seen.insert(dedupe_key) {
+                    return None;
+                }
+
+                Some(CandidateScopeItem {
+                    category: normalized_category,
+                    description,
+                    is_in_scope: item.is_in_scope,
+                    detail,
+                    confidence: item.confidence.clamp(0.0, 1.0),
+                })
+            })
+            .collect()
     }
 
     /// 确认入库候选范围项（事务保护）
@@ -815,7 +1208,7 @@ impl RiskControlStore {
             let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
             *conn = rusqlite::Connection::open_in_memory()
                 .map_err(|e| format!("Cannot open temp connection: {}", e))?;
-        } // MutexGuard 在此释放
+        } // 锁守卫在此释放
 
         // 复制备份文件覆盖当前 DB
         fs::copy(backup_path, db_path).map_err(|e| format!("Cannot restore backup: {}", e))?;
@@ -829,7 +1222,7 @@ impl RiskControlStore {
                 .busy_timeout(std::time::Duration::from_secs(5))
                 .map_err(|e| format!("Cannot set busy timeout after import: {}", e))?;
             *conn = reopened;
-        } // MutexGuard 在此释放
+        } // 锁守卫在此释放
         self.init_tables()?;
 
         // 统计（临时备份由 TempFileGuard 自动清理）
@@ -904,6 +1297,113 @@ mod tests {
             .unwrap();
         }
         store
+    }
+
+    fn test_chunk(id: i64, content: &str) -> crate::services::metadata::ChunkMeta {
+        crate::services::metadata::ChunkMeta {
+            id,
+            vector_key: id,
+            document_id: 1,
+            content: content.to_string(),
+            section_path: None,
+            tags: None,
+            line_no: None,
+            created_at: "2026-06-07 00:00:00".to_string(),
+        }
+    }
+
+    #[test]
+    fn extract_json_accepts_items_wrapper() {
+        let response = r#"{
+            "items": [
+                {
+                    "category": "服务范围",
+                    "description": "采购模块实施",
+                    "is_in_scope": true,
+                    "detail": "原文依据：SOW服务范围包含采购模块",
+                    "confidence": 1.2
+                }
+            ]
+        }"#;
+
+        let items = RiskControlStore::extract_json_from_llm_response(response).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].category, "服务范围");
+        assert_eq!(items[0].description, "采购模块实施");
+        assert_eq!(items[0].confidence, 1.0);
+    }
+
+    #[test]
+    fn extract_json_salvages_truncated_array_objects() {
+        let response = r#"[
+            {"category":"实施范围","description":"PLM模块-配方管理新增字段","is_in_scope":true,"detail":"原文依据：实施优化范围表格","confidence":1.0},
+            {"category":"实施范围","description":"PLM模块-实验bom变更管理","is_in_scope":true,"detail":"原文依据：实施优化范围表格","confidence":1.0},
+            {"category":"实施范围","description":"PLM模块-材料基础信息"#;
+
+        let items = RiskControlStore::extract_json_from_llm_response(response).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].description, "PLM模块-配方管理新增字段");
+        assert_eq!(items[1].description, "PLM模块-实验bom变更管理");
+    }
+
+    #[test]
+    fn scope_batches_keep_unkeyworded_sections() {
+        let chunks = vec![
+            test_chunk(1, "封面\n项目名称\n版本记录\n目录"),
+            test_chunk(2, "特殊约定：甲方需在上线前提供历史 BOM 清单和编码负责人。"),
+            test_chunk(
+                3,
+                "实施范围：采购管理、库存管理、销售管理。\n交付物：蓝图文档、培训材料。\n不包含：银企直连接口。",
+            ),
+        ];
+
+        let contexts = RiskControlStore::build_scope_extraction_batches(&chunks, 450);
+        let joined = contexts.join("\n");
+        assert!(joined.contains("特殊约定"));
+        assert!(joined.contains("实施范围"));
+    }
+
+    #[test]
+    fn scope_batches_respect_token_budget() {
+        let content = (0..120)
+            .map(|index| {
+                format!(
+                    "实施范围第{}项：这里是一段需要 LLM 语义判断的 SOW 范围描述。",
+                    index
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let chunks = vec![test_chunk(1, &content)];
+
+        let contexts = RiskControlStore::build_scope_extraction_batches(&chunks, 220);
+        assert!(contexts.len() > 1);
+        assert!(contexts
+            .iter()
+            .all(|context| RiskControlStore::estimate_scope_tokens(context) <= 220));
+    }
+
+    #[test]
+    fn normalize_candidate_items_deduplicates_across_chunks() {
+        let items = vec![
+            CandidateScopeItem {
+                category: "实施范围".to_string(),
+                description: "PLM 配方管理新增字段".to_string(),
+                is_in_scope: true,
+                detail: "原文依据：片段 1".to_string(),
+                confidence: 0.9,
+            },
+            CandidateScopeItem {
+                category: "实施范围".to_string(),
+                description: "PLM 配方管理新增字段".to_string(),
+                is_in_scope: true,
+                detail: "原文依据：片段 2".to_string(),
+                confidence: 0.8,
+            },
+        ];
+
+        let normalized = RiskControlStore::normalize_candidate_items(items);
+        assert_eq!(normalized.len(), 1);
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! NDJSON 流式规划 + 状态机步进控制 + 依赖合法性校验。
 //! 配合 agent_router 的模式路由，为复杂任务提供 Plan-Execute 执行路径。
 
+use crate::services::llm_providers::LLMProviderConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -90,6 +91,7 @@ impl Planner {
         skill_catalog: &str,
         context: &str,
         llm: &crate::services::llm_service::LLMService,
+        config: &LLMProviderConfig,
         _plan_budget: u32,
     ) -> Result<ExecutionPlan, String> {
         let prompt = format!(
@@ -109,11 +111,8 @@ impl Planner {
             role: "user".to_string(),
             content: prompt,
         }];
-        let config = llm
-            .get_active_config()
-            .map_err(|e| format!("Planner config error: {}", e))?;
         let response = llm
-            .chat_completion(&messages, &config)
+            .chat_completion(&messages, config)
             .await
             .map_err(|e| format!("Planner LLM 调用失败: {}", e))?;
 
@@ -213,6 +212,7 @@ impl Planner {
         executed_steps: &[ExecutedStep],
         old_remaining: &[PlanStep],
         llm: &crate::services::llm_service::LLMService,
+        config: &LLMProviderConfig,
     ) -> Result<Vec<PlanStep>, String> {
         let history = executed_steps
             .iter()
@@ -243,11 +243,8 @@ impl Planner {
                      请以 NDJSON 格式生成新的剩余步骤。"
             ),
         }];
-        let replan_config = llm
-            .get_active_config()
-            .map_err(|e| format!("Replanner config error: {}", e))?;
         let response = llm
-            .chat_completion(&replan_messages, &replan_config)
+            .chat_completion(&replan_messages, config)
             .await
             .map_err(|e| format!("Replanner LLM 调用失败: {}", e))?;
 
@@ -669,7 +666,7 @@ mod tests {
             "搜索知识库",
             Some("search-knowledge"),
             "好的，我来搜索",
-            &["generate-doc".to_string()],
+            &["run-skill-script".to_string()],
         );
         assert!(warning.is_some());
     }

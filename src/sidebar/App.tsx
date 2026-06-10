@@ -20,7 +20,7 @@ export default function SidebarApp() {
   const [theme, setTheme] = useState<Theme>("light")
   const chatEndRef = useRef<HTMLDivElement>(null)
 
-  // Detect Tencent Meeting dark mode
+  // 检测腾讯会议深色模式
   useEffect(() => {
     const mq = window.matchMedia("(prefers-color-scheme: dark)")
     setTheme(mq.matches ? "dark" : "light")
@@ -29,7 +29,7 @@ export default function SidebarApp() {
     return () => mq.removeEventListener("change", handler)
   }, [])
 
-  // Poll for answers from desktop app via localStorage bridge
+  // 通过 localStorage 桥接轮询桌面端回答
   useEffect(() => {
     const interval = setInterval(() => {
       try {
@@ -41,35 +41,35 @@ export default function SidebarApp() {
           setMessages((prev) => [...prev, { id: ++msgId, role: "assistant", content: answer.text }])
         }
       } catch {
-        /* ignore */
+        /* 忽略 */
       }
     }, 1000)
     return () => clearInterval(interval)
   }, [])
 
-  // Auto-scroll
+  // 自动滚动
   useEffect(() => {
+    void messages.length
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [messages])
+  }, [messages.length])
 
   const handleSend = () => {
     const text = input.trim()
     if (!text || loading) return
     setInput("")
 
-    // Add user message
+    // 添加用户消息
     setMessages((prev) => [...prev, { id: ++msgId, role: "user", content: text }])
 
-    // Write question to localStorage for desktop app to process
+    // 将问题写入 localStorage，交给桌面端处理
     try {
       localStorage.setItem(LS_KEY_QUESTION, JSON.stringify({ id: msgId, text }))
       setLoading(true)
     } catch {
-      /* localStorage unavailable */
+      /* localStorage 不可用 */
     }
 
-    // Poll for answer (the interval above handles this)
-    // If no answer within 30s, show timeout
+    // 轮询回答；如果 30 秒内没有回答，则显示超时
     const timeout = setTimeout(() => {
       setLoading(false)
       setMessages((prev) => [
@@ -92,11 +92,11 @@ export default function SidebarApp() {
           setMessages((prev) => [...prev, { id: ++msgId, role: "assistant", content: answer.text }])
         }
       } catch {
-        /* ignore */
+        /* 忽略 */
       }
     }, 500)
 
-    // Cleanup
+    // 清理轮询
     setTimeout(() => {
       clearInterval(check)
       clearTimeout(timeout)
@@ -123,7 +123,7 @@ export default function SidebarApp() {
         color: fg,
       }}
     >
-      {/* Header */}
+      {/* 页头 */}
       <div
         style={{
           padding: "12px 16px",
@@ -134,6 +134,8 @@ export default function SidebarApp() {
         }}
       >
         <svg
+          role="img"
+          aria-label="KingdeeKB"
           width="18"
           height="18"
           viewBox="0 0 24 24"
@@ -149,7 +151,7 @@ export default function SidebarApp() {
         <span style={{ fontSize: 14, fontWeight: 600, color: accent }}>KingdeeKB 实施助手</span>
       </div>
 
-      {/* Messages */}
+      {/* 消息 */}
       <div style={{ flex: 1, overflowY: "auto", padding: "12px 12px 8px" }}>
         {messages.length === 0 && (
           <div style={{ textAlign: "center", marginTop: 40, opacity: 0.5 }}>
@@ -188,7 +190,7 @@ export default function SidebarApp() {
         <div ref={chatEndRef} />
       </div>
 
-      {/* Input */}
+      {/* 输入 */}
       <div style={{ padding: "8px 12px 12px", borderTop: `1px solid ${border}` }}>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input
@@ -214,6 +216,7 @@ export default function SidebarApp() {
             }}
           />
           <button
+            type="button"
             onClick={handleSend}
             disabled={loading || !input.trim()}
             style={{
@@ -231,6 +234,8 @@ export default function SidebarApp() {
             }}
           >
             <svg
+              role="img"
+              aria-label={loading ? "发送中" : "发送"}
               width="16"
               height="16"
               viewBox="0 0 24 24"

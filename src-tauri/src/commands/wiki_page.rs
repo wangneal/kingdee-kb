@@ -6,6 +6,13 @@ use crate::services::wiki_page::{
     CreateWikiPage, UpdateWikiPage, WikiLinkTarget, WikiPage, WikiPageBrief,
 };
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ApproveAutoWikiPagesResult {
+    pub approved: usize,
+    pub skipped: usize,
+    pub failed: Vec<String>,
+}
+
 /// 从文件路径中提取文件名（如 "C:/.../需求.docx" → "需求.docx"）
 /// raw_source_identity 缺失时，用 source_path 兜底
 fn extract_filename(path: &str) -> Option<String> {
@@ -235,6 +242,39 @@ pub async fn approve_wiki_page(state: State<'_, AppState>, id: i64) -> Result<Wi
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
     store.approve_candidate(id)
+}
+
+/// 自动批准低风险候选内容（candidate_status=auto）。
+#[tauri::command]
+pub async fn approve_auto_wiki_pages(
+    state: State<'_, AppState>,
+    project_id: i64,
+) -> Result<ApproveAutoWikiPagesResult, String> {
+    let store = state
+        .wiki_pages
+        .lock()
+        .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+    let pages = store.list(project_id, None, None, None)?;
+    let mut approved = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = Vec::new();
+
+    for page in pages {
+        if page.candidate_status.as_deref() != Some("auto") {
+            skipped += 1;
+            continue;
+        }
+        match store.approve_candidate(page.id) {
+            Ok(_) => approved += 1,
+            Err(error) => failed.push(format!("{}: {}", page.title, error)),
+        }
+    }
+
+    Ok(ApproveAutoWikiPagesResult {
+        approved,
+        skipped,
+        failed,
+    })
 }
 
 /// 拒绝维基页面的候选内容（清空候选字段）。

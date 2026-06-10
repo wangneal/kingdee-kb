@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use tauri::{AppHandle, State};
 
@@ -6,9 +6,10 @@ use crate::app_state::AppState;
 use crate::services::analysis_cache::AnalysisCacheStore;
 use crate::services::ingest_cache::IngestCacheStore;
 use crate::services::ingestion::{
-    ingest_directory as ingest_directory_fn, ingest_file as ingest_file_fn,
-    ingest_text as ingest_text_fn, DirectoryIngestionResult, IngestionResult,
+    ingest_directory as ingest_directory_fn, ingest_text as ingest_text_fn,
+    DirectoryIngestionResult, IngestionResult,
 };
+use crate::services::ingestion_helpers::extract_title_from_filename;
 use crate::services::ingestion_pipeline::process_with_kb_compilation;
 use crate::services::llm_providers::LLMProviderManager;
 use crate::services::wiki_page::WikiPageStore;
@@ -18,19 +19,7 @@ fn clone_image_processor(
     state: &State<'_, AppState>,
 ) -> Result<crate::services::image_processor::ImageProcessor, String> {
     let guard = state.image_processor.read().map_err(|e| e.to_string())?;
-    let mut p = crate::services::image_processor::ImageProcessor::new(
-        guard.get_llm_api_key().to_string(),
-        guard.get_llm_base_url().to_string(),
-        guard.get_llm_model().to_string(),
-    );
-    p.set_llm_multimodal(guard.is_llm_multimodal());
-    if let Some(ocr) = guard.get_ocr_config_cloned() {
-        p.set_ocr_config(ocr);
-    }
-    if let Some(protocol) = guard.get_protocol_cloned() {
-        p.set_protocol(protocol);
-    }
-    Ok(p)
+    Ok(guard.clone_configured())
 }
 
 /// 通过 ImageProcessor 异步提取图片文本（owned processor，可 Send）
@@ -46,6 +35,135 @@ async fn extract_image_text_with_processor(
         return Err("图片中未识别到任何文本".to_string());
     }
     Ok(result.text)
+}
+
+fn is_docx_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("docx"))
+        .unwrap_or(false)
+}
+
+fn create_docx_preview_temp_dir(file_path: &Path) -> Result<PathBuf, String> {
+    let stem = file_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("docx");
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "kingdee-kb-docx-preview-{}-{}-{}",
+        std::process::id(),
+        nonce,
+        stem
+    ));
+    if dir.exists() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("创建 DOCX 预览图临时目录失败 {:?}: {}", dir.display(), e))?;
+    Ok(dir)
+}
+
+async fn extract_docx_preview_text(
+    state: &State<'_, AppState>,
+    file_path: &Path,
+) -> Result<String, String> {
+    let can_process = {
+        let guard = state.image_processor.read().map_err(|e| e.to_string())?;
+        guard.can_process_images()
+    };
+    if !can_process {
+        return Err("DOCX 内嵌 Visio 无法直接提取文字，且未配置 OCR 或多模态视觉模型".to_string());
+    }
+
+    let temp_dir = create_docx_preview_temp_dir(file_path)?;
+    let preview_paths =
+        crate::services::file_extractor::extract_docx_preview_images(file_path, &temp_dir)?;
+    let mut sections = Vec::new();
+    let mut errors = Vec::new();
+
+    for preview_path in preview_paths {
+        let preview_path_str = preview_path.to_string_lossy().to_string();
+        let processor = clone_image_processor(state)?;
+        match extract_image_text_with_processor(&preview_path_str, processor).await {
+            Ok(text) if !text.trim().is_empty() => {
+                sections.push(format!(
+                    "--- DOCX 内嵌 Visio 预览图：{} ---\n{}",
+                    preview_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("preview"),
+                    text.trim()
+                ));
+            }
+            Ok(_) => errors.push(format!("{}: 未识别到文本", preview_path.display())),
+            Err(error) => errors.push(format!("{}: {}", preview_path.display(), error)),
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+
+    if sections.is_empty() {
+        return Err(format!(
+            "DOCX 内嵌 Visio 预览图 OCR 失败：{}",
+            errors.join("；")
+        ));
+    }
+
+    Ok(sections.join("\n\n"))
+}
+
+async fn extract_text_with_docx_preview_fallback(
+    state: &State<'_, AppState>,
+    path: &Path,
+) -> Result<String, String> {
+    match crate::services::file_extractor::extract_text(path) {
+        Ok(text) => Ok(text),
+        Err(error)
+            if is_docx_path(path)
+                && crate::services::file_extractor::is_unreadable_docx_embedded_object_error(
+                    &error,
+                ) =>
+        {
+            tracing::warn!("DOCX 文本提取失败，尝试内嵌 Visio 预览图 OCR: {}", error);
+            extract_docx_preview_text(state, path).await
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn ingest_file_text(
+    state: &State<'_, AppState>,
+    app: &AppHandle,
+    path: &Path,
+    text: &str,
+    project_id: i64,
+) -> Result<IngestionResult, String> {
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("untitled");
+    let title = extract_title_from_filename(filename);
+    let file_path = path.to_string_lossy().to_string();
+    let mut result = ingest_text_fn(
+        text,
+        &title,
+        project_id,
+        &state.embedding,
+        &state.vector_index,
+        &state.metadata,
+        &state.bm25,
+        Some(&state.raw_sources),
+        Some(filename),
+        Some(&file_path),
+        Some(app),
+        Some(&state.data_dir),
+    )?;
+    result.title = title;
+    Ok(result)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -251,23 +369,12 @@ pub async fn ingest_file(
         return Ok(result);
     }
 
-    // ─── 非图片文件：正常同步摄入 ───
-    let mut result = ingest_file_fn(
-        path.as_path(),
-        project_id,
-        &state.embedding,
-        &state.vector_index,
-        &state.metadata,
-        &state.bm25,
-        Some(&state.raw_sources),
-        Some(&app),
-        Some(&state.data_dir),
-    )?;
+    // ─── 非图片文件：先提取文本，DOCX 内嵌 Visio 失败时自动走预览图 OCR ───
+    let text = extract_text_with_docx_preview_fallback(&state, path.as_path()).await?;
+    let mut result = ingest_file_text(&state, &app, path.as_path(), &text, project_id)?;
 
     // 知识编译
     if resolve_kb_compilation(&state, enable_kb_compilation) {
-        let text = crate::services::file_extractor::extract_text(&path)
-            .map_err(|e| format!("读取文件内容失败: {}", e))?;
         let title = result.title.clone();
         let source_identity = path
             .file_name()
@@ -296,9 +403,12 @@ pub async fn ingest_file(
 }
 
 #[tauri::command]
-pub async fn extract_file_text(file_path: String) -> Result<ExtractedFileText, String> {
+pub async fn extract_file_text(
+    state: State<'_, AppState>,
+    file_path: String,
+) -> Result<ExtractedFileText, String> {
     let path = PathBuf::from(&file_path);
-    let text = crate::services::file_extractor::extract_text(&path)?;
+    let text = extract_text_with_docx_preview_fallback(&state, &path).await?;
     let title = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -344,6 +454,36 @@ pub async fn ingest_directory(
         Some(&state.data_dir),
     )?;
 
+    // ─── 对同步提取失败的 DOCX 内嵌 Visio 文档做预览图 OCR 回退 ───
+    let mut retained_errors = Vec::new();
+    for error in std::mem::take(&mut result.errors) {
+        let path = PathBuf::from(&error.path);
+        let can_fallback = is_docx_path(&path)
+            && crate::services::file_extractor::is_unreadable_docx_embedded_object_error(
+                &error.error,
+            )
+            && path.exists();
+        if !can_fallback {
+            retained_errors.push(error);
+            continue;
+        }
+
+        match extract_text_with_docx_preview_fallback(&state, path.as_path()).await {
+            Ok(text) => match ingest_file_text(&state, &app, path.as_path(), &text, project_id) {
+                Ok(imported) => result.imported.push(imported),
+                Err(import_error) => retained_errors.push(crate::services::ingestion::FileError {
+                    path: error.path,
+                    error: import_error,
+                }),
+            },
+            Err(ocr_error) => retained_errors.push(crate::services::ingestion::FileError {
+                path: error.path,
+                error: ocr_error,
+            }),
+        }
+    }
+    result.errors = retained_errors;
+
     // ─── 异步处理图片文件 ───
     let image_paths = crate::services::ingestion::collect_image_paths(&dir);
     let can_process_images = {
@@ -369,18 +509,18 @@ pub async fn ingest_directory(
             };
 
             // 异步：提取图片文本
-            let image_text =
-                match extract_image_text_with_processor(&img_path_str, processor).await {
-                    Ok(text) => text,
-                    Err(e) => {
-                        tracing::warn!("图片 OCR 失败: {:?}: {}", img_path, e);
-                        result.errors.push(crate::services::ingestion::FileError {
-                            path: img_path_str.clone(),
-                            error: e,
-                        });
-                        continue;
-                    }
-                };
+            let image_text = match extract_image_text_with_processor(&img_path_str, processor).await
+            {
+                Ok(text) => text,
+                Err(e) => {
+                    tracing::warn!("图片 OCR 失败: {:?}: {}", img_path, e);
+                    result.errors.push(crate::services::ingestion::FileError {
+                        path: img_path_str.clone(),
+                        error: e,
+                    });
+                    continue;
+                }
+            };
 
             // 同步：走纯文本摄入
             let filename = img_path

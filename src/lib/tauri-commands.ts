@@ -1,11 +1,12 @@
 import { invoke } from "@tauri-apps/api/core"
+import { listen } from "@tauri-apps/api/event"
 
-// ── Types matching Rust structs ──────────────────────────────────────────────
+// ── 与 Rust 结构体对应的类型 ───────────────────────────────────────────────
 
 export interface AttachmentInfo {
   name: string
   path: string
-  kind: string // "image" | "document"
+  kind: string // "image" 或 "document"
 }
 
 export interface HybridSearchResult {
@@ -88,17 +89,11 @@ export interface KnowledgeStats {
   db_path: string
 }
 
-// ── LLM / RAG Types ────────────────────────────────────────────────────────
+// ── LLM / RAG 类型 ────────────────────────────────────────────────────────
 
 export interface ChatMessage {
   role: string
   content: string
-}
-
-export interface StreamChunk {
-  content: string
-  done: boolean
-  thinking?: string
 }
 
 export interface RAGSource {
@@ -108,18 +103,12 @@ export interface RAGSource {
   score: number
 }
 
-export interface RAGResponse {
-  answer: string
-  sources: RAGSource[]
-  llm_available: boolean
-}
+// ── Tauri 命令封装 ─────────────────────────────────────────────────────────
+// 注意：Tauri v2 #[tauri::command] 默认按 rename_all="camelCase" 处理。
+// JS invoke() 必须使用 camelCase 参数名（例如 filePath，而不是 file_path）。
+// Rust 函数参数保持 snake_case，由宏负责映射。
 
-// ── Tauri command wrappers ───────────────────────────────────────────────────
-// NOTE: Tauri v2 #[tauri::command] defaults to rename_all="camelCase".
-// JS invoke() must use camelCase keys (e.g. filePath, not file_path).
-// Rust function params stay snake_case; the macro handles the mapping.
-
-/** Check if any LLM provider is configured with a valid API key */
+/** 检查是否存在已配置有效 API Key 的 LLM 供应商 */
 export async function isLLMConfigured(): Promise<boolean> {
   return invoke("is_llm_configured")
 }
@@ -210,11 +199,35 @@ export interface RecompileFailedSourcesResult {
   failed: RecompileFailedSourceError[]
 }
 
+export interface KbRecompileStatus {
+  status: "idle" | "running" | "completed" | "failed"
+  project_id: number | null
+  force: boolean
+  retried: number
+  succeeded: number
+  failed: RecompileFailedSourceError[]
+  completed_source_keys: string[]
+  message?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+}
+
 export async function recompileFailedKbSources(
   projectId: number,
   force: boolean = false,
 ): Promise<RecompileFailedSourcesResult> {
   return invoke("recompile_failed_kb_sources", { projectId, force })
+}
+
+export async function startKbRecompile(
+  projectId: number,
+  force: boolean = false,
+): Promise<KbRecompileStatus> {
+  return invoke("start_kb_recompile", { projectId, force })
+}
+
+export async function getKbRecompileStatus(): Promise<KbRecompileStatus> {
+  return invoke("get_kb_recompile_status")
 }
 
 /// 强制重编译指定的源（用于"删 wiki 后原地重生成"场景）
@@ -251,7 +264,7 @@ export async function deleteDocument(documentId: number, projectId?: number | nu
   return invoke("delete_document", { documentId, projectId: projectId ?? null })
 }
 
-/** Batch-delete multiple documents (and their chunks) in a single transaction */
+/** 在单个事务中批量删除多个文档及其片段 */
 export async function deleteDocumentsBatch(
   documentIds: number[],
   projectId?: number | null,
@@ -259,7 +272,7 @@ export async function deleteDocumentsBatch(
   return invoke("delete_documents_batch", { documentIds, projectId: projectId ?? null })
 }
 
-// ── Embedding model commands ──────────────────────────────────────────────────
+// ── Embedding 模型命令 ─────────────────────────────────────────────────────
 
 export async function initModel(): Promise<boolean> {
   return invoke("init_model")
@@ -269,12 +282,12 @@ export async function getModelStatus(): Promise<boolean> {
   return invoke("get_model_status")
 }
 
-/** Get embedding model download progress (0–100) */
+/** 获取 Embedding 模型下载进度（0-100） */
 export async function getDownloadProgress(): Promise<number> {
   return invoke("get_download_progress")
 }
 
-// ── LLM / RAG command wrappers ───────────────────────────────────────────────
+// ── LLM / RAG 命令封装 ────────────────────────────────────────────────────
 
 export type EmbeddingProviderType =
   | "local"
@@ -289,7 +302,7 @@ export interface EmbeddingModelConfig {
   custom_model_dir?: string | null
 }
 
-/** Online embedding provider configuration (stored in frontend localStorage) */
+/** 在线 Embedding 供应商配置（存储在前端 localStorage） */
 export interface EmbeddingProviderConfig {
   provider: EmbeddingProviderType
   api_key: string
@@ -307,178 +320,18 @@ export async function setEmbeddingModelConfig(customModelDir?: string | null): P
   })
 }
 
-export async function ragQuery(
-  query: string,
-  projectId?: number | null,
-  conversationHistory?: ChatMessage[],
-): Promise<RAGResponse> {
-  return invoke("rag_query", {
-    query,
-    projectId: projectId ?? null,
-    conversationHistory: conversationHistory ?? null,
-  })
-}
-
-export async function ragQueryStream(
-  query: string,
-  projectId?: number | null,
-  conversationHistory?: ChatMessage[],
-): Promise<StreamChunk[]> {
-  return invoke("rag_query_stream", {
-    query,
-    projectId: projectId ?? null,
-    conversationHistory: conversationHistory ?? null,
-  })
-}
-
 export async function countTokens(text: string): Promise<number> {
   return invoke("count_tokens", { text })
 }
 
-// ── Real-time streaming chat (EventSource pattern, like EchoBird) ────────────
+// ── 聊天记忆 ───────────────────────────────────────────────────────────────
 
-/**
- * Start a streaming chat session.
- *
- * The backend spawns a background task and emits `chat_chunk` Tauri events.
- * Frontend should call `listenChatEvents()` before this to receive chunks.
- */
-export async function startChatStream(
-  query: string,
-  projectId?: number | null,
-  conversationHistory?: ChatMessage[],
-): Promise<void> {
-  return invoke("start_chat_stream", {
-    query,
-    projectId: projectId ?? null,
-    conversationHistory: conversationHistory ?? null,
-  })
-}
-
-/** A single event from the chat stream */
-export interface ChatStreamEvent {
-  type: "text_delta" | "done" | "error" | "sources" | "thinking"
-  content?: string
-  message?: string
-  sources?: RAGSource[]
-}
-
-/**
- * Listen for `chat_chunk` events from the backend streaming chat.
- * Returns an unlisten function to clean up.
- */
-import { listen, type UnlistenFn } from "@tauri-apps/api/event"
-
-export function listenChatEvents(handler: (event: ChatStreamEvent) => void): Promise<UnlistenFn> {
-  return listen<ChatStreamEvent>("chat_chunk", (e) => handler(e.payload))
-}
-
-// ── Chat Memory ───────────────────────────────────────────────────────────
-
-/** Save chat conversation to memory: archive + extract → ingest into KB. */
+/** 保存聊天记忆：归档、提取并写入知识库。 */
 export async function saveChatMemory(
   conversation: ChatMessage[],
   projectId?: number | null,
 ): Promise<void> {
   return invoke("save_chat_memory", { conversation, projectId: projectId ?? null })
-}
-
-// ── Phase 9/10/11/12/13: Template & Wizard Types ────────────────────────────
-
-export interface TemplateInfo {
-  id: string
-  name: string
-  filename: string
-  phase: string
-  phase_index: number
-  format: string
-  file_path: string
-  relative_path: string
-  file_size: number
-}
-
-export interface FieldInfo {
-  name: string
-  field_type: string
-  context: string
-  count: number
-}
-
-export interface SchemaField {
-  name: string
-  type: string
-  fill_strategy: string
-  required: boolean
-  default?: string
-  description?: string
-  cell_refs?: string[]
-}
-
-export interface TemplateSchema {
-  template: {
-    id: string
-    name: string
-    format: string
-    phase: string
-  }
-  fields: SchemaField[]
-}
-
-export interface SmartFillRequest {
-  template_id: string
-  user_input: string
-  manual_fields: Record<string, string>
-  schema_fields: SchemaField[]
-  project_name?: string
-  project_id?: number
-}
-
-export interface KBSource {
-  title: string
-  section_path?: string
-  content_snippet: string
-  score: number
-}
-
-export interface SmartFillResult {
-  filled_fields: Record<string, string>
-  ai_fields: string[]
-  missing_fields: string[]
-  kb_sources: KBSource[]
-}
-
-export interface GenerateDocRequest {
-  template_path: string
-  output_path: string
-  fields: Record<string, string>
-  schema_fields?: SchemaField[]
-  project_name?: string
-  project_id?: number
-  context?: string
-}
-
-export interface MissingField {
-  name: string
-  description: string
-  reason: string
-}
-
-export interface GeneratedDoc {
-  output_path: string
-  fields_filled: number
-  user_fields: string[]
-  ai_fields: string[]
-  missing_fields: string[]
-  missing_fields_detail: MissingField[]
-}
-
-export interface DeliverableRecipe {
-  name: string
-  template_id: string
-  phase: string
-  description: string
-  field_overrides: Record<string, { strategy: string; hint?: string }>
-  system_prompt: string
 }
 
 export interface ProductMeta {
@@ -491,44 +344,6 @@ export interface ProductMeta {
   field_count: number
   llm_fields_count: number
   created_at: string
-}
-
-// ── Phase 9+ command wrappers ────────────────────────────────────────────────
-
-export async function scanTemplates(templateDir?: string): Promise<TemplateInfo[]> {
-  return invoke("scan_templates", { templateDir: templateDir ?? null })
-}
-
-export async function extractTemplateFields(filePath: string): Promise<FieldInfo[]> {
-  return invoke("extract_template_fields", { filePath })
-}
-
-export async function getTemplateSchema(
-  templateId: string,
-  templateName: string,
-  filePath: string,
-  phase: string,
-  writeSidecar?: boolean,
-): Promise<TemplateSchema> {
-  return invoke("get_template_schema", {
-    templateId,
-    templateName,
-    filePath,
-    phase,
-    writeSidecar: writeSidecar ?? false,
-  })
-}
-
-export async function smartFill(request: SmartFillRequest): Promise<SmartFillResult> {
-  return invoke("smart_fill", { request })
-}
-
-export async function generateDoc(request: GenerateDocRequest): Promise<GeneratedDoc> {
-  return invoke("generate_doc", { request })
-}
-
-export async function getDeliverableRecipe(templateId: string): Promise<DeliverableRecipe> {
-  return invoke("get_deliverable_recipe", { templateId })
 }
 
 export async function listProducts(projectId?: number | null): Promise<ProductMeta[]> {
@@ -547,7 +362,7 @@ export async function deleteProduct(id: number, projectId?: number | null): Prom
   return invoke("delete_product", { id, projectId: projectId ?? null })
 }
 
-// ── Phase 13: Research Session Management ─────────────────────────────────
+// ── 阶段 13：调研会话管理 ────────────────────────────────────────────────
 
 export interface ResearchSession {
   id: number
@@ -664,7 +479,7 @@ export async function reorderQARecords(sessionId: number, recordIds: number[]): 
   return invoke("reorder_qa_records", { sessionId, recordIds })
 }
 
-// ── Phase 12: Whisper Voice Recognition ───────────────────────────────────
+// ── 阶段 12：Whisper 语音识别 ───────────────────────────────────────────
 
 export interface TranscriptionResult {
   text: string
@@ -685,6 +500,19 @@ export interface WhisperStatus {
   language: string
 }
 
+export interface AudioInputDeviceInfo {
+  id: string
+  name: string
+  host: string
+  is_default: boolean
+}
+
+export interface RecordingPreviewResult {
+  text: string
+  sample_count: number
+  processing_time_ms: number
+}
+
 export async function loadWhisperModel(modelSize: string): Promise<void> {
   return invoke("load_whisper_model", { modelSize })
 }
@@ -693,8 +521,22 @@ export async function getWhisperStatus(): Promise<WhisperStatus> {
   return invoke("get_whisper_status")
 }
 
-export async function startWhisperRecording(): Promise<void> {
-  return invoke("start_whisper_recording")
+export async function listAudioInputDevices(): Promise<AudioInputDeviceInfo[]> {
+  return invoke("list_audio_input_devices")
+}
+
+export async function startWhisperRecording(deviceName?: string): Promise<void> {
+  return invoke("start_whisper_recording", { deviceName: deviceName ?? null })
+}
+
+export async function transcribeWhisperRecordingChunk(
+  fromSample: number,
+): Promise<RecordingPreviewResult> {
+  return invoke("transcribe_whisper_recording_chunk", { fromSample })
+}
+
+export async function reviewTranscriptionText(text: string): Promise<string> {
+  return invoke("review_transcription_text", { text })
 }
 
 export async function stopWhisperRecording(provider?: string): Promise<TranscriptionResult> {
@@ -768,12 +610,135 @@ export async function removeSensitiveKeyword(keyword: string): Promise<boolean> 
 
 // ── ReAct Agent ──────────────────────────────────────────────────────────
 
-/** Clarification payload sent from backend when agent uses the question tool */
+export type AgentToolEffect =
+  | "read_only"
+  | "user_interaction"
+  | "skill_reference"
+  | "skill_environment"
+  | "skill_execution"
+
+export type AgentToolRetry = "none" | "exponential"
+
+export interface AgentToolProfile {
+  id: string
+  effect: AgentToolEffect
+  retry: AgentToolRetry
+  schema_guard: boolean
+  audit: boolean
+  disable_allowed: boolean
+}
+
+export interface AgentToolAuditRecord {
+  session_id?: string | null
+  assistant_message_id?: string | null
+  tool_call_id?: string | null
+  started_at_ms: number
+  tool: string
+  effect: AgentToolEffect
+  retry: AgentToolRetry
+  schema_guard: boolean
+  status: "ok" | "error" | string
+  duration_ms: number
+  args_bytes: number
+  output_chars: number | null
+  returned_chars: number | null
+  truncated: boolean | null
+  empty_output: boolean | null
+  output_path: string | null
+  error_kind: string | null
+  error: string | null
+}
+
+export interface AgentToolAuditToolSummary {
+  tool: string
+  calls: number
+  ok: number
+  error: number
+  truncated: number
+  empty_output: number
+  avg_duration_ms: number
+  max_duration_ms: number
+  last_started_at_ms: number
+}
+
+export interface AgentToolAuditErrorKindSummary {
+  kind: string
+  count: number
+}
+
+export interface AgentToolAuditRecentError {
+  started_at_ms: number
+  tool: string
+  kind: string
+  error: string
+}
+
+export interface AgentToolAuditSummary {
+  sampled: number
+  ok: number
+  error: number
+  truncated: number
+  empty_output: number
+  avg_duration_ms: number
+  max_duration_ms: number
+  tools: AgentToolAuditToolSummary[]
+  error_kinds: AgentToolAuditErrorKindSummary[]
+  recent_errors: AgentToolAuditRecentError[]
+}
+
+export interface AgentToolOutputContent {
+  path: string
+  content: string
+  bytes: number
+  offset_bytes: number
+  returned_bytes: number
+  truncated: boolean
+  next_offset_bytes: number | null
+}
+
+export interface AgentToolOutputLimits {
+  max_chars: number
+  max_bytes: number
+  max_lines: number
+}
+
+export interface AgentToolConfig {
+  disabled_tools: string[]
+  output_limits: AgentToolOutputLimits
+}
+
+export interface SkillPermissionRuleInfo {
+  rule: string
+  effect: "allow" | "deny" | string
+  skill_name: string
+  script: string
+  created_at_ms: number
+}
+
+/** Agent 使用提问工具时后端发送的澄清载荷 */
+export interface QuestionOption {
+  label: string
+  description: string
+}
+
+export interface ClarificationQuestion {
+  prompt: string
+  header: string
+  mode: "single_choice" | "multi_choice" | "free_input"
+  options: QuestionOption[]
+  multiple: boolean
+  custom: boolean
+}
+
 export interface ClarificationPayload {
   question_id: string
   prompt: string
+  header: string
   mode: "single_choice" | "multi_choice" | "free_input"
-  options: string[]
+  options: QuestionOption[]
+  multiple: boolean
+  custom: boolean
+  questions: ClarificationQuestion[]
 }
 
 export interface PlanStep {
@@ -812,12 +777,132 @@ export type ReActEvent =
   | { type: "planner_timeout"; session_id: string; sessionId?: string; message: string }
   | { type: "clarification"; session_id: string; sessionId?: string; payload: ClarificationPayload }
 
+export interface AgentSessionRecord {
+  id: string
+  project_id: number
+  slot: string
+  status: string
+  provider_id?: string | null
+  model_id?: string | null
+  started_at: string
+  updated_at: string
+  ended_at?: string | null
+}
+
+export interface AgentMessageRecord {
+  id: string
+  session_id: string
+  role: "user" | "assistant" | string
+  content: string
+  status: string
+  parent_message_id?: string | null
+  created_at: string
+}
+
+export interface AgentToolCallRecord {
+  id: string
+  session_id: string
+  assistant_message_id?: string | null
+  tool_name: string
+  tool_revision: string
+  effect: string
+  args_json: string
+  status: string
+  started_at: string
+  ended_at?: string | null
+}
+
+export interface AgentToolResultRecord {
+  id: string
+  tool_call_id: string
+  result_json: string
+  preview_text: string
+  output_ref?: string | null
+  status: string
+  created_at: string
+}
+
+export interface AgentEventRecord {
+  id: string
+  session_id: string
+  event_type: string
+  payload_json: string
+  created_at: string
+}
+
+export interface AgentSessionSnapshot {
+  session: AgentSessionRecord
+  messages: AgentMessageRecord[]
+  tool_calls: AgentToolCallRecord[]
+  tool_results: AgentToolResultRecord[]
+  events: AgentEventRecord[]
+}
+
+/** 获取 Agent 工具注册元数据，用于诊断、设置和工具策略展示 */
+export async function listAgentToolProfiles(): Promise<AgentToolProfile[]> {
+  return invoke("list_agent_tool_profiles")
+}
+
+/** 获取最近 Agent 工具调用审计记录，按新到旧排序 */
+export async function listAgentToolAudit(limit: number = 50): Promise<AgentToolAuditRecord[]> {
+  return invoke("list_agent_tool_audit", { limit })
+}
+
+/** 获取最近 Agent 工具调用审计摘要，用于观察稳定性和异常分布 */
+export async function listAgentToolAuditSummary(
+  limit: number = 200,
+): Promise<AgentToolAuditSummary> {
+  return invoke("list_agent_tool_audit_summary", { limit })
+}
+
+/** 获取 Agent 工具可用性配置 */
+export async function getAgentToolConfig(): Promise<AgentToolConfig> {
+  return invoke("get_agent_tool_config")
+}
+
+/** 保存 Agent 工具可用性配置 */
+export async function setAgentToolConfig(config: AgentToolConfig): Promise<AgentToolConfig> {
+  return invoke("set_agent_tool_config", { config })
+}
+
+/** 安全读取被截断后保存的 Agent 工具完整输出预览 */
+export async function readAgentToolOutput(
+  outputPath: string,
+  maxBytes: number = 512 * 1024,
+  offsetBytes: number = 0,
+): Promise<AgentToolOutputContent> {
+  return invoke("read_agent_tool_output", { outputPath, maxBytes, offsetBytes })
+}
+
+/** 获取已保存的 skill 脚本授权规则 */
+export async function listSkillPermissionRules(): Promise<SkillPermissionRuleInfo[]> {
+  return invoke("list_skill_permission_rules")
+}
+
+/** 撤销一条已保存的 skill 脚本授权规则 */
+export async function revokeSkillPermissionRule(rule: string): Promise<SkillPermissionRuleInfo[]> {
+  return invoke("revoke_skill_permission_rule", { rule })
+}
+
+/** 获取指定项目最近一次 Agent 会话账本 */
+export async function getLatestAgentSession(
+  projectId: number,
+  slot: string,
+): Promise<AgentSessionSnapshot | null> {
+  return invoke("get_latest_agent_session", { projectId, slot })
+}
+
+/** 获取指定 Agent 会话账本 */
+export async function getAgentSession(sessionId: string): Promise<AgentSessionSnapshot | null> {
+  return invoke("get_agent_session", { sessionId })
+}
+
 function nextSessionId(): string {
   return crypto.randomUUID()
 }
 
 /** agentChat 请求超时时间（毫秒） */
-const AGENT_CHAT_TIMEOUT_MS = 180_000 // 3 minutes
+const AGENT_CHAT_TIMEOUT_MS = 180_000 // 3 分钟
 /** agentChat 最大重试次数 */
 const MAX_RETRIES = 2
 
@@ -836,6 +921,7 @@ export async function agentChat(
   projectId?: number | null,
   history?: ChatMessage[],
   providerId?: string,
+  modelId?: string,
   attachments?: AttachmentInfo[],
 ): Promise<string> {
   const sid = sessionId || nextSessionId()
@@ -850,6 +936,7 @@ export async function agentChat(
         riskProjectId: null,
         history: history ?? [],
         providerId: providerId ?? null,
+        modelId: modelId ?? null,
         attachments: attachments ?? [],
       })
 
@@ -858,13 +945,13 @@ export async function agentChat(
       )
 
       await Promise.race([invokePromise, timeoutPromise])
-      return sid // Success
+      return sid // 成功
     } catch (err) {
       lastError = err
       const isTimeout = err instanceof Error && err.message === "__AGENT_CHAT_TIMEOUT__"
 
       if (isTimeout && attempt < MAX_RETRIES) {
-        // Exponential backoff: 1s, 2s
+        // 指数退避：1 秒、2 秒
         const delay = 1000 * 2 ** attempt
         await new Promise((resolve) => setTimeout(resolve, delay))
         continue
@@ -877,24 +964,39 @@ export async function agentChat(
     }
   }
 
-  // Should not reach here, but satisfy TypeScript
+  // 理论上不会到达这里，仅用于满足 TypeScript
   throw lastError
 }
 
-/** Answer a pending clarification question (resolves the blocked question tool) */
+/** 回答待处理的澄清问题（解除被阻塞的提问工具） */
 export async function answerQuestion(
   questionId: string,
   answer: string,
+  sessionId?: string | null,
   projectId?: number | null,
 ): Promise<void> {
   return invoke("answer_question", {
     questionId,
     answer,
+    sessionId: sessionId ?? null,
     projectId: projectId ?? null,
   })
 }
 
-/** Cancel a running agent stream session */
+/** 取消待处理的澄清问题（解除被阻塞的提问工具） */
+export async function rejectQuestion(
+  questionId: string,
+  sessionId?: string | null,
+  projectId?: number | null,
+): Promise<void> {
+  return invoke("reject_question", {
+    questionId,
+    sessionId: sessionId ?? null,
+    projectId: projectId ?? null,
+  })
+}
+
+/** 取消正在运行的 Agent 流会话 */
 export async function cancelAgentStream(sessionId: string): Promise<void> {
   return invoke("cancel_agent_stream", { sessionId })
 }
@@ -909,7 +1011,7 @@ export async function listenReActEvents(
 ): Promise<() => void> {
   const { listen } = await import("@tauri-apps/api/event")
   const unlisten = await listen<ReActEvent>("react-event", (event) => {
-    // Check session_id in both snake_case and camelCase (Tauri v2 may convert)
+    // 同时检查 snake_case 和 camelCase 的 session_id（Tauri v2 可能转换）
     const eventSessionId = event.payload.session_id || event.payload.sessionId
     if (sessionId && eventSessionId !== sessionId) return
     handler(event.payload)
@@ -917,14 +1019,14 @@ export async function listenReActEvents(
   return unlisten
 }
 
-// ── Utility — Export ───────────────────────────────────────────────────────
+// ── 工具：导出 ────────────────────────────────────────────────────────────
 
-/** Export content to a file with UTF-8 BOM encoding (uses PowerShell to avoid Chinese encoding issues) */
+/** 使用 UTF-8 BOM 编码导出内容到文件（避免中文编码问题） */
 export async function exportReport(content: string, filePath: string): Promise<string> {
   return invoke("export_report", { content, filePath })
 }
 
-// ── Phase 14: Video Transcription ───────────────────────────────────────
+// ── 阶段 14：视频转写 ────────────────────────────────────────────────────
 
 export interface VideoTranscriptionSegment {
   start_ms: number
@@ -953,12 +1055,12 @@ export interface VideoPipelineResult {
   meeting_minutes: MeetingMinutesResult | null
 }
 
-/** Transcribe audio from a video file via Whisper. Requires loaded Whisper model. */
+/** 通过 Whisper 转写视频文件中的音频，需要先加载 Whisper 模型。 */
 export async function transcribeVideoFile(videoPath: string): Promise<VideoTranscriptionResult> {
   return invoke("transcribe_video_file", { videoPath })
 }
 
-/** Full video pipeline: transcribe → ingest into KB → optional meeting minutes. */
+/** 完整视频流程：转写、入库、可选生成会议纪要。 */
 export async function transcribeAndIngestVideo(
   videoPath: string,
   projectId: number,
@@ -971,28 +1073,28 @@ export async function transcribeAndIngestVideo(
   })
 }
 
-/** Generate meeting minutes from an existing transcript. */
+/** 根据已有转写稿生成会议纪要。 */
 export async function generateMeetingMinutesFromTranscript(
   transcript: string,
 ): Promise<MeetingMinutesResult> {
   return invoke("generate_meeting_minutes_from_transcript", { transcript })
 }
 
-/** Video processing progress event payload */
+/** 视频处理进度事件载荷 */
 export interface VideoProgressEvent {
   step: "extracting" | "transcribing" | "ingesting" | "generating_minutes" | "done"
   progress: number
   message: string
 }
 
-/** Listen for video processing progress events. Returns unlisten function. */
+/** 监听视频处理进度事件，返回取消监听函数。 */
 export function listenVideoProgress(
   handler: (event: VideoProgressEvent) => void,
 ): Promise<() => void> {
   return listen<VideoProgressEvent>("video_progress", (e) => handler(e.payload))
 }
 
-// ─── Risk Control Types (P1: 双轨风险把控舱) ───
+// ─── 风险控制类型（P1：双轨风险把控舱） ───
 
 export interface CandidateScopeItem {
   category: string
@@ -1025,7 +1127,7 @@ export interface ImportDbResult {
   chunk_count: number
 }
 
-// ─── Risk Control API ───
+// ─── 风险控制 API ───
 
 // 合同范围
 export async function listScopeItems(projectId: number): Promise<ContractScopeItem[]> {
@@ -1119,7 +1221,7 @@ export async function importDatabase(backupPath: string): Promise<ImportDbResult
   return invoke("import_database", { backupPath })
 }
 
-// ─── Phase 12b: 在线 ASR Provider ───
+// ─── 阶段 12b：在线 ASR 供应商 ───
 
 export interface AsrProviderInfo {
   type: string
@@ -1148,6 +1250,60 @@ export async function saveAsrConfig(config: {
 /** 获取当前 ASR 配置状态 */
 export async function getAsrConfigStatus(): Promise<AsrConfigStatus> {
   return invoke("get_asr_config_status")
+}
+
+// ─── 腾讯会议 MCP ───
+
+export interface TencentMeetingConfigStatus {
+  configured: boolean
+}
+
+export interface TencentMeetingToolResult {
+  tool_name: string
+  content_text: string
+  raw: unknown
+}
+
+export interface TencentMeetingTranscriptResult {
+  record_file_id: string
+  transcript: string
+  minutes?: string | null
+  records_raw?: unknown
+  transcript_raw: unknown
+  minutes_raw?: unknown
+}
+
+export async function saveTencentMeetingToken(token?: string): Promise<void> {
+  return invoke("save_tencent_meeting_token", { token: token ?? null })
+}
+
+export async function getTencentMeetingConfigStatus(): Promise<TencentMeetingConfigStatus> {
+  return invoke("get_tencent_meeting_config_status")
+}
+
+export async function listTencentMeetingTools(): Promise<unknown> {
+  return invoke("list_tencent_meeting_tools")
+}
+
+export async function callTencentMeetingTool(
+  name: string,
+  argumentsValue: Record<string, unknown>,
+): Promise<TencentMeetingToolResult> {
+  return invoke("call_tencent_meeting_tool", { name, arguments: argumentsValue })
+}
+
+export async function fetchTencentMeetingTranscript(input: {
+  meetingId?: string
+  meetingCode?: string
+  recordFileId?: string
+  includeMinutes?: boolean
+}): Promise<TencentMeetingTranscriptResult> {
+  return invoke("fetch_tencent_meeting_transcript", {
+    meetingId: input.meetingId ?? null,
+    meetingCode: input.meetingCode ?? null,
+    recordFileId: input.recordFileId ?? null,
+    includeMinutes: input.includeMinutes ?? false,
+  })
 }
 
 // ── Wiki 页面 ────────────────────────────────────────────────────────────────
@@ -1206,6 +1362,12 @@ export interface WikiLinkTarget {
   page_status: string
 }
 
+export interface ApproveAutoWikiPagesResult {
+  approved: number
+  skipped: number
+  failed: string[]
+}
+
 /** 列出所有 Wiki 页面 */
 export async function listWikiPages(projectId: number): Promise<WikiPageBrief[]> {
   return invoke("list_wiki_pages", { projectId })
@@ -1244,6 +1406,11 @@ export async function batchDeleteWikiPages(ids: number[]): Promise<number> {
 /** 批准 Wiki 页面候选内容 */
 export async function approveWikiPage(id: number): Promise<WikiPage> {
   return invoke("approve_wiki_page", { id })
+}
+
+/** 自动批准低风险候选内容 */
+export async function approveAutoWikiPages(projectId: number): Promise<ApproveAutoWikiPagesResult> {
+  return invoke("approve_auto_wiki_pages", { projectId })
 }
 
 /** 拒绝 Wiki 页面候选内容（清空候选字段，保留 content） */

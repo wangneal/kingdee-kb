@@ -40,11 +40,6 @@ mod vision_pipeline {
             models,
             max_tokens: 4096,
             temperature: 0.3,
-            // legacy fields
-            api_key: String::new(),
-            model: String::new(),
-            is_multimodal: None,
-            last_probe_at: None,
         }
     }
 
@@ -411,7 +406,7 @@ mod vision_pipeline {
             id: "ollama".into(),
             name: "Ollama".into(),
             protocol: LLMProtocol::Local,
-            base_url: "http://localhost:11434/v1".into(),
+            base_url: "http://localhost:11434".into(),
             is_default: true,
             api_keys: vec![ApiKeyConfig {
                 id: "ollama-key".into(),
@@ -422,10 +417,6 @@ mod vision_pipeline {
             models: vec![make_model("llava", "llava:latest", None)],
             max_tokens: 4096,
             temperature: 0.3,
-            api_key: String::new(),
-            model: String::new(),
-            is_multimodal: None,
-            last_probe_at: None,
         };
 
         let _ = mgr.add_provider(local_provider);
@@ -474,10 +465,6 @@ mod vision_pipeline {
             models: vec![make_model("gpt-4o", "gpt-4o", None)],
             max_tokens: 4096,
             temperature: 0.3,
-            api_key: String::new(),
-            model: String::new(),
-            is_multimodal: None,
-            last_probe_at: None,
         };
 
         let _ = mgr.add_provider(remote_provider);

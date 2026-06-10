@@ -304,7 +304,7 @@ mod tests {
     use crate::services::metadata::MetadataStore;
     use crate::services::product_store::ProductStore;
     use crate::services::project_store::ProjectStore;
-    use crate::services::rig_tool::all_rig_tools;
+    use crate::services::rig_tool::{all_rig_tools, RigToolOutputLimits};
     use crate::services::risk_control::RiskControlStore;
     use crate::services::skill_manager::SkillManager;
     use crate::services::vector_index::VectorIndex;
@@ -414,6 +414,7 @@ mod tests {
                 .tools(all_rig_tools(
                     None,
                     tmp.path().to_path_buf(),
+                    RigToolOutputLimits::default(),
                     llm,
                     embedding,
                     vector_index,

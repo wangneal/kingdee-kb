@@ -24,14 +24,13 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-// ─── Sample Conversion (cpal 0.15 removed to_f32() from Sample trait) ───
+// ─── 音频采样格式转换 ───
 
-/// Helper trait to convert audio samples to f32 for processing.
-/// cpal 0.15 no longer provides `to_f32()` on its sample traits,
-/// so we define it for the three formats used in build_stream.
+/// 将不同 PCM 采样格式转换为 Whisper 需要的 f32。
 trait SampleToF32 {
     fn to_f32_(&self) -> f32;
 }
@@ -54,6 +53,18 @@ impl SampleToF32 for u16 {
     }
 }
 
+impl SampleToF32 for i8 {
+    fn to_f32_(&self) -> f32 {
+        *self as f32 / 128.0
+    }
+}
+
+impl SampleToF32 for u8 {
+    fn to_f32_(&self) -> f32 {
+        (*self as f32 - 128.0) / 128.0
+    }
+}
+
 /// Recording state info for frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioRecordingState {
@@ -63,6 +74,15 @@ pub struct AudioRecordingState {
     pub duration_ms: u64,
     /// Number of audio samples buffered
     pub buffer_size: usize,
+}
+
+/// 系统输入设备信息。
+#[derive(Debug, Clone)]
+pub struct AudioInputDevice {
+    pub id: String,
+    pub name: String,
+    pub host: String,
+    pub is_default: bool,
 }
 
 /// Internal mutable state shared between audio callback and main thread
@@ -123,43 +143,130 @@ impl AudioCapture {
         self.capture_dir.join(format!("rec_{}.pcm", ts))
     }
 
-    /// Start recording from default microphone.
-    ///
-    /// Spawns a dedicated thread that owns the cpal::Stream.
-    /// The stream is alive as long as `is_recording` is true.
-    /// Returns immediately; audio is captured in the background.
-    /// Audio data is simultaneously stored in memory and written to a
-    /// temp .pcm file for crash safety.
-    pub fn start_recording(&self) -> Result<(), String> {
-        // Already recording?
-        if self.state.is_recording.load(Ordering::SeqCst) {
-            return Err("Already recording".to_string());
+    /// 列出 cpal 所有可用 Host 下的麦克风输入设备。
+    pub fn input_devices() -> Result<Vec<AudioInputDevice>, String> {
+        let default_name = Self::default_input_device_name();
+        let mut devices = Vec::new();
+        for host_id in cpal::available_hosts() {
+            let host_label = format!("{:?}", host_id);
+            let host = match cpal::host_from_id(host_id) {
+                Ok(host) => host,
+                Err(error) => {
+                    eprintln!("[AudioCapture] Host {} unavailable: {}", host_label, error);
+                    continue;
+                }
+            };
+            let input_devices = match host.input_devices() {
+                Ok(input_devices) => input_devices,
+                Err(error) => {
+                    eprintln!(
+                        "[AudioCapture] Failed to query input devices on {}: {}",
+                        host_label, error
+                    );
+                    continue;
+                }
+            };
+            for device in input_devices {
+                let name = device.name().unwrap_or_else(|_| "未知输入设备".to_string());
+                let id = format!("{}::{}", host_label, name);
+                if devices
+                    .iter()
+                    .any(|existing: &AudioInputDevice| existing.id == id)
+                {
+                    continue;
+                }
+                devices.push(AudioInputDevice {
+                    is_default: default_name.as_deref() == Some(name.as_str()),
+                    id,
+                    name,
+                    host: host_label.clone(),
+                });
+            }
+        }
+        Ok(devices)
+    }
+
+    /// 获取系统默认输入设备名称。
+    pub fn default_input_device_name() -> Option<String> {
+        let host = cpal::default_host();
+        host.default_input_device()
+            .and_then(|device| device.name().ok())
+    }
+
+    fn find_input_device(device_key: Option<&str>) -> Result<(cpal::Device, String), String> {
+        if let Some(expected_key) = device_key {
+            for host_id in cpal::available_hosts() {
+                let host_label = format!("{:?}", host_id);
+                let host = match cpal::host_from_id(host_id) {
+                    Ok(host) => host,
+                    Err(_) => continue,
+                };
+                let devices = match host.input_devices() {
+                    Ok(devices) => devices,
+                    Err(_) => continue,
+                };
+                for device in devices {
+                    let name = device.name().unwrap_or_default();
+                    let id = format!("{}::{}", host_label, name);
+                    if expected_key == id || expected_key == name {
+                        return Ok((device, format!("{} ({})", name, host_label)));
+                    }
+                }
+            }
+            return Err(format!("未找到输入设备: {}", expected_key));
         }
 
         let host = cpal::default_host();
         let device = host
             .default_input_device()
-            .ok_or("No microphone input device found")?;
+            .ok_or("未找到系统默认麦克风输入设备")?;
+        let name = device
+            .name()
+            .unwrap_or_else(|_| "系统默认输入设备".to_string());
+        Ok((device, name))
+    }
 
-        let supported_config = device
+    /// 从指定或默认麦克风开始录音。
+    ///
+    /// 音频流由独立线程持有，只要 `is_recording` 为 true 就保持活动。
+    /// 方法会立即返回，实际采样在后台进行。
+    pub fn start_recording(&self, device_key: Option<&str>) -> Result<(), String> {
+        // 已在录音时拒绝重复启动
+        if self.state.is_recording.load(Ordering::SeqCst) {
+            return Err("录音已经在进行中".to_string());
+        }
+
+        let (device, selected_device_name) = Self::find_input_device(device_key)?;
+
+        let mut supported_configs = device
             .supported_input_configs()
-            .map_err(|e| format!("Failed to query input configs: {}", e))?
-            .next()
-            .ok_or("No supported input audio configuration")?;
+            .map_err(|e| format!("查询输入设备配置失败: {}", e))?;
+        let supported_config = supported_configs
+            .find(|config| {
+                matches!(
+                    config.sample_format(),
+                    SampleFormat::F32
+                        | SampleFormat::I8
+                        | SampleFormat::I16
+                        | SampleFormat::U8
+                        | SampleFormat::U16
+                )
+            })
+            .ok_or("输入设备没有当前支持的音频采集格式")?;
 
         let config = supported_config.with_max_sample_rate().config();
         let device_sample_rate = config.sample_rate.0;
         let sample_format = supported_config.sample_format();
 
         eprintln!(
-            "[AudioCapture] Recording at {}Hz, {} channels",
-            device_sample_rate, config.channels
+            "[AudioCapture] Recording from {}, {}Hz, {} channels",
+            selected_device_name, device_sample_rate, config.channels
         );
 
         // Create temp PCM file for crash-safe persistence
         let temp_path = self.temp_file_path();
-        let temp_file = File::create(&temp_path)
-            .map_err(|e| format!("Failed to create temp audio file: {}", e))?;
+        let temp_file =
+            File::create(&temp_path).map_err(|e| format!("创建临时音频文件失败: {}", e))?;
         eprintln!(
             "[AudioCapture] Crash-safe temp file: {}",
             temp_path.display()
@@ -185,9 +292,11 @@ impl AudioCapture {
 
         let capture_state = self.state.clone();
         let target_rate = 16000u32;
+        let (startup_tx, startup_rx) = mpsc::channel::<Result<(), String>>();
 
         // Spawn thread that owns the stream
         std::thread::spawn(move || {
+            let mut startup_tx = Some(startup_tx);
             let capture_state_err = capture_state.clone();
             let err_fn = move |err: cpal::StreamError| {
                 eprintln!("[AudioCapture] Stream error: {}", err);
@@ -206,7 +315,23 @@ impl AudioCapture {
                     target_rate,
                     err_fn,
                 ),
+                SampleFormat::I8 => build_stream::<i8>(
+                    &device,
+                    &config,
+                    capture_state.clone(),
+                    device_sample_rate,
+                    target_rate,
+                    err_fn,
+                ),
                 SampleFormat::I16 => build_stream::<i16>(
+                    &device,
+                    &config,
+                    capture_state.clone(),
+                    device_sample_rate,
+                    target_rate,
+                    err_fn,
+                ),
+                SampleFormat::U8 => build_stream::<u8>(
                     &device,
                     &config,
                     capture_state.clone(),
@@ -225,6 +350,9 @@ impl AudioCapture {
                 sf => {
                     eprintln!("[AudioCapture] Unsupported sample format: {:?}", sf);
                     capture_state.is_recording.store(false, Ordering::SeqCst);
+                    if let Some(tx) = startup_tx.take() {
+                        let _ = tx.send(Err(format!("输入设备采样格式不支持: {:?}", sf)));
+                    }
                     return;
                 }
             };
@@ -234,6 +362,9 @@ impl AudioCapture {
                 Err(e) => {
                     eprintln!("[AudioCapture] Failed to build stream: {}", e);
                     capture_state.is_recording.store(false, Ordering::SeqCst);
+                    if let Some(tx) = startup_tx.take() {
+                        let _ = tx.send(Err(format!("创建麦克风输入流失败: {}", e)));
+                    }
                     return;
                 }
             };
@@ -241,9 +372,15 @@ impl AudioCapture {
             if let Err(e) = stream.play() {
                 eprintln!("[AudioCapture] Failed to play stream: {}", e);
                 capture_state.is_recording.store(false, Ordering::SeqCst);
+                if let Some(tx) = startup_tx.take() {
+                    let _ = tx.send(Err(format!("启动麦克风输入流失败: {}", e)));
+                }
                 return;
             }
 
+            if let Some(tx) = startup_tx.take() {
+                let _ = tx.send(Ok(()));
+            }
             eprintln!("[AudioCapture] Stream active, recording in background thread");
 
             // Keep thread alive while recording — stream is dropped when this
@@ -256,7 +393,17 @@ impl AudioCapture {
             // stream dropped here → stops capture
         });
 
-        Ok(())
+        match startup_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                let _ = self.stop_recording();
+                Err(error)
+            }
+            Err(_) => {
+                let _ = self.stop_recording();
+                Err("麦克风输入流启动超时，请检查设备是否被系统或其他程序占用".to_string())
+            }
+        }
     }
 
     /// Stop recording and return the captured PCM data.
@@ -333,6 +480,18 @@ impl AudioCapture {
             duration_ms,
             buffer_size,
         }
+    }
+
+    /// 复制当前录音缓冲区，用于录音中的分段转写预览。
+    pub fn recording_snapshot(&self) -> Result<(bool, Vec<f32>), String> {
+        let is_recording = self.state.is_recording.load(Ordering::SeqCst);
+        let buffer = self
+            .state
+            .buffer
+            .lock()
+            .map_err(|e| format!("Lock error: {}", e))?
+            .clone();
+        Ok((is_recording, buffer))
     }
 
     /// Simple VAD: detect speech segments in PCM data.

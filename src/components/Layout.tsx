@@ -1,7 +1,6 @@
 import {
   BookOpen,
   ClipboardList,
-  FileEdit,
   FolderKanban,
   LayoutDashboard,
   MessageSquare,
@@ -22,8 +21,8 @@ import {
   isLLMConfigured,
   listenReActEvents,
 } from "../lib/tauri-commands"
-import Spotlight from "./Spotlight"
 import ProjectSwitcher from "./ProjectSwitcher"
+import Spotlight from "./Spotlight"
 
 const LS_KEY_QUESTION = "kb_sidebar_question"
 const LS_KEY_ANSWER = "kb_sidebar_answer"
@@ -35,7 +34,6 @@ const navItems = [
   { to: "/chat", icon: MessageSquare, label: "AI 对话" },
   { to: "/research", icon: ClipboardList, label: "调研助手" },
   { to: "/risk", icon: ShieldAlert, label: "风险把控" },
-  { to: "/templates", icon: FileEdit, label: "文档生成" },
   { to: "/products", icon: Package, label: "产物管理" },
   { to: "/projects", icon: FolderKanban, label: "项目管理" },
   // { to: "/import", icon: Upload, label: "导入" }, // 入口已移至知识库右键菜单，配置在设置页
@@ -67,7 +65,7 @@ function StatusBar({ onNavigate }: { onNavigate: (path: string) => void }) {
     async function check() {
       const results: StatusItem[] = []
 
-      // LLM status
+      // LLM 状态
       try {
         const configured = await isLLMConfigured()
         results.push({
@@ -80,7 +78,7 @@ function StatusBar({ onNavigate }: { onNavigate: (path: string) => void }) {
         results.push({ label: "LLM", level: "error", detail: "检测失败", section: "llm" })
       }
 
-      // Embedding status
+      // Embedding 状态
       try {
         const loaded = await getModelStatus()
         results.push({
@@ -98,7 +96,7 @@ function StatusBar({ onNavigate }: { onNavigate: (path: string) => void }) {
         })
       }
 
-      // KB status
+      // 知识库状态
       try {
         const stats = await getStats(currentProjectId)
         results.push({
@@ -152,33 +150,39 @@ export default function Layout() {
   const { currentProjectId } = useProject()
   const sideAnswerRef = useRef("")
   const sideSessionRef = useRef<string | null>(null)
+  const sideQuestionIdRef = useRef<string | null>(null)
   const navigate = useNavigate()
 
-  // Sidebar localStorage bridge: 定期检查腾讯会议侧边栏发来的问题
+  // 侧边栏 localStorage 桥接：定期检查腾讯会议侧边栏发来的问题
   useEffect(() => {
     let cancelled = false
     let unsub: (() => void) | null = null
 
     listenReActEvents((event) => {
-      // Support both snake_case and camelCase (Tauri v2 may convert)
+      // 同时支持 snake_case 和 camelCase（Tauri v2 可能转换）
       const eventSessionId = event.session_id || event.sessionId
       if (eventSessionId !== sideSessionRef.current) return
       if (event.type === "text_delta") {
         sideAnswerRef.current += event.content
       }
-      if (event.type === "done") {
-        const answer = sideAnswerRef.current
+      if (event.type === "error") {
+        sideAnswerRef.current = event.message || "AI 回答失败"
+      }
+      if (event.type === "done" || event.type === "error") {
+        const answer = sideAnswerRef.current || "AI 未返回有效内容"
         try {
-          const raw = localStorage.getItem(LS_KEY_QUESTION)
-          if (raw) {
-            const q = JSON.parse(raw)
-            localStorage.setItem(LS_KEY_ANSWER, JSON.stringify({ id: q.id, text: answer }))
+          if (sideQuestionIdRef.current) {
+            localStorage.setItem(
+              LS_KEY_ANSWER,
+              JSON.stringify({ id: sideQuestionIdRef.current, text: answer }),
+            )
           }
         } catch {
-          /* localStorage unavailable */
+          /* localStorage 不可用 */
         }
         sideAnswerRef.current = ""
         sideSessionRef.current = null
+        sideQuestionIdRef.current = null
       }
     }).then((fn) => {
       if (cancelled) {
@@ -196,12 +200,24 @@ export default function Layout() {
         if (!q.text || !q.id) return
         localStorage.removeItem(LS_KEY_QUESTION)
         sideAnswerRef.current = ""
-        // Generate session ID first before calling agentChat
+        sideQuestionIdRef.current = q.id
         const sid = `layout_${Date.now()}`
         sideSessionRef.current = sid
-        agentChat(q.text, sid, currentProjectId)
+        agentChat(q.text, sid, currentProjectId).catch((error) => {
+          try {
+            localStorage.setItem(
+              LS_KEY_ANSWER,
+              JSON.stringify({ id: q.id, text: `AI 回答失败：${String(error)}` }),
+            )
+          } catch {
+            /* localStorage 不可用 */
+          }
+          sideAnswerRef.current = ""
+          sideSessionRef.current = null
+          sideQuestionIdRef.current = null
+        })
       } catch {
-        /* poll error */
+        /* 轮询异常 */
       }
     }, 5000)
 
@@ -214,9 +230,9 @@ export default function Layout() {
 
   return (
     <div className="flex h-screen bg-neutral-50">
-      {/* Sidebar */}
+      {/* 侧边栏 */}
       <aside className="flex w-56 flex-col border-r border-neutral-200 bg-white">
-        {/* Logo */}
+        {/* 标识 */}
         <div className="flex h-14 items-center gap-2 border-b border-neutral-200 px-4">
           <div className="h-7 w-7 rounded-lg bg-[#1A6BD8] flex items-center justify-center">
             <BookOpen className="h-4 w-4 text-white" />
@@ -226,7 +242,7 @@ export default function Layout() {
 
         <ProjectSwitcher />
 
-        {/* Navigation */}
+        {/* 导航 */}
         <nav className="flex-1 space-y-1 p-3">
           {navItems.map(({ to, icon: Icon, label }) => (
             <NavLink
@@ -247,16 +263,16 @@ export default function Layout() {
           ))}
         </nav>
 
-        {/* Status Indicator */}
+        {/* 状态指示器 */}
         <StatusBar onNavigate={navigate} />
       </aside>
 
-      {/* Main content */}
+      {/* 主内容 */}
       <main className="flex min-h-0 flex-1 flex-col overflow-auto">
         <Outlet />
       </main>
 
-      {/* Global Spotlight overlay */}
+      {/* 全局 Spotlight 浮层 */}
       <Spotlight />
     </div>
   )

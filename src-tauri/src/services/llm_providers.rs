@@ -8,7 +8,12 @@
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+const REMOTE_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
 
 fn is_official_anthropic_url(url: &str) -> bool {
     reqwest::Url::parse(url)
@@ -168,6 +173,45 @@ pub enum LLMProtocol {
     Local,
 }
 
+/// Provider 策略效果
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderPolicyEffect {
+    Allow,
+    Deny,
+}
+
+/// Provider 使用策略规则
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderPolicyRule {
+    /// 规则效果
+    pub effect: ProviderPolicyEffect,
+    /// 动作，目前固定为 provider.use
+    pub action: String,
+    /// 资源：*、provider_id、provider_id:* 或 provider_id:model_id
+    pub resource: String,
+}
+
+/// Provider 策略配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderPolicyConfig {
+    /// 无匹配规则时的默认效果
+    pub default_effect: ProviderPolicyEffect,
+    /// 明确 allow/deny 规则
+    pub rules: Vec<ProviderPolicyRule>,
+}
+
+impl Default for ProviderPolicyConfig {
+    fn default() -> Self {
+        Self {
+            default_effect: ProviderPolicyEffect::Allow,
+            rules: Vec::new(),
+        }
+    }
+}
+
 /// OCR 供应商配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OcrProviderConfig {
@@ -211,10 +255,20 @@ pub struct LLMProviderManager {
     providers: Vec<LLMProviderConfig>,
     /// OCR 配置
     ocr_config: Option<OcrProviderConfig>,
+    /// Provider 使用策略
+    provider_policy: ProviderPolicyConfig,
     /// 配置文件路径
     config_path: PathBuf,
     /// HTTP 客户端
     client: reqwest::Client,
+    /// 端点模型列表短期缓存
+    remote_model_cache: HashMap<String, RemoteModelCacheEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct RemoteModelCacheEntry {
+    fetched_at: Instant,
+    models: Vec<String>,
 }
 
 // ─── 实现 ───
@@ -226,8 +280,10 @@ impl LLMProviderManager {
         let mut manager = Self {
             providers: Vec::new(),
             ocr_config: None,
+            provider_policy: ProviderPolicyConfig::default(),
             config_path,
             client: reqwest::Client::new(),
+            remote_model_cache: HashMap::new(),
         };
         manager.load();
         manager
@@ -243,6 +299,7 @@ impl LLMProviderManager {
             if let Ok(config) = serde_json::from_str::<ProviderConfigFile>(&content) {
                 self.providers = config.providers.unwrap_or_default();
                 self.ocr_config = config.ocr_config;
+                self.provider_policy = config.provider_policy.unwrap_or_default();
             }
         }
     }
@@ -252,6 +309,7 @@ impl LLMProviderManager {
         let config = ProviderConfigFile {
             providers: Some(self.providers.clone()),
             ocr_config: self.ocr_config.clone(),
+            provider_policy: Some(self.provider_policy.clone()),
         };
 
         let content =
@@ -269,9 +327,134 @@ impl LLMProviderManager {
         &self.providers
     }
 
+    /// 获取运行态允许使用的 LLM 供应商
+    pub fn list_runtime_providers(&self) -> Vec<LLMProviderConfig> {
+        self.providers
+            .iter()
+            .filter(|provider| self.is_provider_allowed(&provider.id, None))
+            .cloned()
+            .collect()
+    }
+
+    /// 获取 Provider 策略
+    pub fn get_provider_policy(&self) -> ProviderPolicyConfig {
+        self.provider_policy.clone()
+    }
+
+    /// 保存 Provider 策略
+    pub fn set_provider_policy(&mut self, policy: ProviderPolicyConfig) -> Result<(), String> {
+        validate_provider_policy(&policy)?;
+        self.provider_policy = policy;
+        self.save()
+    }
+
+    /// 判断 provider/model 是否允许使用
+    pub fn is_provider_allowed(&self, provider_id: &str, model_id: Option<&str>) -> bool {
+        provider_policy_effect(&self.provider_policy, provider_id, model_id)
+            == ProviderPolicyEffect::Allow
+    }
+
+    /// 强制校验 provider/model 是否允许使用
+    pub fn assert_provider_allowed(
+        &self,
+        provider_id: &str,
+        model_id: Option<&str>,
+    ) -> Result<(), String> {
+        if self.is_provider_allowed(provider_id, model_id) {
+            Ok(())
+        } else {
+            let target = model_id
+                .map(|model| format!("{}:{}", provider_id, model))
+                .unwrap_or_else(|| provider_id.to_string());
+            Err(format!("Provider Policy 已禁止使用 {}", target))
+        }
+    }
+
+    /// 读取端点模型列表的短期缓存
+    pub fn cached_remote_models(
+        &self,
+        protocol: &LLMProtocol,
+        base_url: &str,
+        api_key: &str,
+    ) -> Option<Vec<String>> {
+        let cache_key = remote_model_cache_key(protocol, base_url, api_key);
+        self.remote_model_cache.get(&cache_key).and_then(|entry| {
+            if entry.fetched_at.elapsed() <= REMOTE_MODEL_CACHE_TTL {
+                Some(entry.models.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// 写入端点模型列表的短期缓存
+    pub fn remember_remote_models(
+        &mut self,
+        protocol: &LLMProtocol,
+        base_url: &str,
+        api_key: &str,
+        models: Vec<String>,
+    ) {
+        let cache_key = remote_model_cache_key(protocol, base_url, api_key);
+        self.remote_model_cache.insert(
+            cache_key,
+            RemoteModelCacheEntry {
+                fetched_at: Instant::now(),
+                models,
+            },
+        );
+    }
+
+    /// 从端点的 /models 列表读取模型名称
+    pub async fn fetch_remote_models_from_endpoint(
+        protocol: &LLMProtocol,
+        base_url: &str,
+        api_key: &str,
+    ) -> Result<Vec<String>, String> {
+        let url = models_endpoint_url(base_url)?;
+        if *protocol != LLMProtocol::Local && api_key.trim().is_empty() {
+            return Err("请先填写 API Key，再获取端点模型列表".to_string());
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .build()
+            .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+        let request = client.get(&url);
+        let request = match protocol {
+            LLMProtocol::Anthropic => with_anthropic_headers(request, &url, api_key),
+            LLMProtocol::OpenAI => request.header("Authorization", format!("Bearer {}", api_key)),
+            LLMProtocol::Local => request,
+        };
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| format!("请求模型列表失败: {}", e))?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(format!("模型列表接口返回 {}: {}", status, body));
+        }
+
+        parse_remote_model_names(&body)
+    }
+
     /// 获取默认供应商
     pub fn get_default_provider(&self) -> Option<&LLMProviderConfig> {
         self.providers.iter().find(|p| p.is_default)
+    }
+
+    /// 获取运行态默认供应商
+    pub fn get_default_runtime_provider(&self) -> Option<&LLMProviderConfig> {
+        self.providers
+            .iter()
+            .find(|p| p.is_default && self.is_provider_allowed(&p.id, None))
+            .or_else(|| {
+                self.providers
+                    .iter()
+                    .find(|p| self.is_provider_allowed(&p.id, None))
+            })
     }
 
     /// 根据 ID 获取供应商
@@ -804,9 +987,11 @@ impl LLMProviderManager {
     /// 获取支持多模态的供应商和模型
     pub fn get_multimodal_model(&self) -> Option<(&LLMProviderConfig, &ModelConfig)> {
         // 优先返回默认供应商的默认模型（如果支持多模态）
-        if let Some(default_provider) = self.get_default_provider() {
+        if let Some(default_provider) = self.get_default_runtime_provider() {
             if let Some(default_model) = default_provider.get_default_model() {
-                if default_model.is_multimodal == Some(true) {
+                if default_model.is_multimodal == Some(true)
+                    && self.is_provider_allowed(&default_provider.id, Some(&default_model.id))
+                {
                     return Some((default_provider, default_model));
                 }
             }
@@ -814,8 +999,13 @@ impl LLMProviderManager {
 
         // 否则返回任意支持多模态的模型
         for provider in &self.providers {
+            if !self.is_provider_allowed(&provider.id, None) {
+                continue;
+            }
             for model in &provider.models {
-                if model.is_multimodal == Some(true) {
+                if model.is_multimodal == Some(true)
+                    && self.is_provider_allowed(&provider.id, Some(&model.id))
+                {
                     return Some((provider, model));
                 }
             }
@@ -865,8 +1055,13 @@ impl LLMProviderManager {
 
         // Tier 1: is_multimodal == Some(true) 的已确认模型
         for provider in &self.providers {
+            if !self.is_provider_allowed(&provider.id, None) {
+                continue;
+            }
             for model in &provider.models {
-                if model.is_multimodal == Some(true) {
+                if model.is_multimodal == Some(true)
+                    && self.is_provider_allowed(&provider.id, Some(&model.id))
+                {
                     add_candidate(
                         provider.get_default_key_value(),
                         provider.base_url.clone(),
@@ -883,7 +1078,13 @@ impl LLMProviderManager {
 
         // Tier 2: is_multimodal != Some(false) 且内置 DB 标记 supports_vision=true
         for provider in &self.providers {
+            if !self.is_provider_allowed(&provider.id, None) {
+                continue;
+            }
             for model in &provider.models {
+                if !self.is_provider_allowed(&provider.id, Some(&model.id)) {
+                    continue;
+                }
                 if model.is_multimodal != Some(false) {
                     if let Some(true) = super::model_metadata::builtin_supports_vision(&model.name)
                     {
@@ -904,7 +1105,13 @@ impl LLMProviderManager {
 
         // Tier 3: is_multimodal != Some(false) 且内置 DB 未明确标记 supports_vision=false 的未知模型
         for provider in &self.providers {
+            if !self.is_provider_allowed(&provider.id, None) {
+                continue;
+            }
             for model in &provider.models {
+                if !self.is_provider_allowed(&provider.id, Some(&model.id)) {
+                    continue;
+                }
                 if model.is_multimodal != Some(false) {
                     // 排除内置 DB 明确标记为不支持视觉的模型
                     match super::model_metadata::builtin_supports_vision(&model.name) {
@@ -933,8 +1140,9 @@ impl LLMProviderManager {
     pub fn get_provider_config(&self, id: Option<&str>) -> Option<(String, String, String)> {
         let provider = if let Some(id) = id {
             self.get_provider(id)
+                .filter(|provider| self.is_provider_allowed(&provider.id, None))
         } else {
-            self.get_default_provider()
+            self.get_default_runtime_provider()
         };
 
         provider.map(|p| {
@@ -963,8 +1171,11 @@ impl LLMProviderManager {
         }
 
         // 默认：使用默认供应商的默认模型
-        let provider = self.get_default_provider()?;
+        let provider = self.get_default_runtime_provider()?;
         let model = provider.get_default_model()?;
+        if !self.is_provider_allowed(&provider.id, Some(&model.id)) {
+            return None;
+        }
         let api_key = provider.get_default_key_value();
 
         Some((
@@ -1035,8 +1246,14 @@ impl LLMProviderManager {
         let mut models = Vec::new();
 
         for provider in &self.providers {
+            if !self.is_provider_allowed(&provider.id, None) {
+                continue;
+            }
             let api_key = provider.get_default_key_value();
             for model in &provider.models {
+                if !self.is_provider_allowed(&provider.id, Some(&model.id)) {
+                    continue;
+                }
                 models.push(AvailableModel {
                     provider_id: provider.id.clone(),
                     provider_name: provider.name.clone(),
@@ -1074,6 +1291,46 @@ struct ProviderConfigFile {
     providers: Option<Vec<LLMProviderConfig>>,
     #[serde(default)]
     ocr_config: Option<OcrProviderConfig>,
+    #[serde(default)]
+    provider_policy: Option<ProviderPolicyConfig>,
+}
+
+fn validate_provider_policy(policy: &ProviderPolicyConfig) -> Result<(), String> {
+    for rule in &policy.rules {
+        if rule.action != "provider.use" {
+            return Err(format!("不支持的 Provider Policy 动作: {}", rule.action));
+        }
+        let resource = rule.resource.trim();
+        if resource.is_empty() {
+            return Err("Provider Policy 资源不能为空".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn provider_policy_effect(
+    policy: &ProviderPolicyConfig,
+    provider_id: &str,
+    model_id: Option<&str>,
+) -> ProviderPolicyEffect {
+    let exact_model = model_id.map(|model| format!("{}:{}", provider_id, model));
+    let provider_wildcard = format!("{}:*", provider_id);
+
+    for rule in policy.rules.iter().rev() {
+        if rule.action != "provider.use" {
+            continue;
+        }
+        let resource = rule.resource.trim();
+        let matched = resource == "*"
+            || resource == provider_id
+            || resource == provider_wildcard
+            || exact_model.as_deref() == Some(resource);
+        if matched {
+            return rule.effect.clone();
+        }
+    }
+
+    policy.default_effect.clone()
 }
 
 fn validate_provider_endpoint(provider: &LLMProviderConfig) -> Result<(), String> {
@@ -1083,6 +1340,76 @@ fn validate_provider_endpoint(provider: &LLMProviderConfig) -> Result<(), String
         return Err("Local 协议仅支持 Ollama 原生根地址，Endpoint URL 不能以 /v1 结尾".to_string());
     }
     Ok(())
+}
+
+fn models_endpoint_url(base_url: &str) -> Result<String, String> {
+    let normalized = base_url.trim().trim_end_matches('/');
+    if normalized.is_empty() {
+        return Err("请先填写 Endpoint URL".to_string());
+    }
+    let parsed =
+        reqwest::Url::parse(normalized).map_err(|e| format!("Endpoint URL 无效: {}", e))?;
+    if normalized.ends_with("/models") {
+        return Ok(normalized.to_string());
+    }
+    let last_segment = parsed
+        .path_segments()
+        .and_then(|segments| segments.filter(|segment| !segment.is_empty()).last());
+    if last_segment.map(is_version_segment).unwrap_or(false) {
+        Ok(format!("{}/models", normalized))
+    } else {
+        Ok(format!("{}/v1/models", normalized))
+    }
+}
+
+fn is_version_segment(segment: &str) -> bool {
+    let rest = match segment.strip_prefix('v') {
+        Some(rest) => rest,
+        None => return false,
+    };
+    !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn remote_model_cache_key(protocol: &LLMProtocol, base_url: &str, api_key: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    format!("{:?}", protocol).hash(&mut hasher);
+    base_url.trim().trim_end_matches('/').hash(&mut hasher);
+    api_key.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
+fn parse_remote_model_names(body: &str) -> Result<Vec<String>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("解析模型列表失败: {}", e))?;
+    let mut names = Vec::new();
+    let mut seen = HashSet::new();
+
+    let items = value
+        .get("data")
+        .and_then(|data| data.as_array())
+        .or_else(|| value.as_array())
+        .ok_or_else(|| "模型列表响应缺少 data 数组".to_string())?;
+
+    for item in items {
+        let name = item
+            .as_str()
+            .or_else(|| item.get("id").and_then(|id| id.as_str()))
+            .or_else(|| item.get("name").and_then(|name| name.as_str()))
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+
+        if let Some(name) = name {
+            if seen.insert(name.to_string()) {
+                names.push(name.to_string());
+            }
+        }
+    }
+
+    if names.is_empty() {
+        return Err("模型列表响应中没有可用模型名称".to_string());
+    }
+
+    Ok(names)
 }
 
 // ─── 测试 ───
@@ -1178,6 +1505,45 @@ mod tests {
         });
 
         assert!(serde_json::from_value::<LLMProviderConfig>(removed_shape).is_err());
+    }
+
+    #[test]
+    fn test_models_endpoint_url_uses_versioned_base_url() {
+        assert_eq!(
+            models_endpoint_url("https://api.openai.com/v1").unwrap(),
+            "https://api.openai.com/v1/models"
+        );
+        assert_eq!(
+            models_endpoint_url("https://dashscope.aliyuncs.com/compatible-mode/v1/").unwrap(),
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/models"
+        );
+        assert_eq!(
+            models_endpoint_url("https://example.com").unwrap(),
+            "https://example.com/v1/models"
+        );
+    }
+
+    #[test]
+    fn test_parse_remote_model_names() {
+        let body = serde_json::json!({
+            "object": "list",
+            "data": [
+                { "id": "gpt-4o" },
+                { "id": "gpt-4o" },
+                { "name": "qwen-plus" },
+                "deepseek-chat"
+            ]
+        })
+        .to_string();
+
+        assert_eq!(
+            parse_remote_model_names(&body).unwrap(),
+            vec![
+                "gpt-4o".to_string(),
+                "qwen-plus".to_string(),
+                "deepseek-chat".to_string()
+            ]
+        );
     }
 
     #[test]

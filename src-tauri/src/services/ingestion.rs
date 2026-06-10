@@ -125,7 +125,9 @@ pub fn ingest_text(
     // 通常来自嵌入阶段失败）。孤儿文档会被静默删除，然后按新文档导入。
     {
         let meta = metadata.lock().map_err(|e| format!("Lock error: {}", e))?;
-        if let Some(existing) = meta.get_document_by_sha256(&sha256)? {
+        if let Some(existing) =
+            meta.get_document_by_source_key(&sha256, project_id, raw_source_identity)?
+        {
             let existing_chunks = meta.get_document_chunk_count(existing.id)?;
             if existing_chunks == 0 {
                 // 孤儿文档：没有任何分块被写入，通常是首次导入时嵌入模型未就绪。
@@ -581,10 +583,9 @@ fn ingest_dir_recursive(
             ) {
                 Ok(result) => imported.push(result),
                 Err(e) => {
-                    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
                     eprintln!("[Ingestion] Failed to ingest {:?}: {}", path, e);
                     errors.push(FileError {
-                        path: filename.to_string(),
+                        path: path.to_string_lossy().to_string(),
                         error: e,
                     });
                     // 继续处理其他文件
