@@ -237,7 +237,10 @@ pub async fn add_api_key(
     };
 
     let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
-    manager.add_api_key(&provider_id, api_key)
+    manager.add_api_key(&provider_id, api_key)?;
+    // 添加第一个 Key 时会被自动设为默认 → 同步 ImageProcessor
+    sync_image_processor(&state, &manager);
+    Ok(())
 }
 
 /// 更新 API Key
@@ -258,7 +261,10 @@ pub async fn update_api_key(
     };
 
     let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
-    manager.update_api_key(&provider_id, api_key)
+    manager.update_api_key(&provider_id, api_key)?;
+    // is_default 改变会切换默认 Key → 同步 ImageProcessor
+    sync_image_processor(&state, &manager);
+    Ok(())
 }
 
 /// 删除 API Key
@@ -269,7 +275,10 @@ pub async fn delete_provider_api_key(
     key_id: String,
 ) -> Result<(), String> {
     let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
-    manager.delete_api_key(&provider_id, &key_id)
+    manager.delete_api_key(&provider_id, &key_id)?;
+    // 删除默认 Key 后会 fallback 到第一个 → 同步 ImageProcessor
+    sync_image_processor(&state, &manager);
+    Ok(())
 }
 
 /// 设置默认 API Key
@@ -280,7 +289,10 @@ pub async fn set_default_api_key(
     key_id: String,
 ) -> Result<(), String> {
     let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
-    manager.set_default_api_key(&provider_id, &key_id)
+    manager.set_default_api_key(&provider_id, &key_id)?;
+    // 同步 ImageProcessor 的 LLM 配置（默认 key 改了，ImageProcessor 必须跟着更新）
+    sync_image_processor(&state, &manager);
+    Ok(())
 }
 
 // ─── 模型管理命令 ───
@@ -305,7 +317,10 @@ pub async fn add_model(
     };
 
     let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
-    manager.add_model(&provider_id, model)
+    manager.add_model(&provider_id, model)?;
+    // 添加第一个 Model 时会被自动设为默认 → 同步 ImageProcessor
+    sync_image_processor(&state, &manager);
+    Ok(())
 }
 
 /// 更新模型
@@ -339,7 +354,10 @@ pub async fn update_model(
     };
 
     let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
-    manager.update_model(&provider_id, model)
+    manager.update_model(&provider_id, model)?;
+    // is_default 改变会切换默认 Model → 同步 ImageProcessor
+    sync_image_processor(&state, &manager);
+    Ok(())
 }
 
 /// 删除模型
@@ -350,7 +368,10 @@ pub async fn delete_model(
     model_id: String,
 ) -> Result<(), String> {
     let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
-    manager.delete_model(&provider_id, &model_id)
+    manager.delete_model(&provider_id, &model_id)?;
+    // 删除默认 Model 后会 fallback 到第一个 → 同步 ImageProcessor
+    sync_image_processor(&state, &manager);
+    Ok(())
 }
 
 /// 设置默认模型
@@ -361,7 +382,10 @@ pub async fn set_default_model(
     model_id: String,
 ) -> Result<(), String> {
     let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
-    manager.set_default_model(&provider_id, &model_id)
+    manager.set_default_model(&provider_id, &model_id)?;
+    // 同步 ImageProcessor 的 LLM 配置（默认 model 改了，ImageProcessor 必须跟着更新）
+    sync_image_processor(&state, &manager);
+    Ok(())
 }
 
 // ─── 多模态探测命令 ───
