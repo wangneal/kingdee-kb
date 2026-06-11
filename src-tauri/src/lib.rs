@@ -349,7 +349,6 @@ pub fn run() {
             commands::risk_blueprint::add_sensitive_keyword,
             commands::risk_blueprint::list_sensitive_keywords,
             commands::risk_blueprint::remove_sensitive_keyword,
-            commands::risk_blueprint::extract_blueprint,
             commands::risk_blueprint::analyze_fit_gap,
             commands::agent::list_agent_tool_profiles,
             commands::agent::list_agent_tool_audit,

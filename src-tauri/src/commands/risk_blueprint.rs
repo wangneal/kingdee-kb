@@ -511,37 +511,6 @@ pub fn remove_sensitive_keyword(
     Ok(state.desensitizer.remove_keyword(&keyword))
 }
 
-// --- P2.2: 蓝图提炼 ---
-
-const BLUEPRINT_SYSTEM_PROMPT: &str = "\
-你是一个金蝶ERP业务架构师。根据调研记录提炼业务蓝图。\n\
-按四段结构：\n\
-1.【现有流程 As-Is】具体流程步骤和角色\n\
-2.【系统标准流程 To-Be】含系统路径\n\
-3.【差异配置点】配置路径: 配置值\n\
-4.【对应单据类型】单据名称（编码规则）\n\
-禁止空话，不确定写[待确认]";
-
-#[tauri::command]
-pub async fn extract_blueprint(
-    state: State<'_, AppState>,
-    research_context: String,
-) -> Result<String, String> {
-    use crate::services::llm_service::ChatMessage;
-    let messages = vec![
-        ChatMessage {
-            role: "system".to_string(),
-            content: BLUEPRINT_SYSTEM_PROMPT.to_string(),
-        },
-        ChatMessage {
-            role: "user".to_string(),
-            content: research_context,
-        },
-    ];
-    let config = state.llm.get_active_config()?;
-    state.llm.chat_completion(&messages, &config).await
-}
-
 // --- P2.3: Fit-Gap 分析 ---
 
 const FITGAP_SYSTEM_PROMPT: &str = "\

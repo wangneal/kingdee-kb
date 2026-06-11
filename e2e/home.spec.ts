@@ -24,7 +24,7 @@ test.describe("Home page", () => {
     await expect(page.getByRole("button", { name: "检索 搜索知识库中的相关内容" })).toBeVisible();
     await expect(page.getByRole("button", { name: "AI 生成交付物 在对话中调用官方技能生成文档、PPT 和清单" })).toBeVisible();
     await expect(page.getByRole("button", { name: "AI 对话 基于知识库的智能问答" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "调研助手 语音转录 + 会话管理 + 蓝图导出" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "调研助手 语音转录 + 会话管理 + 调研报告" })).toBeVisible();
     await expect(page.getByRole("button", { name: "风险把控 范围预警 + 项目健康 + 防身话术" })).toBeVisible();
   });
 

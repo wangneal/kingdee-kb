@@ -580,11 +580,7 @@ export interface ProjectHealthScore {
   data_completeness: number
 }
 
-// ── P2: 蓝图提炼 / Fit-Gap / 脱敏 ──────────────────────────────────────
-
-export async function extractBlueprint(researchContext: string): Promise<string> {
-  return invoke("extract_blueprint", { researchContext })
-}
+// ── P2: Fit-Gap / 脱敏 ────────────────────────────────────────
 
 export async function analyzeFitGap(projectId: number, requirements: string): Promise<string> {
   return invoke("analyze_fit_gap", { projectId, requirements })

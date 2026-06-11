@@ -39,7 +39,6 @@ import {
   deleteResearchSession,
   exportSessionCsv,
   exportSessionMarkdown,
-  extractBlueprint,
   fetchTencentMeetingTranscript,
   getAsrConfigStatus,
   getResearchSession,
@@ -1229,23 +1228,49 @@ function SessionDetailView({
     }
   }
 
-  const handleExtractBlueprint = async () => {
-    const qaText = records
-      .map((r, i) => `Q${i + 1}: ${r.question_text}\nA: ${r.answer_text}`)
-      .join("\n\n")
-    if (!qaText.trim()) {
-      toast.warning("暂无记录，无法提炼蓝图")
+  // 调研报告配方：4 段硬约束（与后端 RECIPE_INVESTIGATION 保持一致）
+  const REPORT_RECIPE = `你是一位资深的金蝶ERP实施顾问，正在撰写项目调研报告。
+【输出结构约束】
+1.【现有流程 As-Is】— 客户当前业务操作模式（必须有具体流程描述）
+2.【系统方案 To-Be】— 金蝶标准解决方案（必须含系统路径/单据类型）
+3.【差异分析】— 逐条标注 Fit(标准配置) 或 Gap(需评估)
+4.【实施建议】— 具体的配置参数、业务规则或操作步骤
+【禁止】
+- 禁止"实现高效管理""优化流程"等无具体操作的套话
+- 禁止编造不存在的系统功能或二开方案
+- 不确定的内容写"待确认"，不得用模糊表述填充`
+
+  const handleGenerateReport = async () => {
+    if (aiLoading) return
+    if (records.length === 0) {
+      toast.warning("暂无调研记录，无法生成报告")
       return
     }
+    // 拼 Q&A 记录
+    const qaText = records
+      .map(
+        (r, i) =>
+          `Q${i + 1}: ${r.question_text}\nA: ${r.answer_text}${r.notes ? `\n备注: ${r.notes}` : ""}`,
+      )
+      .join("\n\n")
+    const prompt = [
+      `${REPORT_RECIPE}`,
+      "",
+      "请先用 use-skill 加载 survey-assistant 技能（action=load, name_or_query=survey-assistant），按其 Step 4「生成调研报告」指引，结合下方调研记录输出。",
+      "",
+      `调研会话：${session.title}（${session.edition}/${session.module_code}）`,
+      `访谈对象：${session.interviewee || "未填写"}`,
+      `访谈日期：${session.session_date || "未填写"}`,
+      "",
+      "【调研记录】",
+      qaText,
+    ].join("\n")
     try {
-      const blueprint = await extractBlueprint(qaText)
-      const dest = await save({
-        defaultPath: `蓝图_${session.title}.md`,
-        filters: [{ name: "Markdown", extensions: ["md"] }],
-      })
-      if (dest) await invoke("export_report", { content: blueprint, filePath: dest })
+      agent.clearSlot("research")
+      setCopilotTab("assistant")
+      await agent.sendMessage("research", prompt, { projectId: currentProjectId })
     } catch (err) {
-      toast.error(`蓝图提炼失败: ${String(err)}`)
+      toast.error(`生成调研报告失败: ${String(err)}`)
     }
   }
 
@@ -1291,10 +1316,11 @@ function SessionDetailView({
           </button>
           <button
             type="button"
-            onClick={handleExtractBlueprint}
-            className="flex items-center gap-1 rounded-lg border border-blue-200 px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 transition-colors"
+            onClick={handleGenerateReport}
+            disabled={aiLoading}
+            className="flex items-center gap-1 rounded-lg border border-blue-200 px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
           >
-            <FileText className="h-3.5 w-3.5" /> 提炼蓝图
+            <FileText className="h-3.5 w-3.5" /> 生成调研报告
           </button>
         </div>
       </div>

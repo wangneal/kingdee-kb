@@ -149,7 +149,7 @@ export default function Home() {
     {
       icon: ClipboardList,
       label: "调研助手",
-      description: "语音转录 + 会话管理 + 蓝图导出",
+      description: "语音转录 + 会话管理 + 调研报告",
       path: "/research",
       color: "bg-cyan-600",
     },

@@ -297,7 +297,6 @@ const MOCK_RESPONSES: Record<string, unknown> = {
   },
 
   // Blueprint / Fit-Gap / Desensitize
-  extract_blueprint: "## 蓝图摘要\n\n测试蓝图内容",
   analyze_fit_gap: "## Fit-Gap 分析\n\n测试分析结果",
   desensitize_text: { safe_text: "测试文本", mapping: {} },
   add_sensitive_keyword: null,
