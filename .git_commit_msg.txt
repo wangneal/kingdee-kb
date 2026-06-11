@@ -1,6 +1,26 @@
-feat: 调研报告生成后可通过保存按钮落盘
+feat: 调研报告增加 4 段标识横幅与失败重试
 
-handleGenerateReport 完成后报告内容在 Copilot Tab 流式展示，
-新增 handleSaveReport 将 newAnswer 保存为 Markdown 文件
-（默认文件名：调研报告_${session.title}.md）。
-保存按钮条件显示（有内容才出现），放在复制按钮左侧。
+延续前两次提交，本轮收尾以下质量细节：
+
+1. SKILL.md Step 4 描述同步 4 段硬结构（与 RECIPE_INVESTIGATION 配方保持一致），
+   报告开头追加会话元信息（标题/版本/模块/访谈对象/日期），
+   与前端 REPORT_RECIPE 提示词口径完全对齐，避免 LLM 自由发挥导致结构漂移。
+
+2. 失败重试：
+   - 拆分 buildReportPrompt / sendReportPrompt，把最近一次报告 prompt 缓存到 lastReportPromptRef
+   - 新增 handleRetryReport：失败时 Copilot 顶部红条显示原因 + 「重试」按钮，
+     复用同一份 prompt 重新发起，不让用户重新拼调研记录
+   - 限制条件：records.length === 0 时禁用重试（prompt 中 Q&A 已失效）
+   - sendMessage 抛错也走重试路径（catch 弹 toast 但不重置 ref）
+
+3. 报告上下文区分：
+   - 新增 reportContextRef 标记当前 AI 响应是「调研报告」还是「普通问答」
+   - sendReportPrompt 进入时打开，普通 handleAIAssist / 清空 / 保存问答记录时关闭
+   - 报告上下文：顶部标题改为「调研报告（AI 生成，请审阅）」+ 蓝色「4 段结构」徽章
+   - 报告上下文：底部主按钮改为「保存报告」，隐藏「保存为问答记录/插入中栏」无关按钮
+   - 普通问答上下文：维持原行为（不引入新概念）
+
+后续可继续优化（不阻塞当前提交）：
+- RECIPE 提示词复用后端常量（漂移防御）
+- 「保存报告」返回文件路径并在 toast 显示绝对路径
+- 「生成调研报告」按钮在 records 为 0 时直接 disabled 而非弹 toast

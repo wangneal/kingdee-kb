@@ -466,6 +466,10 @@ function SessionDetailView({
   const liveTranscribingRef = useRef(false)
   const lastAutoPromptTranscriptRef = useRef("")
   const autoPromptTimerRef = useRef<number | null>(null)
+  // 缓存最近一次"生成调研报告"的 prompt，供失败重试用
+  const lastReportPromptRef = useRef<string>("")
+  // 标记当前 AI 响应是否处于"调研报告"上下文（横幅、重试按钮根据这个开关显示）
+  const reportContextRef = useRef<boolean>(false)
 
   // 大纲上下文与文本插入触发器
   const outline = useOutline()
@@ -562,6 +566,7 @@ function SessionDetailView({
     setCopilotTab("assistant")
     agent.clearSlot("research")
     setNewAnswer("")
+    resetReportContext()
     const context = `当前调研：${session.title}（${session.edition}/${session.module_code}）\n已有记录：${records.map((r) => `Q: ${r.question_text}`).join("\n")}`
     const prompt = `请回答以下调研问题，基于知识库中的金蝶ERP实施经验。回答要具体、可操作，包含系统配置路径或单据类型；不确定的写[待确认]。\n\n问题：${question}\n\n背景：${context}`
     await agent.sendMessage("research", prompt, { projectId: currentProjectId })
@@ -1115,14 +1120,40 @@ function SessionDetailView({
           </div>
 
           {/* AI 流式结果渲染区 */}
-          {newAnswer && (
+          {newAnswer && (() => {
+            const lastMsg = slot.messages[slot.messages.length - 1]
+            const isReport = reportContextRef.current
+            const isError = lastMsg?.role === "assistant" && lastMsg.error === true
+            return (
             <div className="rounded-lg border border-neutral-200 bg-white p-3 space-y-2 flex min-h-0 flex-1 flex-col overflow-hidden">
-              <span className="text-[10px] font-bold text-neutral-400 uppercase">AI 助手响应</span>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-neutral-400 uppercase">
+                  {isReport ? "调研报告（AI 生成，请审阅）" : "AI 助手响应"}
+                </span>
+                {isReport && !aiLoading && !isError && (
+                  <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600">
+                    📋 4 段结构
+                  </span>
+                )}
+              </div>
+              {isReport && isError && (
+                <div className="rounded border border-red-200 bg-red-50 px-2 py-1.5 text-[10px] text-red-700 flex items-center justify-between">
+                  <span>⚠️ 生成失败，可点击重试沿用原 prompt 再次发起</span>
+                  <button
+                    type="button"
+                    onClick={handleRetryReport}
+                    disabled={aiLoading || !lastReportPromptRef.current}
+                    className="rounded border border-red-300 bg-white px-2 py-0.5 text-[10px] font-medium text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    重试
+                  </button>
+                </div>
+              )}
               <div className="flex-1 overflow-y-auto text-xs prose prose-sm leading-relaxed max-w-none text-neutral-700 bg-neutral-50 p-2 rounded border border-neutral-100">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{newAnswer}</ReactMarkdown>
               </div>
               <div className="flex gap-1.5 pt-1 border-t border-neutral-100">
-                {activeTab === "outline" ? (
+                {!isReport && (activeTab === "outline" ? (
                   <button
                     type="button"
                     onClick={() => {
@@ -1142,8 +1173,8 @@ function SessionDetailView({
                   >
                     保存为问答记录
                   </button>
-                )}
-                {newAnswer.trim() && (
+                ))}
+                {isReport && newAnswer.trim() && !isError && (
                   <button
                     type="button"
                     onClick={handleSaveReport}
@@ -1166,14 +1197,18 @@ function SessionDetailView({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setNewAnswer("")}
+                  onClick={() => {
+                    setNewAnswer("")
+                    resetReportContext()
+                  }}
                   className="rounded border border-neutral-200 px-2 py-1 text-[10px] text-red-500 hover:bg-red-50 transition-colors hover:border-red-200"
                 >
                   清空
                 </button>
               </div>
             </div>
-          )}
+            )
+          })()}
         </div>
       </div>
     )
@@ -1185,6 +1220,7 @@ function SessionDetailView({
       await addQARecord(session.id, null, newQuestion.trim(), newAnswer.trim(), "", records.length)
       setNewQuestion("")
       setNewAnswer("")
+      resetReportContext()
       onUpdated()
     } catch (err) {
       toast.error(String(err))
@@ -1262,20 +1298,14 @@ function SessionDetailView({
 - 禁止编造不存在的系统功能或二开方案
 - 不确定的内容写"待确认"，不得用模糊表述填充`
 
-  const handleGenerateReport = async () => {
-    if (aiLoading) return
-    if (records.length === 0) {
-      toast.warning("暂无调研记录，无法生成报告")
-      return
-    }
-    // 拼 Q&A 记录
+  const buildReportPrompt = (): string => {
     const qaText = records
       .map(
         (r, i) =>
           `Q${i + 1}: ${r.question_text}\nA: ${r.answer_text}${r.notes ? `\n备注: ${r.notes}` : ""}`,
       )
       .join("\n\n")
-    const prompt = [
+    return [
       `${REPORT_RECIPE}`,
       "",
       "请先用 use-skill 加载 survey-assistant 技能（action=load, name_or_query=survey-assistant），按其 Step 4「生成调研报告」指引，结合下方调研记录输出。",
@@ -1287,13 +1317,47 @@ function SessionDetailView({
       "【调研记录】",
       qaText,
     ].join("\n")
+  }
+
+  const sendReportPrompt = async (prompt: string): Promise<boolean> => {
+    reportContextRef.current = true
     try {
       agent.clearSlot("research")
       setCopilotTab("assistant")
       await agent.sendMessage("research", prompt, { projectId: currentProjectId })
+      return true
     } catch (err) {
       toast.error(`生成调研报告失败: ${String(err)}`)
+      return false
     }
+  }
+
+  const handleGenerateReport = async () => {
+    if (aiLoading) return
+    if (records.length === 0) {
+      toast.warning("暂无调研记录，无法生成报告")
+      return
+    }
+    const prompt = buildReportPrompt()
+    lastReportPromptRef.current = prompt
+    await sendReportPrompt(prompt)
+  }
+
+  const handleRetryReport = async () => {
+    if (aiLoading) return
+    if (!lastReportPromptRef.current) return
+    if (records.length === 0) {
+      // 记录中途被删光，prompt 中的 Q&A 已失效，禁用重试
+      toast.warning("调研记录已清空，无法重试")
+      return
+    }
+    await sendReportPrompt(lastReportPromptRef.current)
+  }
+
+  // 切换 tab、用户发新提问、清空报告时，重置报告上下文
+  const resetReportContext = () => {
+    reportContextRef.current = false
+    lastReportPromptRef.current = ""
   }
 
   return (
