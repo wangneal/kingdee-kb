@@ -287,6 +287,14 @@ impl AppState {
         let llm_providers = Arc::new(RwLock::new(LLMProviderManager::new(
             &data_dir.to_path_buf(),
         )));
+        // 首次启动时异步 seed OpenCode Zen 默认供应商
+        // 分离到独立方法是为了让 LLMProviderManager::new() 在无 tokio runtime 的测试环境也能工作
+        {
+            let seed_arc = llm_providers.clone();
+            tokio::spawn(async move {
+                LLMProviderManager::seed_default_async(&seed_arc).await;
+            });
+        }
 
         // 初始化 ImageProcessor（图像处理，从 LLMProviderManager 获取配置）
         let image_processor = {

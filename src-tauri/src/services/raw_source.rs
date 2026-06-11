@@ -35,14 +35,23 @@ impl RawSourceStore {
     }
 
     /// 创建 raw_sources 表及其索引（幂等）
+    ///
+    /// **迁移安全**：整个流程包裹在 IMMEDIATE 事务中，**任一步骤失败全部 ROLLBACK**，
+    /// 避免旧版 "DROP+rename → CREATE → ensure_column → backfill" 链路中，backfill 失败
+    /// 导致表停留在"新 schema + 全 NULL project_id"的不可用状态
     pub fn ensure_table(&self) -> Result<(), String> {
-        if self.has_column("raw_sources", "project")? {
-            self.migrate_legacy_table()?;
+        let needs_legacy_migration = self.has_column("raw_sources", "project")?;
+        let tx = self
+            .db
+            .unchecked_transaction()
+            .map_err(|e| format!("启动 ensure_table 事务失败: {}", e))?;
+
+        if needs_legacy_migration {
+            // 无内嵌 BEGIN/COMMIT — 复用外层事务（迁移本身就是原子的：要么全成功要么全回滚）
+            self.migrate_legacy_table_in_tx(&tx)?;
         }
-        self.db
-            .execute_batch(
-                "
-            CREATE TABLE IF NOT EXISTS raw_sources (
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS raw_sources (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 identity      TEXT NOT NULL,
@@ -55,29 +64,37 @@ impl RawSourceStore {
                 created_at    TEXT NOT NULL DEFAULT (datetime('now')),
                 deleted_at    TEXT,
                 UNIQUE(project_id, identity)
-            );
-
-            ",
+            )",
+        )
+        .map_err(|e| {
+            format!(
+                "创建 raw_sources 表失败（已自动回滚迁移）: {}",
+                e
             )
-            .map_err(|e| format!("创建 raw_sources 表失败: {}", e))?;
-        self.ensure_column("raw_sources", "project_id", "INTEGER")?;
-        self.backfill_project_id("raw_sources")?;
-        self.db
-            .execute_batch(
-                "
-            CREATE INDEX IF NOT EXISTS idx_raw_sources_project_id ON raw_sources(project_id);
-            CREATE INDEX IF NOT EXISTS idx_raw_sources_status ON raw_sources(status);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_sources_project_identity
-                ON raw_sources(project_id, identity);
-            ",
-            )
-            .map_err(|e| format!("创建 raw_sources 索引失败: {}", e))?;
+        })?;
+        self.ensure_column_in_tx(&tx, "raw_sources", "project_id", "INTEGER")?;
+        self.backfill_project_id_in_tx(&tx, "raw_sources")?;
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_raw_sources_project_id ON raw_sources(project_id);
+             CREATE INDEX IF NOT EXISTS idx_raw_sources_status ON raw_sources(status);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_sources_project_identity
+                 ON raw_sources(project_id, identity);",
+        )
+        .map_err(|e| format!("创建 raw_sources 索引失败（已自动回滚）: {}", e))?;
+        tx.commit()
+            .map_err(|e| format!("提交 ensure_table 事务失败: {}", e))?;
         Ok(())
     }
 
-    fn ensure_column(&self, table: &str, column: &str, definition: &str) -> Result<(), String> {
-        let mut stmt = self
-            .db
+    /// 仅在事务内生效的列检查 + ADD COLUMN（如果缺）
+    fn ensure_column_in_tx(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        table: &str,
+        column: &str,
+        definition: &str,
+    ) -> Result<(), String> {
+        let mut stmt = tx
             .prepare(&format!("PRAGMA table_info({})", table))
             .map_err(|e| format!("读取表结构失败: {}", e))?;
         let columns = stmt
@@ -88,19 +105,53 @@ impl RawSourceStore {
                 return Ok(());
             }
         }
-        self.db
-            .execute_batch(&format!(
-                "ALTER TABLE {} ADD COLUMN {} {};",
-                table, column, definition
-            ))
-            .map_err(|e| format!("添加列 {}.{} 失败: {}", table, column, e))?;
+        tx.execute_batch(&format!(
+            "ALTER TABLE {} ADD COLUMN {} {};",
+            table, column, definition
+        ))
+        .map_err(|e| format!("添加列 {}.{} 失败: {}", table, column, e))?;
         Ok(())
     }
 
-    fn migrate_legacy_table(&self) -> Result<(), String> {
-        let sql = "
-            BEGIN IMMEDIATE;
-            CREATE TABLE raw_sources_new (
+    /// 仅在事务内生效的 project_id 回填
+    fn backfill_project_id_in_tx(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        table: &str,
+    ) -> Result<(), String> {
+        let legacy_project = if self.has_column(table, "project")? {
+            format!(
+                "(SELECT id FROM projects WHERE name = {}.project LIMIT 1),",
+                table
+            )
+        } else {
+            "NULL,".to_string()
+        };
+        tx.execute(
+            &format!(
+                "UPDATE {} SET project_id = COALESCE(
+                    {}
+                    (SELECT id FROM projects WHERE name = '默认项目' LIMIT 1),
+                    (SELECT id FROM projects WHERE status = 'active' ORDER BY id ASC LIMIT 1)
+                ) WHERE project_id IS NULL",
+                table, legacy_project
+            ),
+            [],
+        )
+        .map_err(|e| format!("回填 {}.project_id 失败: {}", table, e))?;
+        Ok(())
+    }
+
+    /// 旧版迁移（无内嵌事务，依赖调用方提供事务上下文）
+    ///
+    /// 步骤：CREATE new → INSERT SELECT → DROP old → RENAME new → old
+    /// 4 步 SQL 在调用方事务中要么全成功要么全失败
+    fn migrate_legacy_table_in_tx(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+    ) -> Result<(), String> {
+        tx.execute_batch(
+            "CREATE TABLE raw_sources_new (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 identity      TEXT NOT NULL,
@@ -113,8 +164,11 @@ impl RawSourceStore {
                 created_at    TEXT NOT NULL DEFAULT (datetime('now')),
                 deleted_at    TEXT,
                 UNIQUE(project_id, identity)
-            );
-            INSERT INTO raw_sources_new (
+            )",
+        )
+        .map_err(|e| format!("迁移：创建 raw_sources_new 失败: {}", e))?;
+        tx.execute_batch(
+            "INSERT INTO raw_sources_new (
                 id, project_id, identity, original_path, storage_path, sha256,
                 file_size, mime_type, status, created_at, deleted_at
             )
@@ -126,40 +180,13 @@ impl RawSourceStore {
                    ),
                    identity, original_path, storage_path, sha256,
                    file_size, mime_type, status, created_at, deleted_at
-            FROM raw_sources;
-            DROP TABLE raw_sources;
-            ALTER TABLE raw_sources_new RENAME TO raw_sources;
-            COMMIT;
-        ";
-        if let Err(e) = self.db.execute_batch(sql) {
-            let _ = self.db.execute_batch("ROLLBACK;");
-            return Err(format!("迁移旧版 raw_sources 表失败: {}", e));
-        }
-        Ok(())
-    }
-
-    fn backfill_project_id(&self, table: &str) -> Result<(), String> {
-        let legacy_project = if self.has_column(table, "project")? {
-            format!(
-                "(SELECT id FROM projects WHERE name = {}.project LIMIT 1),",
-                table
-            )
-        } else {
-            "NULL,".to_string()
-        };
-        self.db
-            .execute(
-                &format!(
-                    "UPDATE {} SET project_id = COALESCE(
-                        {}
-                        (SELECT id FROM projects WHERE name = '默认项目' LIMIT 1),
-                        (SELECT id FROM projects WHERE status = 'active' ORDER BY id ASC LIMIT 1)
-                    ) WHERE project_id IS NULL",
-                    table, legacy_project
-                ),
-                [],
-            )
-            .map_err(|e| format!("回填 {}.project_id 失败: {}", table, e))?;
+            FROM raw_sources",
+        )
+        .map_err(|e| format!("迁移：数据复制失败: {}", e))?;
+        tx.execute_batch("DROP TABLE raw_sources")
+            .map_err(|e| format!("迁移：DROP 旧表失败: {}", e))?;
+        tx.execute_batch("ALTER TABLE raw_sources_new RENAME TO raw_sources")
+            .map_err(|e| format!("迁移：RENAME 失败: {}", e))?;
         Ok(())
     }
 

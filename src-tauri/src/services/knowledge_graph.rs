@@ -3,7 +3,6 @@
 //! ⚠️ 实验性能力 — 当前为独立功能，不依赖也不影响主流程。
 //! 后续若需作为主搜索链路依赖，需先评估稳定性和性能。
 //!
-use tracing::info;
 
 // 管理页面间的关联关系（wikilink、tag、source、co_citation 等信号）。
 // 提供图构建、递归遍历、邻居查询和统计功能。
@@ -124,7 +123,9 @@ impl GraphStore {
     /// 构建/重建知识图谱。先清空项目旧数据，再从 wiki_pages 提取 4 信号写入边。
     /// 返回插入的边数。
     ///
-    /// 整个构建过程在单个事务内完成，保证原子性——要么全部成功，要么全部回滚。
+    /// 整个 4 信号构建过程在单个事务内完成，保证原子性——要么全部成功，要么全部回滚。
+    /// **Backfill 拆出事务**（自愈逻辑已迁移到 [`backfill_empty_wikilinks`](Self::backfill_empty_wikilinks)），
+    /// 由调用方单独调用，避免长事务阻塞 wiki_pages 并发写入。
     pub fn build_knowledge_graph(&self, project_id: i64) -> Result<usize, String> {
         // 外层事务：保证 4 信号的构建原子性
         self.db
@@ -147,17 +148,10 @@ impl GraphStore {
         }
     }
 
-    /// 图谱构建内部逻辑（由外层事务保护）
+    /// 图谱构建内部逻辑（由外层事务保护，**不**包含 backfill）
     fn build_knowledge_graph_inner(&self, project_id: i64) -> Result<usize, String> {
-        // 0. Backfill: 修复历史空 wikilinks
-        // 原因：早期版本的 ingestion_pipeline 硬编码 wikilinks="[]"。
-        // 现有 wiki 页即使有 [[slug]] 引用，wikilinks 字段也是空。
-        // 修复方式：从页面的 content_candidate（最新 LLM 输出）扫描 [[slug]] 并写回 wikilinks。
-        // 这是自愈式：一次 build_knowledge_graph 后所有历史页面都恢复正确 wikilinks。
-        let backfilled = self.backfill_empty_wikilinks(project_id)?;
-        if backfilled > 0 {
-            info!("回填了 {} 个 wiki 页面的 wikilinks", backfilled);
-        }
+        // 0. Backfill 已拆出事务 —— 调用方应在 build_knowledge_graph 之前先调用
+        //    backfill_empty_wikilinks(...)，避免大项目下长事务阻塞 wiki_pages 写入
 
         // 1. 清空该项目旧图数据
         self.db
@@ -249,9 +243,12 @@ impl GraphStore {
     /// 行为：
     /// - 只回填"完全空"的页面（`wikilinks = '[]'`），避免覆盖用户已手动设置的链接
     /// - 提取的 slug 必须存在于项目当前 slugs 中（防御 LLM 幻觉）
-    /// - 在 `build_knowledge_graph` 事务内执行，保证一致性
+    /// - **不在 `build_knowledge_graph` 事务内**：自愈逻辑已拆出，由调用方单独调用，
+    ///   避免大项目下长事务阻塞 wiki_pages 并发写入
     /// - 返回回填的页面数
-    fn backfill_empty_wikilinks(&self, project_id: i64) -> Result<usize, String> {
+    ///
+    /// 调用方应在 `build_knowledge_graph` 之前先调用此方法。
+    pub fn backfill_empty_wikilinks(&self, project_id: i64) -> Result<usize, String> {
         // 查询项目所有 (slug) 用于过滤
         let valid_slugs: std::collections::HashSet<String> = {
             let mut stmt = self

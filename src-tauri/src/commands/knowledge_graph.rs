@@ -11,6 +11,12 @@ use crate::services::knowledge_graph::{GraphNeighbor, GraphPath, GraphRecommenda
 /// 构建/重建项目知识图谱（4 信号：wikilink、tag 共现、source 共源、co_citation）。
 /// 返回插入的边数。
 ///
+/// **分两阶段**：
+/// 1. Backfill（事务外）：修复历史空 wikilinks
+/// 2. Build（事务内）：清空旧图 + 4 信号重建
+///
+/// 这样拆分避免大项目下长事务阻塞 wiki_pages 写入。
+///
 /// ⚠️ 实验性能力 — 不影响主流程，仅供探索性使用。
 #[tauri::command]
 pub async fn build_knowledge_graph(
@@ -21,7 +27,18 @@ pub async fn build_knowledge_graph(
         .graph_store
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.build_knowledge_graph(project_id)
+    // 阶段 1：backfill（独立事务，不阻塞 wiki_pages 写入）
+    let backfilled = store.backfill_empty_wikilinks(project_id)?;
+    // 阶段 2：4 信号构建（事务内，原子性）
+    let inserted = store.build_knowledge_graph(project_id)?;
+    if backfilled > 0 {
+        tracing::info!(
+            "知识图谱构建：backfill {} 页，insert {} 边",
+            backfilled,
+            inserted
+        );
+    }
+    Ok(inserted)
 }
 
 /// 递归图遍历：从 seed 页面出发，沿边展开 N 层。

@@ -5,12 +5,12 @@ use tauri::State;
 async fn with_project_store<T, F>(state: State<'_, AppState>, task: F) -> Result<T, String>
 where
     T: Send + 'static,
-    F: FnOnce(&mut ProjectStore) -> Result<T, String> + Send + 'static,
+    F: FnOnce(&ProjectStore) -> Result<T, String> + Send + 'static,
 {
     let store = state.project_store.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut store = store.lock().map_err(|e| e.to_string())?;
-        task(&mut store)
+        let store = store.lock().map_err(|e| e.to_string())?;
+        task(&store)
     })
     .await
     .map_err(|e| format!("项目命令执行失败: {}", e))?

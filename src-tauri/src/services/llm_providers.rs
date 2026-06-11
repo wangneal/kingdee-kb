@@ -12,6 +12,7 @@ use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -391,10 +392,14 @@ fn seed_default_opencode_zen(free_models: Vec<String>) -> Vec<LLMProviderConfig>
 }
 
 impl LLMProviderManager {
-    /// 创建供应商管理器
+    /// 同步创建供应商管理器
+    ///
+    /// **不**触发 seed —— 首次启动的 OpenCode Zen 默认配置 seed 由调用方显式调用
+    /// [`seed_default_async`](Self::seed_default_async) 触发。分离原因是：
+    /// 1. 同步构造可在无 tokio runtime 的环境（测试）正常工作
+    /// 2. 异步 seed 由调用方在自己拥有 Arc 的上下文中 spawn，避免跨线程捕获裸 `&mut Self`
     pub fn new(data_dir: &PathBuf) -> Self {
         let config_path = data_dir.join("llm_providers.json");
-        let seeding_in_progress = Arc::new(AtomicBool::new(false));
         let mut manager = Self {
             providers: Vec::new(),
             ocr_config: None,
@@ -402,49 +407,86 @@ impl LLMProviderManager {
             config_path,
             client: reqwest::Client::new(),
             remote_model_cache: HashMap::new(),
-            seeding_in_progress: seeding_in_progress.clone(),
+            seeding_in_progress: Arc::new(AtomicBool::new(false)),
         };
         manager.load();
+        manager
+    }
 
-        // 首次启动（配置文件不存在）→ 异步从 OpenCode Zen 拉取 -free 模型并 seed
-        // 关键：仅"配置文件不存在"时 seed。用户删除默认后不会自动恢复
-        if !manager.config_path.exists() {
-            // 仅在 tokio runtime 内执行 seed（生产环境由 Tauri runtime 保证）
-            // 测试环境无 runtime 时跳过，providers 保持空 → 触发"无供应商"UI
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                // 标记 seed 进行中：阻止 save() 写文件（防止用户保存与 seed 写文件相互覆盖）
-                seeding_in_progress.store(true, Ordering::SeqCst);
-                let path = manager.config_path.clone();
-                let flag = seeding_in_progress.clone();
-                handle.spawn(async move {
-                    let free_models = fetch_opencode_zen_free_models().await;
-                    let default = seed_default_opencode_zen(free_models);
-                    if let Some(parent) = path.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    let payload = ProviderConfigFile {
-                        providers: Some(default),
-                        ocr_config: None,
-                        provider_policy: Some(ProviderPolicyConfig::default()),
-                    };
-                    match serde_json::to_string_pretty(&payload) {
-                        Ok(content) => {
-                            if let Err(e) = std::fs::write(&path, content) {
-                                tracing::warn!("写入默认 OpenCode Zen 配置失败: {}", e);
-                            } else {
-                                tracing::info!("首次启动已 seed 默认 OpenCode Zen 配置");
-                            }
-                        }
-                        Err(e) => tracing::warn!("序列化默认配置失败: {}", e),
-                    }
-                    // 释放 flag：允许用户后续 save()
-                    flag.store(false, Ordering::SeqCst);
-                });
-            } else {
-                tracing::debug!("无 tokio runtime，跳过默认 OpenCode Zen seed");
+    /// 异步 seed 默认 OpenCode Zen 供应商
+    ///
+    /// 行为：
+    /// - 仅在 `config_path` 不存在时执行（用户删过默认后不会自动恢复）
+    /// - 写完文件后**同时更新内存状态** —— 修复前只写文件、不更新内存，导致 Settings 页看不到默认供应商
+    /// - 网络拉取失败时使用 `FALLBACK_FREE_MODEL` 兜底
+    /// - 期间 `seeding_in_progress = true`，`save()` 会拒绝写文件，避免与 seed 互相覆盖
+    ///
+    /// 调用方负责 spawn 到 tokio runtime 中。失败仅 `tracing::warn!`，不阻塞启动
+    pub async fn seed_default_async(arc_self: &Arc<RwLock<Self>>) {
+        let config_path = match arc_self.read() {
+            Ok(mgr) => mgr.config_path.clone(),
+            Err(e) => {
+                tracing::warn!("seed 前读 manager 失败: {}", e);
+                return;
+            }
+        };
+        if config_path.exists() {
+            return;
+        }
+
+        // 标记 seed 进行中：阻止 save() 写文件
+        let _ = arc_self
+            .read()
+            .map(|m| m.seeding_in_progress.store(true, Ordering::SeqCst));
+
+        let free_models = fetch_opencode_zen_free_models().await;
+        let default = seed_default_opencode_zen(free_models);
+
+        // 写文件
+        if let Some(parent) = config_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let payload = ProviderConfigFile {
+            providers: Some(default.clone()),
+            ocr_config: None,
+            provider_policy: Some(ProviderPolicyConfig::default()),
+        };
+        match serde_json::to_string_pretty(&payload) {
+            Ok(content) => {
+                if let Err(e) = std::fs::write(&config_path, content) {
+                    tracing::warn!("写入默认 OpenCode Zen 配置失败: {}", e);
+                    let _ = arc_self
+                        .read()
+                        .map(|m| m.seeding_in_progress.store(false, Ordering::SeqCst));
+                    return;
+                }
+            }
+            Err(e) => {
+                tracing::warn!("序列化默认配置失败: {}", e);
+                let _ = arc_self
+                    .read()
+                    .map(|m| m.seeding_in_progress.store(false, Ordering::SeqCst));
+                return;
             }
         }
-        manager
+
+        // **关键修复**：写完文件后同步到内存状态
+        // 修复前：seed 任务只写文件，`arc_self.providers` 永远是空，
+        //         Settings 页调用 list_providers() 看到空 Vec。
+        //         用户必须关 app 重启才能看到默认供应商。
+        // 修复后：写文件 + 更新内存同时进行，Settings 立刻能读到。
+        if let Ok(mut mgr) = arc_self.write() {
+            mgr.providers = default;
+        } else {
+            tracing::warn!("seed 写内存状态时获取写锁失败");
+        }
+
+        // 释放 flag：允许用户后续 save()
+        let _ = arc_self
+            .read()
+            .map(|m| m.seeding_in_progress.store(false, Ordering::SeqCst));
+
+        tracing::info!("首次启动已 seed 默认 OpenCode Zen 配置");
     }
 
     /// 从文件加载配置
@@ -1776,5 +1818,56 @@ mod tests {
         let (provider, model) = manager.get_multimodal_model().unwrap();
         assert_eq!(provider.id, "multimodal");
         assert_eq!(model.name, "gpt-4o");
+    }
+
+    /// 回归：seed_default_async 必须**同时**更新内存状态
+    ///
+    /// 修复前：seed 任务只写文件，`manager.providers` 永远是空，
+    ///        Settings 页调用 list_providers() 看到空 Vec，
+    ///        用户必须关 app 重启才能看到默认供应商
+    /// 修复后：写完文件后同步到内存，Settings 立刻能读到
+    ///
+    /// 网络可达：fetch 成功 → seed 真实模型
+    /// 网络不可达：fetch 失败 → seed fallback `minimax-m2.5-free`
+    /// 两种情况都应满足：写文件成功 + 内存状态被更新
+    #[tokio::test]
+    async fn seed_default_async_updates_in_memory_providers() {
+        let temp_dir = tempfile::tempdir().expect("创建临时目录失败");
+        let data_dir = temp_dir.path().to_path_buf();
+        // 关键：数据目录里没有 llm_providers.json → 触发 seed
+        assert!(!data_dir.join("llm_providers.json").exists());
+
+        let manager = LLMProviderManager::new(&data_dir);
+        let arc_self = Arc::new(RwLock::new(manager));
+
+        // seed 前：内存为空
+        assert_eq!(
+            arc_self.read().unwrap().list_providers().len(),
+            0,
+            "seed 前内存状态应为空"
+        );
+
+        // 触发 seed
+        LLMProviderManager::seed_default_async(&arc_self).await;
+
+        // 验证：内存状态被更新
+        let mgr = arc_self.read().unwrap();
+        let providers = mgr.list_providers();
+        assert!(
+            !providers.is_empty(),
+            "修复 BUG：seed 后内存状态必须包含默认供应商"
+        );
+        assert_eq!(providers[0].id, "opencode-zen", "默认供应商 id 应为 opencode-zen");
+        assert!(
+            !providers[0].models.is_empty(),
+            "默认供应商应至少包含一个模型（fallback 或网络拉取）"
+        );
+        drop(mgr);
+
+        // 验证：文件也被写入了
+        assert!(
+            data_dir.join("llm_providers.json").exists(),
+            "seed 应同时写入配置文件"
+        );
     }
 }

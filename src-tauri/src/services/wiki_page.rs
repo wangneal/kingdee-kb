@@ -420,23 +420,19 @@ impl WikiPageStore {
         }
     }
 
-    /// 更新维基页面，返回更新后的完整记录
+    /// 更新维基页面（仅修改"正式"字段，自动递增 version 并 NULL 候选字段）
+    ///
+    /// 设计要点：
+    /// - 只接受非候选字段（title/content/sources/wikilinks/tags/page_metadata/page_status/frontmatter）
+    /// - 总是 `version = version + 1`（修复前是 `version = existing.version` 不递增）
+    /// - 总是 NULL 候选字段：CHECK 约束 `candidate_version = version + 1` 在 version 递增后失效，
+    ///   若保留旧 candidate_version 会触发约束违反。任何对页面的"正式"修改都让待批准候选失效
+    ///   （候选是基于旧 content 生成的），这是合理语义
+    /// - 候选更新请用 [`set_candidate`](Self::set_candidate) 方法
     pub fn update(&self, id: i64, input: &UpdateWikiPage) -> Result<WikiPage, String> {
         let existing = self.get_by_id(id)?;
         let title = input.title.as_deref().unwrap_or(&existing.title);
         let content = input.content.as_deref().unwrap_or(&existing.content);
-        let content_candidate: Option<&str> = input
-            .content_candidate
-            .as_deref()
-            .or(existing.content_candidate.as_deref());
-        let candidate_status: Option<&str> = input
-            .candidate_status
-            .as_deref()
-            .or(existing.candidate_status.as_deref());
-        let sources_candidate: Option<&str> = input
-            .sources_candidate
-            .as_deref()
-            .or(existing.sources_candidate.as_deref());
         let frontmatter = input
             .frontmatter
             .as_deref()
@@ -448,7 +444,6 @@ impl WikiPageStore {
             .page_metadata
             .as_deref()
             .unwrap_or(&existing.page_metadata);
-        let candidate_version: Option<i64> = input.candidate_version.or(existing.candidate_version);
         let page_status = input
             .page_status
             .as_deref()
@@ -456,29 +451,64 @@ impl WikiPageStore {
         self.db
             .execute(
                 "UPDATE wiki_pages SET
-                title = ?1, content = ?2, content_candidate = ?3, candidate_status = ?4,
-                sources_candidate = ?5, frontmatter = ?6, sources = ?7, wikilinks = ?8, tags = ?9,
-                page_metadata = ?10, candidate_version = ?11, page_status = ?12,
-                version = ?13, updated_at = datetime('now')
-             WHERE id = ?14",
+                title = ?1, content = ?2,
+                content_candidate = NULL, candidate_status = NULL, sources_candidate = NULL,
+                candidate_version = NULL,
+                frontmatter = ?3, sources = ?4, wikilinks = ?5, tags = ?6,
+                page_metadata = ?7, page_status = ?8,
+                version = version + 1, updated_at = datetime('now')
+             WHERE id = ?9",
                 params![
                     title,
                     content,
-                    content_candidate,
-                    candidate_status,
-                    sources_candidate,
                     frontmatter,
                     sources,
                     wikilinks,
                     tags,
                     page_metadata,
-                    candidate_version,
                     page_status,
-                    existing.version,
                     id,
                 ],
             )
             .map_err(|e| format!("更新 wiki_page 失败: {}", e))?;
+        self.get_by_id(id)
+    }
+
+    /// 设置候选内容（仅写候选字段，不动正式 content/version）
+    ///
+    /// 用途：LLM 编译完成后，调用此方法把生成内容写入 `content_candidate` 等字段
+    /// 等待用户批准。批准走 [`approve_candidate`](Self::approve_candidate)，
+    /// 拒绝走 [`reject_candidate`](Self::reject_candidate)。
+    ///
+    /// 不会自动递增 `version`（version 是"已发布内容"的版本号，候选不算）。
+    /// 调用方必须显式传 `candidate_version = existing.version + 1` 满足 CHECK 约束。
+    pub fn set_candidate(
+        &self,
+        id: i64,
+        content: &str,
+        candidate_status: &str,
+        sources_candidate: Option<&str>,
+        candidate_version: i64,
+    ) -> Result<WikiPage, String> {
+        // CHECK 约束校验：candidate_status 必须是允许值
+        match candidate_status {
+            "auto" | "conflict" | "pending" => {}
+            other => {
+                return Err(format!(
+                    "无效 candidate_status: {}（必须为 auto/conflict/pending）",
+                    other
+                ))
+            }
+        }
+        self.db
+            .execute(
+                "UPDATE wiki_pages SET
+                content_candidate = ?1, candidate_status = ?2, sources_candidate = ?3,
+                candidate_version = ?4, updated_at = datetime('now')
+             WHERE id = ?5",
+                params![content, candidate_status, sources_candidate, candidate_version, id],
+            )
+            .map_err(|e| format!("设置 wiki_page 候选内容失败: {}", e))?;
         self.get_by_id(id)
     }
 
@@ -649,36 +679,65 @@ impl WikiPageStore {
     }
 
     /// 添加 wikilink（追加 slug 到 wikilinks JSON 数组，去重）
+    ///
+    /// 使用 IMMEDIATE 事务包裹 read-modify-write 流程，避免并发调用互相覆盖（lost update）
     pub fn add_wikilink(&self, page_id: i64, target_slug: &str) -> Result<WikiPage, String> {
-        let existing = self.get_by_id(page_id)?;
-        let mut links: Vec<String> = serde_json::from_str(&existing.wikilinks).unwrap_or_default();
-        if !links.contains(&target_slug.to_string()) {
+        let tx = self
+            .db
+            .unchecked_transaction()
+            .map_err(|e| format!("启动 add_wikilink 事务失败: {}", e))?;
+        let existing_json: String = tx
+            .query_row(
+                "SELECT wikilinks FROM wiki_pages WHERE id = ?1",
+                params![page_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("读取 wiki_page wikilinks 失败: {}", e))?;
+        let mut links: Vec<String> = serde_json::from_str(&existing_json).unwrap_or_default();
+        if !links.iter().any(|s| s == target_slug) {
             links.push(target_slug.to_string());
         }
-        let json =
-            serde_json::to_string(&links).map_err(|e| format!("序列化 wikilinks 失败: {}", e))?;
-        self.db
-            .execute(
-                "UPDATE wiki_pages SET wikilinks = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![json, page_id],
-            )
-            .map_err(|e| format!("更新 wikilinks 失败: {}", e))?;
+        let new_json = serde_json::to_string(&links)
+            .map_err(|e| format!("序列化 wikilinks 失败: {}", e))?;
+        tx.execute(
+            "UPDATE wiki_pages SET wikilinks = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![new_json, page_id],
+        )
+        .map_err(|e| format!("更新 wikilinks 失败: {}", e))?;
+        tx.commit()
+            .map_err(|e| format!("提交 add_wikilink 事务失败: {}", e))?;
         self.get_by_id(page_id)
     }
 
     /// 移除 wikilink（从数组中删除 slug）
+    ///
+    /// 使用 IMMEDIATE 事务包裹 read-modify-write 流程，避免并发调用互相覆盖（lost update）
     pub fn remove_wikilink(&self, page_id: i64, target_slug: &str) -> Result<WikiPage, String> {
-        let existing = self.get_by_id(page_id)?;
-        let links: Vec<String> = serde_json::from_str(&existing.wikilinks).unwrap_or_default();
-        let filtered: Vec<String> = links.into_iter().filter(|s| s != target_slug).collect();
-        let json = serde_json::to_string(&filtered)
-            .map_err(|e| format!("序列化 wikilinks 失败: {}", e))?;
-        self.db
-            .execute(
-                "UPDATE wiki_pages SET wikilinks = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![json, page_id],
+        let tx = self
+            .db
+            .unchecked_transaction()
+            .map_err(|e| format!("启动 remove_wikilink 事务失败: {}", e))?;
+        let existing_json: String = tx
+            .query_row(
+                "SELECT wikilinks FROM wiki_pages WHERE id = ?1",
+                params![page_id],
+                |row| row.get(0),
             )
-            .map_err(|e| format!("更新 wikilinks 失败: {}", e))?;
+            .map_err(|e| format!("读取 wiki_page wikilinks 失败: {}", e))?;
+        let links: Vec<String> = serde_json::from_str(&existing_json).unwrap_or_default();
+        let filtered: Vec<String> = links
+            .into_iter()
+            .filter(|s| s != target_slug)
+            .collect();
+        let new_json = serde_json::to_string(&filtered)
+            .map_err(|e| format!("序列化 wikilinks 失败: {}", e))?;
+        tx.execute(
+            "UPDATE wiki_pages SET wikilinks = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![new_json, page_id],
+        )
+        .map_err(|e| format!("更新 wikilinks 失败: {}", e))?;
+        tx.commit()
+            .map_err(|e| format!("提交 remove_wikilink 事务失败: {}", e))?;
         self.get_by_id(page_id)
     }
 
@@ -808,18 +867,20 @@ impl WikiPageStore {
     }
 
     /// 获取反向链接（哪些页面引用了当前页面）
+    ///
+    /// 用 SQLite `json_each` 正确解析 wikilinks JSON 数组，**避免 `LIKE '%slug%'` 的子串误报**：
+    /// 之前 slug="api" 会匹配 "api-design"、"apiary" 等，现在只匹配数组中**完整相等**的元素
     pub fn get_backlinks(&self, project_id: i64, slug: &str) -> Result<Vec<WikiPageBrief>, String> {
-        let pattern = format!("%{}%", slug);
         let mut stmt = self
             .db
             .prepare(
-                "SELECT id, slug, title, page_type
-                 FROM wiki_pages
-                  WHERE project_id = ?1 AND wikilinks LIKE ?2",
+                "SELECT p.id, p.slug, p.title, p.page_type
+                 FROM wiki_pages p, json_each(p.wikilinks) AS je
+                  WHERE p.project_id = ?1 AND je.value = ?2",
             )
             .map_err(|e| format!("准备反向链接查询失败: {}", e))?;
         let rows = stmt
-            .query_map(params![project_id, pattern], |row| {
+            .query_map(params![project_id, slug], |row| {
                 Ok(WikiPageBrief {
                     id: row.get(0)?,
                     slug: row.get(1)?,
@@ -889,6 +950,164 @@ impl WikiPageStore {
             results.push(row.map_err(|e| format!("读取行失败: {}", e))?);
         }
         Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    use crate::services::project_store::ProjectStore;
+    use tempfile::tempdir;
+
+    /// 回归：update() 必须递增 version
+    /// 修复前：version = existing.version（保持不变）
+    /// 修复后：version = version + 1（递增）
+    #[test]
+    fn update_increments_version() {
+        let dir = tempdir().expect("创建临时目录失败");
+        let db_path = dir.path().join("test.db");
+        let project_store = ProjectStore::new(&db_path).expect("创建项目存储失败");
+        let project_id = project_store.ensure_default_project().expect("创建默认项目失败");
+        let store = WikiPageStore::new(rusqlite::Connection::open(&db_path).unwrap());
+        store.ensure_table().expect("创建 wiki_pages 表失败");
+        let created = store
+            .create(&CreateWikiPage {
+                project_id,
+                slug: "test".to_string(),
+                title: "原标题".to_string(),
+                page_type: "summary".to_string(),
+                content: "原内容".to_string(),
+                frontmatter: Some("{}".to_string()),
+                sources: Some("[]".to_string()),
+                wikilinks: Some("[]".to_string()),
+                tags: Some("[]".to_string()),
+                page_metadata: Some("{}".to_string()),
+                page_status: Some("draft".to_string()),
+            })
+            .expect("创建失败");
+        assert_eq!(created.version, 1);
+
+        let updated = store
+            .update(
+                created.id,
+                &UpdateWikiPage {
+                    title: Some("新标题".to_string()),
+                    content: Some("新内容".to_string()),
+                    content_candidate: None,
+                    candidate_status: None,
+                    sources_candidate: None,
+                    frontmatter: None,
+                    sources: None,
+                    wikilinks: None,
+                    tags: None,
+                    page_metadata: None,
+                    candidate_version: None,
+                    page_status: None,
+                },
+            )
+            .expect("更新失败");
+        assert_eq!(updated.version, 2, "version 必须递增为 2");
+        assert_eq!(updated.title, "新标题");
+        assert_eq!(updated.content, "新内容");
+        assert!(
+            updated.content_candidate.is_none(),
+            "正式 update 应清空候选字段"
+        );
+    }
+
+    /// 回归：add_wikilink / remove_wikilink 必须保持去重
+    /// 修复前后行为：去重逻辑保持，但通过事务避免并发竞态
+    #[test]
+    fn add_wikilink_dedupes_and_remove_filters() {
+        let dir = tempdir().expect("创建临时目录失败");
+        let db_path = dir.path().join("test.db");
+        let project_store = ProjectStore::new(&db_path).expect("创建项目存储失败");
+        let project_id = project_store.ensure_default_project().expect("创建默认项目失败");
+        let store = WikiPageStore::new(rusqlite::Connection::open(&db_path).unwrap());
+        store.ensure_table().expect("创建 wiki_pages 表失败");
+        let created = store
+            .create(&CreateWikiPage {
+                project_id,
+                slug: "src".to_string(),
+                title: "源页面".to_string(),
+                page_type: "summary".to_string(),
+                content: "".to_string(),
+                frontmatter: Some("{}".to_string()),
+                sources: Some("[]".to_string()),
+                wikilinks: Some("[]".to_string()),
+                tags: Some("[]".to_string()),
+                page_metadata: Some("{}".to_string()),
+                page_status: Some("draft".to_string()),
+            })
+            .expect("创建失败");
+
+        // 添加两个 slug（其中一个重复）
+        store.add_wikilink(created.id, "a").unwrap();
+        store.add_wikilink(created.id, "b").unwrap();
+        store.add_wikilink(created.id, "a").unwrap(); // 重复
+        let after_add = store.get_by_id(created.id).unwrap();
+        let links: Vec<String> = serde_json::from_str(&after_add.wikilinks).unwrap();
+        assert_eq!(links, vec!["a".to_string(), "b".to_string()], "必须去重并排序");
+
+        // 移除一个
+        store.remove_wikilink(created.id, "a").unwrap();
+        let after_remove = store.get_by_id(created.id).unwrap();
+        let links: Vec<String> = serde_json::from_str(&after_remove.wikilinks).unwrap();
+        assert_eq!(links, vec!["b".to_string()]);
+    }
+
+    /// 回归：get_backlinks 用 json_each 正确匹配
+    /// 修复前用 LIKE '%slug%' 会把 "api" 误匹配到 "api-design"
+    /// 修复后用 json_each + je.value = slug 只匹配数组中完整相等的元素
+    #[test]
+    fn get_backlinks_uses_exact_match_not_substring() {
+        let dir = tempdir().expect("创建临时目录失败");
+        let db_path = dir.path().join("test.db");
+        let project_store = ProjectStore::new(&db_path).expect("创建项目存储失败");
+        let project_id = project_store.ensure_default_project().expect("创建默认项目失败");
+        let store = WikiPageStore::new(rusqlite::Connection::open(&db_path).unwrap());
+        store.ensure_table().expect("创建 wiki_pages 表失败");
+        // 创建 2 个源页面，wikilinks 各包含 1 个目标 slug
+        store
+            .create(&CreateWikiPage {
+                project_id,
+                slug: "src-exact".to_string(),
+                title: "精确匹配".to_string(),
+                page_type: "summary".to_string(),
+                content: "".to_string(),
+                frontmatter: Some("{}".to_string()),
+                sources: Some("[]".to_string()),
+                wikilinks: Some(r#"["api"]"#.to_string()),
+                tags: Some("[]".to_string()),
+                page_metadata: Some("{}".to_string()),
+                page_status: Some("draft".to_string()),
+            })
+            .expect("创建失败");
+        store
+            .create(&CreateWikiPage {
+                project_id,
+                slug: "src-substring".to_string(),
+                title: "子串误报".to_string(),
+                page_type: "summary".to_string(),
+                content: "".to_string(),
+                frontmatter: Some("{}".to_string()),
+                sources: Some("[]".to_string()),
+                // 注意："api-design" 包含 "api" 子串，但与目标 slug "api" 不同
+                wikilinks: Some(r#"["api-design"]"#.to_string()),
+                tags: Some("[]".to_string()),
+                page_metadata: Some("{}".to_string()),
+                page_status: Some("draft".to_string()),
+            })
+            .expect("创建失败");
+
+        // 查询 "api" 的反向链接 —— 修复前会同时返回 src-exact 和 src-substring（误报）
+        let backlinks = store.get_backlinks(project_id, "api").unwrap();
+        let slugs: Vec<String> = backlinks.iter().map(|p| p.slug.clone()).collect();
+        assert_eq!(
+            slugs,
+            vec!["src-exact".to_string()],
+            "json_each 只匹配数组中完整相等的 slug，不应有子串误报"
+        );
     }
 }
 

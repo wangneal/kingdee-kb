@@ -552,7 +552,11 @@ impl ProjectStore {
         Ok(())
     }
 
-    pub fn set_current_phase(&mut self, project_id: i64, phase_key: &str) -> Result<(), String> {
+    /// 设置项目的当前阶段。
+    ///
+    /// 用 `unchecked_transaction()` 包裹 3 步写入，**使用 `&self`**（其他方法都 `&self`），
+    /// 允许通过共享引用（`Arc<Mutex<ProjectStore>>`）并发调用
+    pub fn set_current_phase(&self, project_id: i64, phase_key: &str) -> Result<(), String> {
         let phase_index = PHASE_KEYS
             .iter()
             .position(|key| *key == phase_key)
@@ -562,7 +566,7 @@ impl ProjectStore {
         self.ensure_project_active(project_id)?;
         let transaction = self
             .db
-            .transaction()
+            .unchecked_transaction()
             .map_err(|e| format!("启动项目阶段事务失败: {}", e))?;
         transaction
             .execute(
@@ -826,7 +830,7 @@ mod tests {
     fn set_current_phase_updates_project_and_phase_statuses() {
         let dir = tempdir().expect("创建临时目录失败");
         let db_path = dir.path().join("metadata.db");
-        let mut store = ProjectStore::new(&db_path).expect("创建项目存储失败");
+        let store = ProjectStore::new(&db_path).expect("创建项目存储失败");
         let project_id = store.ensure_default_project().expect("创建默认项目失败");
 
         store
