@@ -1143,6 +1143,15 @@ function SessionDetailView({
                     保存为问答记录
                   </button>
                 )}
+                {newAnswer.trim() && (
+                  <button
+                    type="button"
+                    onClick={handleSaveReport}
+                    className="flex-1 text-center bg-[#1A6BD8] text-white rounded py-1 text-[10px] font-medium hover:bg-[#1558B0] transition-colors"
+                  >
+                    保存报告
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -1179,6 +1188,19 @@ function SessionDetailView({
       onUpdated()
     } catch (err) {
       toast.error(String(err))
+    }
+  }
+
+  const handleSaveReport = async () => {
+    if (!newAnswer.trim()) return
+    try {
+      const dest = await save({
+        defaultPath: `调研报告_${session.title}.md`,
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      })
+      if (dest) await invoke("export_report", { content: newAnswer, filePath: dest })
+    } catch (err) {
+      toast.error(`保存调研报告失败: ${String(err)}`)
     }
   }
 

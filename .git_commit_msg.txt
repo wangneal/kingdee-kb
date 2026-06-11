@@ -1,0 +1,6 @@
+feat: 调研报告生成后可通过保存按钮落盘
+
+handleGenerateReport 完成后报告内容在 Copilot Tab 流式展示，
+新增 handleSaveReport 将 newAnswer 保存为 Markdown 文件
+（默认文件名：调研报告_${session.title}.md）。
+保存按钮条件显示（有内容才出现），放在复制按钮左侧。
