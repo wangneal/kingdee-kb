@@ -301,6 +301,25 @@ impl WikiPageStore {
         )
     }
 
+    /// 列出项目下所有页面的 (slug, title) 对，轻量查询（不加载 content）
+    /// 用途：编译 prompt 时告知 LLM 项目已有页面，让 LLM 用 `[[slug]]` 引用
+    pub fn list_slugs(&self, project_id: i64) -> Result<Vec<(String, String)>, String> {
+        let mut stmt = self
+            .db
+            .prepare("SELECT slug, title FROM wiki_pages WHERE project_id = ?1 ORDER BY id ASC")
+            .map_err(|e| format!("准备 slug 列表查询失败: {}", e))?;
+        let rows = stmt
+            .query_map(params![project_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| format!("执行 slug 列表查询失败: {}", e))?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| format!("读取 slug 行失败: {}", e))?);
+        }
+        Ok(result)
+    }
+
     /// 列出项目下的所有页面，可按状态过滤
     pub fn list(
         &self,

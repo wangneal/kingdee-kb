@@ -20,6 +20,14 @@ static RE_MD_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?s)```markdown\s*\n?(.*?)```").expect("编译正则失败: RE_MD_BLOCK")
 });
 
+/// 匹配 wiki 链接 `[[slug]]` 或 `[[slug|显示文本]]`
+/// - 捕获组 1：slug 部分（不含 | 显示文本）
+/// - 排除 `[[ ]]`（空 slug）和 `[[ |xxx]]`（无 slug）
+static RE_WIKILINK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[\[([^\[\]\|\n]+?)(?:\|[^\]\n]+)?\]\]")
+        .expect("编译正则失败: RE_WIKILINK")
+});
+
 use crate::services::analysis_cache::AnalysisCacheStore;
 use crate::services::document_analysis::{AnalysisOrchestrator, DocumentAnalysis, EngineType};
 use crate::services::ingest_cache::{CreateIngestCache, IngestCacheStore};
@@ -220,10 +228,29 @@ async fn run_llm_compilation(
     };
     let page_slug = slugify(&page_title);
 
-    let prompt = build_compilation_prompt(analysis);
+    // 查询项目已有页面 slug，让 LLM 在正文中用 [[slug]] 引用它们
+    let existing_slugs: Vec<(String, String)> = {
+        let store = wiki_pages
+            .lock()
+            .map_err(|e| format!("wiki_pages 锁失败: {}", e))?;
+        store.list_slugs(project_id)?
+    };
+
+    let prompt = build_compilation_prompt(analysis, &existing_slugs);
 
     let (generated_content, generated_tags) =
         call_llm_for_compilation(&prompt, &page_title, provider_manager).await?;
+
+    // 从生成的 markdown 中提取 [[slug]] 形式的 wiki 链接
+    // valid_slugs 用项目已有 slug（不含当前正在生成的 page_slug，避免自引用）
+    let valid_slugs: Vec<String> = existing_slugs
+        .iter()
+        .map(|(s, _)| s.clone())
+        .filter(|s| s != &page_slug)
+        .collect();
+    let wikilinks = parse_wikilinks_from_markdown(&generated_content, &valid_slugs);
+    let wikilinks_json = serde_json::to_string(&wikilinks)
+        .map_err(|e| format!("序列化 wikilinks 失败: {}", e))?;
 
     let sources_json = serde_json::json!([{
         "source_id": serde_json::Value::Null,
@@ -240,13 +267,16 @@ async fn run_llm_compilation(
         &generated_content,
         &generated_tags,
         Some(sources_json),
+        Some(wikilinks_json),
     )?;
 
     Ok(vec![slug])
 }
 
 /// 构造 LLM 编译提示词（从 DocumentAnalysis 生成 wiki 页面内容）
-fn build_compilation_prompt(analysis: &DocumentAnalysis) -> String {
+///
+/// `existing_slugs` 项目已有页面 slug 列表，让 LLM 用 `[[slug]]` 引用它们
+fn build_compilation_prompt(analysis: &DocumentAnalysis, existing_slugs: &[(String, String)]) -> String {
     let keywords_str = analysis
         .keywords
         .iter()
@@ -271,6 +301,17 @@ fn build_compilation_prompt(analysis: &DocumentAnalysis) -> String {
         .collect::<Vec<String>>()
         .join("\n");
 
+    // 项目已有页面列表（slug - 标题）。让 LLM 在正文中用 [[slug]] 引用
+    let existing_pages_str: String = if existing_slugs.is_empty() {
+        "（暂无，这是项目第一个页面）".to_string()
+    } else {
+        existing_slugs
+            .iter()
+            .map(|(s, t)| format!("- `{}` ({})", s, t))
+            .collect::<Vec<String>>()
+            .join("\n")
+    };
+
     format!(
         r#"你是一个知识库维基页面生成专家。请根据以下文档分析结果，生成一篇维基百科风格的页面内容。
 
@@ -289,12 +330,21 @@ fn build_compilation_prompt(analysis: &DocumentAnalysis) -> String {
 ## 交叉引用
 {cross_refs}
 
+## 项目已有页面（可被引用）
+
+{existing_pages}
+
+如果当前文档的内容涉及上述任何页面，请在正文中用 Obsidian 风格的 `[[slug]]` 或 `[[slug|显示文本]]` 引用它们。
+例如：本文档可以参考 `[[other-page-slug]]` 中的详细说明。
+**重要**：只能引用上述列表中的 slug，不要编造不存在的页面。
+
 ## 输出要求
 
 1. 生成标准 Markdown 格式内容，以 YAML 前置元数据开头
 2. 第一段必须是页面概述（200 字以内）
 3. 随后展开详细内容，引用文档中的要点
-4. 输出格式（严格按此结构，``` 不可省略）：
+4. 涉及相关概念时优先用 `[[slug]]` 引用项目已有页面（而不是普通文本）
+5. 输出格式（严格按此结构，``` 不可省略）：
 
 ```yaml
 tags: [标签1, 标签2, 标签3]
@@ -307,7 +357,7 @@ tags: [标签1, 标签2, 标签3]
 
 ## 正文
 
-（详细展开内容）
+（详细展开内容，含 `[[slug]]` 引用）
 ```"#,
         title = analysis.title,
         keywords = keywords_str,
@@ -317,6 +367,7 @@ tags: [标签1, 标签2, 标签3]
         language = analysis.language,
         headings = headings_str,
         cross_refs = cross_refs_str,
+        existing_pages = existing_pages_str,
     )
 }
 
@@ -425,9 +476,51 @@ fn normalize_tags_json(tags: &str) -> Result<String, String> {
     serde_json::to_string(&values).map_err(|e| format!("序列化 tags 失败: {}", e))
 }
 
+/// 从 markdown 正文中提取 `[[slug]]` 形式的 wiki 链接，过滤掉无效 slug
+///
+/// 设计目的：知识图谱 S1 (wikilink) 信号需要从 `wiki_pages.wikilinks` 字段读取。
+/// 之前 wikilinks 字段被硬编码为 `"[]"`，导致知识图谱永远 0 条边（除非手动 add_wikilink）。
+/// 本函数把 LLM 生成的 markdown 中的 `[[slug]]` 链接提取出来写入 wikilinks 字段。
+///
+/// 防御措施：
+/// - 仅返回 `valid_slugs` 中已存在的 slug（防止 LLM 幻觉产生的无效 slug 进入数据库）
+/// - 去重（同一 slug 多次出现只算一次）
+/// - 排序（保证写入顺序稳定）
+///
+/// 格式支持：
+/// - `[[slug]]` — 简单形式
+/// - `[[slug|显示文本]]` — 带显示文本，提取 slug 部分
+/// - 排除 `[[]]`、`[[ |xxx]]`、`[[空]]`
+pub fn parse_wikilinks_from_markdown(markdown: &str, valid_slugs: &[String]) -> Vec<String> {
+    let valid_set: std::collections::HashSet<&str> =
+        valid_slugs.iter().map(|s| s.as_str()).collect();
+    let mut found: Vec<String> = RE_WIKILINK
+        .captures_iter(markdown)
+        .filter_map(|cap| {
+            let slug = cap[1].trim().to_string();
+            if slug.is_empty() {
+                None
+            } else if valid_set.is_empty() || valid_set.contains(slug.as_str()) {
+                Some(slug)
+            } else {
+                warn!("wikilink 指向不存在的 slug，已过滤: {}", slug);
+                None
+            }
+        })
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
 // ─── Wiki 页面写入 ───
 
 /// 创建或更新 wiki 页面（写入 content_candidate，不直接修改 content）
+///
+/// `wikilinks`: 从 LLM 生成的 markdown 中提取的 `[[slug]]` 引用列表（JSON 字符串）
+/// - 新页面：直接写入 `wikilinks` 字段
+/// - 已有页面：候选阶段不覆盖 `wikilinks`（与 sources 同样的设计：wikilinks 反映已批准 content）
+///   新 wikilinks 应在 approve_candidate 时一起提交
 fn write_or_update_wiki_page(
     wiki_pages: &Arc<Mutex<WikiPageStore>>,
     project_id: i64,
@@ -436,6 +529,7 @@ fn write_or_update_wiki_page(
     content: &str,
     tags: &str,
     sources: Option<String>,
+    wikilinks: Option<String>,
 ) -> Result<String, String> {
     let store = wiki_pages
         .lock()
@@ -497,7 +591,9 @@ fn write_or_update_wiki_page(
             content: String::new(),
             frontmatter: Some("{}".to_string()),
             sources: sources.clone().or(Some("[]".to_string())),
-            wikilinks: Some("[]".to_string()),
+            // 关键修复：写入 LLM 从 markdown 中提取的 wikilinks（之前硬编码 "[]"）
+            // → 知识图谱 S1 (wikilink) 信号能正确生成边
+            wikilinks: wikilinks.clone().or(Some("[]".to_string())),
             tags: Some(tags.to_string()),
             page_metadata: Some("{}".to_string()),
             page_status: Some("draft".to_string()),
@@ -753,4 +849,138 @@ mod tests {
 
     // 单元测试说明：Issue 2 修复后，sources_has_valid_document_id + 8 个相关测试已移除
     // （设计决策改为 sources 永远不通过候选路径覆盖）
+
+    // ─── parse_wikilinks_from_markdown 单元测试 ───
+
+    #[test]
+    fn wikilink_extracts_simple_form() {
+        let valid = vec!["page-a".to_string(), "page-b".to_string()];
+        let md = "本文参考 [[page-a]] 和 [[page-b]]。";
+        assert_eq!(
+            parse_wikilinks_from_markdown(md, &valid),
+            vec!["page-a".to_string(), "page-b".to_string()]
+        );
+    }
+
+    #[test]
+    fn wikilink_extracts_alias_form() {
+        let valid = vec!["page-a".to_string()];
+        let md = "参考 [[page-a|显示文本]] 的说明。";
+        assert_eq!(
+            parse_wikilinks_from_markdown(md, &valid),
+            vec!["page-a".to_string()]
+        );
+    }
+
+    #[test]
+    fn wikilink_dedup() {
+        let valid = vec!["page-a".to_string()];
+        let md = "[[page-a]] 再次 [[page-a]] 第三次 [[page-a]]";
+        assert_eq!(
+            parse_wikilinks_from_markdown(md, &valid),
+            vec!["page-a".to_string()]
+        );
+    }
+
+    #[test]
+    fn wikilink_sorted() {
+        let valid = vec![
+            "zeta".to_string(),
+            "alpha".to_string(),
+            "mu".to_string(),
+        ];
+        let md = "[[zeta]] [[alpha]] [[mu]]";
+        assert_eq!(
+            parse_wikilinks_from_markdown(md, &valid),
+            vec![
+                "alpha".to_string(),
+                "mu".to_string(),
+                "zeta".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn wikilink_filters_invalid_slug() {
+        // 关键防御：LLM 可能输出不存在的 slug
+        let valid = vec!["real-page".to_string()];
+        let md = "[[real-page]] 引用了 [[hallucinated-page]]";
+        assert_eq!(
+            parse_wikilinks_from_markdown(md, &valid),
+            vec!["real-page".to_string()]
+        );
+    }
+
+    #[test]
+    fn wikilink_empty_valid_accepts_all() {
+        // valid_slugs 为空时不验证（向后兼容：未传项目 slugs 时也能提取）
+        let md = "[[any-slug]] [[other-slug]]";
+        assert_eq!(
+            parse_wikilinks_from_markdown(md, &[]),
+            vec!["any-slug".to_string(), "other-slug".to_string()]
+        );
+    }
+
+    #[test]
+    fn wikilink_handles_chinese_slug() {
+        let valid = vec!["金蝶云星空".to_string()];
+        let md = "参考 [[金蝶云星空]] 文档。";
+        assert_eq!(
+            parse_wikilinks_from_markdown(md, &valid),
+            vec!["金蝶云星空".to_string()]
+        );
+    }
+
+    #[test]
+    fn wikilink_ignores_empty_brackets() {
+        let valid = vec!["page-a".to_string()];
+        let md = "[[]] [[ ]] [[ |xxx]]"; // 空 slug
+        assert_eq!(
+            parse_wikilinks_from_markdown(md, &valid),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn wikilink_ignores_in_code_blocks() {
+        // 缺陷案例：当前实现会把代码块里的 [[xxx]] 也当成 wikilink
+        // 这里验证现状（不修复，避免过度工程）
+        let valid = vec!["in-code".to_string()];
+        let md = "```\n[[in-code]]\n```";
+        // 现状：代码块中的 [[xxx]] 也会被提取
+        assert_eq!(
+            parse_wikilinks_from_markdown(md, &valid),
+            vec!["in-code".to_string()]
+        );
+    }
+
+    #[test]
+    fn wikilink_complex_real_world() {
+        // 注：字符串按字节排序（Rust 默认 Ord），中文 3 字节 UTF-8 的排序结果可能与 Unicode 字典序不同
+        // 本测试只验证去重 + 有效性，不假设具体顺序
+        let valid = vec![
+            "需求分析".to_string(),
+            "系统设计".to_string(),
+            "技术栈".to_string(),
+        ];
+        let md = r#"## 概述
+
+本文档描述了 [[需求分析]] 的方法论。
+
+## 设计
+
+参考 [[系统设计|系统设计文档]] 和 [[技术栈]] 的选型。
+        "#;
+        let result = parse_wikilinks_from_markdown(md, &valid);
+        // 三个有效 slug 都被提取
+        assert_eq!(result.len(), 3);
+        assert!(result.contains(&"需求分析".to_string()));
+        assert!(result.contains(&"系统设计".to_string()));
+        assert!(result.contains(&"技术栈".to_string()));
+        // 无重复
+        let mut sorted = result.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 3);
+    }
 }

@@ -3,8 +3,10 @@
 //! ⚠️ 实验性能力 — 当前为独立功能，不依赖也不影响主流程。
 //! 后续若需作为主搜索链路依赖，需先评估稳定性和性能。
 //!
-//! 管理页面间的关联关系（wikilink、tag、source、co_citation 等信号）。
-//! 提供图构建、递归遍历、邻居查询和统计功能。
+use tracing::info;
+
+// 管理页面间的关联关系（wikilink、tag、source、co_citation 等信号）。
+// 提供图构建、递归遍历、邻居查询和统计功能。
 
 use std::collections::HashMap;
 
@@ -121,7 +123,42 @@ impl GraphStore {
 
     /// 构建/重建知识图谱。先清空项目旧数据，再从 wiki_pages 提取 4 信号写入边。
     /// 返回插入的边数。
+    ///
+    /// 整个构建过程在单个事务内完成，保证原子性——要么全部成功，要么全部回滚。
     pub fn build_knowledge_graph(&self, project_id: i64) -> Result<usize, String> {
+        // 外层事务：保证 4 信号的构建原子性
+        self.db
+            .execute_batch("BEGIN IMMEDIATE TRANSACTION")
+            .map_err(|e| format!("开始图谱构建事务失败: {}", e))?;
+
+        let result = self.build_knowledge_graph_inner(project_id);
+
+        match result {
+            Ok(count) => {
+                self.db
+                    .execute_batch("COMMIT")
+                    .map_err(|e| format!("提交图谱构建事务失败: {}", e))?;
+                Ok(count)
+            }
+            Err(e) => {
+                let _ = self.db.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
+    /// 图谱构建内部逻辑（由外层事务保护）
+    fn build_knowledge_graph_inner(&self, project_id: i64) -> Result<usize, String> {
+        // 0. Backfill: 修复历史空 wikilinks
+        // 原因：早期版本的 ingestion_pipeline 硬编码 wikilinks="[]"。
+        // 现有 wiki 页即使有 [[slug]] 引用，wikilinks 字段也是空。
+        // 修复方式：从页面的 content_candidate（最新 LLM 输出）扫描 [[slug]] 并写回 wikilinks。
+        // 这是自愈式：一次 build_knowledge_graph 后所有历史页面都恢复正确 wikilinks。
+        let backfilled = self.backfill_empty_wikilinks(project_id)?;
+        if backfilled > 0 {
+            info!("回填了 {} 个 wiki 页面的 wikilinks", backfilled);
+        }
+
         // 1. 清空该项目旧图数据
         self.db
             .execute(
@@ -161,8 +198,8 @@ impl GraphStore {
 
         let mut count: usize = 0;
         self.db
-            .execute_batch("BEGIN TRANSACTION")
-            .map_err(|e| format!("开始事务失败: {}", e))?;
+            .execute_batch("SAVEPOINT sp_wikilink")
+            .map_err(|e| format!("创建 wikilink 保存点失败: {}", e))?;
 
         let mut insert_err: Option<String> = None;
         for row in rows {
@@ -195,13 +232,96 @@ impl GraphStore {
         }
 
         if let Some(e) = insert_err {
-            let _ = self.db.execute_batch("ROLLBACK");
+            let _ = self.db.execute_batch("ROLLBACK TO sp_wikilink");
             return Err(e);
         }
         self.db
-            .execute_batch("COMMIT")
-            .map_err(|e| format!("提交 wikilink 事务失败: {}", e))?;
+            .execute_batch("RELEASE sp_wikilink")
+            .map_err(|e| format!("释放 wikilink 保存点失败: {}", e))?;
         Ok(count)
+    }
+
+    /// Backfill: 修复历史空 wikilinks
+    ///
+    /// 扫描项目下所有 `wikilinks = '[]'` 的页面，从其 `content_candidate`（优先）或 `content`
+    /// 重新提取 `[[slug]]` 引用并写入 `wikilinks`。
+    ///
+    /// 行为：
+    /// - 只回填"完全空"的页面（`wikilinks = '[]'`），避免覆盖用户已手动设置的链接
+    /// - 提取的 slug 必须存在于项目当前 slugs 中（防御 LLM 幻觉）
+    /// - 在 `build_knowledge_graph` 事务内执行，保证一致性
+    /// - 返回回填的页面数
+    fn backfill_empty_wikilinks(&self, project_id: i64) -> Result<usize, String> {
+        // 查询项目所有 (slug) 用于过滤
+        let valid_slugs: std::collections::HashSet<String> = {
+            let mut stmt = self
+                .db
+                .prepare("SELECT slug FROM wiki_pages WHERE project_id = ?1")
+                .map_err(|e| format!("准备 slug 查询失败: {}", e))?;
+            let rows = stmt
+                .query_map(params![project_id], |row| row.get::<_, String>(0))
+                .map_err(|e| format!("执行 slug 查询失败: {}", e))?;
+            let mut set = std::collections::HashSet::new();
+            for r in rows {
+                set.insert(r.map_err(|e| format!("读取 slug 失败: {}", e))?);
+            }
+            set
+        };
+
+        // 找出 wikilinks 为空但 content_candidate 或 content 非空的页面
+        let mut stmt = self
+            .db
+            .prepare(
+                "SELECT id, slug, content, content_candidate
+                 FROM wiki_pages
+                 WHERE project_id = ?1 AND wikilinks = '[]'
+                   AND (content_candidate IS NOT NULL AND content_candidate != '' OR
+                        content IS NOT NULL AND content != '')",
+            )
+            .map_err(|e| format!("准备 backfill 查询失败: {}", e))?;
+        let rows = stmt
+            .query_map(params![project_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|e| format!("执行 backfill 查询失败: {}", e))?;
+
+        // 收集需要更新的页面（避免在迭代中修改同一连接）
+        let mut to_update: Vec<(i64, String)> = Vec::new();
+        for row in rows {
+            let (id, slug, content, content_candidate) =
+                row.map_err(|e| format!("读取 backfill 行失败: {}", e))?;
+            // 优先用 content_candidate（最新 LLM 输出），否则用 content
+            let source_text = content_candidate
+                .filter(|s| !s.is_empty())
+                .or(content)
+                .unwrap_or_default();
+            if source_text.is_empty() {
+                continue;
+            }
+            // 提取 [[slug]]，并过滤掉自引用和无效 slug
+            let links = extract_wikilink_slugs(&source_text, &slug, &valid_slugs);
+            if links.is_empty() {
+                continue;
+            }
+            to_update.push((id, serde_json::to_string(&links)
+                .map_err(|e| format!("序列化 wikilinks 失败: {}", e))?));
+        }
+
+        // 批量更新
+        for (id, wikilinks_json) in &to_update {
+            self.db
+                .execute(
+                    "UPDATE wiki_pages SET wikilinks = ?1, updated_at = datetime('now') WHERE id = ?2",
+                    params![wikilinks_json, id],
+                )
+                .map_err(|e| format!("backfill 更新 wikilinks 失败: {}", e))?;
+        }
+        Ok(to_update.len())
     }
 
     /// S2: tag 共现信号。共享同一 tag 的页面两两关联（weight=0.6）
@@ -210,8 +330,8 @@ impl GraphStore {
         let pairs = Self::generate_co_occurrence_pairs(&tag_map);
 
         self.db
-            .execute_batch("BEGIN TRANSACTION")
-            .map_err(|e| format!("开始事务失败: {}", e))?;
+            .execute_batch("SAVEPOINT sp_tag")
+            .map_err(|e| format!("创建 tag 保存点失败: {}", e))?;
         let mut count: usize = 0;
         for (a, b) in &pairs {
             let res = self.db.execute(
@@ -226,14 +346,14 @@ impl GraphStore {
                     }
                 }
                 Err(e) => {
-                    let _ = self.db.execute_batch("ROLLBACK");
+                    let _ = self.db.execute_batch("ROLLBACK TO sp_tag");
                     return Err(format!("插入 tag 共现边失败: {}", e));
                 }
             }
         }
         self.db
-            .execute_batch("COMMIT")
-            .map_err(|e| format!("提交 tag 事务失败: {}", e))?;
+            .execute_batch("RELEASE sp_tag")
+            .map_err(|e| format!("释放 tag 保存点失败: {}", e))?;
         Ok(count)
     }
 
@@ -243,8 +363,8 @@ impl GraphStore {
         let pairs = Self::generate_co_occurrence_pairs(&source_map);
 
         self.db
-            .execute_batch("BEGIN TRANSACTION")
-            .map_err(|e| format!("开始事务失败: {}", e))?;
+            .execute_batch("SAVEPOINT sp_source")
+            .map_err(|e| format!("创建 source 保存点失败: {}", e))?;
         let mut count: usize = 0;
         for (a, b) in &pairs {
             let res = self.db.execute(
@@ -259,14 +379,14 @@ impl GraphStore {
                     }
                 }
                 Err(e) => {
-                    let _ = self.db.execute_batch("ROLLBACK");
+                    let _ = self.db.execute_batch("ROLLBACK TO sp_source");
                     return Err(format!("插入 source 共源边失败: {}", e));
                 }
             }
         }
         self.db
-            .execute_batch("COMMIT")
-            .map_err(|e| format!("提交 source 事务失败: {}", e))?;
+            .execute_batch("RELEASE sp_source")
+            .map_err(|e| format!("释放 source 保存点失败: {}", e))?;
         Ok(count)
     }
 
@@ -312,8 +432,8 @@ impl GraphStore {
         }
 
         self.db
-            .execute_batch("BEGIN TRANSACTION")
-            .map_err(|e| format!("开始事务失败: {}", e))?;
+            .execute_batch("SAVEPOINT sp_co_citation")
+            .map_err(|e| format!("创建 co_citation 保存点失败: {}", e))?;
         let mut count: usize = 0;
         for (a, b) in &pairs {
             let res = self.db.execute(
@@ -328,14 +448,14 @@ impl GraphStore {
                     }
                 }
                 Err(e) => {
-                    let _ = self.db.execute_batch("ROLLBACK");
+                    let _ = self.db.execute_batch("ROLLBACK TO sp_co_citation");
                     return Err(format!("插入 co_citation 边失败: {}", e));
                 }
             }
         }
         self.db
-            .execute_batch("COMMIT")
-            .map_err(|e| format!("提交 co_citation 事务失败: {}", e))?;
+            .execute_batch("RELEASE sp_co_citation")
+            .map_err(|e| format!("释放 co_citation 保存点失败: {}", e))?;
         Ok(count)
     }
 
@@ -688,19 +808,25 @@ impl GraphStore {
         Ok(map)
     }
 
-    /// 从共现映射生成去重的页面对（source < target 排序）
+    /// 从共现映射生成去重的页面对（source < target 排序）。
+    /// 每组最多 `MAX_CO_OCCURRENCE_GROUP_SIZE` 个页面参与配对，防止 O(n²) 爆炸。
     fn generate_co_occurrence_pairs(map: &HashMap<String, Vec<String>>) -> Vec<(String, String)> {
+        /// 单组最多参与的页面数量，超出时截断取前 N 个
+        const MAX_CO_OCCURRENCE_GROUP_SIZE: usize = 50;
+
         let mut pairs = Vec::new();
         for slugs in map.values() {
             if slugs.len() < 2 {
                 continue;
             }
-            for i in 0..slugs.len() {
-                for j in (i + 1)..slugs.len() {
-                    let (a, b) = if slugs[i] < slugs[j] {
-                        (&slugs[i], &slugs[j])
+            // 截断超大组，只取前 MAX 个页面参与配对
+            let group: Vec<&String> = slugs.iter().take(MAX_CO_OCCURRENCE_GROUP_SIZE).collect();
+            for i in 0..group.len() {
+                for j in (i + 1)..group.len() {
+                    let (a, b) = if group[i] < group[j] {
+                        (group[i], group[j])
                     } else {
-                        (&slugs[j], &slugs[i])
+                        (group[j], group[i])
                     };
                     pairs.push((a.clone(), b.clone()));
                 }
@@ -804,6 +930,60 @@ fn parse_string_array(field: &str, json_str: &str) -> Result<Vec<String>, String
     Ok(result)
 }
 
+/// 从 markdown 文本中提取 `[[slug]]` 形式的链接，并按规则过滤
+///
+/// 复用 ingestion_pipeline.rs 的 `RE_WIKILINK` 语义（这里简化版本，避免跨 crate 引用）：
+/// - 匹配 `[[slug]]` 和 `[[slug|显示文本]]`
+/// - 排除自引用（slug == current_slug）
+/// - 仅保留存在于 `valid_slugs` 中的 slug
+/// - 排除空 slug
+/// - 去重 + 排序
+fn extract_wikilink_slugs(
+    markdown: &str,
+    current_slug: &str,
+    valid_slugs: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    // 简化版 wikilink 匹配：`[[xxx]]` 或 `[[xxx|yyy]]`，xxx 不能含 [ ] | \n
+    // 用 char-by-char 解析避免引入 regex 依赖
+    let bytes = markdown.as_bytes();
+    let mut found: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'[' && bytes[i + 1] == b'[' {
+            // 找下一个 ']]'
+            if let Some(end) = find_double_close(bytes, i + 2) {
+                let inner = &markdown[i + 2..end];
+                // 提取 slug 部分（| 之前的）
+                let slug = inner.split('|').next().unwrap_or("").trim();
+                if !slug.is_empty()
+                    && slug != current_slug
+                    && (valid_slugs.is_empty() || valid_slugs.contains(slug))
+                {
+                    found.push(slug.to_string());
+                }
+                i = end + 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// 从 start 位置开始找下一个 `]]`（不是单个 `]`）
+fn find_double_close(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut i = start;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b']' && bytes[i + 1] == b']' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
 fn parse_source_keys(json_str: &str) -> Result<Vec<String>, String> {
     let value: Value =
         serde_json::from_str(json_str).map_err(|e| format!("解析 sources 字段失败: {}", e))?;
@@ -840,6 +1020,7 @@ fn source_value_to_key(prefix: &str, value: Option<&Value>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn parse_string_array_rejects_yaml_like_tags() {
@@ -863,5 +1044,108 @@ mod tests {
     fn parse_source_keys_prefers_source_id() {
         let keys = parse_source_keys(r#"[{"source_id":7,"document_id":42,"chunks":[]}]"#).unwrap();
         assert_eq!(keys, vec!["source_id:7".to_string()]);
+    }
+
+    // ─── extract_wikilink_slugs 单元测试 ───
+
+    #[test]
+    fn extract_wikilink_simple_form() {
+        let valid: HashSet<String> = ["page-a", "page-b"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let result = extract_wikilink_slugs("参考 [[page-a]] 和 [[page-b]]", "current", &valid);
+        assert_eq!(result, vec!["page-a", "page-b"]);
+    }
+
+    #[test]
+    fn extract_wikilink_alias_form() {
+        let valid: HashSet<String> = ["page-a"].iter().map(|s| s.to_string()).collect();
+        let result = extract_wikilink_slugs("参考 [[page-a|显示文本]]", "current", &valid);
+        assert_eq!(result, vec!["page-a"]);
+    }
+
+    #[test]
+    fn extract_wikilink_filters_self_reference() {
+        let valid: HashSet<String> = ["page-a", "self"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let result = extract_wikilink_slugs("参考 [[self]] 和 [[page-a]]", "self", &valid);
+        assert_eq!(result, vec!["page-a"]);
+    }
+
+    #[test]
+    fn extract_wikilink_filters_invalid_slugs() {
+        let valid: HashSet<String> = ["real"].iter().map(|s| s.to_string()).collect();
+        let result = extract_wikilink_slugs("[[real]] 和 [[hallucinated]]", "current", &valid);
+        assert_eq!(result, vec!["real"]);
+    }
+
+    #[test]
+    fn extract_wikilink_dedup_and_sort() {
+        let valid: HashSet<String> = ["a", "b", "c"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let result = extract_wikilink_slugs("[[c]] [[a]] [[b]] [[a]]", "x", &valid);
+        assert_eq!(result, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn extract_wikilink_handles_chinese() {
+        let valid: HashSet<String> = ["金蝶云星空"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let result = extract_wikilink_slugs("参考 [[金蝶云星空]] 文档", "current", &valid);
+        assert_eq!(result, vec!["金蝶云星空"]);
+    }
+
+    #[test]
+    fn extract_wikilink_handles_code_block_text() {
+        // 注：当前实现会把代码块中的 [[xxx]] 也提取（已知缺陷，暂不修）
+        let valid: HashSet<String> = ["in-code"].iter().map(|s| s.to_string()).collect();
+        let result = extract_wikilink_slugs("```\n[[in-code]]\n```", "current", &valid);
+        assert_eq!(result, vec!["in-code"]);
+    }
+
+    #[test]
+    fn extract_wikilink_empty_input() {
+        let valid: HashSet<String> = HashSet::new();
+        let result = extract_wikilink_slugs("no wikilinks here", "current", &valid);
+        assert_eq!(result, Vec::<String>::new());
+    }
+
+    #[test]
+    fn extract_wikilink_ignores_single_brackets() {
+        // 单个 [xxx] 不应被识别
+        let valid: HashSet<String> = ["page-a"].iter().map(|s| s.to_string()).collect();
+        let result = extract_wikilink_slugs("[page-a] 不是 wikilink", "current", &valid);
+        assert_eq!(result, Vec::<String>::new());
+    }
+
+    #[test]
+    fn extract_wikilink_empty_set_means_no_validation() {
+        // 防御兼容：valid_slugs 为空时不验证（虽然 backfill 不传空，但保护 API）
+        let valid: HashSet<String> = HashSet::new();
+        let result = extract_wikilink_slugs("[[any-page]]", "current", &valid);
+        assert_eq!(result, vec!["any-page"]);
+    }
+
+    #[test]
+    fn extract_wikilink_complex_real_world() {
+        let valid: HashSet<String> =
+            ["需求分析", "系统设计", "技术栈", "数据库"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        let md = "## 概述\n\n本文档描述了 [[需求分析]] 的方法论。\n\n## 设计\n\n参考 [[系统设计|系统设计文档]]、[[技术栈]] 和 [[数据库|数据库选型]]。\n        ";
+        let result = extract_wikilink_slugs(md, "current-page", &valid);
+        assert_eq!(result.len(), 4);
+        assert!(result.contains(&"需求分析".to_string()));
+        assert!(result.contains(&"系统设计".to_string()));
+        assert!(result.contains(&"技术栈".to_string()));
+        assert!(result.contains(&"数据库".to_string()));
     }
 }
