@@ -1,33 +1,31 @@
-feat: 调研报告配方同源化、保存反馈优化、按钮空态
+refactor: 8 个 prompt 常量统一 include_str! 嵌入 + 重试 Q&A 漂移检测
 
-延续前三次提交，本轮收尾最后三个质量细节：
+延续前四次提交，本轮收尾两个细节：
 
-1. RECIPE 漂移防御：
-   - 后端 commands::research 新增 get_investigation_recipe 命令，
-     直接返回 services::prompts::RECIPE_INVESTIGATION 常量
-   - lib.rs 注册命令
-   - 前端 tauri-commands.ts 封装 fetchInvestigationRecipe()
-   - ResearchAssistant.tsx 启动时 useEffect 拉取，存为 reportRecipe state
-   - 移除 REPORT_RECIPE 硬编码字符串，buildReportPrompt 用 state
-   - 漂移后果：如果后端改 4 段结构，前端 prompt 自动跟随，
-     之前需要前后端同步改两份，现在只改 prompts.rs 一处
+1. 修复 prompts.rs 内部规范违反：
+   - 之前 6 个 RECIPE_* 常量全是内联字符串（含 \n 转义），与模块顶部注释
+     「所有 AI 系统提示词通过 include_str!() 从 resources/prompts/ 目录嵌入」
+     直接矛盾
+   - 6 个新文件迁移到 resources/prompts/：
+     recipe_investigation.md / recipe_weekly.md / recipe_blueprint.md
+     recipe_pcr.md / recipe_go_live.md / recipe_acceptance.md
+     recipe_meeting.md
+   - prompts.rs 全部 8 个常量改为 include_str!() 加载
+   - 新增 test_all_constants_use_include_str 回归测试：
+     扫描所有常量是否含 \\n 转义符（include_str! 不会转义，
+     内联字符串会），防止后续有人再漂回到内联
 
-2. 保存报告反馈：
-   - export_report 后端早已返回 file_path 字符串（core.rs:187-191）
-   - 前端 invoke 之前没用返回值（直接 await 没用）
-   - 改为 const savedPath = await invoke<string>("export_report", ...)
-   - toast.success(`已保存到：${savedPath}`) 弹绝对路径
+2. 重试 Q&A 漂移检测：
+   - handleGenerateReport 触发时计算 records 指纹 hash
+     （id|answer|notes 拼接 + djb2 字符串 hash）存到 lastReportQaHashRef
+   - handleRetryReport 重新计算 hash 并对比
+   - 不一致时 toast.warning 提示用户「调研记录已变更，重试将沿用
+     原 prompt（旧 Q&A 快照）」
+   - 不阻塞重试——用户已了解风险仍想用旧 prompt 重发
 
-3. 空记录按钮禁用：
-   - 「生成调研报告」按钮 disabled 条件从 aiLoading 扩展为
-     aiLoading || records.length === 0
-   - 加 title 属性提示原因（"暂无调研记录" / "基于当前调研记录生成 4 段结构报告"）
-   - handleGenerateReport 内的 toast.warning 变为兜底（防御性保留）
+至此 prompts 模块的同源化工作彻底闭环：
+- 前端 ↔ 后端：get_investigation_recipe 命令拉取
+- prompts.rs 内部：include_str! 嵌入
+- SKILL.md ↔ prompt：4 段配方对齐
 
-4. e2e mock：tauri-mock.ts 添加 get_investigation_recipe 占位响应
-
-至此调研报告功能闭环完成，3 + 1 = 4 次提交覆盖：
-- 反模式删除 + 走 LLM/skill
-- 落盘保存
-- SKILL.md / 4 段配方 / 失败重试 / 上下文横幅
-- 配方同源 / 路径反馈 / 空态禁用
+任何提示词修改只需改对应 .md 文件，无需改 Rust 或 TS 代码。

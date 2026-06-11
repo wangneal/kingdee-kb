@@ -469,6 +469,8 @@ function SessionDetailView({
   const autoPromptTimerRef = useRef<number | null>(null)
   // 缓存最近一次"生成调研报告"的 prompt，供失败重试用
   const lastReportPromptRef = useRef<string>("")
+  // 标记最近一次报告生成时的 Q&A 快照（id+answer+notes 拼接 hash），用于重试时漂移检测
+  const lastReportQaHashRef = useRef<string>("")
   // 标记当前 AI 响应是否处于"调研报告"上下文（横幅、重试按钮根据这个开关显示）
   const reportContextRef = useRef<boolean>(false)
 
@@ -1337,6 +1339,19 @@ function SessionDetailView({
     }
   }
 
+  // 计算当前 records 的指纹 hash（id+answer+notes），用于重试时漂移检测
+  const computeQaHash = (): string => {
+    const concat = records
+      .map((r) => `${r.id}|${r.answer_text}|${r.notes}`)
+      .join("\u0001")
+    // djb2 字符串 hash，不要求密码学安全
+    let h = 5381
+    for (let i = 0; i < concat.length; i++) {
+      h = ((h * 33) ^ concat.charCodeAt(i)) >>> 0
+    }
+    return h.toString(16)
+  }
+
   const handleGenerateReport = async () => {
     if (aiLoading) return
     if (records.length === 0) {
@@ -1345,6 +1360,7 @@ function SessionDetailView({
     }
     const prompt = buildReportPrompt()
     lastReportPromptRef.current = prompt
+    lastReportQaHashRef.current = computeQaHash()
     await sendReportPrompt(prompt)
   }
 
@@ -1355,6 +1371,11 @@ function SessionDetailView({
       // 记录中途被删光，prompt 中的 Q&A 已失效，禁用重试
       toast.warning("调研记录已清空，无法重试")
       return
+    }
+    // 漂移检测：当前 records 指纹与上次生成时不一致 → 提示
+    const currentHash = computeQaHash()
+    if (lastReportQaHashRef.current && lastReportQaHashRef.current !== currentHash) {
+      toast.warning("调研记录已变更，重试将沿用原 prompt（旧 Q&A 快照）")
     }
     await sendReportPrompt(lastReportPromptRef.current)
   }
