@@ -76,5 +76,6 @@ pub mod verification_log;
 pub mod video_transcriber;
 pub mod whisper_service;
 pub mod wiki_page;
+pub mod wikilink_parser;
 pub mod xfyun_asr;
 pub mod xlsx_filler;

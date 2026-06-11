@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const REMOTE_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
@@ -263,6 +265,9 @@ pub struct LLMProviderManager {
     client: reqwest::Client,
     /// 端点模型列表短期缓存
     remote_model_cache: HashMap<String, RemoteModelCacheEntry>,
+    /// 是否正在执行首次启动的 OpenCode Zen 默认 seed
+    /// 为 true 时 save() 会拒绝（防止用户保存与 seed 写文件相互覆盖）
+    seeding_in_progress: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone)]
@@ -280,6 +285,9 @@ const OPENCODE_ZEN_BASE_URL: &str = "https://opencode.ai/zen/v1";
 
 /// 异步从 OpenCode Zen `/v1/models` 拉取所有带 `-free` 后缀的模型名
 /// 使用 "public" key（OpenCode Zen 免费模型约定的公共 key）
+///
+/// 错误处理策略：网络/解析失败时返回空 Vec，调用方会自动 fallback 到 `FALLBACK_FREE_MODEL`。
+/// 同时记录 debug 日志便于排查"为什么没拉到模型"——网络失败、防火墙拦截、API 变更等都能区分。
 async fn fetch_opencode_zen_free_models() -> Vec<String> {
     let url = format!("{}/models", OPENCODE_ZEN_BASE_URL);
     let client = match reqwest::Client::builder()
@@ -287,7 +295,10 @@ async fn fetch_opencode_zen_free_models() -> Vec<String> {
         .build()
     {
         Ok(c) => c,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            tracing::warn!("构建 reqwest 客户端失败: {}", e);
+            return Vec::new();
+        }
     };
     let resp = match client
         .get(&url)
@@ -296,20 +307,35 @@ async fn fetch_opencode_zen_free_models() -> Vec<String> {
         .await
     {
         Ok(r) => r,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            tracing::debug!("OpenCode Zen /models 请求失败（可能是离线）: {}", e);
+            return Vec::new();
+        }
     };
     if !resp.status().is_success() {
+        tracing::debug!(
+            "OpenCode Zen /models 返回非 2xx 状态: {}",
+            resp.status()
+        );
         return Vec::new();
     }
     let body = match resp.text().await {
         Ok(b) => b,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            tracing::debug!("读取 OpenCode Zen /models 响应体失败: {}", e);
+            return Vec::new();
+        }
     };
     let names = match parse_remote_model_names(&body) {
         Ok(n) => n,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            tracing::debug!("解析 OpenCode Zen /models 响应失败: {}", e);
+            return Vec::new();
+        }
     };
-    names.into_iter().filter(|n| n.ends_with("-free")).collect()
+    let free: Vec<String> = names.into_iter().filter(|n| n.ends_with("-free")).collect();
+    tracing::debug!("OpenCode Zen /models 拉到 {} 个 -free 模型", free.len());
+    free
 }
 
 /// 构造默认 OpenCode Zen 供应商配置
@@ -368,6 +394,7 @@ impl LLMProviderManager {
     /// 创建供应商管理器
     pub fn new(data_dir: &PathBuf) -> Self {
         let config_path = data_dir.join("llm_providers.json");
+        let seeding_in_progress = Arc::new(AtomicBool::new(false));
         let mut manager = Self {
             providers: Vec::new(),
             ocr_config: None,
@@ -375,6 +402,7 @@ impl LLMProviderManager {
             config_path,
             client: reqwest::Client::new(),
             remote_model_cache: HashMap::new(),
+            seeding_in_progress: seeding_in_progress.clone(),
         };
         manager.load();
 
@@ -384,7 +412,10 @@ impl LLMProviderManager {
             // 仅在 tokio runtime 内执行 seed（生产环境由 Tauri runtime 保证）
             // 测试环境无 runtime 时跳过，providers 保持空 → 触发"无供应商"UI
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                // 标记 seed 进行中：阻止 save() 写文件（防止用户保存与 seed 写文件相互覆盖）
+                seeding_in_progress.store(true, Ordering::SeqCst);
                 let path = manager.config_path.clone();
+                let flag = seeding_in_progress.clone();
                 handle.spawn(async move {
                     let free_models = fetch_opencode_zen_free_models().await;
                     let default = seed_default_opencode_zen(free_models);
@@ -406,6 +437,8 @@ impl LLMProviderManager {
                         }
                         Err(e) => tracing::warn!("序列化默认配置失败: {}", e),
                     }
+                    // 释放 flag：允许用户后续 save()
+                    flag.store(false, Ordering::SeqCst);
                 });
             } else {
                 tracing::debug!("无 tokio runtime，跳过默认 OpenCode Zen seed");
@@ -431,6 +464,12 @@ impl LLMProviderManager {
 
     /// 保存配置到文件
     fn save(&self) -> Result<(), String> {
+        // 防竞态：首次启动 seed 进行中不允许 save()，避免覆盖用户输入
+        // （seed 会在 fetch + 写文件完成后自动释放 flag）
+        if self.seeding_in_progress.load(Ordering::SeqCst) {
+            return Err("首次启动配置初始化中，请稍候再保存（约 8 秒）".to_string());
+        }
+
         let config = ProviderConfigFile {
             providers: Some(self.providers.clone()),
             ocr_config: self.ocr_config.clone(),

@@ -304,7 +304,11 @@ impl GraphStore {
                 continue;
             }
             // 提取 [[slug]]，并过滤掉自引用和无效 slug
-            let links = extract_wikilink_slugs(&source_text, &slug, &valid_slugs);
+            let links = crate::services::wikilink_parser::extract_wikilinks(
+                &source_text,
+                &slug,
+                &valid_slugs,
+            );
             if links.is_empty() {
                 continue;
             }
@@ -930,60 +934,6 @@ fn parse_string_array(field: &str, json_str: &str) -> Result<Vec<String>, String
     Ok(result)
 }
 
-/// 从 markdown 文本中提取 `[[slug]]` 形式的链接，并按规则过滤
-///
-/// 复用 ingestion_pipeline.rs 的 `RE_WIKILINK` 语义（这里简化版本，避免跨 crate 引用）：
-/// - 匹配 `[[slug]]` 和 `[[slug|显示文本]]`
-/// - 排除自引用（slug == current_slug）
-/// - 仅保留存在于 `valid_slugs` 中的 slug
-/// - 排除空 slug
-/// - 去重 + 排序
-fn extract_wikilink_slugs(
-    markdown: &str,
-    current_slug: &str,
-    valid_slugs: &std::collections::HashSet<String>,
-) -> Vec<String> {
-    // 简化版 wikilink 匹配：`[[xxx]]` 或 `[[xxx|yyy]]`，xxx 不能含 [ ] | \n
-    // 用 char-by-char 解析避免引入 regex 依赖
-    let bytes = markdown.as_bytes();
-    let mut found: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'[' && bytes[i + 1] == b'[' {
-            // 找下一个 ']]'
-            if let Some(end) = find_double_close(bytes, i + 2) {
-                let inner = &markdown[i + 2..end];
-                // 提取 slug 部分（| 之前的）
-                let slug = inner.split('|').next().unwrap_or("").trim();
-                if !slug.is_empty()
-                    && slug != current_slug
-                    && (valid_slugs.is_empty() || valid_slugs.contains(slug))
-                {
-                    found.push(slug.to_string());
-                }
-                i = end + 2;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    found.sort();
-    found.dedup();
-    found
-}
-
-/// 从 start 位置开始找下一个 `]]`（不是单个 `]`）
-fn find_double_close(bytes: &[u8], start: usize) -> Option<usize> {
-    let mut i = start;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b']' && bytes[i + 1] == b']' {
-            return Some(i);
-        }
-        i += 1;
-    }
-    None
-}
-
 fn parse_source_keys(json_str: &str) -> Result<Vec<String>, String> {
     let value: Value =
         serde_json::from_str(json_str).map_err(|e| format!("解析 sources 字段失败: {}", e))?;
@@ -1020,7 +970,6 @@ fn source_value_to_key(prefix: &str, value: Option<&Value>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
 
     #[test]
     fn parse_string_array_rejects_yaml_like_tags() {
@@ -1044,108 +993,5 @@ mod tests {
     fn parse_source_keys_prefers_source_id() {
         let keys = parse_source_keys(r#"[{"source_id":7,"document_id":42,"chunks":[]}]"#).unwrap();
         assert_eq!(keys, vec!["source_id:7".to_string()]);
-    }
-
-    // ─── extract_wikilink_slugs 单元测试 ───
-
-    #[test]
-    fn extract_wikilink_simple_form() {
-        let valid: HashSet<String> = ["page-a", "page-b"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let result = extract_wikilink_slugs("参考 [[page-a]] 和 [[page-b]]", "current", &valid);
-        assert_eq!(result, vec!["page-a", "page-b"]);
-    }
-
-    #[test]
-    fn extract_wikilink_alias_form() {
-        let valid: HashSet<String> = ["page-a"].iter().map(|s| s.to_string()).collect();
-        let result = extract_wikilink_slugs("参考 [[page-a|显示文本]]", "current", &valid);
-        assert_eq!(result, vec!["page-a"]);
-    }
-
-    #[test]
-    fn extract_wikilink_filters_self_reference() {
-        let valid: HashSet<String> = ["page-a", "self"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let result = extract_wikilink_slugs("参考 [[self]] 和 [[page-a]]", "self", &valid);
-        assert_eq!(result, vec!["page-a"]);
-    }
-
-    #[test]
-    fn extract_wikilink_filters_invalid_slugs() {
-        let valid: HashSet<String> = ["real"].iter().map(|s| s.to_string()).collect();
-        let result = extract_wikilink_slugs("[[real]] 和 [[hallucinated]]", "current", &valid);
-        assert_eq!(result, vec!["real"]);
-    }
-
-    #[test]
-    fn extract_wikilink_dedup_and_sort() {
-        let valid: HashSet<String> = ["a", "b", "c"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let result = extract_wikilink_slugs("[[c]] [[a]] [[b]] [[a]]", "x", &valid);
-        assert_eq!(result, vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn extract_wikilink_handles_chinese() {
-        let valid: HashSet<String> = ["金蝶云星空"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let result = extract_wikilink_slugs("参考 [[金蝶云星空]] 文档", "current", &valid);
-        assert_eq!(result, vec!["金蝶云星空"]);
-    }
-
-    #[test]
-    fn extract_wikilink_handles_code_block_text() {
-        // 注：当前实现会把代码块中的 [[xxx]] 也提取（已知缺陷，暂不修）
-        let valid: HashSet<String> = ["in-code"].iter().map(|s| s.to_string()).collect();
-        let result = extract_wikilink_slugs("```\n[[in-code]]\n```", "current", &valid);
-        assert_eq!(result, vec!["in-code"]);
-    }
-
-    #[test]
-    fn extract_wikilink_empty_input() {
-        let valid: HashSet<String> = HashSet::new();
-        let result = extract_wikilink_slugs("no wikilinks here", "current", &valid);
-        assert_eq!(result, Vec::<String>::new());
-    }
-
-    #[test]
-    fn extract_wikilink_ignores_single_brackets() {
-        // 单个 [xxx] 不应被识别
-        let valid: HashSet<String> = ["page-a"].iter().map(|s| s.to_string()).collect();
-        let result = extract_wikilink_slugs("[page-a] 不是 wikilink", "current", &valid);
-        assert_eq!(result, Vec::<String>::new());
-    }
-
-    #[test]
-    fn extract_wikilink_empty_set_means_no_validation() {
-        // 防御兼容：valid_slugs 为空时不验证（虽然 backfill 不传空，但保护 API）
-        let valid: HashSet<String> = HashSet::new();
-        let result = extract_wikilink_slugs("[[any-page]]", "current", &valid);
-        assert_eq!(result, vec!["any-page"]);
-    }
-
-    #[test]
-    fn extract_wikilink_complex_real_world() {
-        let valid: HashSet<String> =
-            ["需求分析", "系统设计", "技术栈", "数据库"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-        let md = "## 概述\n\n本文档描述了 [[需求分析]] 的方法论。\n\n## 设计\n\n参考 [[系统设计|系统设计文档]]、[[技术栈]] 和 [[数据库|数据库选型]]。\n        ";
-        let result = extract_wikilink_slugs(md, "current-page", &valid);
-        assert_eq!(result.len(), 4);
-        assert!(result.contains(&"需求分析".to_string()));
-        assert!(result.contains(&"系统设计".to_string()));
-        assert!(result.contains(&"技术栈".to_string()));
-        assert!(result.contains(&"数据库".to_string()));
     }
 }

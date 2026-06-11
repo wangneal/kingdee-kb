@@ -63,6 +63,27 @@ pub struct CreateWikiPage {
     pub page_status: Option<String>,
 }
 
+/// 创建带候选内容的维基页面（一次 SQL 写入，避免 CHECK 约束不一致）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateWikiPageWithCandidate {
+    pub project_id: i64,
+    pub slug: String,
+    pub title: String,
+    pub page_type: String,
+    pub frontmatter: Option<String>,
+    pub sources: Option<String>,
+    pub wikilinks: Option<String>,
+    pub tags: Option<String>,
+    pub page_metadata: Option<String>,
+    pub page_status: Option<String>,
+    /// 候选内容
+    pub content_candidate: String,
+    /// 候选来源（一般与 sources 同步）
+    pub sources_candidate: Option<String>,
+    /// 候选状态（auto / conflict / pending）
+    pub candidate_status: String,
+}
+
 /// 更新维基页面时的数据传输对象
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateWikiPage {
@@ -278,6 +299,51 @@ impl WikiPageStore {
         self.get_by_id(id)
     }
 
+    /// 一次 SQL 创建带候选内容的维基页面
+    ///
+    /// 等价于 `create` + `update`（写 content_candidate）合并：
+    /// - 避免"先 create 再 update"产生的两次写入
+    /// - 一次性满足 wiki_pages 的 CHECK 约束（candidate_version = version + 1 = 2）
+    pub fn create_with_candidate(
+        &self,
+        input: &CreateWikiPageWithCandidate,
+    ) -> Result<WikiPage, String> {
+        // 候选字段在 CHECK 约束中必须同时存在且 candidate_version = version + 1
+        // 新建时 version=1，所以 candidate_version=2
+        self.db
+            .execute(
+                "INSERT INTO wiki_pages (
+                    project_id, slug, title, page_type, content,
+                    content_candidate, candidate_status, sources_candidate,
+                    frontmatter, sources, wikilinks, tags, page_metadata,
+                    candidate_version, page_status, version
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, '',
+                    ?5, ?6, ?7,
+                    ?8, ?9, ?10, ?11, ?12,
+                    2, ?13, 1
+                )",
+                params![
+                    input.project_id,
+                    input.slug,
+                    input.title,
+                    input.page_type,
+                    input.content_candidate,
+                    input.candidate_status,
+                    input.sources_candidate,
+                    input.frontmatter.as_deref().unwrap_or("{}"),
+                    input.sources.as_deref().unwrap_or("[]"),
+                    input.wikilinks.as_deref().unwrap_or("[]"),
+                    input.tags.as_deref().unwrap_or("[]"),
+                    input.page_metadata.as_deref().unwrap_or("{}"),
+                    input.page_status.as_deref().unwrap_or("draft"),
+                ],
+            )
+            .map_err(|e| format!("插入 wiki_page（带候选）失败: {}", e))?;
+        let id = self.db.last_insert_rowid();
+        self.get_by_id(id)
+    }
+
     /// 按 ID 获取一条维基页面
     pub fn get_by_id(&self, id: i64) -> Result<WikiPage, String> {
         self.query_one(
@@ -303,10 +369,13 @@ impl WikiPageStore {
 
     /// 列出项目下所有页面的 (slug, title) 对，轻量查询（不加载 content）
     /// 用途：编译 prompt 时告知 LLM 项目已有页面，让 LLM 用 `[[slug]]` 引用
+    ///
+    /// 排序：`updated_at DESC` —— 最近更新的页面优先，LLM 更容易引用"现行"页面，
+    /// 避免只看到创建顺序的旧页面。
     pub fn list_slugs(&self, project_id: i64) -> Result<Vec<(String, String)>, String> {
         let mut stmt = self
             .db
-            .prepare("SELECT slug, title FROM wiki_pages WHERE project_id = ?1 ORDER BY id ASC")
+            .prepare("SELECT slug, title FROM wiki_pages WHERE project_id = ?1 ORDER BY updated_at DESC, id DESC")
             .map_err(|e| format!("准备 slug 列表查询失败: {}", e))?;
         let rows = stmt
             .query_map(params![project_id], |row| {
@@ -457,7 +526,11 @@ impl WikiPageStore {
             }
             set
         };
-        let links = extract_wikilinks_from_candidate(&candidate, &existing.slug, &valid_slugs);
+        let links = crate::services::wikilink_parser::extract_wikilinks(
+            &candidate,
+            &existing.slug,
+            &valid_slugs,
+        );
         let wikilinks_json = serde_json::to_string(&links)
             .map_err(|e| format!("序列化 wikilinks 失败: {}", e))?;
 
@@ -819,103 +892,3 @@ impl WikiPageStore {
     }
 }
 
-/// 从候选 markdown 中提取 `[[slug]]` 形式的链接
-///
-/// 行为与 knowledge_graph.rs 的 extract_wikilink_slugs 一致（共享过滤语义）：
-/// - 排除空 slug
-/// - 排除自引用（slug == current_slug）
-/// - 仅保留 valid_slugs 中存在的 slug（防御 LLM 幻觉）
-/// - 去重 + 排序
-fn extract_wikilinks_from_candidate(
-    markdown: &str,
-    current_slug: &str,
-    valid_slugs: &std::collections::HashSet<String>,
-) -> Vec<String> {
-    let bytes = markdown.as_bytes();
-    let mut found: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'[' && bytes[i + 1] == b'[' {
-            if let Some(end) = find_double_close(bytes, i + 2) {
-                let inner = &markdown[i + 2..end];
-                let slug = inner.split('|').next().unwrap_or("").trim();
-                if !slug.is_empty()
-                    && slug != current_slug
-                    && (valid_slugs.is_empty() || valid_slugs.contains(slug))
-                {
-                    found.push(slug.to_string());
-                }
-                i = end + 2;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    found.sort();
-    found.dedup();
-    found
-}
-
-/// 查找下一个 `]]` 位置（从 start 开始，匹配 `]]` 双字符）
-fn find_double_close(bytes: &[u8], start: usize) -> Option<usize> {
-    let mut i = start;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b']' && bytes[i + 1] == b']' {
-            return Some(i);
-        }
-        i += 1;
-    }
-    None
-}
-
-#[cfg(test)]
-mod tests_for_approve_wikilinks {
-    use super::*;
-    use std::collections::HashSet;
-
-    #[test]
-    fn extract_candidate_wikilinks_basic() {
-        let valid: HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
-        let result = extract_wikilinks_from_candidate("[[a]] 和 [[b]]", "current", &valid);
-        assert_eq!(result, vec!["a", "b"]);
-    }
-
-    #[test]
-    fn extract_candidate_filters_self() {
-        let valid: HashSet<String> = ["a", "self-page"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let result =
-            extract_wikilinks_from_candidate("[[self-page]] [[a]]", "self-page", &valid);
-        assert_eq!(result, vec!["a"]);
-    }
-
-    #[test]
-    fn extract_candidate_filters_invalid() {
-        let valid: HashSet<String> = ["real"].iter().map(|s| s.to_string()).collect();
-        let result =
-            extract_wikilinks_from_candidate("[[real]] [[fake]]", "current", &valid);
-        assert_eq!(result, vec!["real"]);
-    }
-
-    #[test]
-    fn extract_candidate_handles_chinese() {
-        let valid: HashSet<String> = ["中文页面"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let result = extract_wikilinks_from_candidate("参考 [[中文页面]]", "current", &valid);
-        assert_eq!(result, vec!["中文页面"]);
-    }
-
-    #[test]
-    fn extract_candidate_dedup_and_sort() {
-        let valid: HashSet<String> = ["a", "b", "c"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let result = extract_wikilinks_from_candidate("[[c]] [[a]] [[b]] [[a]]", "x", &valid);
-        assert_eq!(result, vec!["a", "b", "c"]);
-    }
-}
