@@ -426,23 +426,50 @@ impl WikiPageStore {
     }
 
     /// 批准候选内容：将 content_candidate 和 sources_candidate 一起提升，重置候选字段，版本递增
+    ///
+    /// 关键：批准时**同时刷新 wikilinks 字段**（从新 content 重新提取）。
+    /// 原因：候选 content 可能引用了不同的 [[slug]]，原 wikilinks 已不匹配。
     pub fn approve_candidate(&self, id: i64) -> Result<WikiPage, String> {
         let existing = self.get_by_id(id)?;
         let candidate = existing
             .content_candidate
+            .clone()
             .ok_or_else(|| "没有待批准的候选内容".to_string())?;
         let sources = existing
             .sources_candidate
-            .as_deref()
-            .unwrap_or(&existing.sources);
+            .clone()
+            .unwrap_or_else(|| existing.sources.clone());
+
+        // 重新计算 wikilinks：从新 content 提取 [[slug]]，过滤项目已有 slug + 排除自引用
+        let valid_slugs: std::collections::HashSet<String> = {
+            let mut stmt = self
+                .db
+                .prepare("SELECT slug FROM wiki_pages WHERE project_id = ?1")
+                .map_err(|e| format!("准备 slug 查询失败: {}", e))?;
+            let rows = stmt
+                .query_map(params![existing.project_id], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|e| format!("执行 slug 查询失败: {}", e))?;
+            let mut set = std::collections::HashSet::new();
+            for r in rows {
+                set.insert(r.map_err(|e| format!("读取 slug 失败: {}", e))?);
+            }
+            set
+        };
+        let links = extract_wikilinks_from_candidate(&candidate, &existing.slug, &valid_slugs);
+        let wikilinks_json = serde_json::to_string(&links)
+            .map_err(|e| format!("序列化 wikilinks 失败: {}", e))?;
+
         self.db
             .execute(
                 "UPDATE wiki_pages SET
                 content = ?1, content_candidate = NULL, candidate_status = NULL,
                 sources = ?2, sources_candidate = NULL,
+                wikilinks = ?3,
                 candidate_version = NULL, version = version + 1, updated_at = datetime('now')
-             WHERE id = ?3 AND content_candidate IS NOT NULL",
-                params![candidate, sources, id],
+             WHERE id = ?4 AND content_candidate IS NOT NULL",
+                params![candidate, sources, wikilinks_json, id],
             )
             .map_err(|e| format!("批准 wiki_page 候选内容失败: {}", e))?;
         self.get_by_id(id)
@@ -789,5 +816,106 @@ impl WikiPageStore {
             results.push(row.map_err(|e| format!("读取行失败: {}", e))?);
         }
         Ok(results)
+    }
+}
+
+/// 从候选 markdown 中提取 `[[slug]]` 形式的链接
+///
+/// 行为与 knowledge_graph.rs 的 extract_wikilink_slugs 一致（共享过滤语义）：
+/// - 排除空 slug
+/// - 排除自引用（slug == current_slug）
+/// - 仅保留 valid_slugs 中存在的 slug（防御 LLM 幻觉）
+/// - 去重 + 排序
+fn extract_wikilinks_from_candidate(
+    markdown: &str,
+    current_slug: &str,
+    valid_slugs: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let bytes = markdown.as_bytes();
+    let mut found: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'[' && bytes[i + 1] == b'[' {
+            if let Some(end) = find_double_close(bytes, i + 2) {
+                let inner = &markdown[i + 2..end];
+                let slug = inner.split('|').next().unwrap_or("").trim();
+                if !slug.is_empty()
+                    && slug != current_slug
+                    && (valid_slugs.is_empty() || valid_slugs.contains(slug))
+                {
+                    found.push(slug.to_string());
+                }
+                i = end + 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// 查找下一个 `]]` 位置（从 start 开始，匹配 `]]` 双字符）
+fn find_double_close(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut i = start;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b']' && bytes[i + 1] == b']' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests_for_approve_wikilinks {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn extract_candidate_wikilinks_basic() {
+        let valid: HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let result = extract_wikilinks_from_candidate("[[a]] 和 [[b]]", "current", &valid);
+        assert_eq!(result, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn extract_candidate_filters_self() {
+        let valid: HashSet<String> = ["a", "self-page"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let result =
+            extract_wikilinks_from_candidate("[[self-page]] [[a]]", "self-page", &valid);
+        assert_eq!(result, vec!["a"]);
+    }
+
+    #[test]
+    fn extract_candidate_filters_invalid() {
+        let valid: HashSet<String> = ["real"].iter().map(|s| s.to_string()).collect();
+        let result =
+            extract_wikilinks_from_candidate("[[real]] [[fake]]", "current", &valid);
+        assert_eq!(result, vec!["real"]);
+    }
+
+    #[test]
+    fn extract_candidate_handles_chinese() {
+        let valid: HashSet<String> = ["中文页面"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let result = extract_wikilinks_from_candidate("参考 [[中文页面]]", "current", &valid);
+        assert_eq!(result, vec!["中文页面"]);
+    }
+
+    #[test]
+    fn extract_candidate_dedup_and_sort() {
+        let valid: HashSet<String> = ["a", "b", "c"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let result = extract_wikilinks_from_candidate("[[c]] [[a]] [[b]] [[a]]", "x", &valid);
+        assert_eq!(result, vec!["a", "b", "c"]);
     }
 }
