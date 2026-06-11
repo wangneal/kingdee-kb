@@ -192,13 +192,22 @@ impl RigAgent {
         };
         let attachment_project_id = active_project_id.to_string();
 
-        // 查询项目名称，让 LLM 能感知当前项目名而非数字 ID
-        let active_project_name = project_store
+        // 查询项目信息，让 LLM 能感知当前项目上下文
+        let active_project = project_store
             .lock()
             .ok()
-            .and_then(|store| store.get_project(active_project_id).ok().flatten())
-            .map(|p| p.name)
+            .and_then(|store| store.get_project(active_project_id).ok().flatten());
+        let active_project_name = active_project
+            .as_ref()
+            .map(|p| p.name.clone())
             .unwrap_or_else(|| active_project_id.to_string());
+        // 获取项目产品列表
+        let active_project_products: Vec<crate::services::project_store::ProjectProduct> =
+            project_store
+                .lock()
+                .ok()
+                .and_then(|store| store.list_project_products(active_project_id).ok())
+                .unwrap_or_default();
         let attachment_search_projects = attachments
             .as_ref()
             .filter(|list| !list.is_empty())
@@ -434,10 +443,35 @@ impl RigAgent {
         };
 
         // 2. 构建系统提示词
-        let project_section = format!(
-            "\n【当前项目】{}\n所有工具调用（搜索知识库、生成交付物等）都应限定在此项目范围内。\n",
-            active_project_name
-        );
+        let project_section = if let Some(ref project) = active_project {
+            let mut section = format!(
+                "\n【当前项目】{}\n客户：{}\n项目描述：{}\n当前阶段：{}",
+                project.name,
+                if project.client_name.is_empty() { "未填写" } else { &project.client_name },
+                if project.description.is_empty() { "未填写" } else { &project.description },
+                project.current_phase,
+            );
+            if !active_project_products.is_empty() {
+                let products_info: Vec<String> = active_project_products
+                    .iter()
+                    .map(|p| {
+                        if p.product_version.is_empty() {
+                            p.product_name.clone()
+                        } else {
+                            format!("{} {}", p.product_name, p.product_version)
+                        }
+                    })
+                    .collect();
+                section.push_str(&format!("\n产品版本：{}", products_info.join("、")));
+            }
+            section.push_str("\n所有工具调用（搜索知识库、生成交付物等）都应限定在此项目范围内。\n");
+            section
+        } else {
+            format!(
+                "\n【当前项目】{}\n所有工具调用（搜索知识库、生成交付物等）都应限定在此项目范围内。\n",
+                active_project_name
+            )
+        };
 
         // 活文档机制：注入历史失败教训（驾驭工程 Harness Engineering）
         // agents_log 在会话结束后保持可变，用于记录本次会话的失败模式

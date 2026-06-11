@@ -273,6 +273,97 @@ struct RemoteModelCacheEntry {
 
 // ─── 实现 ───
 
+/// 首次启动时拉取失败时的兜底模型
+const FALLBACK_FREE_MODEL: &str = "minimax-m2.5-free";
+/// OpenCode Zen base URL
+const OPENCODE_ZEN_BASE_URL: &str = "https://opencode.ai/zen/v1";
+
+/// 异步从 OpenCode Zen `/v1/models` 拉取所有带 `-free` 后缀的模型名
+/// 使用 "public" key（OpenCode Zen 免费模型约定的公共 key）
+async fn fetch_opencode_zen_free_models() -> Vec<String> {
+    let url = format!("{}/models", OPENCODE_ZEN_BASE_URL);
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let resp = match client
+        .get(&url)
+        .header("Authorization", "Bearer public")
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    if !resp.status().is_success() {
+        return Vec::new();
+    }
+    let body = match resp.text().await {
+        Ok(b) => b,
+        Err(_) => return Vec::new(),
+    };
+    let names = match parse_remote_model_names(&body) {
+        Ok(n) => n,
+        Err(_) => return Vec::new(),
+    };
+    names.into_iter().filter(|n| n.ends_with("-free")).collect()
+}
+
+/// 构造默认 OpenCode Zen 供应商配置
+/// - `free_models`: 从 OpenCode Zen 拉到的 -free 模型列表；空时使用兜底模型
+fn seed_default_opencode_zen(free_models: Vec<String>) -> Vec<LLMProviderConfig> {
+    let models: Vec<ModelConfig> = if free_models.is_empty() {
+        vec![ModelConfig {
+            id: FALLBACK_FREE_MODEL.to_string(),
+            name: FALLBACK_FREE_MODEL.to_string(),
+            is_default: true,
+            is_multimodal: Some(false),
+            last_probe_at: None,
+            context_window: Some(200_000),
+            max_output_tokens: Some(8192),
+            supports_thinking: Some(false),
+        }]
+    } else {
+        free_models
+            .into_iter()
+            .enumerate()
+            .map(|(idx, name)| ModelConfig {
+                id: name.clone(),
+                name,
+                is_default: idx == 0,
+                is_multimodal: Some(false),
+                last_probe_at: None,
+                context_window: None,
+                max_output_tokens: None,
+                supports_thinking: None,
+            })
+            .collect()
+    };
+
+    vec![LLMProviderConfig {
+        id: "opencode-zen".to_string(),
+        name: "OpenCode Zen".to_string(),
+        protocol: LLMProtocol::OpenAI,
+        base_url: OPENCODE_ZEN_BASE_URL.to_string(),
+        is_default: true,
+        api_keys: vec![ApiKeyConfig {
+            id: "default".to_string(),
+            name: "公共 Key".to_string(),
+            // OpenCode Zen 的免费模型使用字面量 "public" 作为公共 API key
+            // （参考 opencode 行为：未配置 key 时使用 public，仅显示免费模型）
+            // https://opencode.ai/docs/zen/
+            key: "public".to_string(),
+            is_default: true,
+        }],
+        models,
+        max_tokens: 4096,
+        temperature: 0.3,
+    }]
+}
+
 impl LLMProviderManager {
     /// 创建供应商管理器
     pub fn new(data_dir: &PathBuf) -> Self {
@@ -286,6 +377,40 @@ impl LLMProviderManager {
             remote_model_cache: HashMap::new(),
         };
         manager.load();
+
+        // 首次启动（配置文件不存在）→ 异步从 OpenCode Zen 拉取 -free 模型并 seed
+        // 关键：仅"配置文件不存在"时 seed。用户删除默认后不会自动恢复
+        if !manager.config_path.exists() {
+            // 仅在 tokio runtime 内执行 seed（生产环境由 Tauri runtime 保证）
+            // 测试环境无 runtime 时跳过，providers 保持空 → 触发"无供应商"UI
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let path = manager.config_path.clone();
+                handle.spawn(async move {
+                    let free_models = fetch_opencode_zen_free_models().await;
+                    let default = seed_default_opencode_zen(free_models);
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let payload = ProviderConfigFile {
+                        providers: Some(default),
+                        ocr_config: None,
+                        provider_policy: Some(ProviderPolicyConfig::default()),
+                    };
+                    match serde_json::to_string_pretty(&payload) {
+                        Ok(content) => {
+                            if let Err(e) = std::fs::write(&path, content) {
+                                tracing::warn!("写入默认 OpenCode Zen 配置失败: {}", e);
+                            } else {
+                                tracing::info!("首次启动已 seed 默认 OpenCode Zen 配置");
+                            }
+                        }
+                        Err(e) => tracing::warn!("序列化默认配置失败: {}", e),
+                    }
+                });
+            } else {
+                tracing::debug!("无 tokio runtime，跳过默认 OpenCode Zen seed");
+            }
+        }
         manager
     }
 
@@ -1423,6 +1548,9 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let data_dir = temp_dir.path().to_path_buf();
         let mut manager = LLMProviderManager::new(&data_dir);
+
+        // 测试环境无 tokio runtime → seed 跳过，providers 初始为空
+        assert_eq!(manager.list_providers().len(), 0);
 
         // 添加
         let provider = LLMProviderConfig {

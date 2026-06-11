@@ -12,6 +12,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ContextMenu, { type ContextMenuItem } from "../components/ContextMenu"
 import ImportModal from "../components/ImportModal"
+import GraphRecommendations from "../components/wiki/GraphRecommendations"
 import WikiLinkEditor from "../components/wiki/WikiLinkEditor"
 import { useProject } from "../contexts/ProjectContext"
 import {
@@ -656,6 +657,12 @@ export default function Browse() {
                       </button>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {currentProjectId != null && selectedWiki && (
+                <div className="mt-6 border-t border-neutral-200 pt-4">
+                  <GraphRecommendations project={currentProjectId} slug={selectedWiki.slug} />
                 </div>
               )}
             </div>

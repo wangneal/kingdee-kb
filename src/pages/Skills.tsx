@@ -19,11 +19,9 @@ import remarkGfm from "remark-gfm"
 import {
   executeSkillScript,
   getSkillFull,
-  getSkillListPrompt,
   getSkillStats,
   importSkill,
   listSkills,
-  matchSkillCandidates,
   readSkillFile,
   rescanSkills,
   searchSkills,
@@ -33,12 +31,9 @@ import type {
   Skill,
   SkillFile,
   SkillFull,
-  SkillMatch,
   SkillStatsResponse,
 } from "../lib/skill-types"
 import {
-  MATCH_TYPE_ICONS,
-  MATCH_TYPE_LABELS,
   SKILL_CATEGORY_LABELS,
   SKILL_FILE_TYPE_ICONS,
   SKILL_FILE_TYPE_LABELS,
@@ -59,16 +54,7 @@ export default function Skills() {
   const [fileContent, setFileContent] = useState<string | null>(null)
   const [loadingFile, setLoadingFile] = useState(false)
 
-  // Phase 2: Trigger Match state
-  const [triggerQuery, setTriggerQuery] = useState("")
-  const [triggerResults, setTriggerResults] = useState<SkillMatch[]>([])
-  const [triggerLoading, setTriggerLoading] = useState(false)
-  const [triggerSearched, setTriggerSearched] = useState(false)
-  const [showPrompt, setShowPrompt] = useState(false)
-  const [promptText, setPromptText] = useState<string | null>(null)
-  const [promptLoading, setPromptLoading] = useState(false)
-
-  // Phase 3: Script Execution state
+  // Script Execution state
   const [executingScript, setExecutingScript] = useState<string | null>(null)
   const [scriptResult, setScriptResult] = useState<ExecutionResult | null>(null)
 
@@ -134,36 +120,7 @@ export default function Skills() {
     }
   }, [])
 
-  // Phase 2: Trigger Match handlers
-  const handleTriggerMatch = useCallback(async () => {
-    if (!triggerQuery.trim()) return
-    setTriggerLoading(true)
-    setTriggerSearched(true)
-    setError(null)
-    try {
-      const matches = await matchSkillCandidates(triggerQuery, 5)
-      setTriggerResults(matches)
-    } catch (e) {
-      setError(String(e))
-      setTriggerResults([])
-    } finally {
-      setTriggerLoading(false)
-    }
-  }, [triggerQuery])
-
-  const handleShowPrompt = useCallback(async () => {
-    setPromptLoading(true)
-    setShowPrompt(true)
-    try {
-      const prompt = await getSkillListPrompt()
-      setPromptText(prompt)
-    } catch (e) {
-      setPromptText(`获取失败: ${e}`)
-    }
-    setPromptLoading(false)
-  }, [])
-
-  // Phase 3: Script Execution handler
+  // Script Execution handler
   const handleExecuteScript = useCallback(async (skillId: string, scriptPath: string) => {
     setExecutingScript(scriptPath)
     setScriptResult(null)
@@ -477,117 +434,6 @@ export default function Skills() {
       {error && (
         <div className="mx-6 mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">
           {error}
-        </div>
-      )}
-
-      {/* Phase 2: Trigger Match Panel */}
-      <div className="mx-6 mt-4 rounded-lg border border-neutral-200 bg-white p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="flex items-center gap-2 text-sm font-semibold text-neutral-700">
-            <Zap className="h-4 w-4 text-[#1A6BD8]" />
-            技能触发匹配
-          </h3>
-          <button
-            type="button"
-            onClick={handleShowPrompt}
-            className="flex items-center gap-1 text-xs text-neutral-500 hover:text-[#1A6BD8]"
-          >
-            查看系统提示
-          </button>
-        </div>
-
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={triggerQuery}
-            onChange={(e) => {
-              setTriggerQuery(e.target.value)
-              setTriggerSearched(false)
-            }}
-            onKeyDown={(e) => e.key === "Enter" && handleTriggerMatch()}
-            placeholder="输入查询，测试技能匹配..."
-            className="flex-1 h-8 rounded-md border border-neutral-200 bg-white px-3 text-xs placeholder:text-neutral-400 focus:border-[#1A6BD8] focus:outline-none"
-          />
-          <button
-            type="button"
-            onClick={handleTriggerMatch}
-            disabled={triggerLoading || !triggerQuery.trim()}
-            className="flex h-8 items-center gap-1 rounded-md bg-[#1A6BD8] px-3 text-xs text-white hover:bg-[#1555B0] disabled:opacity-50"
-          >
-            {triggerLoading ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
-              <Zap className="h-3 w-3" />
-            )}
-            匹配
-          </button>
-        </div>
-
-        {/* Trigger Results */}
-        {triggerResults.length > 0 && (
-          <div className="mt-3 space-y-2">
-            <p className="text-xs text-neutral-500">匹配结果 ({triggerResults.length})</p>
-            {triggerResults.map((match, idx) => (
-              <div
-                key={match.skill_id}
-                className="flex items-center justify-between rounded-md border border-neutral-100 bg-neutral-50 px-3 py-2"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-medium text-neutral-700">
-                    {idx + 1}. {match.skill_id}
-                  </span>
-                  <span className="rounded-full bg-neutral-200 px-1.5 py-0.5 text-[10px] text-neutral-500">
-                    {MATCH_TYPE_ICONS[match.match_type]} {MATCH_TYPE_LABELS[match.match_type]}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="h-1.5 w-16 rounded-full bg-neutral-200 overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-[#1A6BD8]"
-                      style={{ width: `${Math.min(100, (match.score / 10) * 100)}%` }}
-                    />
-                  </div>
-                  <span className="text-[10px] text-neutral-400">{match.score.toFixed(1)}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {triggerSearched && triggerResults.length === 0 && triggerQuery && !triggerLoading && (
-          <p className="mt-2 text-xs text-neutral-400">未找到匹配的技能</p>
-        )}
-      </div>
-
-      {/* System Prompt Modal */}
-      {showPrompt && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="w-full max-w-2xl max-h-[80vh] rounded-lg bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
-              <h3 className="text-sm font-semibold text-neutral-800">系统提示（技能列表）</h3>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowPrompt(false)
-                  setPromptText(null)
-                }}
-                className="flex h-7 w-7 items-center justify-center rounded-md text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="p-4 overflow-y-auto max-h-[60vh]">
-              {promptLoading ? (
-                <div className="flex items-center justify-center py-8">
-                  <Loader2 className="h-6 w-6 animate-spin text-neutral-300" />
-                </div>
-              ) : (
-                <pre className="whitespace-pre-wrap break-all text-xs text-neutral-700 font-mono bg-neutral-50 rounded-md p-4">
-                  {promptText || "无内容"}
-                </pre>
-              )}
-            </div>
-          </div>
         </div>
       )}
 

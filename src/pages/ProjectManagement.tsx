@@ -4,6 +4,7 @@ import {
   FolderKanban,
   Loader2,
   Play,
+  Plus,
   RefreshCw,
   RotateCcw,
   Save,
@@ -22,12 +23,16 @@ import {
   listRawSources,
   type Project,
   type ProjectPhase,
+  type ProjectProduct,
   processIngestionQueue,
   type RawSource,
   retryFailedIngestions,
   softDeleteRawSource,
   updateProject,
   updateProjectPhasePlan,
+  listProjectProducts,
+  addProjectProduct,
+  deleteProjectProduct,
 } from "../lib/project-commands"
 
 type Tab = "details" | "phases" | "sources" | "queue"
@@ -39,6 +44,7 @@ export default function ProjectManagement() {
   const [phases, setPhases] = useState<ProjectPhase[]>([])
   const [sources, setSources] = useState<RawSource[]>([])
   const [queue, setQueue] = useState<IngestionQueueItem[]>([])
+  const [products, setProducts] = useState<ProjectProduct[]>([])
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState("")
@@ -49,21 +55,24 @@ export default function ProjectManagement() {
       setPhases([])
       setSources([])
       setQueue([])
+      setProducts([])
       setLoading(false)
       return
     }
     setLoading(true)
     try {
-      const [nextProject, nextPhases, nextSources, nextQueue] = await Promise.all([
+      const [nextProject, nextPhases, nextSources, nextQueue, nextProducts] = await Promise.all([
         getProject(currentProjectId),
         getProjectPhases(currentProjectId),
         listRawSources(currentProjectId),
         listIngestionQueue(),
+        listProjectProducts(currentProjectId),
       ])
       setProject(nextProject)
       setPhases(nextPhases)
       setSources(nextSources)
       setQueue(nextQueue.filter((item) => item.project_id === currentProjectId))
+      setProducts(nextProducts)
     } finally {
       setLoading(false)
     }
@@ -148,17 +157,36 @@ export default function ProjectManagement() {
       )}
 
       {tab === "details" && (
-        <ProjectDetails
-          project={project}
-          busy={busy}
-          onSave={(name, clientName, description) =>
-            run(async () => {
-              await updateProject(project.id, name, clientName, description)
-              await refreshProjects()
-              return true
-            }, "项目详情已保存")
-          }
-        />
+        <>
+          <ProjectDetails
+            project={project}
+            busy={busy}
+            onSave={(name, clientName, description) =>
+              run(async () => {
+                await updateProject(project.id, name, clientName, description)
+                await refreshProjects()
+                return true
+              }, "项目详情已保存")
+            }
+          />
+          <ProductVersions
+            products={products}
+            busy={busy}
+            onAdd={(productName, productVersion) =>
+              run(async () => {
+                await addProjectProduct(project.id, productName, productVersion)
+                return true
+              }, "产品版本已添加")
+            }
+            onDelete={(productId) =>
+              run(async () => {
+                if (!window.confirm("确认删除该产品版本吗？")) return false
+                await deleteProjectProduct(project.id, productId)
+                return true
+              }, "产品版本已删除")
+            }
+          />
+        </>
       )}
       {tab === "phases" && (
         <PhasePlans
@@ -263,6 +291,88 @@ function ProjectDetails({
         label="保存项目详情"
         onClick={() => onSave(name, clientName, description)}
       />
+    </section>
+  )
+}
+
+function ProductVersions({
+  products,
+  busy,
+  onAdd,
+  onDelete,
+}: {
+  products: ProjectProduct[]
+  busy: boolean
+  onAdd: (productName: string, productVersion: string) => Promise<void>
+  onDelete: (productId: number) => Promise<void>
+}) {
+  const [productName, setProductName] = useState("")
+  const [productVersion, setProductVersion] = useState("")
+
+  function handleAdd() {
+    const name = productName.trim()
+    const version = productVersion.trim()
+    if (!name || !version) return
+    void onAdd(name, version).then(() => {
+      setProductName("")
+      setProductVersion("")
+    })
+  }
+
+  return (
+    <section className="mt-4 space-y-3 rounded-lg border border-neutral-200 bg-white p-5">
+      <h2 className="text-sm font-semibold text-neutral-700">产品版本</h2>
+      {products.length === 0 ? (
+        <p className="text-xs text-neutral-400">暂无产品版本</p>
+      ) : (
+        <div className="space-y-1">
+          {products.map((p) => (
+            <div
+              key={p.id}
+              className="flex items-center justify-between rounded border border-neutral-100 px-3 py-2"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-neutral-600">{p.product_name}</span>
+                <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-500">
+                  {p.product_version}
+                </span>
+              </div>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void onDelete(p.id)}
+                className="text-neutral-300 hover:text-red-500 disabled:opacity-50"
+                title="删除产品版本"
+              >
+                <Trash2 className="h-3 w-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <input
+          value={productName}
+          onChange={(e) => setProductName(e.target.value)}
+          placeholder="产品名称"
+          className="flex-1 rounded-md border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+        />
+        <input
+          value={productVersion}
+          onChange={(e) => setProductVersion(e.target.value)}
+          placeholder="版本号"
+          className="w-32 rounded-md border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
+        />
+        <button
+          type="button"
+          disabled={busy || !productName.trim() || !productVersion.trim()}
+          onClick={handleAdd}
+          className="flex items-center gap-1 rounded bg-[#1A6BD8] px-2 py-1.5 text-xs text-white hover:bg-[#1558B0] disabled:opacity-50"
+        >
+          <Plus className="h-3 w-3" />
+          添加
+        </button>
+      </div>
     </section>
   )
 }

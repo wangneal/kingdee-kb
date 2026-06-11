@@ -282,6 +282,9 @@ pub fn run() {
             commands::project::restore_project,
             commands::project::set_current_project_phase,
             commands::project::ensure_project_active,
+            commands::project::list_project_products,
+            commands::project::add_project_product,
+            commands::project::delete_project_product,
             // Phase 12: Whisper Voice Recognition
             commands::media::load_whisper_model,
             commands::media::get_whisper_status,

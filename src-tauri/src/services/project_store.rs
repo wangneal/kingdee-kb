@@ -54,6 +54,15 @@ pub struct ProjectSummary {
     pub created_at: String,
 }
 
+/// 项目产品条目（金蝶产品版本）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectProduct {
+    pub id: i64,
+    pub project_id: i64,
+    pub product_name: String,
+    pub product_version: String,
+}
+
 pub struct ProjectStore {
     db: Connection,
     #[allow(dead_code)]
@@ -357,6 +366,71 @@ impl ProjectStore {
             )
             .optional()
             .map_err(|e| format!("读取项目失败: {}", e))
+    }
+
+    // ─── 项目产品（金蝶产品版本）CRUD ───
+
+    pub fn list_project_products(&self, project_id: i64) -> Result<Vec<ProjectProduct>, String> {
+        self.db
+            .prepare(
+                "SELECT id, project_id, product_name, product_version FROM project_products WHERE project_id = ?1 ORDER BY id",
+            )
+            .map_err(|e| format!("查询项目产品失败: {}", e))?
+            .query_map(params![project_id], |row| {
+                Ok(ProjectProduct {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    product_name: row.get(2)?,
+                    product_version: row.get(3)?,
+                })
+            })
+            .map_err(|e| format!("读取项目产品失败: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("解析项目产品失败: {}", e))
+    }
+
+    pub fn add_project_product(
+        &self,
+        project_id: i64,
+        product_name: &str,
+        product_version: &str,
+    ) -> Result<i64, String> {
+        self.ensure_project_active(project_id)?;
+        let name = product_name.trim();
+        let version = product_version.trim();
+        if name.is_empty() {
+            return Err("产品名称不能为空".to_string());
+        }
+        self.db
+            .execute(
+                "INSERT INTO project_products (project_id, product_name, product_version) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(project_id, product_name) DO UPDATE SET product_version = ?3",
+                params![project_id, name, version],
+            )
+            .map_err(|e| format!("添加项目产品失败: {}", e))?;
+        // upsert 后按唯一键查询真实 id，避免 last_insert_rowid() 在 ON CONFLICT 时返回错误值
+        self.db
+            .query_row(
+                "SELECT id FROM project_products WHERE project_id = ?1 AND product_name = ?2",
+                params![project_id, name],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|e| format!("获取产品 ID 失败: {}", e))
+    }
+
+    pub fn delete_project_product(&self, project_id: i64, product_id: i64) -> Result<(), String> {
+        self.ensure_project_active(project_id)?;
+        let affected = self
+            .db
+            .execute(
+                "DELETE FROM project_products WHERE id = ?1 AND project_id = ?2",
+                params![product_id, project_id],
+            )
+            .map_err(|e| format!("删除项目产品失败: {}", e))?;
+        if affected == 0 {
+            return Err("产品记录不存在或不属于当前项目".to_string());
+        }
+        Ok(())
     }
 
     pub fn get_project_phases(&self, project_id: i64) -> Result<Vec<ProjectPhase>, String> {

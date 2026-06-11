@@ -411,6 +411,7 @@ pub async fn generate_defense_script(
 #[tauri::command]
 pub async fn extract_scope_from_document(
     state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
     project_id: i64,
     doc_id: i64,
 ) -> Result<Vec<CandidateScopeItem>, String> {
@@ -434,7 +435,7 @@ pub async fn extract_scope_from_document(
         .risk_control_store
         .lock()
         .await
-        .extract_scope_from_document(&state.llm, &chunks)
+        .extract_scope_from_document(&state.llm, &chunks, Some(&app_handle), project_id, doc_id)
         .await
 }
 

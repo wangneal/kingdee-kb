@@ -8,6 +8,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tauri::Emitter;
 
 use super::llm_service::{ChatMessage, LLMService};
 use crate::services::verification::types::ScenarioType;
@@ -119,6 +120,40 @@ pub struct CandidateScopeItem {
     pub is_in_scope: bool,
     pub detail: String,
     pub confidence: f64,
+}
+
+/// 合同范围提取进度事件
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContractScopeProgress {
+    pub project_id: i64,
+    pub doc_id: i64,
+    pub step: String,    // "reading" / "extracting" / "repairing" / "merging" / "done"
+    pub current: u32,    // 当前批次（从 1 开始）
+    pub total: u32,      // 总批次数
+    pub message: String, // 人类可读的进度描述
+}
+
+/// 向前端发出合同范围提取进度事件
+pub fn emit_scope_progress(
+    app_handle: Option<&tauri::AppHandle>,
+    project_id: i64,
+    doc_id: i64,
+    step: &str,
+    current: u32,
+    total: u32,
+    message: &str,
+) {
+    if let Some(handle) = app_handle {
+        let event = ContractScopeProgress {
+            project_id,
+            doc_id,
+            step: step.to_string(),
+            current,
+            total,
+            message: message.to_string(),
+        };
+        let _ = handle.emit("contract-scope-progress", &event);
+    }
 }
 
 // ─── Risk Control Store ───
@@ -692,6 +727,9 @@ impl RiskControlStore {
         &self,
         llm: &LLMService,
         chunks: &[super::metadata::ChunkMeta],
+        app_handle: Option<&tauri::AppHandle>,
+        project_id: i64,
+        doc_id: i64,
     ) -> Result<Vec<CandidateScopeItem>, String> {
         let config = llm.get_active_config()?;
         let batch_token_budget = Self::scope_extraction_batch_token_budget(config.max_tokens);
@@ -700,15 +738,45 @@ impl RiskControlStore {
             return Err("文档内容为空，无法提取合同范围".to_string());
         }
 
+        let total_batches = contexts.len() as u32;
+        tracing::info!(total_batches, "开始合同范围提取，共 {} 个批次", total_batches);
+        emit_scope_progress(
+            app_handle, project_id, doc_id,
+            "reading",
+            0,
+            total_batches,
+            &format!("文档已分为 {} 个片段，准备提取", total_batches),
+        );
+
         let mut extracted_items = Vec::new();
         let mut empty_response_count = 0usize;
         let mut parse_errors = Vec::new();
 
         for (index, context) in contexts.iter().enumerate() {
+            tracing::info!(
+                chunk_index = index + 1,
+                total = contexts.len(),
+                "正在提取第 {}/{} 段",
+                index + 1,
+                contexts.len()
+            );
+            emit_scope_progress(
+                app_handle, project_id, doc_id,
+                "extracting",
+                (index + 1) as u32,
+                total_batches,
+                &format!("正在提取第 {}/{} 段", index + 1, contexts.len()),
+            );
+
             let messages =
                 Self::build_scope_extraction_messages(context, index + 1, contexts.len());
             let response = llm.chat_completion_unmasked(&messages, &config).await?;
             let response = if response.trim().is_empty() {
+                tracing::warn!(
+                    chunk_index = index + 1,
+                    "第 {} 段 LLM 返回空响应，尝试重试",
+                    index + 1
+                );
                 let retry_messages = Self::build_scope_extraction_retry_messages(context);
                 llm.chat_completion_unmasked(&retry_messages, &config)
                     .await?
@@ -724,6 +792,20 @@ impl RiskControlStore {
             match Self::extract_json_from_llm_response(&response) {
                 Ok(items) => extracted_items.extend(items),
                 Err(parse_error) => {
+                    tracing::warn!(
+                        chunk_index = index + 1,
+                        error = %parse_error,
+                        "第 {} 段 JSON 解析失败，尝试修复",
+                        index + 1
+                    );
+                    emit_scope_progress(
+                        app_handle, project_id, doc_id,
+                        "repairing",
+                        (index + 1) as u32,
+                        total_batches,
+                        &format!("第 {} 段返回格式异常，正在修复", index + 1),
+                    );
+
                     let repair_messages = Self::build_scope_json_repair_messages(&response);
                     let repaired = llm
                         .chat_completion_unmasked(&repair_messages, &config)
@@ -749,12 +831,42 @@ impl RiskControlStore {
             }
         }
 
+        tracing::info!(
+            total_items = extracted_items.len(),
+            "原始提取 {} 项，正在去重归一化",
+            extracted_items.len()
+        );
+        emit_scope_progress(
+            app_handle, project_id, doc_id,
+            "merging",
+            total_batches,
+            total_batches,
+            &format!("提取完成，共 {} 项候选，正在去重归一化", extracted_items.len()),
+        );
+
         let merged_items = Self::normalize_candidate_items(extracted_items);
         if !merged_items.is_empty() {
+            tracing::info!(
+                merged_count = merged_items.len(),
+                "合同范围提取完成，归一化后 {} 项",
+                merged_items.len()
+            );
+            emit_scope_progress(
+                app_handle, project_id, doc_id,
+                "done",
+                total_batches,
+                total_batches,
+                &format!("提取完成，共 {} 项范围定义", merged_items.len()),
+            );
             return Ok(merged_items);
         }
 
         if empty_response_count == contexts.len() {
+            tracing::error!(
+                empty_count = empty_response_count,
+                total = contexts.len(),
+                "LLM 对所有分块返回空响应"
+            );
             return Err(
                 "LLM 对所有 SOW 分块都返回空响应，无法提取合同范围。请先在设置中测试 LLM 连通性，或换用输出更稳定的模型。"
                     .to_string(),
@@ -766,6 +878,7 @@ impl RiskControlStore {
         } else {
             parse_errors.join("；")
         };
+        tracing::error!(diagnostics = %diagnostics, "未提取到可确认的合同范围项");
         Err(format!("未提取到可确认的合同范围项。{}", diagnostics))
     }
 

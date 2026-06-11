@@ -1094,6 +1094,23 @@ export function listenVideoProgress(
   return listen<VideoProgressEvent>("video_progress", (e) => handler(e.payload))
 }
 
+/** 合同范围提取进度事件载荷 */
+export interface ContractScopeProgressEvent {
+  project_id: number
+  doc_id: number
+  step: "reading" | "extracting" | "repairing" | "merging" | "done"
+  current: number // 当前批次（从 1 开始）
+  total: number // 总批次数
+  message: string // 人类可读的进度描述
+}
+
+/** 监听合同范围提取进度事件，返回取消监听函数。 */
+export function listenContractScopeProgress(
+  handler: (event: ContractScopeProgressEvent) => void,
+): Promise<() => void> {
+  return listen<ContractScopeProgressEvent>("contract-scope-progress", (e) => handler(e.payload))
+}
+
 // ─── 风险控制类型（P1：双轨风险把控舱） ───
 
 export interface CandidateScopeItem {

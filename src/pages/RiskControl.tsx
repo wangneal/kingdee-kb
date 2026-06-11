@@ -16,6 +16,8 @@ import {
   Trash2,
   X,
 } from "lucide-react"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useToast } from "../components/Toast"
 import { DEFAULT_SLOT, useAgent } from "../contexts/AgentContext"
@@ -27,6 +29,7 @@ import {
   type ContractScopeItem,
   checkScopeCreep,
   confirmScopeItems,
+  type ContractScopeProgressEvent,
   type DefenseScriptResult,
   type DocumentMeta,
   deleteScopeItem,
@@ -37,6 +40,7 @@ import {
   getProjectHealth,
   listDocuments,
   listScopeItems,
+  listenContractScopeProgress,
   type ProjectHealthScore,
   recordHealthMetric,
   type ScopeCreepResult,
@@ -114,6 +118,7 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
   const [confirmLoading, setConfirmLoading] = useState(false)
   const [addLoading, setAddLoading] = useState(false)
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [scopeProgress, setScopeProgress] = useState<ContractScopeProgressEvent | null>(null)
   const toast = useToast()
   const activeProjectRef = useRef(projectId)
 
@@ -135,6 +140,7 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
     setConfirmLoading(false)
     setAddLoading(false)
     setDeletingId(null)
+    setScopeProgress(null)
   }, [projectId])
 
   const filteredDocuments = useMemo(() => {
@@ -183,6 +189,32 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
   useEffect(() => {
     refresh()
   }, [refresh])
+
+  // 监听合同范围提取进度事件
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+    listenContractScopeProgress((event) => {
+      // 仅接受当前项目 + 当前文档的进度事件，防止并发/切换串扰
+      if (
+        activeProjectRef.current === projectId &&
+        event.project_id === projectId &&
+        event.doc_id === Number(extractDocId)
+      ) {
+        setScopeProgress(event)
+        if (event.step === "done") {
+          // 提取完成后 3 秒自动清除进度显示
+          setTimeout(() => {
+            if (activeProjectRef.current === projectId) setScopeProgress(null)
+          }, 3000)
+        }
+      }
+    }).then((fn) => {
+      unlisten = fn
+    })
+    return () => {
+      if (unlisten) unlisten()
+    }
+  }, [projectId, extractDocId])
 
   // 打开提取对话框时加载文档列表
   useEffect(() => {
@@ -492,6 +524,29 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
                 提取
               </button>
             </div>
+            {scopeProgress && extractLoading && (
+              <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-600" />
+                  <span className="text-xs font-medium text-amber-800">{scopeProgress.message}</span>
+                </div>
+                {scopeProgress.total > 0 && (
+                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-amber-200">
+                    <div
+                      className="h-full rounded-full bg-amber-600 transition-all duration-300"
+                      style={{
+                        width: `${Math.min(
+                          scopeProgress.step === "done" || scopeProgress.step === "merging"
+                            ? 100
+                            : (scopeProgress.current / scopeProgress.total) * 100,
+                          100,
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
             {candidates.length > 0 && (
               <div className="mt-3 space-y-2">
                 <p className="text-xs font-medium text-amber-800">
@@ -865,8 +920,8 @@ function HealthTab({ projectId }: { projectId: number | null }) {
           </button>
           {aiReport && (
             <div className="mt-2 space-y-2">
-              <div className="rounded-lg border border-amber-100 bg-amber-50 p-3 text-xs leading-relaxed text-neutral-700 whitespace-pre-wrap">
-                {aiReport}
+              <div className="rounded-lg border border-amber-100 bg-amber-50 p-3 text-xs leading-relaxed text-neutral-700 prose prose-sm prose-amber max-w-none">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{aiReport}</ReactMarkdown>
               </div>
               <button
                 type="button"

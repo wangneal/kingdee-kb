@@ -154,3 +154,28 @@ export async function setCurrentProjectPhase(projectId: number, phaseKey: string
 export async function ensureProjectActive(projectId: number): Promise<void> {
   return invoke("ensure_project_active", { projectId })
 }
+
+// ─── 产品版本管理 ───
+
+export interface ProjectProduct {
+  id: number
+  project_id: number
+  product_name: string
+  product_version: string
+}
+
+export async function listProjectProducts(projectId: number): Promise<ProjectProduct[]> {
+  return invoke("list_project_products", { projectId })
+}
+
+export async function addProjectProduct(
+  projectId: number,
+  productName: string,
+  productVersion: string,
+): Promise<number> {
+  return invoke("add_project_product", { projectId, productName, productVersion })
+}
+
+export async function deleteProjectProduct(projectId: number, productId: number): Promise<void> {
+  return invoke("delete_project_product", { projectId, productId })
+}

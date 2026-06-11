@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::services::project_store::{Project, ProjectPhase, ProjectStore, ProjectSummary};
+use crate::services::project_store::{Project, ProjectPhase, ProjectProduct, ProjectStore, ProjectSummary};
 use tauri::State;
 
 async fn with_project_store<T, F>(state: State<'_, AppState>, task: F) -> Result<T, String>
@@ -120,4 +120,37 @@ pub async fn ensure_project_active(
     project_id: i64,
 ) -> Result<(), String> {
     with_project_store(state, move |store| store.ensure_project_active(project_id)).await
+}
+
+#[tauri::command]
+pub async fn list_project_products(
+    state: State<'_, AppState>,
+    project_id: i64,
+) -> Result<Vec<ProjectProduct>, String> {
+    with_project_store(state, move |store| store.list_project_products(project_id)).await
+}
+
+#[tauri::command]
+pub async fn add_project_product(
+    state: State<'_, AppState>,
+    project_id: i64,
+    product_name: String,
+    product_version: String,
+) -> Result<i64, String> {
+    with_project_store(state, move |store| {
+        store.add_project_product(project_id, &product_name, &product_version)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_project_product(
+    state: State<'_, AppState>,
+    project_id: i64,
+    product_id: i64,
+) -> Result<(), String> {
+    with_project_store(state, move |store| {
+        store.delete_project_product(project_id, product_id)
+    })
+    .await
 }
