@@ -312,6 +312,7 @@ pub fn run() {
             commands::research::set_edition,
             commands::research::list_research_modules,
             commands::research::import_research_outlines,
+            commands::research::get_investigation_recipe,
             // Phase 11: Question Recommendation
             commands::research::recommend_questions,
             commands::research::generate_followup_questions,

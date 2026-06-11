@@ -209,6 +209,7 @@ const MOCK_RESPONSES: Record<string, unknown> = {
   create_research_session: 1,
   list_research_sessions: [],
   get_research_session: null,
+  get_investigation_recipe: "调研报告配方（mock）\n1.【现有流程 As-Is】\n2.【系统方案 To-Be】\n3.【差异分析】\n4.【实施建议】",
   update_research_session: null,
   delete_research_session: null,
   add_qa_record: 1,

@@ -39,6 +39,7 @@ import {
   deleteResearchSession,
   exportSessionCsv,
   exportSessionMarkdown,
+  fetchInvestigationRecipe,
   fetchTencentMeetingTranscript,
   getAsrConfigStatus,
   getResearchSession,
@@ -484,6 +485,16 @@ function SessionDetailView({
       outline.loadOutline(session.id)
     }
   }, [activeTab, session.id, outline.loadOutline])
+
+  // 加载调研报告配方（与后端 prompts::RECIPE_INVESTIGATION 同源）
+  useEffect(() => {
+    fetchInvestigationRecipe()
+      .then(setReportRecipe)
+      .catch((err) => {
+        console.error("加载调研报告配方失败:", err)
+        setReportRecipe("")
+      })
+  }, [])
 
   useEffect(() => {
     getWhisperStatus()
@@ -1234,7 +1245,10 @@ function SessionDetailView({
         defaultPath: `调研报告_${session.title}.md`,
         filters: [{ name: "Markdown", extensions: ["md"] }],
       })
-      if (dest) await invoke("export_report", { content: newAnswer, filePath: dest })
+      if (dest) {
+        const savedPath = await invoke<string>("export_report", { content: newAnswer, filePath: dest })
+        toast.success(`已保存到：${savedPath}`)
+      }
     } catch (err) {
       toast.error(`保存调研报告失败: ${String(err)}`)
     }
@@ -1286,17 +1300,8 @@ function SessionDetailView({
     }
   }
 
-  // 调研报告配方：4 段硬约束（与后端 RECIPE_INVESTIGATION 保持一致）
-  const REPORT_RECIPE = `你是一位资深的金蝶ERP实施顾问，正在撰写项目调研报告。
-【输出结构约束】
-1.【现有流程 As-Is】— 客户当前业务操作模式（必须有具体流程描述）
-2.【系统方案 To-Be】— 金蝶标准解决方案（必须含系统路径/单据类型）
-3.【差异分析】— 逐条标注 Fit(标准配置) 或 Gap(需评估)
-4.【实施建议】— 具体的配置参数、业务规则或操作步骤
-【禁止】
-- 禁止"实现高效管理""优化流程"等无具体操作的套话
-- 禁止编造不存在的系统功能或二开方案
-- 不确定的内容写"待确认"，不得用模糊表述填充`
+  // 调研报告配方：后端 prompts::RECIPE_INVESTIGATION 同源，启动时拉取避免漂移
+  const [reportRecipe, setReportRecipe] = useState<string>("")
 
   const buildReportPrompt = (): string => {
     const qaText = records
@@ -1306,7 +1311,7 @@ function SessionDetailView({
       )
       .join("\n\n")
     return [
-      `${REPORT_RECIPE}`,
+      `${reportRecipe}`,
       "",
       "请先用 use-skill 加载 survey-assistant 技能（action=load, name_or_query=survey-assistant），按其 Step 4「生成调研报告」指引，结合下方调研记录输出。",
       "",
@@ -1403,7 +1408,8 @@ function SessionDetailView({
           <button
             type="button"
             onClick={handleGenerateReport}
-            disabled={aiLoading}
+            disabled={aiLoading || records.length === 0}
+            title={records.length === 0 ? "暂无调研记录" : "基于当前调研记录生成 4 段结构报告"}
             className="flex items-center gap-1 rounded-lg border border-blue-200 px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
           >
             <FileText className="h-3.5 w-3.5" /> 生成调研报告

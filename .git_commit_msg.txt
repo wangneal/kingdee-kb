@@ -1,26 +1,33 @@
-feat: 调研报告增加 4 段标识横幅与失败重试
+feat: 调研报告配方同源化、保存反馈优化、按钮空态
 
-延续前两次提交，本轮收尾以下质量细节：
+延续前三次提交，本轮收尾最后三个质量细节：
 
-1. SKILL.md Step 4 描述同步 4 段硬结构（与 RECIPE_INVESTIGATION 配方保持一致），
-   报告开头追加会话元信息（标题/版本/模块/访谈对象/日期），
-   与前端 REPORT_RECIPE 提示词口径完全对齐，避免 LLM 自由发挥导致结构漂移。
+1. RECIPE 漂移防御：
+   - 后端 commands::research 新增 get_investigation_recipe 命令，
+     直接返回 services::prompts::RECIPE_INVESTIGATION 常量
+   - lib.rs 注册命令
+   - 前端 tauri-commands.ts 封装 fetchInvestigationRecipe()
+   - ResearchAssistant.tsx 启动时 useEffect 拉取，存为 reportRecipe state
+   - 移除 REPORT_RECIPE 硬编码字符串，buildReportPrompt 用 state
+   - 漂移后果：如果后端改 4 段结构，前端 prompt 自动跟随，
+     之前需要前后端同步改两份，现在只改 prompts.rs 一处
 
-2. 失败重试：
-   - 拆分 buildReportPrompt / sendReportPrompt，把最近一次报告 prompt 缓存到 lastReportPromptRef
-   - 新增 handleRetryReport：失败时 Copilot 顶部红条显示原因 + 「重试」按钮，
-     复用同一份 prompt 重新发起，不让用户重新拼调研记录
-   - 限制条件：records.length === 0 时禁用重试（prompt 中 Q&A 已失效）
-   - sendMessage 抛错也走重试路径（catch 弹 toast 但不重置 ref）
+2. 保存报告反馈：
+   - export_report 后端早已返回 file_path 字符串（core.rs:187-191）
+   - 前端 invoke 之前没用返回值（直接 await 没用）
+   - 改为 const savedPath = await invoke<string>("export_report", ...)
+   - toast.success(`已保存到：${savedPath}`) 弹绝对路径
 
-3. 报告上下文区分：
-   - 新增 reportContextRef 标记当前 AI 响应是「调研报告」还是「普通问答」
-   - sendReportPrompt 进入时打开，普通 handleAIAssist / 清空 / 保存问答记录时关闭
-   - 报告上下文：顶部标题改为「调研报告（AI 生成，请审阅）」+ 蓝色「4 段结构」徽章
-   - 报告上下文：底部主按钮改为「保存报告」，隐藏「保存为问答记录/插入中栏」无关按钮
-   - 普通问答上下文：维持原行为（不引入新概念）
+3. 空记录按钮禁用：
+   - 「生成调研报告」按钮 disabled 条件从 aiLoading 扩展为
+     aiLoading || records.length === 0
+   - 加 title 属性提示原因（"暂无调研记录" / "基于当前调研记录生成 4 段结构报告"）
+   - handleGenerateReport 内的 toast.warning 变为兜底（防御性保留）
 
-后续可继续优化（不阻塞当前提交）：
-- RECIPE 提示词复用后端常量（漂移防御）
-- 「保存报告」返回文件路径并在 toast 显示绝对路径
-- 「生成调研报告」按钮在 records 为 0 时直接 disabled 而非弹 toast
+4. e2e mock：tauri-mock.ts 添加 get_investigation_recipe 占位响应
+
+至此调研报告功能闭环完成，3 + 1 = 4 次提交覆盖：
+- 反模式删除 + 走 LLM/skill
+- 落盘保存
+- SKILL.md / 4 段配方 / 失败重试 / 上下文横幅
+- 配方同源 / 路径反馈 / 空态禁用

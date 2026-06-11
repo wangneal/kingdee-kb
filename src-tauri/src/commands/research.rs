@@ -1,12 +1,22 @@
 use tauri::State;
 
 use crate::app_state::AppState;
+use crate::services::prompts::RECIPE_INVESTIGATION;
 use crate::services::question_recommend::{
     FollowUpRequest, FollowUpResult, RecommendRequest, RecommendedQuestion,
 };
 use crate::services::research_outline::Edition;
 use crate::services::research_session::{QARecord, ResearchSession, SessionDetail};
 use crate::services::smart_completion::SmartFillResult;
+
+/// 获取调研报告配方（4 段硬结构）
+///
+/// 返回与后端 `prompts::RECIPE_INVESTIGATION` 同源的字符串。前端拼 prompt 时
+/// 直接 `await` 拉取，避免硬编码导致配方漂移。
+#[tauri::command]
+pub fn get_investigation_recipe() -> String {
+    RECIPE_INVESTIGATION.to_string()
+}
 
 /// 获取当前研究版本
 #[tauri::command]

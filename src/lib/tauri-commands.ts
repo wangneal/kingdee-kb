@@ -163,6 +163,12 @@ export async function ingestFile(
   })
 }
 
+// ── 调研报告配方（与后端 prompts::RECIPE_INVESTIGATION 同源，避免硬编码漂移）───
+
+export async function fetchInvestigationRecipe(): Promise<string> {
+  return invoke<string>("get_investigation_recipe")
+}
+
 export async function extractFileText(filePath: string): Promise<ExtractedFileText> {
   return invoke("extract_file_text", { filePath })
 }
