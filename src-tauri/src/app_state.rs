@@ -287,30 +287,49 @@ impl AppState {
         let llm_providers = Arc::new(RwLock::new(LLMProviderManager::new(
             &data_dir.to_path_buf(),
         )));
+        // ImageProcessor 必须先于 seed 任务创建（Arc 包装），便于 seed 完成后回填
+        // 修复前：ImageProcessor 在 seed 之前用空配置快照，seed 完成后无法感知，永远空配置
+        // 修复后：先以空配置创建，seed 完成后由 seed 任务调 update_llm_config 回填
+        let image_processor = Arc::new(RwLock::new(ImageProcessor::new(
+            String::new(),
+            String::new(),
+            String::new(),
+        )));
+        // 已配置用户：llm_providers.load() 已加载文件，立即从内存回填到 ImageProcessor
+        {
+            if let Ok(mgr) = llm_providers.read() {
+                if let Some(provider) = mgr.get_default_provider() {
+                    if let Ok(mut proc) = image_processor.write() {
+                        proc.update_llm_config(
+                            provider.get_default_key_value(),
+                            provider.base_url.clone(),
+                            provider.get_default_model_name(),
+                        );
+                    }
+                }
+            }
+        }
         // 首次启动时异步 seed OpenCode Zen 默认供应商
         // 分离到独立方法是为了让 LLMProviderManager::new() 在无 tokio runtime 的测试环境也能工作
         {
             let seed_arc = llm_providers.clone();
+            let img_arc = image_processor.clone();
             tokio::spawn(async move {
                 LLMProviderManager::seed_default_async(&seed_arc).await;
+                // seed 完成后回填 ImageProcessor：解决"首启时 ImageProcessor 永远拿不到默认配置"
+                if let Ok(mgr) = seed_arc.read() {
+                    if let Some(provider) = mgr.get_default_provider() {
+                        if let Ok(mut proc) = img_arc.write() {
+                            proc.update_llm_config(
+                                provider.get_default_key_value(),
+                                provider.base_url.clone(),
+                                provider.get_default_model_name(),
+                            );
+                        }
+                    }
+                }
             });
         }
-
-        // 初始化 ImageProcessor（图像处理，从 LLMProviderManager 获取配置）
-        let image_processor = {
-            let mgr = llm_providers.read().map_err(|e| e.to_string())?;
-            let (api_key, base_url, model) = mgr
-                .get_default_provider()
-                .map(|p| {
-                    (
-                        p.get_default_key_value(),
-                        p.base_url.clone(),
-                        p.get_default_model_name(),
-                    )
-                })
-                .unwrap_or_default();
-            ImageProcessor::new(api_key, base_url, model)
-        };
 
         // 初始化 LLM 服务（从 LLMProviderManager 获取配置并传入数据脱敏器）
         let llm = LLMService::with_desensitizer(llm_providers.clone(), desensitizer.clone());
@@ -348,7 +367,7 @@ impl AppState {
             skill_manager: Arc::new(tokio::sync::Mutex::new(skill_manager)),
             signal_writer: Arc::new(RwLock::new(signal_writer)),
             template_manager: Arc::new(Mutex::new(template_manager)),
-            image_processor: Arc::new(RwLock::new(image_processor)),
+            image_processor,
             llm_providers,
             ingest_queue,
             kb_recompile_status: Arc::new(Mutex::new(KbRecompileStatus::default())),
