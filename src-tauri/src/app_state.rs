@@ -288,10 +288,16 @@ impl AppState {
         }
         // 首次启动时异步 seed OpenCode Zen 默认供应商
         // 分离到独立方法是为了让 LLMProviderManager::new() 在无 tokio runtime 的测试环境也能工作
+        //
+        // 必须用 tauri::async_runtime::spawn 而非 tokio::spawn：
+        // AppState::new 由 Tauri 的 setup 同步钩子调用，
+        // 此时 tokio 运行时尚未初始化，tokio::spawn 会直接 panic
+        // （"there is no reactor running"）。Tauri 自带 runtime，
+        // 在事件循环启动后由框架统一管理，可靠且不依赖全局 runtime 状态。
         {
             let seed_arc = llm_providers.clone();
             let img_arc = image_processor.clone();
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 LLMProviderManager::seed_default_async(&seed_arc).await;
                 // seed 完成后回填 ImageProcessor：解决"首启时 ImageProcessor 永远拿不到默认配置"
                 if let Ok(mgr) = seed_arc.read() {
