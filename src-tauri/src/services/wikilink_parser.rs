@@ -13,7 +13,7 @@
 //!
 //! 调用方：
 //! - `wiki_page.rs::approve_candidate`（批准候选时重新计算 wikilinks）
-//! - `ingestion_pipeline.rs::parse_wikilinks_from_markdown`（LLM 输出后处理）
+//! - `ingestion_pipeline.rs`（LLM 输出后处理）
 //! - `knowledge_graph.rs::backfill_empty_wikilinks`（历史 wikilinks 回填）
 
 /// 从 markdown 文本中提取 `[[slug]]` 形式的 wiki 链接

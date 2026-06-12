@@ -23,6 +23,30 @@ pub async fn build_knowledge_graph(
     state: State<'_, AppState>,
     project_id: i64,
 ) -> Result<usize, String> {
+    // 预检：扫描项目 wiki_pages 状态，让 0 边现象有据可查
+    let (total_pages, pages_with_wikilinks, sample_wikilinks, sample_content_has_brackets) = {
+        let wiki_store = state
+            .wiki_pages
+            .lock()
+            .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+        wiki_store.diagnose_wikilinks(project_id)?
+    };
+    tracing::info!(
+        "知识图谱构建预检: project={} pages={} 非空wikilinks={} 含[[..]]={}",
+        project_id, total_pages, pages_with_wikilinks, sample_content_has_brackets
+    );
+    for s in &sample_wikilinks {
+        tracing::info!("  - 样例 wikilinks: {}", s);
+    }
+    if total_pages == 0 {
+        tracing::warn!("项目 {} 没有任何 wiki_pages，无法构建图谱", project_id);
+    } else if pages_with_wikilinks == 0 && sample_content_has_brackets == 0 {
+        tracing::warn!(
+            "项目 {} 的 {} 个页面均无 `[[slug]]` 引用，LLM 可能没遵循提示词要求",
+            project_id, total_pages
+        );
+    }
+
     let store = state
         .graph_store
         .lock()
@@ -31,13 +55,10 @@ pub async fn build_knowledge_graph(
     let backfilled = store.backfill_empty_wikilinks(project_id)?;
     // 阶段 2：4 信号构建（事务内，原子性）
     let inserted = store.build_knowledge_graph(project_id)?;
-    if backfilled > 0 {
-        tracing::info!(
-            "知识图谱构建：backfill {} 页，insert {} 边",
-            backfilled,
-            inserted
-        );
-    }
+    tracing::info!(
+        "知识图谱构建完成: project={} backfill={} insert={}",
+        project_id, backfilled, inserted
+    );
     Ok(inserted)
 }
 

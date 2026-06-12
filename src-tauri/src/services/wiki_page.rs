@@ -260,6 +260,73 @@ impl WikiPageStore {
         Ok(result)
     }
 
+    /// 诊断：扫描项目的 wiki_pages.wikilinks 状态，返回关键计数与样例
+    ///
+    /// 用于定位"知识图谱构建为 0 边"问题：
+    /// - 项目无任何页面
+    /// - 页面有但 `wikilinks = '[]'`
+    /// - `content` / `content_candidate` 中无 `[[slug]]`（LLM 没遵循提示词）
+    ///
+    /// 返回 (total_pages, pages_with_nonempty_wikilinks, sample_wikilinks, has_brackets_in_content)
+    pub fn diagnose_wikilinks(
+        &self,
+        project_id: i64,
+    ) -> Result<(usize, usize, Vec<String>, usize), String> {
+        // 总页数
+        let total_pages: usize = self
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM wiki_pages WHERE project_id = ?1",
+                params![project_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|e| format!("diagnose 总页数查询失败: {}", e))? as usize;
+
+        // 非空 wikilinks 页数 + 样例（最多 3 条）
+        let mut stmt = self
+            .db
+            .prepare(
+                "SELECT slug, wikilinks FROM wiki_pages
+                 WHERE project_id = ?1 AND wikilinks != '[]' AND wikilinks != ''
+                 LIMIT 3",
+            )
+            .map_err(|e| format!("diagnose 样例查询失败: {}", e))?;
+        let mut sample_wikilinks: Vec<String> = Vec::new();
+        let pages_with_nonempty: usize = self
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM wiki_pages WHERE project_id = ?1 AND wikilinks != '[]' AND wikilinks != ''",
+                params![project_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|e| format!("diagnose 非空计数执行失败: {}", e))? as usize;
+
+        let rows = stmt
+            .query_map(params![project_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| format!("diagnose 样例执行失败: {}", e))?;
+        for row in rows {
+            let (slug, wl) = row.map_err(|e| format!("diagnose 样例读取失败: {}", e))?;
+            sample_wikilinks.push(format!("slug={} wikilinks={}", slug, wl));
+        }
+
+        // content / content_candidate 含 `[[` 的页数（粗判，统计子串）
+        let has_brackets: usize = self
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM wiki_pages
+                 WHERE project_id = ?1
+                   AND ((content LIKE '%[[%' AND content LIKE '%]]%')
+                        OR (content_candidate LIKE '%[[%' AND content_candidate LIKE '%]]%'))",
+                params![project_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|e| format!("diagnose bracket 查询失败: {}", e))? as usize;
+
+        Ok((total_pages, pages_with_nonempty, sample_wikilinks, has_brackets))
+    }
+
     /// 列出项目下的所有页面，可按状态过滤
     pub fn list(
         &self,
