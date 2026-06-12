@@ -1,9 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use anyhow::Context;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app_state::AppState;
+use crate::error::{AppError, AppResult};
 use crate::services::skill_manager::SkillManager;
 
 const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
@@ -98,8 +100,9 @@ pub async fn export_report(content: String, file_path: String) -> Result<String,
 }
 
 /// 确保 ~/.kingdee-kb/ 数据目录结构存在
-pub fn ensure_data_dir() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+pub fn ensure_data_dir() -> AppResult<PathBuf> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| AppError::Config("无法定位用户主目录".into()))?;
     let data_dir = home.join(".kingdee-kb");
 
     let subdirs = [
@@ -111,34 +114,43 @@ pub fn ensure_data_dir() -> Result<PathBuf, String> {
         "skills",
     ];
     for subdir in subdirs {
-        fs::create_dir_all(data_dir.join(subdir))
-            .map_err(|e| format!("Failed to create {}: {}", subdir, e))?;
+        let target = data_dir.join(subdir);
+        fs::create_dir_all(&target)
+            .map_err(|e| AppError::io(&target, e))
+            .with_context(|| format!("创建子目录失败: {}", subdir))?;
     }
 
     Ok(data_dir)
 }
 
 /// 递归复制目录及其所有内容
-pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+pub fn copy_dir_recursive(src: &Path, dst: &Path) -> AppResult<()> {
     fs::create_dir_all(dst)
-        .map_err(|e| format!("Failed to create dir {}: {}", dst.display(), e))?;
-    for entry in
-        fs::read_dir(src).map_err(|e| format!("Failed to read dir {}: {}", src.display(), e))?
-    {
-        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        .map_err(|e| AppError::io(dst, e))
+        .with_context(|| format!("创建目录失败: {}", dst.display()))?;
+
+    let entries = fs::read_dir(src)
+        .map_err(|e| AppError::io(src, e))
+        .with_context(|| format!("读取目录失败: {}", src.display()))?;
+
+    for entry in entries {
+        let entry = entry
+            .map_err(|e| AppError::io(src, e))
+            .with_context(|| format!("读取目录条目失败: {}", src.display()))?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
         if src_path.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
-            fs::copy(&src_path, &dst_path).map_err(|e| {
-                format!(
-                    "Failed to copy {} to {}: {}",
-                    src_path.display(),
-                    dst_path.display(),
-                    e
-                )
-            })?;
+            fs::copy(&src_path, &dst_path)
+                .map_err(|e| AppError::io(&dst_path, e))
+                .with_context(|| {
+                    format!(
+                        "复制文件失败: {} -> {}",
+                        src_path.display(),
+                        dst_path.display()
+                    )
+                })?;
         }
     }
     Ok(())
@@ -150,21 +162,17 @@ fn dir_has_entries(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn seed_skills_dir(_app: &AppHandle, data_dir: &Path) -> Result<PathBuf, String> {
+fn seed_skills_dir(_app: &AppHandle, data_dir: &Path) -> AppResult<PathBuf> {
     let skills_dir = data_dir.join("skills");
-    fs::create_dir_all(&skills_dir).map_err(|e| {
-        format!(
-            "Failed to create skills dir {}: {}",
-            skills_dir.display(),
-            e
-        )
-    })?;
+    fs::create_dir_all(&skills_dir)
+        .map_err(|e| AppError::io(&skills_dir, e))
+        .with_context(|| format!("创建 skills 目录失败: {}", skills_dir.display()))?;
 
     Ok(skills_dir)
 }
 
 /// 初始化 AppState（同步，在 setup 中立刻调用）
-pub fn init_app_state(app: &AppHandle) -> Result<AppState, String> {
+pub fn init_app_state(app: &AppHandle) -> AppResult<AppState> {
     let data_dir = ensure_data_dir()?;
     tracing::info!("数据目录已初始化: {:?}", data_dir);
 
@@ -187,7 +195,7 @@ pub fn init_app_state(app: &AppHandle) -> Result<AppState, String> {
 }
 
 /// 执行后端初始化异步任务（在 AppState 被托管后运行）
-pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
+pub async fn setup_backend_async(app: AppHandle) -> AppResult<()> {
     let app_state = app.state::<AppState>();
     let data_dir = &app_state.data_dir;
 
@@ -224,8 +232,10 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
         }
     }
 
-    // 启动时补偿 pending 删除
-    crate::compensate_pending_deletions(&app_state);
+    // 启动时补偿 pending 删除（非致命错误，记录 warn 即可）
+    if let Err(e) = crate::compensate_pending_deletions(&app_state) {
+        tracing::warn!("删除补偿失败: {:#}", e);
+    }
 
     // 启动时恢复备份/摄入队列中的任务（如果有）
     if let Err(e) = crate::commands::ingestion_queue::process_pending_queue(&app_state) {

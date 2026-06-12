@@ -93,6 +93,7 @@ async-trait = "0.1"
 # rig AI framework
 rig-core = "0.37"
 thiserror = "2"
+anyhow = "1"
 futures = "0.3.32"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

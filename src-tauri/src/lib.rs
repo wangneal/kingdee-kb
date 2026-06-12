@@ -1,13 +1,16 @@
 mod app_state;
 mod commands;
+mod error;
 pub mod services;
 
+use anyhow::anyhow;
 use std::sync::Mutex;
 use tauri::Manager;
 use tracing_subscriber::EnvFilter;
 
 use crate::app_state::AppState;
 pub use commands::core::{ensure_data_dir, init_app_state, setup_backend_async, SetupState};
+pub use error::{AppError, AppResult};
 pub use services::template_docx;
 pub use services::template_schema;
 pub use services::template_xlsx;
@@ -76,25 +79,22 @@ impl AsrConfigStore {
 }
 
 /// 启动时补偿：重试 deletion_outbox 中 status='pending' 的记录
-pub fn compensate_pending_deletions(state: &AppState) {
-    let meta = match state.metadata.lock() {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::warn!("获取 metadata 锁失败: {}", e);
-            return;
-        }
-    };
+///
+/// 返回 `anyhow::Result<()>` 而非 `()`：之前的版本在锁失败 / DB 失败时
+/// 静默 `return;`，导致线上无人察觉。现版本调用方应 `let _ = ... ;`
+/// 忽略非致命错误，或用 `?` 透传给上层。
+pub fn compensate_pending_deletions(state: &AppState) -> anyhow::Result<()> {
+    let meta = state
+        .metadata
+        .lock()
+        .map_err(|e| anyhow!("获取 metadata 锁失败: {}", e))?;
 
-    let pending = match meta.get_pending_deletions() {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!("读取 pending 删除记录失败: {}", e);
-            return;
-        }
-    };
+    let pending = meta
+        .get_pending_deletions()
+        .map_err(|e| anyhow!("读取 pending 删除记录失败: {}", e))?;
 
     if pending.is_empty() {
-        return;
+        return Ok(());
     }
 
     tracing::info!("发现 {} 条 pending 删除记录，开始补偿", pending.len());
@@ -137,6 +137,7 @@ pub fn compensate_pending_deletions(state: &AppState) {
     }
 
     tracing::info!("删除补偿完成，共处理 {} 条记录", pending.len());
+    Ok(())
 }
 
 pub fn run() {
