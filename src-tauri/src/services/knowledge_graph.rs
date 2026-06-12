@@ -979,4 +979,320 @@ mod tests {
         let keys = parse_source_keys(r#"[{"source_id":7,"document_id":42,"chunks":[]}]"#).unwrap();
         assert_eq!(keys, vec!["source_id:7".to_string()]);
     }
+
+    /// 端到端：模拟用户报告的"0 边"场景，找出哪一步出问题
+    ///
+    /// 场景 A：页面 wikilinks 字段已经存了 `[[slug]]`，调用 build 应有 N 边
+    /// 场景 B：页面 wikilinks = '[]' 但 content 里有 `[[slug]]`，backfill 应回填，再 build 应有边
+    /// 场景 C：页面 wikilinks = '[]' 且 content 也没 `[[slug]]`，build 真的就是 0 边（数据问题，不是代码问题）
+    #[test]
+    fn end_to_end_diagnose_zero_edges() {
+        use crate::services::wiki_page::{CreateWikiPageWithCandidate, WikiPageStore};
+        use rusqlite::Connection;
+        use std::env;
+
+        // 用临时文件模拟"两个独立连接"（实际部署中 WikiPageStore 和 GraphStore 各自持有一个连接）
+        let path = env::temp_dir().join(format!(
+            "kingdee_kb_test_kg_{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path_str = path.to_string_lossy().to_string();
+
+        // 1) 初始化 schema（关外键：测试只验证 build 逻辑，不依赖 projects 表）
+        {
+            let conn = Connection::open(&path_str).unwrap();
+            conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+            conn.execute_batch("CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+                .unwrap();
+            conn.execute("INSERT INTO projects (id, name) VALUES (1, 'test')", [])
+                .unwrap();
+            let wiki = WikiPageStore::new(conn);
+            wiki.ensure_table().unwrap();
+        }
+
+        // 2) 写入测试数据
+        {
+            let conn = Connection::open(&path_str).unwrap();
+
+            // 场景 B：先把 page-c 的数据准备好（先做 conn 直写，再交给 store）
+            // 直接写 page-c 的初始数据：用 SQL 而不是 create_with_candidate 避开顺序问题
+            conn.execute(
+                "INSERT INTO wiki_pages
+                 (project_id, slug, title, page_type, content, content_candidate,
+                  candidate_status, sources_candidate, frontmatter, sources,
+                  wikilinks, tags, page_metadata, candidate_version, page_status, version)
+                 VALUES
+                 (1, 'page-c', 'Page C', 'summary', '请看 [[page-a]] 章节', NULL,
+                  NULL, NULL, '{}', '[]', '[]', '[]', '{}', NULL, 'draft', 1)",
+                [],
+            )
+            .unwrap();
+
+            let wiki_store = WikiPageStore::new(conn);
+            wiki_store
+                .create_with_candidate(&CreateWikiPageWithCandidate {
+                    project_id: 1,
+                    slug: "page-a".into(),
+                    title: "Page A".into(),
+                    page_type: "summary".into(),
+                    content_candidate: "见 [[page-b]] 与 [[page-c]]".into(),
+                    candidate_status: "auto".into(),
+                    sources_candidate: Some("[]".into()),
+                    frontmatter: None,
+                    sources: None,
+                    wikilinks: Some(r#"["page-b","page-c"]"#.into()),
+                    tags: None,
+                    page_metadata: None,
+                    page_status: None,
+                })
+                .unwrap();
+            wiki_store
+                .create_with_candidate(&CreateWikiPageWithCandidate {
+                    project_id: 1,
+                    slug: "page-b".into(),
+                    title: "Page B".into(),
+                    page_type: "summary".into(),
+                    content_candidate: "回链到 [[page-a]]".into(),
+                    candidate_status: "auto".into(),
+                    sources_candidate: Some("[]".into()),
+                    frontmatter: None,
+                    sources: None,
+                    wikilinks: Some(r#"["page-a"]"#.into()),
+                    tags: None,
+                    page_metadata: None,
+                    page_status: None,
+                })
+                .unwrap();
+
+            // 诊断：扫描页面状态
+            let (total, non_empty, samples, has_brackets) =
+                wiki_store.diagnose_wikilinks(1).unwrap();
+            eprintln!(
+                "[诊断 1] total={} non_empty={} has_brackets={}",
+                total, non_empty, has_brackets
+            );
+            for s in &samples {
+                eprintln!("    样例: {}", s);
+            }
+            assert_eq!(total, 3, "应有 3 个页面");
+            assert_eq!(non_empty, 2, "page-a + page-b 应该有非空 wikilinks");
+            assert!(has_brackets >= 1, "page-c 的 content 里有 [[page-a]]");
+        }
+
+        // 3) backfill + build：跑 GraphStore
+        {
+            let conn = Connection::open(&path_str).unwrap();
+            let graph_store = GraphStore::new(conn);
+            graph_store.ensure_table().unwrap();
+
+            let backfilled = graph_store.backfill_empty_wikilinks(1).unwrap();
+            eprintln!("[backfill] backfilled={} (期望 1: page-c)", backfilled);
+            assert_eq!(backfilled, 1, "backfill 应该修复 page-c");
+
+            // 验证 backfill 写回了 page-c 的 wikilinks
+            {
+                let conn = Connection::open(&path_str).unwrap();
+                let wiki_store = WikiPageStore::new(conn);
+                let (total, non_empty, _, _) = wiki_store.diagnose_wikilinks(1).unwrap();
+                eprintln!(
+                    "[诊断 2] backfill 后 total={} non_empty={} (期望 3/3)",
+                    total, non_empty
+                );
+                assert_eq!(total, 3);
+                assert_eq!(non_empty, 3, "backfill 后 3 个页面都应该有 wikilinks");
+            }
+
+            let edges = graph_store.build_knowledge_graph(1).unwrap();
+            eprintln!("[build] edges={} (期望至少 4: a→b, a→c, b→a, c→a)", edges);
+            // 期望 4 条 wikilink 边（page-a→page-b, page-a→page-c, page-b→page-a, page-c→page-a）
+            // 还可能有 tag/source/co_citation 等额外边，所以用 >= 4
+            assert!(edges >= 4, "期望至少 4 条 wikilink 边，实际 {}", edges);
+        }
+
+        // 4) 场景 C：清空 page-c 的 [[..]]，验证 0 边确实是数据导致
+        {
+            let conn = Connection::open(&path_str).unwrap();
+            conn.execute(
+                "UPDATE wiki_pages SET content = 'no links here', wikilinks = '[]'
+                 WHERE slug = 'page-c'",
+                [],
+            )
+            .unwrap();
+            let graph_store = GraphStore::new(conn);
+            let edges_c = graph_store.build_knowledge_graph(1).unwrap();
+            eprintln!(
+                "[场景 C] 边数={} (期望 2-3：a→b, b→a 仍在，c 失去引用)",
+                edges_c
+            );
+            assert!(edges_c >= 2 && edges_c <= 3, "page-c 失去引用后应减 2 条边");
+        }
+
+        // 5) 清理临时文件
+        let _ = std::fs::remove_file(&path_str);
+    }
+
+    /// 诊断用户真实数据库：跑 `KINGDEE_KB_DIAGNOSE=1 cargo test --lib diagnose_user_database -- --nocapture`
+    ///
+    /// 会打开 `~/.kingdee-kb/metadata.db`（覆盖用 `KINGDEE_KB_DB=...`），对每个 project_id
+    /// 输出 wiki_pages 状态，并尝试 build_knowledge_graph 看实际边数
+    #[test]
+    fn diagnose_user_database() {
+        if std::env::var("KINGDEE_KB_DIAGNOSE").is_err() {
+            eprintln!(
+                "跳过：设置 KINGDEE_KB_DIAGNOSE=1 才会真正连库。可用 KINGDEE_KB_DB 覆盖数据库路径。"
+            );
+            return;
+        }
+        use crate::services::wiki_page::WikiPageStore;
+        use rusqlite::Connection;
+
+        let db_path = std::env::var("KINGDEE_KB_DB").unwrap_or_else(|_| {
+            let home = std::env::var("USERPROFILE")
+                .or_else(|_| std::env::var("HOME"))
+                .unwrap_or_default();
+            format!("{}\\.kingdee-kb\\metadata.db", home)
+        });
+        eprintln!(">>> 打开数据库: {}", db_path);
+        if !std::path::Path::new(&db_path).exists() {
+            eprintln!("!!! 数据库文件不存在: {}", db_path);
+            return;
+        }
+
+        // 用"复制再读"模式：避免和 Tauri app 进程的文件锁冲突
+        // 直接 Connection::open() 在 Windows 上会被 SQLite 锁文件机制阻塞
+        let open_via_copy = || -> Result<Connection, String> {
+            let tmp = std::env::temp_dir().join(format!(
+                "kingdee_kb_diag_{}.db",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            // 处理 WAL/SHM 也要复制（否则读不到最新数据）
+            let main = db_path.clone();
+            let wal = format!("{}-wal", main);
+            let shm = format!("{}-shm", main);
+            let journal = format!("{}-journal", main);
+            for (src, dst) in [
+                (main.clone(), tmp.to_string_lossy().to_string()),
+                (wal, format!("{}-wal", tmp.to_string_lossy())),
+                (shm, format!("{}-shm", tmp.to_string_lossy())),
+            ] {
+                if std::path::Path::new(&src).exists() {
+                    std::fs::copy(&src, &dst).map_err(|e| format!("复制 {} -> {} 失败: {}", src, dst, e))?;
+                }
+            }
+            let _ = journal; // 未使用
+            let conn = Connection::open(&tmp).map_err(|e| format!("打开副本失败: {}", e))?;
+            let tmp_path = tmp.to_string_lossy().to_string();
+            Ok(conn)
+        };
+        // 写操作不能用只读副本：直接 open，失败时给出明确错误
+        let open_writable = || -> Result<Connection, String> {
+            Connection::open(&db_path).map_err(|e| format!("打开失败（app 进程可能正持有锁）: {}", e))
+        };
+
+        // 列出所有项目
+        let projects: Vec<(i64, String)> = {
+            let conn = open_via_copy().expect("打开数据库失败");
+            let mut stmt = conn
+                .prepare("SELECT id, name FROM projects")
+                .expect("准备 projects 查询");
+            stmt.query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+
+        eprintln!(">>> 共 {} 个项目", projects.len());
+
+        for (pid, name) in &projects {
+            eprintln!("\n=== 项目 {} ({}) ===", pid, name);
+
+            // 诊断 + 详情
+            {
+                let conn = open_via_copy().expect("打开数据库失败");
+                let wiki_store = WikiPageStore::new(conn);
+                let (total, non_empty, samples, has_brackets) =
+                    wiki_store.diagnose_wikilinks(*pid).unwrap_or((0, 0, vec![], 0));
+                eprintln!("  总页数: {}", total);
+                eprintln!("  非空 wikilinks 页数: {}", non_empty);
+                eprintln!("  content 含 `[[..]]` 页数: {}", has_brackets);
+                for s in &samples {
+                    eprintln!("    样例: {}", s);
+                }
+            }
+
+            // 页面详情（用独立连接，避免穿透 private 字段）
+            eprintln!("  --- 页面详情 ---");
+            {
+                let conn = open_via_copy().expect("打开数据库失败");
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT slug, length(content), length(content_candidate), wikilinks
+                         FROM wiki_pages WHERE project_id = ?1",
+                    )
+                    .expect("准备页面详情查询");
+                let rows = stmt
+                    .query_map([pid], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    })
+                    .expect("执行页面详情查询");
+                let mut has_rows = false;
+                for r in rows.flatten() {
+                    has_rows = true;
+                    eprintln!(
+                        "    slug={:<30} content_len={:>5} candidate_len={:>5} wikilinks={}",
+                        r.0, r.1, r.2, r.3
+                    );
+                }
+                if !has_rows {
+                    eprintln!("    (此项目无 wiki_pages)");
+                }
+            }
+
+            // 实际跑 build（用写连接：需要 INSERT；app 没运行时可成功；app 运行时会被锁住）
+            match open_writable() {
+                Ok(c) => {
+                    let graph_store = GraphStore::new(c);
+                    match graph_store.build_knowledge_graph(*pid) {
+                        Ok(n) => eprintln!("  >>> build 边数: {}", n),
+                        Err(e) => eprintln!("  !!! build 失败: {}", e),
+                    }
+                }
+                Err(e) => eprintln!("  >>> build 跳过（app 进程可能正持有锁，需先关 app）: {}", e),
+            }
+
+            // 跑一次 backfill 看能修多少
+            match open_writable() {
+                Ok(c) => {
+                    let graph_store = GraphStore::new(c);
+                    match graph_store.backfill_empty_wikilinks(*pid) {
+                        Ok(n) => eprintln!("  >>> backfill 修复页数: {}", n),
+                        Err(e) => eprintln!("  !!! backfill 失败: {}", e),
+                    }
+                }
+                Err(e) => eprintln!("  >>> backfill 跳过：{}", e),
+            }
+
+            // 再诊断一次（看 backfill 后状态）
+            {
+                let conn = open_via_copy().expect("打开数据库失败");
+                let wiki_store = WikiPageStore::new(conn);
+                let (total, non_empty, _, _) =
+                    wiki_store.diagnose_wikilinks(*pid).unwrap_or((0, 0, vec![], 0));
+                eprintln!("  >>> backfill 后：总页数={} 非空wikilinks={}", total, non_empty);
+            }
+        }
+    }
 }
