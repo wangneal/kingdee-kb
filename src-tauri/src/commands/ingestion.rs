@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
+use anyhow::{Context as _, anyhow};
 use tauri::{AppHandle, State};
 
 use crate::app_state::AppState;
+use crate::error::{AppError, AppResult};
 use crate::services::analysis_cache::AnalysisCacheStore;
 use crate::services::ingest_cache::IngestCacheStore;
 use crate::services::ingestion::{
@@ -17,8 +19,11 @@ use crate::services::wiki_page::WikiPageStore;
 /// 从全局状态克隆 ImageProcessor 配置（不持锁，避免 Send 问题）
 fn clone_image_processor(
     state: &State<'_, AppState>,
-) -> Result<crate::services::image_processor::ImageProcessor, String> {
-    let guard = state.image_processor.read().map_err(|e| e.to_string())?;
+) -> AppResult<crate::services::image_processor::ImageProcessor> {
+    let guard = state
+        .image_processor
+        .read()
+        .map_err(|e| anyhow!("获取 image_processor 读锁失败: {}", e))?;
     Ok(guard.clone_configured())
 }
 
@@ -26,13 +31,17 @@ fn clone_image_processor(
 async fn extract_image_text_with_processor(
     file_path: &str,
     processor: crate::services::image_processor::ImageProcessor,
-) -> Result<String, String> {
+) -> AppResult<String> {
     let result = processor
         .process_image(file_path)
         .await
-        .map_err(|e| format!("图片处理失败: {}", e))?;
+        .map_err(|e| AppError::Api(format!("图片处理失败: {}", e)))
+        .with_context(|| format!("处理图片失败: {}", file_path))?;
     if result.text.trim().is_empty() {
-        return Err("图片中未识别到任何文本".to_string());
+        return Err(AppError::Api(format!(
+            "图片中未识别到任何文本: {}",
+            file_path
+        )));
     }
     Ok(result.text)
 }
@@ -44,7 +53,7 @@ fn is_docx_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn create_docx_preview_temp_dir(file_path: &Path) -> Result<PathBuf, String> {
+fn create_docx_preview_temp_dir(file_path: &Path) -> AppResult<PathBuf> {
     let stem = file_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -63,25 +72,33 @@ fn create_docx_preview_temp_dir(file_path: &Path) -> Result<PathBuf, String> {
         let _ = std::fs::remove_dir_all(&dir);
     }
     std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("创建 DOCX 预览图临时目录失败 {:?}: {}", dir.display(), e))?;
+        .map_err(|e| AppError::io(&dir, e))
+        .with_context(|| format!("创建 DOCX 预览图临时目录失败: {}", dir.display()))?;
     Ok(dir)
 }
 
 async fn extract_docx_preview_text(
     state: &State<'_, AppState>,
     file_path: &Path,
-) -> Result<String, String> {
+) -> AppResult<String> {
     let can_process = {
-        let guard = state.image_processor.read().map_err(|e| e.to_string())?;
+        let guard = state
+            .image_processor
+            .read()
+            .map_err(|e| anyhow!("获取 image_processor 读锁失败: {}", e))?;
         guard.can_process_images()
     };
     if !can_process {
-        return Err("DOCX 内嵌 Visio 无法直接提取文字，且未配置 OCR 或多模态视觉模型".to_string());
+        return Err(AppError::Config(
+            "DOCX 内嵌 Visio 无法直接提取文字，且未配置 OCR 或多模态视觉模型".into(),
+        ));
     }
 
     let temp_dir = create_docx_preview_temp_dir(file_path)?;
-    let preview_paths =
-        crate::services::file_extractor::extract_docx_preview_images(file_path, &temp_dir)?;
+    let preview_paths = crate::services::file_extractor::extract_docx_preview_images(
+        file_path, &temp_dir,
+    )
+    .map_err(|e| AppError::Api(format!("提取 DOCX 预览图失败: {}", e)))?;
     let mut sections = Vec::new();
     let mut errors = Vec::new();
 
@@ -107,10 +124,10 @@ async fn extract_docx_preview_text(
     let _ = std::fs::remove_dir_all(&temp_dir);
 
     if sections.is_empty() {
-        return Err(format!(
+        return Err(AppError::Api(format!(
             "DOCX 内嵌 Visio 预览图 OCR 失败：{}",
             errors.join("；")
-        ));
+        )));
     }
 
     Ok(sections.join("\n\n"))
@@ -119,7 +136,7 @@ async fn extract_docx_preview_text(
 async fn extract_text_with_docx_preview_fallback(
     state: &State<'_, AppState>,
     path: &Path,
-) -> Result<String, String> {
+) -> AppResult<String> {
     match crate::services::file_extractor::extract_text(path) {
         Ok(text) => Ok(text),
         Err(error)
@@ -131,7 +148,7 @@ async fn extract_text_with_docx_preview_fallback(
             tracing::warn!("DOCX 文本提取失败，尝试内嵌 Visio 预览图 OCR: {}", error);
             extract_docx_preview_text(state, path).await
         }
-        Err(error) => Err(error),
+        Err(error) => Err(AppError::Api(format!("文件文本提取失败: {}", error))),
     }
 }
 
@@ -141,7 +158,7 @@ fn ingest_file_text(
     path: &Path,
     text: &str,
     project_id: i64,
-) -> Result<IngestionResult, String> {
+) -> AppResult<IngestionResult> {
     let filename = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -161,7 +178,8 @@ fn ingest_file_text(
         Some(&file_path),
         Some(app),
         Some(&state.data_dir),
-    )?;
+    )
+    .map_err(|e| AppError::Other(anyhow!("ingest_text_fn 失败: {}", e)))?;
     result.title = title;
     Ok(result)
 }
@@ -309,10 +327,12 @@ pub async fn ingest_file(
         if !can_process {
             return Err("未配置 OCR 或多模态视觉模型，无法提取图片文本".to_string());
         }
-        let processor = clone_image_processor(&state)?;
+        let processor = clone_image_processor(&state).map_err(|e| e.to_string())?;
 
         // 异步：提取图片文本
-        let image_text = extract_image_text_with_processor(&file_path, processor).await?;
+        let image_text = extract_image_text_with_processor(&file_path, processor)
+            .await
+            .map_err(|e| e.to_string())?;
 
         // 同步：走纯文本摄入流程
         let filename = path
@@ -370,8 +390,11 @@ pub async fn ingest_file(
     }
 
     // ─── 非图片文件：先提取文本，DOCX 内嵌 Visio 失败时自动走预览图 OCR ───
-    let text = extract_text_with_docx_preview_fallback(&state, path.as_path()).await?;
-    let mut result = ingest_file_text(&state, &app, path.as_path(), &text, project_id)?;
+    let text = extract_text_with_docx_preview_fallback(&state, path.as_path())
+        .await
+        .map_err(|e: AppError| e.to_string())?;
+    let mut result = ingest_file_text(&state, &app, path.as_path(), &text, project_id)
+        .map_err(|e: AppError| e.to_string())?;
 
     // 知识编译
     if resolve_kb_compilation(&state, enable_kb_compilation) {
@@ -408,7 +431,9 @@ pub async fn extract_file_text(
     file_path: String,
 ) -> Result<ExtractedFileText, String> {
     let path = PathBuf::from(&file_path);
-    let text = extract_text_with_docx_preview_fallback(&state, &path).await?;
+    let text = extract_text_with_docx_preview_fallback(&state, &path)
+        .await
+        .map_err(|e| e.to_string())?;
     let title = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -468,8 +493,13 @@ pub async fn ingest_directory(
             continue;
         }
 
-        match extract_text_with_docx_preview_fallback(&state, path.as_path()).await {
-            Ok(text) => match ingest_file_text(&state, &app, path.as_path(), &text, project_id) {
+        match extract_text_with_docx_preview_fallback(&state, path.as_path())
+            .await
+            .map_err(|e: AppError| e.to_string())
+        {
+            Ok(text) => match ingest_file_text(&state, &app, path.as_path(), &text, project_id)
+                .map_err(|e: AppError| e.to_string())
+            {
                 Ok(imported) => result.imported.push(imported),
                 Err(import_error) => retained_errors.push(crate::services::ingestion::FileError {
                     path: error.path,
@@ -502,7 +532,7 @@ pub async fn ingest_directory(
                     tracing::warn!("克隆 ImageProcessor 失败: {}", e);
                     result.errors.push(crate::services::ingestion::FileError {
                         path: img_path_str.clone(),
-                        error: e,
+                        error: e.to_string(),
                     });
                     continue;
                 }
@@ -516,7 +546,7 @@ pub async fn ingest_directory(
                     tracing::warn!("图片 OCR 失败: {:?}: {}", img_path, e);
                     result.errors.push(crate::services::ingestion::FileError {
                         path: img_path_str.clone(),
-                        error: e,
+                        error: e.to_string(),
                     });
                     continue;
                 }
@@ -585,14 +615,14 @@ pub async fn ingest_directory(
                         let processor = match clone_image_processor(&state) {
                             Ok(p) => p,
                             Err(e) => {
-                                imported.kb_compilation_error = Some(e);
+                                imported.kb_compilation_error = Some(e.to_string());
                                 continue;
                             }
                         };
                         match extract_image_text_with_processor(sp, processor).await {
                             Ok(t) => t,
                             Err(e) => {
-                                imported.kb_compilation_error = Some(e);
+                                imported.kb_compilation_error = Some(e.to_string());
                                 continue;
                             }
                         }

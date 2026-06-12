@@ -398,11 +398,11 @@ function htmlToMarkdown(html: string): string {
   md = md.replace(/<ul[^>]*>([\s\S]*?)<\/ul>/gi, (_, content) => {
     return content.replace(/<li[^>]*>(.*?)<\/li>/gi, "- $1\n")
   })
-  md = md.replace(/<ol[^>]*>([\s\S]*?)<\/ol>/gi, (_, content) => {
+  md = md.replace(/<ol[^>]*>([\s\S]*?)<\/ol>/gi, (_outer: string, content: string) => {
     let i = 0
-    return content.replace(/<li[^>]*>(.*?)<\/li>/gi, () => {
+    return content.replace(/<li[^>]*>(.*?)<\/li>/gi, (_m: string, inner: string) => {
       i++
-      return `${i}. $1\n`
+      return `${i}. ${inner}`
     })
   })
 
