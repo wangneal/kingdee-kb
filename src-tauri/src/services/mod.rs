@@ -53,6 +53,7 @@ pub mod skill_manager;
 pub mod skill_trigger;
 pub mod skill_types;
 pub mod smart_completion;
+pub mod spawn_safe;
 pub mod template_docx;
 pub mod template_manager;
 pub mod template_schema;

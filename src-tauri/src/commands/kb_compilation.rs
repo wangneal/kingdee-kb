@@ -231,6 +231,7 @@ pub async fn recompile_failed_kb_sources(
 
 #[tauri::command]
 pub async fn start_kb_recompile(
+    _app: tauri::AppHandle, // 通过 spawn_monitored 短期借用，函数体内未直接引用
     state: tauri::State<'_, AppState>,
     project_id: i64,
     force: Option<bool>,

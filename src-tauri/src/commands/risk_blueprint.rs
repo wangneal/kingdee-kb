@@ -612,7 +612,8 @@ pub async fn agent_chat(
     // 由主模型在同一次流式请求中决定是否调用技能，避免发送前额外路由造成首包延迟。
     let system_extra = "需要专业实施流程、交付物或外部技能时，先调用 use-skill(action=\"search\", name_or_query=...) 查找并加载技能；普通问答直接回答。\n\n".to_string();
 
-    tauri::async_runtime::spawn(async move {
+    // spawn_monitored 替代裸 spawn：panic 时自动 emit task:failed 到前端
+    crate::services::spawn_safe::spawn_monitored("agent_chat_run", Some(&app_handle), async move {
         crate::services::rig_agent::RigAgent::run(
             &llm,
             &message,
@@ -644,7 +645,8 @@ pub async fn agent_chat(
     });
 
     let event_app = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
+    let app_handle_for_emit = event_app.clone(); // 短期 borrow 给 spawn_monitored
+    crate::services::spawn_safe::spawn_monitored("agent_event_writer", Some(&app_handle_for_emit), async move {
         let mut assistant_message_id: Option<String> = None;
         let mut assistant_content = String::new();
         let mut active_tool_call_id: Option<String> = None;

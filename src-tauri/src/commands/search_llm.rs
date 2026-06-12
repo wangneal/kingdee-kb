@@ -51,6 +51,7 @@ pub async fn hybrid_search(
 /// 保存聊天记忆：归档对话 + LLM 提取 → 摄入知识库。
 #[tauri::command]
 pub async fn save_chat_memory(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     conversation: Vec<ChatMessage>,
     project_id: Option<i64>,
@@ -74,7 +75,13 @@ pub async fn save_chat_memory(
         }
     };
 
-    tokio::spawn(async move {
+    // 用 spawn_monitored 替代裸 spawn：panic 时自动 emit task:failed
+    // 先 clone app_handle 一份给 spawn_monitored 的 emit 用，再 move 进 async 块
+    let app_for_emit = app.clone();
+    crate::services::spawn_safe::spawn_monitored(
+        "save_chat_memory",
+        Some(&app_for_emit),
+        async move {
         memory::save_chat_memory(
             &conversation,
             &data_dir,

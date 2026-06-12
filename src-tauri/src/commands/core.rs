@@ -242,6 +242,8 @@ pub async fn setup_backend_async(app: AppHandle) -> AppResult<()> {
         tracing::warn!("恢复摄入队列失败: {}", e);
     }
 
+    let _ = app.emit("app:setup_status", SetupStatus::BackgroundTasksReady);
+
     // 嵌入模型改为"首次使用时懒加载"，不占用启动时间。
     tracing::info!("Embedding 模型改为首次使用时懒加载");
 
@@ -359,4 +361,19 @@ pub async fn save_attachment_as(source: String, dest: String) -> Result<String, 
     fs::copy(&src_path, &dst_path).map_err(|e| format!("文件拷贝失败: {}", e))?;
 
     Ok(dest)
+}
+
+/// Setup 各阶段状态事件（前端订阅 `app:setup_status`）
+///
+/// 序列化为 `{ "phase": "starting" | "skills_ready" | "background_tasks_ready" | "ready" }`。
+/// 前端可显示 "正在初始化..." 之类的进度条，避免首次启动时用户看到空白界面
+/// 误以为程序卡死。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+#[allow(dead_code)] // emit 在 setup_backend_async 函数体内调用，编译器看不到；pub 给前端消费
+pub enum SetupStatus {
+    Starting,
+    SkillsReady,
+    BackgroundTasksReady,
+    Ready,
 }

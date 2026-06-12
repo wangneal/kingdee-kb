@@ -85,7 +85,9 @@ pub async fn set_embedding_model_config(
 
     if is_remote {
         // 远程模式：配置在线 Embedding 提供商
-        let provider = provider.unwrap();
+        // is_remote=true ⇔ provider.is_some() && provider != Local，故 unwrap 安全。
+        // 用 expect 而非 unwrap 留下断言，重构 is_remote 逻辑时编译器/运行时都能提示。
+        let provider = provider.expect("is_remote 已保证 provider 是 Some");
         let provider_info = EmbeddingProvider::all_providers()
             .into_iter()
             .find(|p| p.provider == provider);

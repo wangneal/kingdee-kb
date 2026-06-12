@@ -1,0 +1,60 @@
+fix: 后端基础设施修复 4 个 P0 bug（spawn 卡死 / setup 状态 / spawn 规范）
+
+## 修复的 Bug
+
+### #9 search_llm.rs:77 tokio::spawn 改 tauri::async_runtime::spawn
+原代码违反项目内 [app_state.rs:294] 明确规定的 "必须用 tauri::async_runtime::spawn" 规范。
+理论上有 panic 风险。
+
+### #8 commands/embedding.rs:88 provider.unwrap() 改 expect
+当前 unwrap 安全（因 is_remote 已检查），但**脆弱**——未来重构 is_remote 逻辑时易引入 panic。
+改 expect 并留文档说明安全前提。
+
+### #2 spawn 任务卡 in_progress 永久（核心修复）
+**问题**：9+ 处 fire-and-forget `tauri::async_runtime::spawn(async move { ... })`，内部 `?` 错误传播
+未处理或 LLM API 解析 panic 时，**整个任务静默失败**。前端 UI 看到"重编译进行中..."、`"Agent 思考中..."`
+**永远不变**，没有任何错误信号。
+
+**修复**：
+- 新增 [src-tauri/src/services/spawn_safe.rs](src-tauri/src/services/spawn_safe.rs) — 统一 spawn helper
+  - `spawn_monitored(name, app_handle_opt, future)` —— catch_unwind 包裹 panic
+  - 失败时 `tracing::error!` + `app.emit("task:failed", { name, message })`
+  - 前端监听 `task:failed` 事件可弹"任务失败"提示
+  - 4 个单元测试覆盖 extract_panic_message / catch_unwind 行为
+- 改 3 处最关键的 spawn：
+  - [commands/kb_compilation.rs:286](src-tauri/src/commands/kb_compilation.rs#L286) `start_kb_recompile` 知识编译
+  - [commands/search_llm.rs:80](src-tauri/src/commands/search_llm.rs#L80) `save_chat_memory` 聊天记忆归档
+  - [commands/risk_blueprint.rs:616+648](src-tauri/src/commands/risk_blueprint.rs#L616) `agent_chat` Agent 跑 + 事件 writer
+
+### #7 setup_backend_async fallback 静默
+**问题**：setup 阶段失败时（embedding 初始化、vector index 初始化）退到 `AppState::minimal` 受限模式，
+但**前端不知道**。用户调 LLM 全报错但不知是 setup 失败。
+
+**修复**：
+- 在 setup_backend_async 4 个关键阶段 emit `app:setup_status` 事件
+  - `Starting` (line 205) — 开始
+  - `SkillsReady` — 技能就绪（隐式）
+  - `BackgroundTasksReady` (line 245) — 后台任务就绪
+  - `Ready` (line 247) — 全部就绪
+- 前端可订阅 `app:setup_status` 显示 "正在初始化..." 进度条
+- 配合 spawn_safe 的 `task:failed`，前端**全套**任务生命周期可见
+
+## 仍然未修（前端 UI 改造范畴，下一 commit）
+
+- #4 wikilink=0 banner —— 前端订阅 diagnose 数据后展示
+- #5 LLM 401 友好提示 —— 前端捕 API 错误后弹"请配置 LLM API Key"
+- #1 启动模型下载无进度 —— download_file_chunked 需改为流式 emit 进度
+- #6 大文件导入无进度 —— ingest_file_text 需改 emit 进度
+
+## 验证
+
+- `cargo check --tests`：通过
+- `npx vitest run`：42/42 passed
+- `npx tsc --noEmit`：0 errors
+
+## 兼容性
+
+- `save_chat_memory` 和 `start_kb_recompile` 加 `app: AppHandle` 形参，**前端不需要改**（Tauri 2 自动注入）
+- `spawn_safe` 是纯新增模块，不影响其他 spawn 调用
+
+Co-Authored-By: Claude <noreply@anthropic.com>
