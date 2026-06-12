@@ -3,6 +3,10 @@ node_modules/
 
 # Build outputs
 dist/
+
+# Python
+__pycache__/
+*.pyc
 src-tauri/target/
 
 # WebView2 runtime (binary, not in version control)

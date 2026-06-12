@@ -103,6 +103,69 @@ impl GraphStore {
                 ",
             )
             .map_err(|e| format!("创建 knowledge_graph 表失败: {}", e))?;
+
+        // Schema 迁移：检测并修复老 schema（`project TEXT NOT NULL` + `project_id INTEGER` 残留）
+        //
+        // 历史 bug：早期版本用 `project TEXT NOT NULL` 做主键关联字段（项目名字符串），
+        // 后来改用 `project_id INTEGER REFERENCES projects(id)`，但 CREATE TABLE IF NOT EXISTS
+        // 看到表已存在就不动，导致老 schema 残留。新 build 代码 INSERT 时只给 `project_id`，
+        // 老 schema 要求 `project NOT NULL`，所有 INSERT 静默失败 → knowledge_graph 永远是空的。
+        //
+        // 修法：检测到 `project` 老字段还在就 DROP 重建（表 0 行，丢 0 数据）。
+        self.migrate_drop_old_project_column()?;
+
+        Ok(())
+    }
+
+    /// 检测并修复 knowledge_graph 的老 schema
+    fn migrate_drop_old_project_column(&self) -> Result<(), String> {
+        let cols: Vec<String> = self
+            .db
+            .prepare("PRAGMA table_info(knowledge_graph)")
+            .map_err(|e| format!("PRAGMA table_info 失败: {}", e))?
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| format!("读取表字段失败: {}", e))?
+            .filter_map(|r| r.ok())
+            .collect();
+        if cols.iter().any(|c| c == "project") {
+            // 检查是否有数据：有数据则拒绝迁移（保护数据）
+            let count: i64 = self
+                .db
+                .query_row("SELECT COUNT(*) FROM knowledge_graph", [], |row| {
+                    row.get(0)
+                })
+                .unwrap_or(0);
+            if count > 0 {
+                return Err(format!(
+                    "knowledge_graph 残留老字段 `project` 且有 {} 行数据；\
+                     请人工迁移后再启动。SQL 参考：\
+                     ALTER TABLE knowledge_graph RENAME TO knowledge_graph_old; \
+                     CREATE TABLE knowledge_graph (...); \
+                     INSERT INTO knowledge_graph SELECT ... FROM knowledge_graph_old;",
+                    count
+                ));
+            }
+            tracing::warn!(
+                "检测到 knowledge_graph 老 schema（`project` 字段残留），自动 drop + 重建"
+            );
+            self.db
+                .execute_batch(
+                    "DROP TABLE knowledge_graph;
+                     CREATE TABLE knowledge_graph (
+                         id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                         project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                         source_slug TEXT NOT NULL,
+                         target_slug TEXT NOT NULL,
+                         signal      TEXT NOT NULL CHECK(signal IN ('wikilink','tag','source','co_citation')),
+                         weight      REAL NOT NULL DEFAULT 1.0,
+                         created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                         UNIQUE(project_id, source_slug, target_slug, signal)
+                     );
+                     CREATE INDEX idx_kg_source ON knowledge_graph(project_id, source_slug);
+                     CREATE INDEX idx_kg_target ON knowledge_graph(project_id, target_slug);",
+                )
+                .map_err(|e| format!("迁移 knowledge_graph schema 失败: {}", e))?;
+        }
         Ok(())
     }
 
@@ -1292,6 +1355,104 @@ mod tests {
                 let (total, non_empty, _, _) =
                     wiki_store.diagnose_wikilinks(*pid).unwrap_or((0, 0, vec![], 0));
                 eprintln!("  >>> backfill 后：总页数={} 非空wikilinks={}", total, non_empty);
+            }
+        }
+    }
+
+    /// 批量批准：跑 `KINGDEE_KB_BATCH_APPROVE=1 cargo test --lib batch_approve_user_database -- --nocapture`
+    ///
+    /// 把项目下所有 `content_candidate IS NOT NULL` 的页面一次性批准，
+    /// 然后再跑 build_knowledge_graph 看实际边数。
+    /// 用 `KINGDEE_KB_BATCH_APPROVE_PROJECT=2` 指定项目 ID（默认 1）。
+    #[test]
+    fn batch_approve_user_database() {
+        if std::env::var("KINGDEE_KB_BATCH_APPROVE").is_err() {
+            eprintln!(
+                "跳过：设置 KINGDEE_KB_BATCH_APPROVE=1 才会真正批准。可用 KINGDEE_KB_BATCH_APPROVE_PROJECT=<id> 指定项目。"
+            );
+            return;
+        }
+        use crate::services::wiki_page::WikiPageStore;
+        use rusqlite::Connection;
+
+        let project_id: i64 = std::env::var("KINGDEE_KB_BATCH_APPROVE_PROJECT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+
+        let db_path = std::env::var("KINGDEE_KB_DB").unwrap_or_else(|_| {
+            let home = std::env::var("USERPROFILE")
+                .or_else(|_| std::env::var("HOME"))
+                .unwrap_or_default();
+            format!("{}\\.kingdee-kb\\metadata.db", home)
+        });
+        eprintln!(">>> 打开数据库: {}", db_path);
+        eprintln!(">>> 目标项目 ID: {}", project_id);
+
+        if !std::path::Path::new(&db_path).exists() {
+            eprintln!("!!! 数据库文件不存在: {}", db_path);
+            return;
+        }
+
+        // 列出所有待批准的页面 id
+        let pending_ids: Vec<i64> = {
+            let conn = Connection::open(&db_path).expect("打开数据库失败");
+            let mut stmt = conn
+                .prepare("SELECT id, slug FROM wiki_pages WHERE project_id = ?1 AND content_candidate IS NOT NULL")
+                .expect("准备查询");
+            stmt.query_map([project_id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .map(|(id, _)| id)
+                .collect()
+        };
+        eprintln!(">>> 共 {} 个待批准页面", pending_ids.len());
+        if pending_ids.is_empty() {
+            eprintln!("!!! 没有待批准页面，直接返回");
+            return;
+        }
+
+        // 逐个批准（必须用同一连接持锁，否则会并发写冲突）
+        let mut approved = 0;
+        let mut failed: Vec<(i64, String)> = Vec::new();
+        let conn = Connection::open(&db_path).expect("打开数据库失败");
+        let wiki_store = WikiPageStore::new(conn);
+        for id in &pending_ids {
+            match wiki_store.approve_candidate(*id) {
+                Ok(_) => approved += 1,
+                Err(e) => {
+                    failed.push((*id, e));
+                    eprintln!("  !!! 批准 id={} 失败: {}", id, failed.last().unwrap().1);
+                }
+            }
+        }
+        eprintln!(">>> 批准完成: 成功={} 失败={}", approved, failed.len());
+
+        // 批准后状态
+        {
+            let conn = Connection::open(&db_path).expect("打开数据库失败");
+            let wiki_store = WikiPageStore::new(conn);
+            let (total, non_empty, samples, has_brackets) = wiki_store
+                .diagnose_wikilinks(project_id)
+                .unwrap_or((0, 0, vec![], 0));
+            eprintln!(
+                ">>> 批准后诊断: total={} non_empty={} has_brackets={}",
+                total, non_empty, has_brackets
+            );
+            for s in &samples {
+                eprintln!("    样例: {}", s);
+            }
+        }
+
+        // 跑 build 看边数
+        {
+            let conn = Connection::open(&db_path).expect("打开数据库失败");
+            let graph_store = GraphStore::new(conn);
+            match graph_store.build_knowledge_graph(project_id) {
+                Ok(n) => eprintln!(">>> build 边数: {}", n),
+                Err(e) => eprintln!("!!! build 失败: {}", e),
             }
         }
     }
