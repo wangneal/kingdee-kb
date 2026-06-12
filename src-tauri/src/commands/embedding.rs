@@ -4,11 +4,8 @@ use tauri::State;
 
 use crate::app_state::AppState;
 use crate::services::embedding::{
-    start_download_progress_polling, EmbeddingModelConfig, EmbeddingProvider, ProviderInfo,
-    RemoteEmbeddingConfig,
+    start_download_progress_polling, EmbeddingModelConfig, EmbeddingProvider, RemoteEmbeddingConfig,
 };
-use crate::services::metadata::KnowledgeStats;
-use crate::services::vector_index::SearchResult;
 
 /// 获取当前模型状态（就绪/未就绪）。
 #[tauri::command]
@@ -131,94 +128,4 @@ pub async fn set_embedding_model_config(
     }
 
     Ok(true)
-}
-
-#[tauri::command]
-pub async fn embed_text(state: State<'_, AppState>, text: String) -> Result<Vec<f32>, String> {
-    // 检查是否为远程模式，同时获取共享 HTTP 客户端
-    let remote_info = {
-        let emb = state.embedding.read().map_err(|e| e.to_string())?;
-        emb.remote_config().cloned().map(|config| {
-            let client = emb.http_client().clone(); // O(1) clone（内部 Arc）
-            (config, client)
-        })
-    };
-
-    if let Some((config, client)) = remote_info {
-        // 远程模式：调用在线 Embedding API（复用连接池）
-        crate::services::embedding::remote_embed(&client, &config, &text).await
-    } else {
-        // 本地模式：使用本地 ONNX 模型
-        let mut emb = state.embedding.write().map_err(|e| e.to_string())?;
-        emb.embed_text(&text)
-    }
-}
-
-/// 批量嵌入多个文本
-#[tauri::command]
-pub async fn embed_batch(
-    state: State<'_, AppState>,
-    texts: Vec<String>,
-) -> Result<Vec<Vec<f32>>, String> {
-    // 检查是否为远程模式，同时获取共享 HTTP 客户端
-    let remote_info = {
-        let emb = state.embedding.read().map_err(|e| e.to_string())?;
-        emb.remote_config().cloned().map(|config| {
-            let client = emb.http_client().clone(); // O(1) clone（内部 Arc）
-            (config, client)
-        })
-    };
-
-    if let Some((config, client)) = remote_info {
-        // 远程模式：调用在线 Embedding API（复用连接池）
-        let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        crate::services::embedding::remote_embed_batch(&client, &config, &refs).await
-    } else {
-        // 本地模式：使用本地 ONNX 模型
-        let mut emb = state.embedding.write().map_err(|e| e.to_string())?;
-        let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        emb.embed_batch(&refs)
-    }
-}
-
-/// 在 HNSW 索引中搜索相似向量
-#[tauri::command]
-pub async fn search_similar(
-    state: State<'_, AppState>,
-    query: Vec<f32>,
-    top_k: u32,
-) -> Result<Vec<SearchResult>, String> {
-    let index = state.vector_index.read().map_err(|e| e.to_string())?;
-    index.search(&query, top_k as usize)
-}
-
-/// 从磁盘加载向量索引
-#[tauri::command]
-pub async fn load_index(state: State<'_, AppState>) -> Result<usize, String> {
-    let index = state.vector_index.read().map_err(|e| e.to_string())?;
-    Ok(index.len())
-}
-
-/// 获取向量索引统计信息
-#[tauri::command]
-pub async fn get_index_stats(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let index = state.vector_index.read().map_err(|e| e.to_string())?;
-    let stats = index.stats();
-    serde_json::to_value(stats).map_err(|e| format!("Serialization error: {}", e))
-}
-
-/// 获取知识库统计信息（文档和分块数量）
-#[tauri::command]
-pub async fn get_knowledge_stats(
-    state: State<'_, AppState>,
-    project_id: Option<i64>,
-) -> Result<KnowledgeStats, String> {
-    let meta = state.metadata.lock().map_err(|e| e.to_string())?;
-    meta.get_stats(project_id)
-}
-
-/// 获取所有可用的 Embedding 提供商列表
-#[tauri::command]
-pub async fn get_available_providers() -> Result<Vec<ProviderInfo>, String> {
-    Ok(EmbeddingProvider::all_providers())
 }

@@ -295,28 +295,6 @@ pub fn parse_outline_text(
     }
 }
 
-/// 大纲解析辅助函数（迁移期间预留）
-#[allow(dead_code)]
-fn try_parse_section_header(line: &str) -> Option<String> {
-    let re = Regex::new(r"^\d+\s+(.+)").ok()?;
-    let caps = re.captures(line)?;
-    Some(caps.get(1)?.as_str().trim().to_string())
-}
-
-#[allow(dead_code)]
-fn try_parse_category_header(line: &str) -> Option<String> {
-    let re = Regex::new(r"^\d+\.\d+\s+(.+)").ok()?;
-    let caps = re.captures(line)?;
-    Some(caps.get(1)?.as_str().trim().to_string())
-}
-
-#[allow(dead_code)]
-fn try_parse_question(line: &str) -> Option<String> {
-    let re = Regex::new(r"^\d+\.\d+\.\d+\s+(.+)").ok()?;
-    let caps = re.captures(line)?;
-    Some(caps.get(1)?.as_str().trim().to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,64 +425,6 @@ mod tests {
         assert_eq!(deserialized.module_code, outline.module_code);
         assert_eq!(deserialized.sections.len(), outline.sections.len());
         assert_eq!(deserialized.flatten().len(), outline.flatten().len());
-    }
-
-    #[test]
-    fn test_try_parse_section_header() {
-        assert_eq!(
-            try_parse_section_header("1 业务概况"),
-            Some("业务概况".to_string())
-        );
-        assert_eq!(
-            try_parse_section_header("2 技术架构"),
-            Some("技术架构".to_string())
-        );
-        assert_eq!(
-            try_parse_section_header("10 安全"),
-            Some("安全".to_string())
-        );
-        assert_eq!(try_parse_section_header("  1  带空格的章节"), None);
-        assert_eq!(try_parse_section_header("1.1 分类"), None);
-        assert_eq!(try_parse_section_header("无序文本"), None);
-        assert_eq!(try_parse_section_header(""), None);
-    }
-
-    #[test]
-    fn test_try_parse_category_header() {
-        assert_eq!(
-            try_parse_category_header("1.1 组织人员"),
-            Some("组织人员".to_string())
-        );
-        assert_eq!(
-            try_parse_category_header("2.3 数据存储"),
-            Some("数据存储".to_string())
-        );
-        assert_eq!(
-            try_parse_category_header("10.20 安全策略"),
-            Some("安全策略".to_string())
-        );
-        assert_eq!(try_parse_category_header("1 章节"), None);
-        assert_eq!(try_parse_category_header("1.1.1 问题"), None);
-        assert_eq!(try_parse_category_header(""), None);
-    }
-
-    #[test]
-    fn test_try_parse_question() {
-        assert_eq!(
-            try_parse_question("1.1.1 公司目前财务组织架构？"),
-            Some("公司目前财务组织架构？".to_string())
-        );
-        assert_eq!(
-            try_parse_question("2.3.1 使用什么数据库？"),
-            Some("使用什么数据库？".to_string())
-        );
-        assert_eq!(
-            try_parse_question("10.20.5 安全策略如何审计"),
-            Some("安全策略如何审计".to_string())
-        );
-        assert_eq!(try_parse_question("1 章节"), None);
-        assert_eq!(try_parse_question("1.1 分类"), None);
-        assert_eq!(try_parse_question(""), None);
     }
 
     #[test]

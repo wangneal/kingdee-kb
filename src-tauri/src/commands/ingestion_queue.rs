@@ -28,17 +28,6 @@ pub async fn list_ingestion_queue(state: State<'_, AppState>) -> Result<Vec<Queu
     Ok(queue.visible_items())
 }
 
-/// 重试所有失败的摄入任务
-#[tauri::command]
-pub async fn retry_failed_ingestions(state: State<'_, AppState>) -> Result<(), String> {
-    let mut queue = state
-        .ingest_queue
-        .lock()
-        .map_err(|e| format!("获取队列锁失败: {}", e))?;
-    queue.retry_failed();
-    Ok(())
-}
-
 #[tauri::command]
 pub async fn retry_project_failed_ingestions(
     state: State<'_, AppState>,
@@ -50,12 +39,6 @@ pub async fn retry_project_failed_ingestions(
         .map_err(|e| format!("获取队列锁失败: {}", e))?;
     queue.retry_failed_for_project(project_id);
     Ok(())
-}
-
-/// 处理所有待摄入队列任务。
-#[tauri::command]
-pub async fn process_ingestion_queue(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    process_pending_queue(&state)
 }
 
 #[tauri::command]

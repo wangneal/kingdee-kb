@@ -3,10 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use serde::Serialize;
-
 use crate::app_state::AppState;
-use crate::services::harness::entropy::{EntropyManager, StaleType};
 use crate::services::skill_manager::SkillManager;
 
 const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
@@ -15,84 +12,6 @@ const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
 pub struct SetupState {
     pub frontend_task: bool,
     pub backend_task: bool,
-}
-
-#[tauri::command]
-pub fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
-/// 确保 ~/.kingdee-kb/ 数据目录结构存在
-pub fn ensure_data_dir() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or("Cannot find home directory")?;
-    let data_dir = home.join(".kingdee-kb");
-
-    let subdirs = [
-        "knowledge",
-        "index",
-        "models",
-        "bm25_index",
-        "products",
-        "skills",
-    ];
-    for subdir in subdirs {
-        fs::create_dir_all(data_dir.join(subdir))
-            .map_err(|e| format!("Failed to create {}: {}", subdir, e))?;
-    }
-
-    Ok(data_dir)
-}
-
-/// 递归复制目录及其所有内容
-pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
-    fs::create_dir_all(dst)
-        .map_err(|e| format!("Failed to create dir {}: {}", dst.display(), e))?;
-    for entry in
-        fs::read_dir(src).map_err(|e| format!("Failed to read dir {}: {}", src.display(), e))?
-    {
-        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if src_path.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else {
-            fs::copy(&src_path, &dst_path).map_err(|e| {
-                format!(
-                    "Failed to copy {} to {}: {}",
-                    src_path.display(),
-                    dst_path.display(),
-                    e
-                )
-            })?;
-        }
-    }
-    Ok(())
-}
-
-fn dir_has_entries(path: &Path) -> bool {
-    path.read_dir()
-        .map(|mut entries| entries.next().is_some())
-        .unwrap_or(false)
-}
-
-fn seed_skills_dir(_app: &AppHandle, data_dir: &Path) -> Result<PathBuf, String> {
-    let skills_dir = data_dir.join("skills");
-    fs::create_dir_all(&skills_dir).map_err(|e| {
-        format!(
-            "Failed to create skills dir {}: {}",
-            skills_dir.display(),
-            e
-        )
-    })?;
-
-    Ok(skills_dir)
-}
-
-/// 获取数据目录路径（供前端使用）
-#[tauri::command]
-pub fn get_data_dir() -> Result<String, String> {
-    let data_dir = ensure_data_dir()?;
-    Ok(data_dir.to_string_lossy().to_string())
 }
 
 /// 存储 API 密钥到系统凭据存储
@@ -104,18 +23,6 @@ pub fn set_api_key(service: String, key: String) -> Result<(), String> {
         .set_password(&key)
         .map_err(|e| format!("Failed to store API key: {}", e))?;
     Ok(())
-}
-
-/// 从系统凭据存储获取 API 密钥
-#[tauri::command]
-pub fn get_api_key(service: String) -> Result<Option<String>, String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &service)
-        .map_err(|e| format!("Failed to access keyring: {}", e))?;
-    match entry.get_password() {
-        Ok(password) => Ok(Some(password)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(format!("Failed to retrieve API key: {}", e)),
-    }
 }
 
 /// 从系统凭据存储删除 API 密钥
@@ -188,6 +95,72 @@ pub async fn export_report(content: String, file_path: String) -> Result<String,
     let path = PathBuf::from(&file_path);
     write_file_via_powershell(&path, &content)?;
     Ok(file_path)
+}
+
+/// 确保 ~/.kingdee-kb/ 数据目录结构存在
+pub fn ensure_data_dir() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+    let data_dir = home.join(".kingdee-kb");
+
+    let subdirs = [
+        "knowledge",
+        "index",
+        "models",
+        "bm25_index",
+        "products",
+        "skills",
+    ];
+    for subdir in subdirs {
+        fs::create_dir_all(data_dir.join(subdir))
+            .map_err(|e| format!("Failed to create {}: {}", subdir, e))?;
+    }
+
+    Ok(data_dir)
+}
+
+/// 递归复制目录及其所有内容
+pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst)
+        .map_err(|e| format!("Failed to create dir {}: {}", dst.display(), e))?;
+    for entry in
+        fs::read_dir(src).map_err(|e| format!("Failed to read dir {}: {}", src.display(), e))?
+    {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path).map_err(|e| {
+                format!(
+                    "Failed to copy {} to {}: {}",
+                    src_path.display(),
+                    dst_path.display(),
+                    e
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn dir_has_entries(path: &Path) -> bool {
+    path.read_dir()
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
+}
+
+fn seed_skills_dir(_app: &AppHandle, data_dir: &Path) -> Result<PathBuf, String> {
+    let skills_dir = data_dir.join("skills");
+    fs::create_dir_all(&skills_dir).map_err(|e| {
+        format!(
+            "Failed to create skills dir {}: {}",
+            skills_dir.display(),
+            e
+        )
+    })?;
+
+    Ok(skills_dir)
 }
 
 /// 初始化 AppState（同步，在 setup 中立刻调用）
@@ -371,52 +344,6 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
 }
 
 // ── Entropy Management Commands ──────────────────────────────────────────
-
-#[derive(Serialize)]
-pub struct StaleItemInfo {
-    pub path: String,
-    pub last_accessed_days: u64,
-    pub item_type: String,
-}
-
-#[tauri::command]
-pub async fn scan_stale_skills(state: State<'_, AppState>) -> Result<Vec<StaleItemInfo>, String> {
-    let mgr = EntropyManager::new(state.data_dir.clone());
-    let items = mgr.scan_stale_files("skills");
-    Ok(items
-        .into_iter()
-        .map(|item| StaleItemInfo {
-            path: item.path.to_string_lossy().to_string(),
-            last_accessed_days: item.last_accessed_days,
-            item_type: match item.item_type {
-                StaleType::Skill => "skill".to_string(),
-                StaleType::DocMismatch => "doc_mismatch".to_string(),
-                StaleType::IndexDrift => "index_drift".to_string(),
-            },
-        })
-        .collect())
-}
-
-#[derive(Serialize)]
-pub struct IndexDriftInfo {
-    pub source_path: String,
-    pub stored_hash: String,
-    pub current_hash: String,
-}
-
-#[tauri::command]
-pub async fn scan_index_drift(state: State<'_, AppState>) -> Result<Vec<IndexDriftInfo>, String> {
-    let mgr = EntropyManager::new(state.data_dir.clone());
-    let drifts = mgr.scan_index_drift("knowledge", "index");
-    Ok(drifts
-        .into_iter()
-        .map(|d| IndexDriftInfo {
-            source_path: d.source_path.to_string_lossy().to_string(),
-            stored_hash: d.stored_hash,
-            current_hash: d.current_hash,
-        })
-        .collect())
-}
 
 /// 另存文件附件（Rust 层流式拷贝，零前端内存占用）
 #[tauri::command]

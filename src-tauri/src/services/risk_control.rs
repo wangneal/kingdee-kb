@@ -216,57 +216,7 @@ impl RiskControlStore {
             CREATE INDEX IF NOT EXISTS idx_health_type ON project_health_metrics(indicator_type);",
         )
         .map_err(|e| format!("Failed to init risk control tables: {}", e))?;
-
-        // 分步执行 ALTER TABLE，忽略列已存在错误
-        let alter_tables = [
-            "ALTER TABLE contract_scope_items ADD COLUMN project_id INTEGER NOT NULL DEFAULT -1",
-            "ALTER TABLE project_health_metrics ADD COLUMN project_id INTEGER NOT NULL DEFAULT -1",
-        ];
-        for sql in &alter_tables {
-            let _ = conn.execute(sql, []);
-        }
-        drop(conn);
-        self.migrate_legacy_risk_project_links()?;
         Ok(())
-    }
-
-    fn table_exists(&self, table_name: &str) -> Result<bool, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-        conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-            params![table_name],
-            |row| row.get::<_, i64>(0),
-        )
-        .map(|exists| exists == 1)
-        .map_err(|e| format!("检查数据表失败: {}", e))
-    }
-
-    fn migrate_legacy_risk_project_links(&self) -> Result<(), String> {
-        if !self.table_exists("risk_projects")? {
-            return Ok(());
-        }
-
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
-        conn.execute_batch(
-            "UPDATE contract_scope_items
-             SET project_id = (
-                 SELECT kb_project_id FROM risk_projects
-                 WHERE risk_projects.id = contract_scope_items.project_id
-             )
-             WHERE project_id IN (
-                 SELECT id FROM risk_projects WHERE kb_project_id IS NOT NULL
-             );
-
-             UPDATE project_health_metrics
-             SET project_id = (
-                 SELECT kb_project_id FROM risk_projects
-                 WHERE risk_projects.id = project_health_metrics.project_id
-             )
-             WHERE project_id IN (
-                 SELECT id FROM risk_projects WHERE kb_project_id IS NOT NULL
-             );",
-        )
-        .map_err(|e| format!("迁移旧风险项目关联失败: {}", e))
     }
 
     // ─── 合同范围管理 ───
@@ -1517,21 +1467,6 @@ mod tests {
 
         let normalized = RiskControlStore::normalize_candidate_items(items);
         assert_eq!(normalized.len(), 1);
-    }
-
-    #[test]
-    fn init_tables_does_not_create_risk_projects_table() {
-        let store = new_store();
-        let conn = store.conn.lock().unwrap();
-        let exists: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'risk_projects'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-
-        assert_eq!(exists, 0);
     }
 
     #[test]

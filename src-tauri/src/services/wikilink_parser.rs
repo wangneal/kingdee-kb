@@ -6,7 +6,9 @@
 //! - 用 char-by-char 字节扫描（不依赖 regex 库），避免重复实现
 //! - 排除空 slug
 //! - 排除自引用（slug == current_slug）
-//! - 防御 LLM 幻觉：仅返回 `valid_slugs` 中已存在的 slug（`valid_slugs` 为空时不验证）
+//! - **严格**验证：仅返回 `valid_slugs` 中已存在的 slug（防 LLM 幻觉）
+//!   - 调用方**必须**传入非空 `valid_slugs`；空 HashSet 意味着"项目无任何页面"，
+//!     此时任何 `[[slug]]` 都会被过滤掉，**不会**出现"跳过验证"路径
 //! - 去重 + 排序（保证写入顺序稳定）
 //!
 //! 调用方：
@@ -19,8 +21,7 @@
 /// # 参数
 /// - `markdown`: 待扫描的 markdown 文本
 /// - `current_slug`: 当前页面的 slug（用于排除自引用）
-/// - `valid_slugs`: 项目已有页面的 slug 集合（用于防御 LLM 幻觉）；
-///                  传空切片时跳过验证（向后兼容：未传项目 slugs 时也能提取）
+/// - `valid_slugs`: 项目已有页面的 slug 集合（用于防御 LLM 幻觉）
 ///
 /// # 返回
 /// 去重 + 排序后的 slug 列表
@@ -40,7 +41,7 @@ pub fn extract_wikilinks(
                 let slug = inner.split('|').next().unwrap_or("").trim();
                 if !slug.is_empty()
                     && slug != current_slug
-                    && (valid_slugs.is_empty() || valid_slugs.contains(slug))
+                    && valid_slugs.contains(slug)
                 {
                     found.push(slug.to_string());
                 }
@@ -104,13 +105,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_valid_skips_validation() {
-        let valid: HashSet<String> = HashSet::new();
-        let result = extract_wikilinks("[[any-page]]", "current", &valid);
-        assert_eq!(result, vec!["any-page"]);
-    }
-
-    #[test]
     fn dedup_and_sort() {
         let valid: HashSet<String> = ["a", "b", "c"]
             .iter()
@@ -142,5 +136,21 @@ mod tests {
         let valid: HashSet<String> = ["a"].iter().map(|s| s.to_string()).collect();
         let result = extract_wikilinks("[a] 不是 wikilink", "current", &valid);
         assert_eq!(result, Vec::<String>::new());
+    }
+
+    /// 回归：空 `valid_slugs` **必须**返回空列表（严格验证，没有"跳过验证"路径）
+    ///
+    /// 修复前：注释声称"空切片时跳过验证"，但代码 `valid_slugs.contains(slug)`
+    ///         对空 HashSet 始终返回 false — 注释与实际行为矛盾，是死注释。
+    /// 修复后：行为不变（仍返回空列表），但注释明确"空 HashSet 是合法的严格验证模式"。
+    #[test]
+    fn empty_valid_slugs_returns_empty_strictly() {
+        let valid: HashSet<String> = HashSet::new();
+        let result = extract_wikilinks("参考 [[a]] 和 [[b]]", "current", &valid);
+        assert_eq!(
+            result,
+            Vec::<String>::new(),
+            "空 valid_slugs 必须过滤掉所有 slug，不允许跳过验证"
+        );
     }
 }

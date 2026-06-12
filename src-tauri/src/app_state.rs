@@ -1,17 +1,15 @@
-// 迁移期间部分字段暂未使用
+// 部分字段当前未被全部命令使用，保留以备未来扩展
 #![allow(dead_code)]
 //! 应用状态管理
 //!
 //! 在 Arc<Mutex<>> 中持有所有服务，以便从 Tauri 命令中线程安全地访问。
 //!
-//! 注意：AppState 字段较多（22个）是 Tauri 框架的典型模式。
 //! 所有命令通过 `State<'_, AppState>` 访问，拆分为子状态会增加大量胶水代码。
 
 use crate::services::analysis_cache::AnalysisCacheStore;
 use crate::services::audio_capture::AudioCapture;
 use crate::services::bm25_service::BM25Service;
 use crate::services::desensitize::Desensitizer;
-use crate::services::edition_config::EditionConfig;
 use crate::services::embedding::{EmbeddingService, ModelManager};
 use crate::services::image_processor::ImageProcessor;
 use crate::services::ingest_cache::IngestCacheStore;
@@ -26,7 +24,6 @@ use crate::services::project_store::ProjectStore;
 use crate::services::question_tool::{self, PendingQuestions};
 use crate::services::raw_source::RawSourceStore;
 use crate::services::rerank::RerankerService;
-use crate::services::research_indexer::ResearchIndexer;
 use crate::services::research_session::ResearchSessionStore;
 use crate::services::rig_agent::RigAgent;
 use crate::services::risk_control::RiskControlStore;
@@ -113,10 +110,6 @@ pub struct AppState {
     pub ingest_cache_store: Arc<Mutex<IngestCacheStore>>,
     /// 嵌入模型的下载进度（0–100）。由后台线程更新。
     pub download_progress: Arc<AtomicU32>,
-    /// 版本配置（企业版 / 旗舰版）
-    pub edition_config: EditionConfig,
-    /// 研究大纲索引器
-    pub research_indexer: ResearchIndexer,
     /// 研究会话存储
     pub research_session_store: ResearchSessionStore,
     /// 研究大纲节点存储
@@ -237,22 +230,6 @@ impl AppState {
             Arc::new(Mutex::new(store))
         };
 
-        // 初始化 EditionConfig（共享 metadata.db 的 app_config 表）
-        let edition_config = {
-            let conn = Connection::open(&db_path)
-                .map_err(|e| format!("Failed to open DB for EditionConfig: {}", e))?;
-            let config = EditionConfig::new(conn);
-            config.init_table()?;
-            config
-        };
-
-        // 初始化 ResearchIndexer
-        let research_indexer = {
-            let indexer = ResearchIndexer::new(&db_path)?;
-            indexer.init_tables()?;
-            indexer
-        };
-
         // 初始化 ResearchSessionStore（共享 metadata.db）
         let research_session_store = ResearchSessionStore::new(&db_path)?;
 
@@ -353,8 +330,6 @@ impl AppState {
             analysis_cache,
             ingest_cache_store,
             download_progress: Arc::new(AtomicU32::new(0)),
-            edition_config,
-            research_indexer,
             research_session_store,
             outline_store,
             risk_control_store,
@@ -402,25 +377,8 @@ impl AppState {
         let products = ProductStore::new(db_path.clone())
             .expect("Fatal: cannot create product store — app cannot function without it");
 
-        let edition_config = {
-            let conn = Connection::open(&db_path).expect("Fatal: cannot open DB for EditionConfig");
-            let config = EditionConfig::new(conn);
-            config
-                .init_table()
-                .expect("Fatal: cannot init config table");
-            config
-        };
-
-        let research_indexer = {
-            let indexer =
-                ResearchIndexer::new(&db_path).expect("Fatal: cannot create ResearchIndexer");
-            indexer
-                .init_tables()
-                .expect("Fatal: cannot init research tables");
-            indexer
-        };
-
-        // ResearchSessionStore 和 RiskControlStore 不是核心服务，失败时用内存兜底
+        // ResearchSessionStore / RiskControlStore / OutlineStore 都是非核心辅助服务：
+        // 磁盘库创建失败时退化为内存库，保证主流程不中断；内存库数据不持久化。
         let research_session_store = match ResearchSessionStore::new(&db_path) {
             Ok(s) => s,
             Err(e) => {
@@ -428,13 +386,12 @@ impl AppState {
                     "WARNING: ResearchSessionStore init failed (non-fatal): {}",
                     e
                 );
-                // 用内存数据库兜底，避免 crash
+                // 降级到内存库：当前会话可用，重启后数据丢失（仅辅助服务）
                 ResearchSessionStore::new_in_memory()
                     .expect("Fatal: cannot create in-memory ResearchSessionStore")
             }
         };
 
-        // OutlineStore 失败时用内存兜底
         let outline_store = Arc::new(Mutex::new(match OutlineStore::new(&db_path) {
             Ok(s) => s,
             Err(e) => {
@@ -524,8 +481,6 @@ impl AppState {
                 store
             })),
             download_progress: Arc::new(AtomicU32::new(0)),
-            edition_config,
-            research_indexer,
             research_session_store,
             outline_store,
             risk_control_store,

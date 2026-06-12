@@ -633,14 +633,6 @@ fn sync_image_processor(
 
 // ─── 响应类型 ───
 
-/// 探测结果（迁移期间预留）
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderProbeResult {
-    pub id: String,
-    pub is_multimodal: bool,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelProbeResult {
     pub provider_id: String,

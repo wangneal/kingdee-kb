@@ -103,18 +103,6 @@ impl GraphStore {
                 ",
             )
             .map_err(|e| format!("创建 knowledge_graph 表失败: {}", e))?;
-        if self
-            .db
-            .prepare("SELECT project_id FROM knowledge_graph LIMIT 0")
-            .is_err()
-        {
-            self.db
-                .execute(
-                    "ALTER TABLE knowledge_graph ADD COLUMN project_id INTEGER",
-                    [],
-                )
-                .map_err(|e| format!("添加 knowledge_graph.project_id 失败: {}", e))?;
-        }
         Ok(())
     }
 

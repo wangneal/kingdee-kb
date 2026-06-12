@@ -116,7 +116,7 @@ impl ResearchSessionStore {
     fn init_tables(&self) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
 
-        // Step 1: Create tables (without index on project yet)
+        // 单一明确语义：表结构即当前实现，不再有"列不存在则 ALTER"的兼容路径
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS research_sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,69 +138,18 @@ impl ResearchSessionStore {
                 question_text TEXT NOT NULL,
                 answer_text TEXT DEFAULT '',
                 notes TEXT DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'auto' CHECK(source IN ('auto','manual')),
+                is_bookmarked INTEGER NOT NULL DEFAULT 0,
                 sort_order INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY (session_id) REFERENCES research_sessions(id) ON DELETE CASCADE
-            );",
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_qa_session ON session_qa_records(session_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_module ON research_sessions(module_code);
+            CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON research_sessions(project_id);",
         )
         .map_err(|e| format!("Failed to init session tables: {}", e))?;
-
-        // Step 2: 兼容已有数据库：只扩展 schema，不迁移旧 project 字符串值。
-        let has_project_id = conn
-            .prepare("SELECT project_id FROM research_sessions LIMIT 0")
-            .is_ok();
-        if !has_project_id {
-            conn.execute(
-                "ALTER TABLE research_sessions ADD COLUMN project_id INTEGER",
-                [],
-            )
-            .map_err(|e| format!("Failed to add project_id column: {}", e))?;
-        }
-
-        // Step 3: 迁移 — 为 session_qa_records 添加 source 和 is_bookmarked 列
-        let has_source = {
-            let mut stmt = conn
-                .prepare("PRAGMA table_info(session_qa_records)")
-                .map_err(|e| format!("Failed to query table info: {}", e))?;
-            let rows = stmt
-                .query_map([], |row| row.get::<_, String>(1))
-                .map_err(|e| format!("Failed to read table info: {}", e))?;
-            let found = rows.flatten().any(|col| col == "source");
-            found
-        };
-        if !has_source {
-            conn.execute(
-                "ALTER TABLE session_qa_records ADD COLUMN source TEXT CHECK(source IN ('auto','manual')) DEFAULT 'auto'",
-                [],
-            )
-            .map_err(|e| format!("Failed to add source column: {}", e))?;
-        }
-
-        let has_bookmarked = {
-            let mut stmt = conn
-                .prepare("PRAGMA table_info(session_qa_records)")
-                .map_err(|e| format!("Failed to query table info: {}", e))?;
-            let rows = stmt
-                .query_map([], |row| row.get::<_, String>(1))
-                .map_err(|e| format!("Failed to read table info: {}", e))?;
-            let found = rows.flatten().any(|col| col == "is_bookmarked");
-            found
-        };
-        if !has_bookmarked {
-            conn.execute(
-                "ALTER TABLE session_qa_records ADD COLUMN is_bookmarked INTEGER NOT NULL DEFAULT 0",
-                [],
-            )
-            .map_err(|e| format!("Failed to add is_bookmarked column: {}", e))?;
-        }
-
-        // Step 4: Create indexes (now safe because project_id column exists)
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_qa_session ON session_qa_records(session_id);
-             CREATE INDEX IF NOT EXISTS idx_sessions_module ON research_sessions(module_code);
-             CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON research_sessions(project_id);",
-        )
-        .map_err(|e| format!("Failed to create session indexes: {}", e))?;
 
         Ok(())
     }

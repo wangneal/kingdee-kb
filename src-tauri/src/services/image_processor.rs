@@ -670,7 +670,7 @@ impl ImageProcessor {
         }
     }
 
-    /// OpenAI 兼容格式的视觉调用（原有实现）
+    /// OpenAI 兼容协议的视觉调用（GPT/Qwen/DeepSeek 等）
     async fn vision_openai_compatible(
         &self,
         img_base64: &str,

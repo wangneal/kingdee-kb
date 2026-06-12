@@ -22,7 +22,7 @@ pub struct DocumentMeta {
     pub raw_source_identity: Option<String>,
 }
 
-/// Chunk metadata (one per vector in the HNSW index)
+/// Chunk 元数据（HNSW 索引中每条向量对应一条）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkMeta {
     pub id: i64,
@@ -249,19 +249,6 @@ impl MetadataStore {
             )
             .map_err(|e| format!("Failed to initialize schema: {}", e))?;
 
-        // 兼容已有数据库：先补齐列，再创建依赖这些列的索引。
-        self.ensure_column("documents", "raw_source_identity", "TEXT DEFAULT NULL")?;
-        self.ensure_column("documents", "project_id", "INTEGER")?;
-        self.ensure_column(
-            "documents",
-            "document_scope",
-            "TEXT NOT NULL DEFAULT 'knowledge'",
-        )?;
-        self.ensure_column("documents", "chat_session_id", "TEXT")?;
-        self.ensure_column("chunks", "line_no", "INTEGER")?;
-        self.ensure_column("deletion_outbox", "project_id", "INTEGER")?;
-        self.backfill_document_project_id()?;
-
         self.db
             .execute_batch(
                 "
@@ -307,51 +294,9 @@ impl MetadataStore {
         Ok(())
     }
 
-    fn ensure_column(&self, table: &str, column: &str, definition: &str) -> Result<(), String> {
-        let mut stmt = self
-            .db
-            .prepare(&format!("PRAGMA table_info({})", table))
-            .map_err(|e| format!("读取表结构失败: {}", e))?;
-        let columns = stmt
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(|e| format!("查询表结构失败: {}", e))?;
-        for col in columns {
-            if col.map_err(|e| format!("读取列名失败: {}", e))? == column {
-                return Ok(());
-            }
-        }
-        self.db
-            .execute_batch(&format!(
-                "ALTER TABLE {} ADD COLUMN {} {};",
-                table, column, definition
-            ))
-            .map_err(|e| format!("添加列 {}.{} 失败: {}", table, column, e))?;
-        Ok(())
-    }
-
-    fn backfill_document_project_id(&self) -> Result<(), String> {
-        let default_project_id = match self.db.query_row(
-            "SELECT id FROM projects WHERE status = 'active' ORDER BY id ASC LIMIT 1",
-            [],
-            |row| row.get::<_, i64>(0),
-        ) {
-            Ok(id) => id,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
-            Err(e) => return Err(format!("读取默认项目失败: {}", e)),
-        };
-
-        self.db
-            .execute(
-                "UPDATE documents SET project_id = ?1 WHERE project_id IS NULL",
-                params![default_project_id],
-            )
-            .map_err(|e| format!("回填文档默认项目失败: {}", e))?;
-        Ok(())
-    }
-
     // ─── Document operations ───
 
-    /// Insert a new document. Returns the document ID.
+    /// 插入新文档，返回文档 ID
     pub fn insert_document(
         &self,
         title: &str,
@@ -527,8 +472,8 @@ impl MetadataStore {
         }
     }
 
-    /// Delete a document and its associated chunks
-    /// If project_id is specified, verify the document belongs to that project before deleting
+    /// 删除文档及其关联的 chunk
+    /// 若指定 project_id，删除前校验文档归属
     pub fn delete_document(&self, id: i64, project_id: Option<i64>) -> Result<(), String> {
         if let Some(pid) = project_id {
             let doc_project_id: i64 = self
@@ -600,30 +545,40 @@ impl MetadataStore {
         let tx = self
             .db
             .unchecked_transaction()
-            .map_err(|e| format!("Failed to begin transaction: {}", e))?;
+            .map_err(|e| format!("启动批量删除事务失败: {}", e))?;
 
-        let _chunks_deleted = tx
-            .execute(
-                &format!("DELETE FROM chunks WHERE document_id IN ({})", placeholders),
-                params.as_slice(),
-            )
-            .map_err(|e| format!("Failed to batch-delete chunks: {}", e))?;
-
-        let docs_deleted = tx
-            .execute(
-                &format!("DELETE FROM documents WHERE id IN ({})", placeholders),
-                params.as_slice(),
-            )
-            .map_err(|e| format!("Failed to batch-delete documents: {}", e))?;
-
+        // 把事务体收集为 Result，失败时显式 rollback
+        // （unchecked_transaction 的 guard 在 drop 时不会自动回滚）
+        let body: Result<u64, String> = (|| {
+            let _chunks_deleted = tx
+                .execute(
+                    &format!("DELETE FROM chunks WHERE document_id IN ({})", placeholders),
+                    params.as_slice(),
+                )
+                .map_err(|e| format!("批量删除 chunks 失败: {}", e))?;
+            let docs_deleted = tx
+                .execute(
+                    &format!("DELETE FROM documents WHERE id IN ({})", placeholders),
+                    params.as_slice(),
+                )
+                .map_err(|e| format!("批量删除 documents 失败: {}", e))?;
+            Ok(docs_deleted as u64)
+        })();
+        let docs_deleted = match body {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = tx.rollback();
+                return Err(e);
+            }
+        };
         tx.commit()
-            .map_err(|e| format!("Failed to commit batch delete: {}", e))?;
+            .map_err(|e| format!("提交批量删除事务失败: {}", e))?;
 
-        Ok(docs_deleted as u64)
+        Ok(docs_deleted)
     }
 
-    /// Get vector keys for all chunks belonging to the given document IDs.
-    /// Used to remove vectors from the usearch index when deleting documents.
+    /// 获取指定文档 ID 列表的所有 chunk 对应的 vector key。
+    /// 用于删除文档时从 usearch 索引中清理向量。
     pub fn get_vector_keys_by_document_ids(
         &self,
         document_ids: &[i64],
@@ -771,7 +726,7 @@ impl MetadataStore {
         Ok(self.db.last_insert_rowid())
     }
 
-    /// Get a chunk by its vector key
+    /// 按 vector key 获取一条 chunk
     pub fn get_chunk_by_vector_key(&self, vector_key: i64) -> Result<Option<ChunkMeta>, String> {
         self.query_one_chunk(
             "SELECT id, vector_key, document_id, content, section_path, tags, line_no, created_at
@@ -831,7 +786,7 @@ impl MetadataStore {
         Ok(ids)
     }
 
-    /// Get all chunks for a document
+    /// 获取指定文档的所有 chunk
     pub fn get_chunks_by_document(&self, document_id: i64) -> Result<Vec<ChunkMeta>, String> {
         self.query_chunks(
             "SELECT id, vector_key, document_id, content, section_path, tags, line_no, created_at
@@ -871,7 +826,7 @@ impl MetadataStore {
 
     // ─── Stats ───
 
-    /// Get knowledge base statistics, optionally filtered by project_id
+    /// 获取知识库统计信息，可按 project_id 过滤
     pub fn get_stats(&self, project_id: Option<i64>) -> Result<KnowledgeStats, String> {
         let doc_count: i64 = match project_id {
             Some(pid) => self
@@ -1489,54 +1444,6 @@ mod tests {
         drop(project_store);
         let store = MetadataStore::new(db_path).unwrap();
         (tmp, store, default_project_id, other_project_id)
-    }
-
-    #[test]
-    fn migrates_legacy_documents_table_before_creating_indexes() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db_path = tmp.path().join("test.db");
-
-        {
-            let db = Connection::open(&db_path).unwrap();
-            db.execute_batch(
-                "
-                CREATE TABLE documents (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    title TEXT NOT NULL,
-                    source_path TEXT,
-                    sha256 TEXT UNIQUE,
-                    project TEXT,
-                    created_at TEXT DEFAULT (datetime('now'))
-                );
-                CREATE TABLE chunks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    vector_key INTEGER UNIQUE,
-                    document_id INTEGER REFERENCES documents(id),
-                    content TEXT NOT NULL,
-                    section_path TEXT,
-                    tags TEXT,
-                    line_no INTEGER,
-                    created_at TEXT DEFAULT (datetime('now'))
-                );
-                INSERT INTO documents (title, source_path, sha256, project)
-                VALUES ('旧文档', '/legacy.md', 'legacy-sha', '默认项目');
-                ",
-            )
-            .unwrap();
-        }
-
-        let project_store = ProjectStore::new(&db_path).unwrap();
-        let default_project_id = project_store.ensure_default_project().unwrap();
-        drop(project_store);
-
-        let store = MetadataStore::new(db_path).unwrap();
-        let docs = store.list_documents(None).unwrap();
-
-        assert_eq!(docs.len(), 1);
-        assert_eq!(docs[0].title, "旧文档");
-        assert_eq!(docs[0].project_id, default_project_id);
-        assert_eq!(docs[0].document_scope, "knowledge");
-        assert_eq!(docs[0].chat_session_id, None);
     }
 
     #[test]

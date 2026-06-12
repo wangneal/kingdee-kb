@@ -6,8 +6,6 @@ use crate::services::hybrid_search::HybridSearchResult;
 use crate::services::llm_service::ChatMessage;
 use crate::services::memory;
 
-/// 确保 embedding 模型已加载（懒加载，已迁移到 AppState）。
-
 /// 使用 BM25 按关键词搜索分块（jieba 分词 + tantivy 评分）
 #[tauri::command]
 pub async fn bm25_search(

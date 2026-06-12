@@ -16,6 +16,7 @@ use crate::services::hybrid_search::{self, HybridSearchResult};
 use crate::services::llm_service::{ChatMessage, LLMService};
 use crate::services::metadata::MetadataStore;
 use crate::services::template_schema::SchemaField;
+use crate::services::token::truncate_to_tokens;
 use crate::services::vector_index::VectorIndex;
 
 // ─── Types ───
@@ -221,8 +222,8 @@ fn assemble_kb_context(results: &[HybridSearchResult], max_tokens: u32) -> Strin
         context.push_str(&entry);
     }
 
-    // Truncate to fit token budget
-    super::llm_service::truncate_to_tokens(&context, max_tokens)
+    // 截断到 token 预算
+    truncate_to_tokens(&context, max_tokens)
 }
 
 /// Call LLM to generate field values using KB context.

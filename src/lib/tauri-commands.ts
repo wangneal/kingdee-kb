@@ -545,7 +545,7 @@ export async function reviewTranscriptionText(text: string): Promise<string> {
   return invoke("review_transcription_text", { text })
 }
 
-export async function stopWhisperRecording(provider?: string): Promise<TranscriptionResult> {
+export async function stopWhisperRecording(provider?: "tencent"): Promise<TranscriptionResult> {
   return invoke("stop_whisper_recording", { provider: provider ?? null })
 }
 
@@ -1243,11 +1243,9 @@ export async function importDatabase(backupPath: string): Promise<ImportDbResult
 // ─── 阶段 12b：在线 ASR 供应商 ───
 
 export interface AsrProviderInfo {
-  type: string
+  kind: "tencent"
   name: string
   description: string
-  supports_streaming: boolean
-  supports_file: boolean
 }
 
 export async function listAsrProviders(): Promise<AsrProviderInfo[]> {

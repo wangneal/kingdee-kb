@@ -164,7 +164,8 @@ pub fn run() {
                 }
                 Err(e) => {
                     eprintln!("Fatal error during app state initialization: {}", e);
-                    // 降级兜底：即便 init_app_state 返回 Err（例如 home_dir 缺失），我们也至少要 manage 一个 minimal 的 AppState 保证应用能启动！
+                    // 降级到 minimal AppState：磁盘初始化失败时仍能启动应用，
+                    // 后续功能（whisper、LLM 等）由调用方按需提示用户重试
                     let fallback_dir = std::env::temp_dir().join("kingdee-kb-fallback");
                     let _ = std::fs::create_dir_all(&fallback_dir);
                     let app_state = AppState::minimal(&fallback_dir);
@@ -212,28 +213,16 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             // Core
-            commands::core::greet,
-            commands::core::get_data_dir,
             commands::core::set_api_key,
-            commands::core::get_api_key,
             commands::core::delete_api_key,
             commands::core::set_complete,
             commands::core::export_report,
-            commands::core::scan_stale_skills,
-            commands::core::scan_index_drift,
             // Phase 2: Embedding & Vector Store
             commands::embedding::get_model_status,
             commands::embedding::init_model,
             commands::embedding::get_download_progress,
             commands::embedding::get_embedding_model_config,
             commands::embedding::set_embedding_model_config,
-            commands::embedding::embed_text,
-            commands::embedding::embed_batch,
-            commands::embedding::search_similar,
-            commands::embedding::load_index,
-            commands::embedding::get_index_stats,
-            commands::embedding::get_knowledge_stats,
-            commands::embedding::get_available_providers,
             // Phase 3: Ingestion Pipeline
             commands::ingestion::ingest_text,
             commands::ingestion::ingest_file,
@@ -245,13 +234,10 @@ pub fn run() {
             commands::kb_compilation::recompile_failed_kb_sources,
             commands::kb_compilation::start_kb_recompile,
             commands::kb_compilation::get_kb_recompile_status,
-            commands::kb_compilation::force_recompile_kb_source,
             // Phase 2: 持久化摄入队列
             commands::ingestion_queue::enqueue_ingestion,
             commands::ingestion_queue::list_ingestion_queue,
-            commands::ingestion_queue::retry_failed_ingestions,
             commands::ingestion_queue::retry_project_failed_ingestions,
-            commands::ingestion_queue::process_ingestion_queue,
             commands::ingestion_queue::process_project_ingestion_queue,
             // Document Management
             commands::document::list_documents,
@@ -267,7 +253,6 @@ pub fn run() {
             commands::search_llm::count_tokens,
             // Phase 12: Product Management
             commands::product::list_products,
-            commands::product::get_product,
             commands::product::delete_product,
             commands::product::export_product,
             // Unified Project Management
@@ -307,16 +292,6 @@ pub fn run() {
             commands::tencent_meeting::list_tencent_meeting_tools,
             commands::tencent_meeting::call_tencent_meeting_tool,
             commands::tencent_meeting::fetch_tencent_meeting_transcript,
-            // Phase 9: Research Edition Commands
-            commands::research::get_current_edition,
-            commands::research::set_edition,
-            commands::research::list_research_modules,
-            commands::research::import_research_outlines,
-            commands::research::get_investigation_recipe,
-            // Phase 11: Question Recommendation
-            commands::research::recommend_questions,
-            commands::research::generate_followup_questions,
-            commands::research::smart_fill_for_question,
             // Phase 13: Research Session Management
             commands::research::create_research_session,
             commands::research::list_research_sessions,
@@ -436,7 +411,6 @@ pub fn run() {
             commands::wiki_page::approve_wiki_page,
             commands::wiki_page::approve_auto_wiki_pages,
             commands::wiki_page::reject_wiki_page,
-            commands::wiki_page::seed_demo_wiki_pages,
             // Phase 5: Wikilink 编辑器
             commands::wiki_page::search_wikilink_candidates,
             commands::wiki_page::add_wikilink,
@@ -454,7 +428,6 @@ pub fn run() {
             commands::outline::get_outline_stats,
             // Phase 5: 知识图谱
             commands::knowledge_graph::build_knowledge_graph,
-            commands::knowledge_graph::traverse_graph,
             commands::knowledge_graph::get_graph_neighbors,
             commands::knowledge_graph::get_graph_stats,
             commands::knowledge_graph::graph_expand_search,

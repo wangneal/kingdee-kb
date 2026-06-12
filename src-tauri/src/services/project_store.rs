@@ -164,8 +164,6 @@ impl ProjectStore {
             )
             .map_err(|e| format!("创建默认项目失败: {}", e))?;
 
-        self.import_legacy_projects()?;
-
         let project_id = self
             .db
             .query_row(
@@ -195,49 +193,6 @@ impl ProjectStore {
         Ok(project_id)
     }
 
-    fn import_legacy_projects(&self) -> Result<(), String> {
-        for table in [
-            "raw_sources",
-            "wiki_pages",
-            "analysis_cache",
-            "ingest_cache",
-        ] {
-            if !self.table_has_column(table, "project")? {
-                continue;
-            }
-            self.db
-                .execute_batch(&format!(
-                    "INSERT OR IGNORE INTO projects (name, client_name, description, status, current_phase)
-                     SELECT DISTINCT project, '', '从旧版数据迁移', 'active', 'survey'
-                     FROM {}
-                     WHERE project IS NOT NULL AND trim(project) != '';",
-                    table
-                ))
-                .map_err(|e| format!("迁移 {} 历史项目失败: {}", table, e))?;
-        }
-        Ok(())
-    }
-
-    fn table_has_column(&self, table_name: &str, column_name: &str) -> Result<bool, String> {
-        if !self.table_exists(table_name)? {
-            return Ok(false);
-        }
-        let mut stmt = self
-            .db
-            .prepare(&format!("PRAGMA table_info({})", table_name))
-            .map_err(|e| format!("读取 {} 表结构失败: {}", table_name, e))?;
-        let columns = stmt
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(|e| format!("查询 {} 表结构失败: {}", table_name, e))?;
-        for column in columns {
-            if column.map_err(|e| format!("读取 {} 列名失败: {}", table_name, e))? == column_name
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     pub fn create_project(
         &self,
         name: &str,
@@ -263,31 +218,13 @@ impl ProjectStore {
     }
 
     pub fn list_projects(&self) -> Result<Vec<ProjectSummary>, String> {
-        let document_count = if self.table_has_column("documents", "project_id")? {
-            "(SELECT COUNT(*) FROM documents d WHERE d.project_id = p.id)"
-        } else {
-            "0"
-        };
-        let wiki_count = if self.table_has_column("wiki_pages", "project_id")? {
-            "(SELECT COUNT(*) FROM wiki_pages w WHERE w.project_id = p.id)"
-        } else {
-            "0"
-        };
-        let product_count = if self.table_has_column("products", "project_id")? {
-            "(SELECT COUNT(*) FROM products pr WHERE pr.project_id = p.id)"
-        } else {
-            "0"
-        };
-        let risk_scope_count = if self.table_has_column("contract_scope_items", "project_id")? {
-            "(SELECT COUNT(*) FROM contract_scope_items s WHERE s.project_id = p.id)"
-        } else {
-            "0"
-        };
-        let risk_metric_count = if self.table_has_column("project_health_metrics", "project_id")? {
-            "(SELECT COUNT(*) FROM project_health_metrics h WHERE h.project_id = p.id)"
-        } else {
-            "0"
-        };
+        let document_count = "(SELECT COUNT(*) FROM documents d WHERE d.project_id = p.id)";
+        let wiki_count = "(SELECT COUNT(*) FROM wiki_pages w WHERE w.project_id = p.id)";
+        let product_count = "(SELECT COUNT(*) FROM products pr WHERE pr.project_id = p.id)";
+        let risk_scope_count =
+            "(SELECT COUNT(*) FROM contract_scope_items s WHERE s.project_id = p.id)";
+        let risk_metric_count =
+            "(SELECT COUNT(*) FROM project_health_metrics h WHERE h.project_id = p.id)";
         let sql = format!(
             "SELECT
                 p.id,
@@ -332,17 +269,6 @@ impl ProjectStore {
             projects.push(project.map_err(|e| format!("转换项目列表失败: {}", e))?);
         }
         Ok(projects)
-    }
-
-    fn table_exists(&self, table_name: &str) -> Result<bool, String> {
-        self.db
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-                params![table_name],
-                |row| row.get::<_, i64>(0),
-            )
-            .map(|exists| exists == 1)
-            .map_err(|e| format!("检查数据表失败: {}", e))
     }
 
     pub fn get_project(&self, project_id: i64) -> Result<Option<Project>, String> {
@@ -568,41 +494,50 @@ impl ProjectStore {
             .db
             .unchecked_transaction()
             .map_err(|e| format!("启动项目阶段事务失败: {}", e))?;
-        transaction
-            .execute(
-                "UPDATE project_phases
-                 SET status = CASE
-                     WHEN phase_index < ?2 THEN 'completed'
-                     ELSE 'pending'
-                 END,
-                 actual_start = CASE
-                     WHEN phase_index <= ?2 THEN COALESCE(actual_start, datetime('now'))
-                     ELSE NULL
-                 END,
-                 actual_end = CASE
-                     WHEN phase_index < ?2 THEN COALESCE(actual_end, datetime('now'))
-                     ELSE NULL
-                 END
-                 WHERE project_id = ?1",
-                params![project_id, phase_index],
-            )
-            .map_err(|e| format!("更新项目阶段状态失败: {}", e))?;
-        transaction
-            .execute(
-                "UPDATE project_phases
-                 SET status = 'current', actual_start = COALESCE(actual_start, datetime('now'))
-                 WHERE project_id = ?1 AND phase_index = ?2",
-                params![project_id, phase_index],
-            )
-            .map_err(|e| format!("设置项目当前阶段失败: {}", e))?;
-        transaction
-            .execute(
-                "UPDATE projects
-                 SET current_phase = ?2, updated_at = datetime('now')
-                 WHERE id = ?1",
-                params![project_id, phase_key],
-            )
-            .map_err(|e| format!("更新项目当前阶段失败: {}", e))?;
+        // 把事务体收集为 Result，失败时显式 rollback
+        // （unchecked_transaction 的 guard 在 drop 时不会自动回滚）
+        let body: Result<(), String> = (|| {
+            transaction
+                .execute(
+                    "UPDATE project_phases
+                     SET status = CASE
+                         WHEN phase_index < ?2 THEN 'completed'
+                         ELSE 'pending'
+                     END,
+                     actual_start = CASE
+                         WHEN phase_index <= ?2 THEN COALESCE(actual_start, datetime('now'))
+                         ELSE NULL
+                     END,
+                     actual_end = CASE
+                         WHEN phase_index < ?2 THEN COALESCE(actual_end, datetime('now'))
+                         ELSE NULL
+                     END
+                     WHERE project_id = ?1",
+                    params![project_id, phase_index],
+                )
+                .map_err(|e| format!("更新项目阶段状态失败: {}", e))?;
+            transaction
+                .execute(
+                    "UPDATE project_phases
+                     SET status = 'current', actual_start = COALESCE(actual_start, datetime('now'))
+                     WHERE project_id = ?1 AND phase_index = ?2",
+                    params![project_id, phase_index],
+                )
+                .map_err(|e| format!("设置项目当前阶段失败: {}", e))?;
+            transaction
+                .execute(
+                    "UPDATE projects
+                     SET current_phase = ?2, updated_at = datetime('now')
+                     WHERE id = ?1",
+                    params![project_id, phase_key],
+                )
+                .map_err(|e| format!("更新项目当前阶段失败: {}", e))?;
+            Ok(())
+        })();
+        if let Err(e) = body {
+            let _ = transaction.rollback();
+            return Err(e);
+        }
         transaction
             .commit()
             .map_err(|e| format!("提交项目阶段事务失败: {}", e))
@@ -728,20 +663,6 @@ mod tests {
     }
 
     #[test]
-    fn list_projects_works_before_products_table_exists() {
-        let dir = tempdir().expect("创建临时目录失败");
-        let db_path = dir.path().join("metadata.db");
-        let store = ProjectStore::new(&db_path).expect("创建项目存储失败");
-
-        let project_id = store.ensure_default_project().expect("创建默认项目失败");
-        let projects = store.list_projects().expect("读取项目列表失败");
-
-        assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].id, project_id);
-        assert_eq!(projects[0].product_count, 0);
-    }
-
-    #[test]
     fn list_projects_returns_real_project_counts() {
         let dir = tempdir().expect("创建临时目录失败");
         let db_path = dir.path().join("metadata.db");
@@ -788,42 +709,6 @@ mod tests {
         assert_eq!(projects[0].wiki_count, 1);
         assert_eq!(projects[0].product_count, 1);
         assert_eq!(projects[0].risk_count, 2);
-    }
-
-    #[test]
-    fn imports_legacy_projects_and_initializes_phases() {
-        let dir = tempdir().expect("创建临时目录失败");
-        let db_path = dir.path().join("metadata.db");
-        {
-            let db = Connection::open(&db_path).expect("创建旧版数据库失败");
-            db.execute_batch(
-                "
-                CREATE TABLE raw_sources (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    project TEXT NOT NULL,
-                    identity TEXT NOT NULL
-                );
-                INSERT INTO raw_sources (project, identity)
-                VALUES ('项目甲', 'a'), ('项目乙', 'b');
-                ",
-            )
-            .expect("创建旧版项目数据失败");
-        }
-
-        let store = ProjectStore::new(&db_path).expect("创建项目存储失败");
-        store.ensure_default_project().expect("迁移历史项目失败");
-
-        let projects = store.list_projects().expect("读取项目列表失败");
-        assert_eq!(projects.len(), 3);
-        for project in projects {
-            assert_eq!(
-                store
-                    .get_project_phases(project.id)
-                    .expect("读取迁移项目阶段失败")
-                    .len(),
-                7
-            );
-        }
     }
 
     #[test]

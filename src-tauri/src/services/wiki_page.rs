@@ -115,9 +115,6 @@ impl WikiPageStore {
 
     /// 创建 wiki_pages 表及其索引（幂等）
     pub fn ensure_table(&self) -> Result<(), String> {
-        if self.has_column("wiki_pages", "project")? {
-            self.migrate_legacy_table()?;
-        }
         self.db.execute_batch(
             "CREATE TABLE IF NOT EXISTS wiki_pages (
                 id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,138 +139,12 @@ impl WikiPageStore {
                 CHECK((content_candidate IS NULL AND candidate_status IS NULL AND candidate_version IS NULL)
                    OR (content_candidate IS NOT NULL AND candidate_status IS NOT NULL AND candidate_version IS NOT NULL AND candidate_version = version + 1))
             );
-        ").map_err(|e| format!("创建 wiki_pages 表失败: {}", e))?;
-
-        self.ensure_column("wiki_pages", "project_id", "INTEGER")?;
-        self.ensure_column("wiki_pages", "sources_candidate", "TEXT")?;
-        self.backfill_project_id("wiki_pages")?;
-        self.db
-            .execute_batch(
-                "
             CREATE UNIQUE INDEX IF NOT EXISTS idx_wiki_pages_slug ON wiki_pages(project_id, slug);
             CREATE INDEX IF NOT EXISTS idx_wiki_pages_project_id ON wiki_pages(project_id);
             CREATE INDEX IF NOT EXISTS idx_wiki_pages_status ON wiki_pages(page_status);
             CREATE INDEX IF NOT EXISTS idx_wiki_pages_type ON wiki_pages(page_type);
-            ",
-            )
-            .map_err(|e| format!("创建 wiki_pages 索引失败: {}", e))?;
+        ").map_err(|e| format!("创建 wiki_pages 表失败: {}", e))?;
         Ok(())
-    }
-
-    fn ensure_column(&self, table: &str, column: &str, definition: &str) -> Result<(), String> {
-        let mut stmt = self
-            .db
-            .prepare(&format!("PRAGMA table_info({})", table))
-            .map_err(|e| format!("读取表结构失败: {}", e))?;
-        let columns = stmt
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(|e| format!("查询表结构失败: {}", e))?;
-        for col in columns {
-            if col.map_err(|e| format!("读取列名失败: {}", e))? == column {
-                return Ok(());
-            }
-        }
-        self.db
-            .execute_batch(&format!(
-                "ALTER TABLE {} ADD COLUMN {} {};",
-                table, column, definition
-            ))
-            .map_err(|e| format!("添加列 {}.{} 失败: {}", table, column, e))?;
-        Ok(())
-    }
-
-    fn migrate_legacy_table(&self) -> Result<(), String> {
-        let sql = "
-            BEGIN IMMEDIATE;
-            CREATE TABLE wiki_pages_new (
-                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id         INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                slug               TEXT NOT NULL,
-                title              TEXT NOT NULL,
-                page_type          TEXT NOT NULL CHECK(page_type IN ('summary','blueprint','fitgap','decision','config')),
-                content            TEXT NOT NULL,
-                content_candidate  TEXT,
-                candidate_status   TEXT CHECK(candidate_status IN ('auto','conflict','pending')),
-                sources_candidate  TEXT,
-                frontmatter        TEXT NOT NULL DEFAULT '{}',
-                sources            TEXT NOT NULL DEFAULT '[]',
-                wikilinks          TEXT NOT NULL DEFAULT '[]',
-                tags               TEXT NOT NULL DEFAULT '[]',
-                page_metadata      TEXT NOT NULL DEFAULT '{}',
-                candidate_version  INTEGER,
-                page_status        TEXT NOT NULL DEFAULT 'draft' CHECK(page_status IN ('draft','published')),
-                version            INTEGER NOT NULL DEFAULT 1,
-                created_at         TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(project_id, slug),
-                CHECK((content_candidate IS NULL AND candidate_status IS NULL AND candidate_version IS NULL)
-                   OR (content_candidate IS NOT NULL AND candidate_status IS NOT NULL AND candidate_version IS NOT NULL AND candidate_version = version + 1))
-            );
-            INSERT INTO wiki_pages_new (
-                id, project_id, slug, title, page_type, content, content_candidate,
-                candidate_status, sources_candidate, frontmatter, sources, wikilinks, tags, page_metadata,
-                candidate_version, page_status, version, created_at, updated_at
-            )
-            SELECT id,
-                   COALESCE(
-                       (SELECT id FROM projects WHERE name = wiki_pages.project LIMIT 1),
-                       (SELECT id FROM projects WHERE name = '默认项目' LIMIT 1),
-                       (SELECT id FROM projects WHERE status = 'active' ORDER BY id ASC LIMIT 1)
-                   ),
-                   slug, title, page_type, content, content_candidate,
-                   candidate_status, NULL, frontmatter, sources, wikilinks, tags, page_metadata,
-                   candidate_version, page_status, version, created_at, updated_at
-            FROM wiki_pages;
-            DROP TABLE wiki_pages;
-            ALTER TABLE wiki_pages_new RENAME TO wiki_pages;
-            COMMIT;
-        ";
-        if let Err(e) = self.db.execute_batch(sql) {
-            let _ = self.db.execute_batch("ROLLBACK;");
-            return Err(format!("迁移旧版 wiki_pages 表失败: {}", e));
-        }
-        Ok(())
-    }
-
-    fn backfill_project_id(&self, table: &str) -> Result<(), String> {
-        let legacy_project = if self.has_column(table, "project")? {
-            format!(
-                "(SELECT id FROM projects WHERE name = {}.project LIMIT 1),",
-                table
-            )
-        } else {
-            "NULL,".to_string()
-        };
-        self.db
-            .execute(
-                &format!(
-                    "UPDATE {} SET project_id = COALESCE(
-                        {}
-                        (SELECT id FROM projects WHERE name = '默认项目' LIMIT 1),
-                        (SELECT id FROM projects WHERE status = 'active' ORDER BY id ASC LIMIT 1)
-                    ) WHERE project_id IS NULL",
-                    table, legacy_project
-                ),
-                [],
-            )
-            .map_err(|e| format!("回填 {}.project_id 失败: {}", table, e))?;
-        Ok(())
-    }
-
-    fn has_column(&self, table: &str, column: &str) -> Result<bool, String> {
-        let mut stmt = self
-            .db
-            .prepare(&format!("PRAGMA table_info({})", table))
-            .map_err(|e| format!("读取表结构失败: {}", e))?;
-        let columns = stmt
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(|e| format!("查询表结构失败: {}", e))?;
-        for col in columns {
-            if col.map_err(|e| format!("读取列名失败: {}", e))? == column {
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 
     /// 创建一条维基页面，返回完整记录
@@ -592,42 +463,6 @@ impl WikiPageStore {
         self.get_by_id(id)
     }
 
-    /// 插入 50 条种子演示数据，用于阶段五知识图谱开发测试
-    pub fn seed_demo_pages(&self, project_id: i64) -> Result<usize, String> {
-        let existing: i64 = self
-            .db
-            .query_row(
-                "SELECT COUNT(*) FROM wiki_pages WHERE project_id = ?1",
-                params![project_id],
-                |row| row.get(0),
-            )
-            .map_err(|e| format!("检查已有数据失败: {}", e))?;
-        if existing > 0 {
-            return Err(format!(
-                "项目 {} 下已有 {} 条 wiki_pages，跳过种子数据",
-                project_id, existing
-            ));
-        }
-        let script_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("seed-wiki-pages.sql");
-        let sql = std::fs::read_to_string(&script_path)
-            .map_err(|e| format!("读取种子数据脚本失败 ({}): {}", script_path.display(), e))?;
-        let sql = sql.replace("__PROJECT__", &project_id.to_string());
-        self.db
-            .execute_batch(&sql)
-            .map_err(|e| format!("执行种子数据脚本失败: {}", e))?;
-        let count: i64 = self
-            .db
-            .query_row(
-                "SELECT COUNT(*) FROM wiki_pages WHERE project_id = ?1",
-                params![project_id],
-                |row| row.get(0),
-            )
-            .map_err(|e| format!("查询种子数据量失败: {}", e))?;
-        Ok(count as usize)
-    }
-
     /// 按项目删除所有页面
     pub fn delete_by_project(&self, project_id: i64) -> Result<usize, String> {
         let rows = self
@@ -686,24 +521,33 @@ impl WikiPageStore {
             .db
             .unchecked_transaction()
             .map_err(|e| format!("启动 add_wikilink 事务失败: {}", e))?;
-        let existing_json: String = tx
-            .query_row(
-                "SELECT wikilinks FROM wiki_pages WHERE id = ?1",
-                params![page_id],
-                |row| row.get(0),
+        // 把事务内全部写入收集为 Result，失败时显式 rollback 避免事务卡死
+        // （unchecked_transaction 的 guard 在 drop 时不会自动回滚）
+        let body: Result<(), String> = (|| {
+            let existing_json: String = tx
+                .query_row(
+                    "SELECT wikilinks FROM wiki_pages WHERE id = ?1",
+                    params![page_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("读取 wiki_page wikilinks 失败: {}", e))?;
+            let mut links: Vec<String> = serde_json::from_str(&existing_json).unwrap_or_default();
+            if !links.iter().any(|s| s == target_slug) {
+                links.push(target_slug.to_string());
+            }
+            let new_json = serde_json::to_string(&links)
+                .map_err(|e| format!("序列化 wikilinks 失败: {}", e))?;
+            tx.execute(
+                "UPDATE wiki_pages SET wikilinks = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![new_json, page_id],
             )
-            .map_err(|e| format!("读取 wiki_page wikilinks 失败: {}", e))?;
-        let mut links: Vec<String> = serde_json::from_str(&existing_json).unwrap_or_default();
-        if !links.iter().any(|s| s == target_slug) {
-            links.push(target_slug.to_string());
+            .map_err(|e| format!("更新 wikilinks 失败: {}", e))?;
+            Ok(())
+        })();
+        if let Err(e) = body {
+            let _ = tx.rollback();
+            return Err(e);
         }
-        let new_json = serde_json::to_string(&links)
-            .map_err(|e| format!("序列化 wikilinks 失败: {}", e))?;
-        tx.execute(
-            "UPDATE wiki_pages SET wikilinks = ?1, updated_at = datetime('now') WHERE id = ?2",
-            params![new_json, page_id],
-        )
-        .map_err(|e| format!("更新 wikilinks 失败: {}", e))?;
         tx.commit()
             .map_err(|e| format!("提交 add_wikilink 事务失败: {}", e))?;
         self.get_by_id(page_id)
@@ -717,25 +561,32 @@ impl WikiPageStore {
             .db
             .unchecked_transaction()
             .map_err(|e| format!("启动 remove_wikilink 事务失败: {}", e))?;
-        let existing_json: String = tx
-            .query_row(
-                "SELECT wikilinks FROM wiki_pages WHERE id = ?1",
-                params![page_id],
-                |row| row.get(0),
+        let body: Result<(), String> = (|| {
+            let existing_json: String = tx
+                .query_row(
+                    "SELECT wikilinks FROM wiki_pages WHERE id = ?1",
+                    params![page_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("读取 wiki_page wikilinks 失败: {}", e))?;
+            let links: Vec<String> = serde_json::from_str(&existing_json).unwrap_or_default();
+            let filtered: Vec<String> = links
+                .into_iter()
+                .filter(|s| s != target_slug)
+                .collect();
+            let new_json = serde_json::to_string(&filtered)
+                .map_err(|e| format!("序列化 wikilinks 失败: {}", e))?;
+            tx.execute(
+                "UPDATE wiki_pages SET wikilinks = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![new_json, page_id],
             )
-            .map_err(|e| format!("读取 wiki_page wikilinks 失败: {}", e))?;
-        let links: Vec<String> = serde_json::from_str(&existing_json).unwrap_or_default();
-        let filtered: Vec<String> = links
-            .into_iter()
-            .filter(|s| s != target_slug)
-            .collect();
-        let new_json = serde_json::to_string(&filtered)
-            .map_err(|e| format!("序列化 wikilinks 失败: {}", e))?;
-        tx.execute(
-            "UPDATE wiki_pages SET wikilinks = ?1, updated_at = datetime('now') WHERE id = ?2",
-            params![new_json, page_id],
-        )
-        .map_err(|e| format!("更新 wikilinks 失败: {}", e))?;
+            .map_err(|e| format!("更新 wikilinks 失败: {}", e))?;
+            Ok(())
+        })();
+        if let Err(e) = body {
+            let _ = tx.rollback();
+            return Err(e);
+        }
         tx.commit()
             .map_err(|e| format!("提交 remove_wikilink 事务失败: {}", e))?;
         self.get_by_id(page_id)

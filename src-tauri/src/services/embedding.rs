@@ -12,7 +12,7 @@ use fastembed::{
 };
 use serde::{Deserialize, Serialize};
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -132,14 +132,13 @@ pub struct RemoteEmbeddingConfig {
     pub model_name: String,
 }
 
-/// HuggingFace mirror list, ordered by likely speed in China.
-/// `hf-hub` (used internally by fastembed) reads the `HF_ENDPOINT` env var
-/// to determine which mirror to download from.
+/// HuggingFace 镜像列表，按国内可达速度粗略排序。
 ///
-/// Note: hf-mirror.com doesn't support HTTP Range/Content-Range headers,
-/// which hf-hub requires for its download logic. Some attempts may fail
-/// with "Header Content-Range is missing". This is normal 鈥?the fallback
-/// mirror will be tried next.
+/// 模型管理器会按顺序尝试每个镜像以决定从哪个下载。
+///
+/// 注意：hf-mirror.com 不支持 HTTP Range/Content-Range 头，
+/// 而 hf-hub 的下载逻辑需要这些头。部分尝试会因
+/// "Header Content-Range is missing" 失败，这是正常现象 —— 镜像降级会自动继续尝试下一个。
 const HF_MIRRORS: &[Option<&str>] = &[
     Some("https://hf-mirror.com"), // Official HF Chinese mirror (fast, no Range)
     None,                          // Default (huggingface.co)
@@ -150,16 +149,12 @@ const HF_MIRRORS: &[Option<&str>] = &[
 const EXPECTED_MODEL_BYTES: u64 = 95_000_000;
 
 const DEFAULT_BGE_DIMENSION: usize = 512;
-/// 预留 MiniLM 维度常量（迁移期间未使用）
-#[allow(dead_code)]
-const DEFAULT_MINILM_DIMENSION: usize = 384;
 const DEFAULT_REMOTE_DIMENSION: usize = 1024;
 
-/// Start a background polling thread that estimates model download progress
-/// by scanning the HuggingFace cache directory.
+/// 启动后台轮询线程，通过扫描 HuggingFace 缓存目录估算模型下载进度。
 ///
-/// Returns a handle to the progress value (0鈥?9 while downloading, 100 = done).
-/// The caller must set `stop` to `true` when the download finishes.
+/// 返回进度值句柄（下载中为 0-99，完成 = 100）。
+/// 调用方在下载结束时必须将 `stop` 置为 `true`。
 pub fn start_download_progress_polling(
     model: &EmbeddingModel,
     progress: Arc<AtomicU32>,
@@ -189,10 +184,10 @@ pub fn start_download_progress_polling(
     });
 }
 
-/// Recursively sum file sizes under a directory tree.
-fn sum_dir_size(dir: &PathBuf) -> u64 {
+/// 递归汇总目录树下所有文件大小。
+fn sum_dir_size(path: &Path) -> u64 {
     let mut total = 0u64;
-    if let Ok(entries) = std::fs::read_dir(dir) {
+    if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -207,14 +202,14 @@ fn sum_dir_size(dir: &PathBuf) -> u64 {
     total
 }
 
-/// Get the HuggingFace cache directory for a given model.
+/// 获取指定模型的 HuggingFace 缓存目录。
 ///
-/// Uses the same logic as `hf-hub` crate:
-///   1. `$HF_HOME/hub` (if `HF_HOME` env var is set)
-///   2. Otherwise `dirs::cache_dir()/huggingface/hub`
+/// 与 `hf-hub` 内部逻辑一致：
+///   1. `$HF_HOME/hub`（若设置了 `HF_HOME` 环境变量）
+///   2. 否则 `dirs::cache_dir()/huggingface/hub`
 ///
-/// On Windows `dirs::cache_dir()` returns `%LOCALAPPDATA%`
-/// (typically `C:\Users\<you>\AppData\Local\huggingface\hub\`).
+/// 在 Windows 上 `dirs::cache_dir()` 返回 `%LOCALAPPDATA%`
+/// （通常为 `C:\Users\<you>\AppData\Local\huggingface\hub\`）。
 pub fn model_hf_cache_dir(model: &EmbeddingModel) -> Option<PathBuf> {
     let cache_root = std::env::var("HF_HOME")
         .map(PathBuf::from)
@@ -239,7 +234,7 @@ pub fn model_hf_cache_dir(model: &EmbeddingModel) -> Option<PathBuf> {
     Some(cache_root.join(cache_key))
 }
 
-/// Managed state for the embedding model lifecycle.
+/// Embedding 模型生命周期管理状态。
 pub struct ModelManager {
     model_dir: PathBuf,
     config_path: PathBuf,
@@ -581,11 +576,10 @@ impl ModelManager {
         ))
     }
 
-    /// Download model files directly from HuggingFace mirror using plain HTTP.
-    /// Bypasses hf-hub's Content-Range validation 鈥?works with mirrors that
-    /// don't support Range headers (like hf-mirror.com).
+    /// 通过原生 HTTP 直接从 HuggingFace 镜像下载模型文件。
+    /// 绕过 hf-hub 的 Content-Range 校验 —— 兼容不支持 Range 头的镜像（如 hf-mirror.com）。
     ///
-    /// Tries multiple possible file paths and saves to all expected locations.
+    /// 尝试多个可能的文件路径并保存到所有预期位置。
     fn download_model_direct(model: &EmbeddingModel) -> bool {
         let Some(cache_dir) = model_hf_cache_dir(model) else {
             return false;

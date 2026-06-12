@@ -80,10 +80,10 @@ export async function startRecording(deviceName?: string): Promise<void> {
 /**
  * 停止录音并转录音频
  *
- * @param provider - 可选 ASR 服务商（如 "tencent"），为空则使用本地 Whisper
+ * @param provider - 可选 ASR 服务商（"tencent"），为空则使用本地 Whisper
  * @returns 转录结果，包含文本、分段、置信度和处理耗时
  */
-export async function stopRecording(provider?: string): Promise<TranscriptionResult> {
+export async function stopRecording(provider?: "tencent"): Promise<TranscriptionResult> {
   return invoke("stop_whisper_recording", { provider: provider ?? null })
 }
 

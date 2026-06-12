@@ -2,7 +2,7 @@
 
 use crate::app_state::{AppState, KbRecompileFailure, KbRecompileStatus};
 use crate::services::image_processor::ImageProcessor;
-use crate::services::ingestion_pipeline::{process_with_kb_compilation, KbCompilationResult};
+use crate::services::ingestion_pipeline::process_with_kb_compilation;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -640,99 +640,4 @@ mod tests {
         // 空字符串会触发 unwrap_or(identity) 兜底
         assert_eq!(source_title(""), "");
     }
-}
-
-/// 强制重编译指定的源（用于"删 wiki 后原地重生成"场景）
-///
-/// 流程：
-/// 1. 按 source_id 查出 raw_source，校验 project_id
-/// 2. 重新读取源文件提取文本
-/// 3. 强制清除该源的 ingest_cache 和 analysis_cache
-/// 4. 调用 process_with_kb_compilation，force_recompile=true 跳过 cache 检查
-#[tauri::command]
-pub async fn force_recompile_kb_source(
-    state: tauri::State<'_, AppState>,
-    project_id: i64,
-    source_id: i64,
-) -> Result<KbCompilationResult, String> {
-    // 1. 读取源记录
-    let source = {
-        let store = state
-            .raw_sources
-            .lock()
-            .map_err(|e| format!("获取 raw_sources 锁失败: {}", e))?;
-        store.get_by_id(source_id)?
-    };
-
-    // 2. 校验 project_id 一致
-    if source.project_id != project_id {
-        return Err(format!(
-            "源项目不匹配: source.project_id={}, 传入 project_id={}",
-            source.project_id, project_id
-        ));
-    }
-
-    let title = source_title(&source.identity);
-
-    // 3. 反查 document_id（确保新建 wiki 页面 sources 含真实 document_id，避免 null）
-    //    关联键：documents.sha256 = source.sha256 AND documents.project_id = source.project_id
-    //    AND documents.raw_source_identity = source.identity
-    let document_id: Option<i64> = lookup_document_id(
-        &state.metadata,
-        project_id,
-        &source.sha256,
-        &source.identity,
-    )?;
-
-    // 4. 重新读取并提取文本
-    let context = RecompileContext::from_state(&state);
-    let text = extract_text_with_docx_preview_fallback(&context, Path::new(&source.storage_path))
-        .await
-        .map_err(|e| format!("读取原始资料失败: {}", e))?;
-
-    // 5. 强制清除 ingest_cache 和 analysis_cache
-    {
-        let ingest = state
-            .ingest_cache_store
-            .lock()
-            .map_err(|e| format!("获取 ingest_cache 锁失败: {}", e))?;
-        if let Ok(Some(cache)) = ingest.get_by_key(project_id, &source.identity, &source.sha256) {
-            let _ = ingest.delete(cache.id);
-            tracing::info!(
-                "force_recompile 已清 ingest_cache: source={}, sha256={}",
-                source.identity,
-                source.sha256
-            );
-        }
-    }
-    {
-        let analysis = state
-            .analysis_cache
-            .lock()
-            .map_err(|e| format!("获取 analysis_cache 锁失败: {}", e))?;
-        if let Ok(Some(cache)) = analysis.get_by_key(project_id, &source.identity, &source.sha256) {
-            let _ = analysis.delete(cache.id);
-            tracing::info!(
-                "force_recompile 已清 analysis_cache: source={}",
-                source.identity
-            );
-        }
-    }
-
-    // 6. 走完整流程（force_recompile=true 跳过 Step 0 的 cache 检查）
-    process_with_kb_compilation(
-        &text,
-        &source.identity,
-        &source.sha256,
-        project_id,
-        &title,
-        true, // enable_kb_compilation
-        state.analysis_cache.clone(),
-        state.llm_providers.clone(),
-        state.wiki_pages.clone(),
-        state.ingest_cache_store.clone(),
-        document_id, // 传入反查到的 document_id（issue 2 修复）
-        true,        // force_recompile：跳过 cache 命中检查
-    )
-    .await
 }

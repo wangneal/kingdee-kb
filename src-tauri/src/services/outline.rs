@@ -64,11 +64,11 @@ impl OutlineStore {
         Ok(store)
     }
 
-    /// 创建内存数据库（降级兜底）
+    /// 创建内存数据库（用于单元测试和降级场景）
     pub fn new_in_memory() -> Result<Self, String> {
         let conn =
             Connection::open_in_memory().map_err(|e| format!("创建内存大纲数据库失败: {}", e))?;
-        // 内存数据库中禁用外键约束（用于降级和单元测试）
+        // 内存数据库中禁用外键约束，避免跨存储引用 research_sessions / session_qa_records 时报错
         conn.execute_batch("PRAGMA foreign_keys = OFF")
             .map_err(|e| format!("禁用外键约束失败: {}", e))?;
         let store = Self {
@@ -107,133 +107,7 @@ impl OutlineStore {
             )
             .map_err(|e| format!("创建 outline_nodes 表失败: {}", e))?;
         }
-        // 迁移历史问答记录到大纲节点（需要独立获取锁）
-        self.migrate_qa_to_outline()?;
         Ok(())
-    }
-
-    /// 将历史问答记录（session_qa_records）迁移到大纲节点（outline_nodes）。
-    ///
-    /// 幂等设计：
-    /// - 跳过已有大纲节点的 session（不创建重复根节点）
-    /// - 跳过已通过 question_id 关联到大纲节点的 QA 记录
-    /// - 若 session_qa_records 表不存在则静默跳过（内存数据库场景）
-    ///
-    /// 返回成功迁移的节点数量。
-    pub fn migrate_qa_to_outline(&self) -> Result<i64, String> {
-        let conn = self.conn.lock().map_err(|e| format!("加锁失败: {}", e))?;
-
-        // 检查 session_qa_records 表是否存在（内存数据库或未初始化时可能不存在）
-        let table_exists: bool = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='session_qa_records'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(|e| format!("检查 session_qa_records 表是否存在失败: {}", e))?
-            > 0;
-
-        if !table_exists {
-            return Ok(0);
-        }
-
-        // 步骤 1：为有问答记录但无大纲节点的 session 创建根节点
-        conn.execute(
-            "INSERT INTO outline_nodes (session_id, parent_id, content, sort_order, notes, tags, collapsed, completed, marker, priority, note)
-             SELECT
-                 r.session_id,
-                 NULL as parent_id,
-                 '调研问答记录' as content,
-                 1.0 as sort_order,
-                 '' as notes,
-                 '[]' as tags,
-                 0 as collapsed,
-                 0 as completed,
-                 '' as marker,
-                 '' as priority,
-                 '共 ' || COUNT(*) || ' 条问答记录' as note
-             FROM session_qa_records r
-             WHERE NOT EXISTS (
-                 SELECT 1 FROM outline_nodes WHERE session_id = r.session_id
-             )
-             GROUP BY r.session_id",
-            [],
-        )
-        .map_err(|e| format!("创建迁移根节点失败: {}", e))?;
-
-        // 步骤 2：将每个尚未关联的 QA 记录转换为根节点下的子节点
-        let qa_rows: Vec<(i64, i64, String, String, i64)> = {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT r.id, r.session_id, r.question_text, r.answer_text,
-                            ROW_NUMBER() OVER (PARTITION BY r.session_id ORDER BY r.sort_order, r.id) as rn
-                     FROM session_qa_records r
-                     WHERE NOT EXISTS (
-                         SELECT 1 FROM outline_nodes
-                         WHERE session_id = r.session_id AND question_id = r.id
-                     )",
-                )
-                .map_err(|e| format!("准备迁移查询失败: {}", e))?;
-
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,    // qa_id
-                        row.get::<_, i64>(1)?,    // session_id
-                        row.get::<_, String>(2)?, // question_text
-                        row.get::<_, String>(3)?, // answer_text
-                        row.get::<_, i64>(4)?,    // rn
-                    ))
-                })
-                .map_err(|e| format!("执行迁移查询失败: {}", e))?;
-
-            let mut results = Vec::new();
-            for row in rows {
-                results.push(row.map_err(|e| format!("读取迁移行失败: {}", e))?);
-            }
-            results
-        };
-
-        let mut count: i64 = 0;
-        for (qa_id, session_id, question, answer, rn) in qa_rows {
-            // 查找该 session 的根节点（迁移刚创建的 "调研问答记录" 节点）
-            let root_id: i64 = match conn.query_row(
-                "SELECT id FROM outline_nodes
-                 WHERE session_id = ?1 AND parent_id IS NULL
-                 ORDER BY sort_order LIMIT 1",
-                params![session_id],
-                |row| row.get(0),
-            ) {
-                Ok(id) => id,
-                Err(e) => {
-                    tracing::warn!(
-                        "迁移问答到大纲时未找到会话根节点，已跳过记录: session_id={}, qa_id={}, error={}",
-                        session_id,
-                        qa_id,
-                        e
-                    );
-                    continue;
-                }
-            };
-
-            let content = if answer.is_empty() {
-                question
-            } else {
-                format!("{}\n\n{}", question, answer)
-            };
-
-            conn.execute(
-                "INSERT INTO outline_nodes
-                     (session_id, parent_id, content, sort_order, question_id, notes, tags, collapsed, completed, marker, priority, note)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, '', '', '')",
-                params![session_id, root_id, content, rn as f64, qa_id, "", "[]"],
-            )
-            .map_err(|e| format!("插入迁移子节点失败: {}", e))?;
-
-            count += 1;
-        }
-
-        Ok(count)
     }
 
     // ─── CRUD 操作 ───
@@ -394,9 +268,10 @@ impl OutlineStore {
                         .map_err(|e| format!("查询引用计数失败: {}", e))?;
                     if ref_count == 0 {
                         // 仅删除自动生成且未收藏的记录
+                        // source 列在当前 schema 下 NOT NULL，不再需要 IS NULL 兜底
                         conn.execute(
                             "DELETE FROM session_qa_records WHERE id = ?1
-                             AND (source != 'manual' OR source IS NULL) AND (is_bookmarked = 0 OR is_bookmarked IS NULL)",
+                             AND source != 'manual' AND is_bookmarked = 0",
                             params![qid],
                         )
                         .map_err(|e| format!("清理孤立问答记录失败: {}", e))?;

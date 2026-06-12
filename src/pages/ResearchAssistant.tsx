@@ -506,9 +506,8 @@ function SessionDetailView({
       })
     listAsrProviders()
       .then((providers) => {
-        // 过滤掉不支持文件识别的 provider（如讯飞 WebSocket 模式）
-        const available = (providers || []).filter((p) => p.type !== "xfyun")
-        setAsrProviders(available)
+        // 单一明确语义：后端只返回腾讯云这一种在线 ASR，前端无需再过滤
+        setAsrProviders(providers || [])
       })
       .catch(console.error)
     listAudioInputDevices()
@@ -740,8 +739,8 @@ function SessionDetailView({
   const handleStopRecording = async () => {
     try {
       const result =
-        selectedAsrProvider && selectedAsrProvider !== "whisper"
-          ? await stopWhisperRecording(selectedAsrProvider)
+        selectedAsrProvider === "tencent"
+          ? await stopWhisperRecording("tencent")
           : await stopWhisperRecording()
       setRecording(false)
       const draftText = liveTranscript.trim()
@@ -872,17 +871,27 @@ function SessionDetailView({
                 onChange={(e) => setSelectedAsrProvider(e.target.value)}
                 className="w-full rounded border border-neutral-200 px-2 py-1 text-[10px] text-neutral-600 outline-none focus:border-[#1A6BD8]"
               >
+                {/* Whisper 是内置默认项，list_asr_providers 不再包含它 */}
+                <option value="whisper">
+                  本地 Whisper {whisperStatus?.model_loaded ? "✓" : "⚠"}
+                </option>
                 {asrProviders.map((p) => (
-                  <option key={p.type} value={p.type}>
-                    {p.name} {p.type === "whisper" ? (whisperStatus?.model_loaded ? "✓" : "⚠") : ""}
+                  <option key={p.kind} value={p.kind}>
+                    {p.name}
                   </option>
                 ))}
               </select>
               {/* 供应商描述说明 */}
-              {asrProviders.find((p) => p.type === selectedAsrProvider) && (
+              {selectedAsrProvider === "whisper" ? (
                 <p className="text-[10px] text-neutral-400 mt-0.5">
-                  {asrProviders.find((p) => p.type === selectedAsrProvider)?.description}
+                  本地离线语音识别，无需网络，支持中文/英文。需要先下载模型（约 80MB）。首次使用时自动下载。
                 </p>
+              ) : (
+                asrProviders.find((p) => p.kind === selectedAsrProvider) && (
+                  <p className="text-[10px] text-neutral-400 mt-0.5">
+                    {asrProviders.find((p) => p.kind === selectedAsrProvider)?.description}
+                  </p>
+                )
               )}
             </div>
             {whisperStatus && !whisperStatus.model_loaded && selectedAsrProvider === "whisper" && (

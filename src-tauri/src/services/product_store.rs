@@ -35,9 +35,6 @@ pub struct ProductVersion {
 /// SQLite-based product store
 pub struct ProductStore {
     db: Connection,
-    /// 迁移期间预留
-    #[allow(dead_code)]
-    db_path: PathBuf,
 }
 
 impl ProductStore {
@@ -63,7 +60,7 @@ impl ProductStore {
         db.execute_batch("PRAGMA foreign_keys=ON;")
             .map_err(|e| format!("Failed to enable foreign keys: {}", e))?;
 
-        let store = Self { db, db_path };
+        let store = Self { db };
         store.init_schema()?;
         Ok(store)
     }

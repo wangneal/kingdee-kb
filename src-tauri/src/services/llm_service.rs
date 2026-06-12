@@ -9,12 +9,10 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::services::token;
-// Re-export for backward compatibility with external callers
 use crate::services::agent_timeout::{
     LLM_CALL_TIMEOUT_SECS, LLM_STREAM_FIRST_CHUNK_TIMEOUT_SECS, MAX_RETRIES, RETRY_BASE_DELAY_MS,
 };
-pub use crate::services::token::truncate_to_tokens;
+use crate::services::token;
 
 use crate::services::bm25_service::BM25Service;
 use crate::services::embedding::EmbeddingService;
@@ -40,15 +38,6 @@ use crate::services::verification::types::{ScenarioType, VerificationInput, Veri
 /// 系统提示词 - ERP 顾问知识助手，带有反幻觉防护。
 static SYSTEM_PROMPT: &str = include_str!("../../resources/prompts/system_prompt.md");
 
-/// 文档生成的系统提示词（迁移期间预留）
-#[allow(dead_code)]
-static DOC_GEN_SYSTEM_PROMPT: &str =
-    include_str!("../../resources/prompts/doc_gen_system_prompt.md");
-
-/// 默认上下文窗口大小（迁移期间预留）
-#[allow(dead_code)]
-const DEFAULT_MAX_CONTEXT_TOKENS: u32 = 4096;
-
 /// 为助手响应保留的 token 数
 const RESPONSE_TOKENS: u32 = 1024;
 
@@ -66,22 +55,6 @@ const KEEP_LAST_PAIRS: usize = 2;
 
 /// 记忆分数时间衰减的半衰期（天）
 const MEMORY_HALF_LIFE_DAYS: f64 = 30.0;
-
-/// 默认 OpenAI 基础 URL（迁移期间预留）
-#[allow(dead_code)]
-const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
-
-/// 默认 OpenAI 模型（迁移期间预留）
-#[allow(dead_code)]
-const DEFAULT_OPENAI_MODEL: &str = "gpt-4o";
-
-/// 默认 Anthropic 基础 URL（迁移期间预留）
-#[allow(dead_code)]
-const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
-
-/// 默认 Anthropic 模型（迁移期间预留）
-#[allow(dead_code)]
-const DEFAULT_ANTHROPIC_MODEL: &str = "claude-3-5-sonnet-20241022";
 
 /// Anthropic API 版本头
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -244,59 +217,7 @@ impl StreamingRestorer {
     }
 }
 
-// 鈹€鈹€鈹€ 閲嶈瘯宸ュ叿鍑芥暟 鈹€鈹€鈹€
-
-/// 带指数退避的异步重试包装器（迁移期间预留）。
-#[allow(dead_code)]
-async fn with_retry<F, Fut, T, E>(operation_name: &str, mut f: F) -> Result<T, E>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, E>>,
-    E: std::fmt::Display,
-{
-    let mut last_error = None;
-
-    for attempt in 0..=MAX_RETRIES {
-        match f().await {
-            Ok(result) => {
-                if attempt > 0 {
-                    info!("{}: 鎴愬姛锛堢{}娆￠噸璇曪級", operation_name, attempt);
-                }
-                return Ok(result);
-            }
-            Err(e) => {
-                let error_msg = e.to_string();
-
-                // 永久错误不重试。
-                if is_permanent_error(&error_msg) {
-                    warn!(
-                        "{}: 姘镐箙鎬ч敊璇紝涓嶉噸璇? {}",
-                        operation_name, error_msg
-                    );
-                    return Err(e);
-                }
-
-                last_error = Some(e);
-
-                if attempt < MAX_RETRIES {
-                    let delay = Duration::from_millis(RETRY_BASE_DELAY_MS * 2u64.pow(attempt));
-                    warn!(
-                        "{}: 第{}次尝试失败，{}ms 后重试: {}",
-                        operation_name,
-                        attempt + 1,
-                        delay.as_millis(),
-                        error_msg
-                    );
-                    tokio::time::sleep(delay).await;
-                } else {
-                    warn!("{}: 所有{}次重试均失败", operation_name, MAX_RETRIES + 1);
-                }
-            }
-        }
-    }
-
-    Err(last_error.unwrap())
-}
+// ─── 重试工具函数 ───
 
 /// 带指数退避的同步重试包装器。
 fn with_retry_sync<F, T, E>(operation_name: &str, mut f: F) -> Result<T, E>
@@ -533,14 +454,13 @@ pub fn assemble_context(results: &[HybridSearchResult], max_tokens: u32) -> Stri
     token::truncate_to_tokens(&context, max_tokens)
 }
 
-/// Build the user prompt with context and query.
+/// 构造带上下文与问题的用户 prompt。
 ///
-/// When context is empty (no search results / embedding unavailable),
-/// falls back to pure conversational mode without referencing the knowledge base.
+/// 当 context 为空（无检索结果 / embedding 不可用）时，回退到纯对话模式，
+/// 不引用知识库内容。
 ///
-/// Uses Hermes-inspired context fencing: injected knowledge and memory are wrapped
-/// in a `<context>` block with a system note, clearly separating reference material
-/// from the user's actual question.
+/// 采用 Hermes 风格的 context fencing：注入的知识与记忆被包裹在 `<context>` 块中，
+/// 并附系统说明，明确区分参考资料与用户真实问题。
 fn build_user_prompt(context: &str, query: &str) -> String {
     if context.trim().is_empty() {
         format!("用户问题：{query}\n\n请直接回答用户的问题。")
@@ -583,12 +503,12 @@ fn estimate_tokens(messages: &[ChatMessage]) -> u32 {
 
 // 鈹€鈹€鈹€ LLM Service 鈹€鈹€鈹€
 
-/// LLM Service manages API config and provides RAG query capabilities.
+/// LLM Service 管理 API 配置并提供 RAG 查询能力。
 #[derive(Clone)]
 pub struct LLMService {
     /// 供应商管理器。
     providers: Arc<RwLock<LLMProviderManager>>,
-    /// HTTP client (reusable for connection pooling)
+    /// HTTP 客户端（可复用，连接池化）
     client: reqwest::Client,
     /// 本地数据脱敏器。
     desensitizer: Option<Arc<crate::services::desensitize::Desensitizer>>,
@@ -607,7 +527,7 @@ impl LLMService {
         }
     }
 
-    /// Create a new LLM service with desensitizer integration.
+    /// 创建一个带脱敏器集成的 LLM 服务。
     pub fn with_desensitizer(
         providers: Arc<RwLock<LLMProviderManager>>,
         desensitizer: Arc<crate::services::desensitize::Desensitizer>,
@@ -1271,19 +1191,18 @@ impl LLMService {
         Ok(self.client.clone())
     }
 
-    /// Check if the LLM is configured (has API key, or is a local model).
+    /// 检查 LLM 是否已配置（已设 API key，或使用本地模型）。
     pub fn is_configured(&self) -> bool {
         self.get_active_config()
             .map(|cfg| cfg.is_configured())
             .unwrap_or(false)
     }
 
-    /// Perform a RAG query: hybrid search 鈫?context assembly 鈫?LLM streaming.
+    /// 执行 RAG 查询：混合检索 → 上下文组装 → LLM 流式输出。
     ///
-    /// Returns an async stream of `StreamChunk`s. If LLM is unavailable,
-    /// falls back to returning search results as a single chunk.
+    /// 返回 `StreamChunk` 的异步流。若 LLM 不可用，回退到单 chunk 的纯检索结果。
     ///
-    /// Branches by provider: OpenAI uses /chat/completions, Anthropic uses /messages.
+    /// 按供应商分支：OpenAI 使用 /chat/completions，Anthropic 使用 /messages。
     pub async fn rag_query(
         &self,
         query: &str,
@@ -1416,7 +1335,7 @@ impl LLMService {
         }
     }
 
-    /// Non-streaming RAG query 鈥?collects all chunks into a single response.
+    /// 非流式 RAG 查询 —— 收集所有 chunk 为单条响应。
     pub async fn rag_query_sync(
         &self,
         query: &str,
@@ -1493,12 +1412,12 @@ impl LLMService {
         })
     }
 
-    /// Simple chat completion (non-streaming, no RAG context).
+    /// 简单聊天补全（非流式，不走 RAG 上下文）。
     ///
-    /// Sends messages directly to the LLM API and returns the response text.
-    /// Used for field generation and other non-RAG tasks.
+    /// 直接将消息发送至 LLM API 并返回响应文本。
+    /// 用于字段生成等非 RAG 任务。
     ///
-    /// Branches by provider: OpenAI uses /chat/completions, Anthropic uses /messages.
+    /// 按供应商分支：OpenAI 使用 /chat/completions，Anthropic 使用 /messages。
     pub async fn chat_completion(
         &self,
         messages: &[ChatMessage],
@@ -1917,14 +1836,13 @@ impl LLMService {
             .map_err(|_| "本地模型调用超时，请检查模型服务是否正常".to_string())?
     }
 
-    /// RAG query with channel-based streaming.
+    /// 基于 channel 的 RAG 流式查询。
     ///
-    /// Same as `rag_query()` but sends each `StreamChunk` through the channel
-    /// as it arrives from the LLM, enabling real-time frontend streaming.
-    /// The caller is responsible for reading all chunks from the receiver.
+    /// 与 `rag_query()` 行为一致，但每收到一个 `StreamChunk` 即通过 channel 推送，
+    /// 实现前端实时流式渲染。调用方负责消费完所有 chunk。
     ///
-    /// If `precomputed_results` is provided, skips the hybrid search step
-    /// (useful when the caller already ran search for source extraction).
+    /// 若提供 `precomputed_results`，跳过混合检索步骤
+    /// （适用于调用方已先做过检索以提取来源信息的场景）。
     pub async fn rag_query_to_sender(
         &self,
         query: &str,
@@ -2052,7 +1970,7 @@ impl LLMService {
         }
     }
 
-    /// Compress conversation history when it exceeds token threshold.
+    /// 当对话历史超过 token 阈值时压缩。
     async fn compress_conversation(
         &self,
         conversation: &[ChatMessage],
@@ -2142,7 +2060,7 @@ impl LLMService {
         }
     }
 
-    /// Test LLM API connectivity without requiring embedding or RAG pipeline.
+    /// 测试 LLM API 连通性，无需 embedding 或 RAG 管线。
     pub async fn test_connection(&self) -> Result<String, String> {
         let config = self.get_active_config()?;
         let is_local = config.protocol == LLMProtocol::Local;
@@ -2263,7 +2181,7 @@ impl LLMService {
         }
     }
 
-    /// Generate a fallback response when LLM is unavailable.
+    /// 在 LLM 不可用时生成兜底响应。
     pub(crate) fn fallback_response(&self, results: &[HybridSearchResult]) -> Vec<StreamChunk> {
         let answer = format!(
             "LLM 未配置（请在设置中填写 API Key），以下为知识库检索结果：\n\n{}",
@@ -2277,7 +2195,7 @@ impl LLMService {
         }]
     }
 
-    /// Format search results as a readable text-only answer.
+    /// 将检索结果格式化为可读的纯文本答案。
     fn format_search_only_answer(&self, results: &[HybridSearchResult]) -> String {
         if results.is_empty() {
             return "知识库中暂无相关内容。".to_string();

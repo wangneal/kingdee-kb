@@ -287,19 +287,6 @@ pub async fn reject_wiki_page(state: State<'_, AppState>, id: i64) -> Result<Wik
     store.reject_candidate(id)
 }
 
-/// 插入 50 条种子演示数据到指定项目（用于阶段五知识图谱开发测试）。
-#[tauri::command]
-pub async fn seed_demo_wiki_pages(
-    state: State<'_, AppState>,
-    project_id: i64,
-) -> Result<usize, String> {
-    let store = state
-        .wiki_pages
-        .lock()
-        .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store.seed_demo_pages(project_id)
-}
-
 /// 搜索 wikilink 候选页面（按标题模糊搜索，排除自身）。
 #[tauri::command]
 pub async fn search_wikilink_candidates(

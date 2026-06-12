@@ -16,18 +16,6 @@ pub async fn list_products(
     store.list(project_id, None, None)
 }
 
-/// 根据 ID 获取单个产品。
-#[tauri::command]
-pub async fn get_product(state: State<'_, AppState>, id: i64) -> Result<ProductMeta, String> {
-    let store = state
-        .products
-        .lock()
-        .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
-    store
-        .get(id)?
-        .ok_or_else(|| format!("Product not found: {}", id))
-}
-
 /// 删除产品及其所有版本。
 #[tauri::command]
 pub async fn delete_product(

@@ -279,16 +279,15 @@ struct RemoteModelCacheEntry {
 
 // ─── 实现 ───
 
-/// 首次启动时拉取失败时的兜底模型
-const FALLBACK_FREE_MODEL: &str = "minimax-m2.5-free";
-/// OpenCode Zen base URL
+/// OpenCode Zen 接口基础地址
 const OPENCODE_ZEN_BASE_URL: &str = "https://opencode.ai/zen/v1";
 
 /// 异步从 OpenCode Zen `/v1/models` 拉取所有带 `-free` 后缀的模型名
 /// 使用 "public" key（OpenCode Zen 免费模型约定的公共 key）
 ///
-/// 错误处理策略：网络/解析失败时返回空 Vec，调用方会自动 fallback 到 `FALLBACK_FREE_MODEL`。
-/// 同时记录 debug 日志便于排查"为什么没拉到模型"——网络失败、防火墙拦截、API 变更等都能区分。
+/// 错误处理：网络/解析失败时返回空 Vec，由 `seed_default_async` 决定是否继续。
+/// 失败会记 debug 日志便于排查"为什么没拉到模型"——网络失败、防火墙拦截、API 变更等都能区分。
+/// 不会"猜测"兜底模型：拉不到就**不**写默认配置，让用户在 Settings 页面手动添加供应商
 async fn fetch_opencode_zen_free_models() -> Vec<String> {
     let url = format!("{}/models", OPENCODE_ZEN_BASE_URL);
     let client = match reqwest::Client::builder()
@@ -340,35 +339,26 @@ async fn fetch_opencode_zen_free_models() -> Vec<String> {
 }
 
 /// 构造默认 OpenCode Zen 供应商配置
-/// - `free_models`: 从 OpenCode Zen 拉到的 -free 模型列表；空时使用兜底模型
+/// - `free_models`: 从 OpenCode Zen 拉到的 -free 模型列表；空时返回空供应商列表
+///   （网络失败时不强行塞兜底模型，让用户在 Settings 页面手动添加）
 fn seed_default_opencode_zen(free_models: Vec<String>) -> Vec<LLMProviderConfig> {
-    let models: Vec<ModelConfig> = if free_models.is_empty() {
-        vec![ModelConfig {
-            id: FALLBACK_FREE_MODEL.to_string(),
-            name: FALLBACK_FREE_MODEL.to_string(),
-            is_default: true,
+    if free_models.is_empty() {
+        return Vec::new();
+    }
+    let models: Vec<ModelConfig> = free_models
+        .into_iter()
+        .enumerate()
+        .map(|(idx, name)| ModelConfig {
+            id: name.clone(),
+            name,
+            is_default: idx == 0,
             is_multimodal: Some(false),
             last_probe_at: None,
-            context_window: Some(200_000),
-            max_output_tokens: Some(8192),
-            supports_thinking: Some(false),
-        }]
-    } else {
-        free_models
-            .into_iter()
-            .enumerate()
-            .map(|(idx, name)| ModelConfig {
-                id: name.clone(),
-                name,
-                is_default: idx == 0,
-                is_multimodal: Some(false),
-                last_probe_at: None,
-                context_window: None,
-                max_output_tokens: None,
-                supports_thinking: None,
-            })
-            .collect()
-    };
+            context_window: None,
+            max_output_tokens: None,
+            supports_thinking: None,
+        })
+        .collect();
 
     vec![LLMProviderConfig {
         id: "opencode-zen".to_string(),
@@ -418,7 +408,7 @@ impl LLMProviderManager {
     /// 行为：
     /// - 仅在 `config_path` 不存在时执行（用户删过默认后不会自动恢复）
     /// - 写完文件后**同时更新内存状态** —— 修复前只写文件、不更新内存，导致 Settings 页看不到默认供应商
-    /// - 网络拉取失败时使用 `FALLBACK_FREE_MODEL` 兜底
+    /// - 网络拉取失败时**不**写文件、不更新内存，并 `tracing::warn!` 提示用户在 Settings 手动添加
     /// - 期间 `seeding_in_progress = true`，`save()` 会拒绝写文件，避免与 seed 互相覆盖
     ///
     /// 调用方负责 spawn 到 tokio runtime 中。失败仅 `tracing::warn!`，不阻塞启动
@@ -442,6 +432,17 @@ impl LLMProviderManager {
         let free_models = fetch_opencode_zen_free_models().await;
         let default = seed_default_opencode_zen(free_models);
 
+        // 网络失败时 default 为空 — 不写文件、不更新内存，让用户在 Settings 手动添加
+        if default.is_empty() {
+            tracing::warn!(
+                "OpenCode Zen /models 拉取失败（离线或 API 变更），跳过默认供应商 seed。请在设置中手动添加供应商。"
+            );
+            let _ = arc_self
+                .read()
+                .map(|m| m.seeding_in_progress.store(false, Ordering::SeqCst));
+            return;
+        }
+
         // 写文件
         if let Some(parent) = config_path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -454,7 +455,7 @@ impl LLMProviderManager {
         match serde_json::to_string_pretty(&payload) {
             Ok(content) => {
                 if let Err(e) = std::fs::write(&config_path, content) {
-                    tracing::warn!("写入默认 OpenCode Zen 配置失败: {}", e);
+                    tracing::warn!("写入默认 OpenCode Zen 配置失败（保留 flag 阻止 save）: {}", e);
                     let _ = arc_self
                         .read()
                         .map(|m| m.seeding_in_progress.store(false, Ordering::SeqCst));
@@ -462,7 +463,7 @@ impl LLMProviderManager {
                 }
             }
             Err(e) => {
-                tracing::warn!("序列化默认配置失败: {}", e);
+                tracing::warn!("序列化默认配置失败（保留 flag 阻止 save）: {}", e);
                 let _ = arc_self
                     .read()
                     .map(|m| m.seeding_in_progress.store(false, Ordering::SeqCst));
@@ -475,10 +476,13 @@ impl LLMProviderManager {
         //         Settings 页调用 list_providers() 看到空 Vec。
         //         用户必须关 app 重启才能看到默认供应商。
         // 修复后：写文件 + 更新内存同时进行，Settings 立刻能读到。
+        // tokio RwLock.write() 不会因 panic 毒化，Err 分支实际不可达；
+        // 仍保留 match 以应对未来 runtime 变更，失败时保留 flag 阻止 save 覆盖文件
         if let Ok(mut mgr) = arc_self.write() {
             mgr.providers = default;
         } else {
-            tracing::warn!("seed 写内存状态时获取写锁失败");
+            tracing::error!("seed 写内存状态时获取写锁失败（理论不可达，已保留 flag 阻止 save）");
+            return;
         }
 
         // 释放 flag：允许用户后续 save()
@@ -1825,13 +1829,14 @@ mod tests {
     /// 修复前：seed 任务只写文件，`manager.providers` 永远是空，
     ///        Settings 页调用 list_providers() 看到空 Vec，
     ///        用户必须关 app 重启才能看到默认供应商
-    /// 修复后：写完文件后同步到内存，Settings 立刻能读到
+    /// 修复后：写文件 + 更新内存必须**同步**：要么都成功，要么都不动
     ///
-    /// 网络可达：fetch 成功 → seed 真实模型
-    /// 网络不可达：fetch 失败 → seed fallback `minimax-m2.5-free`
-    /// 两种情况都应满足：写文件成功 + 内存状态被更新
+    /// 端到端测试接受网络可达/不可达两种情况：
+    /// - 网络可达：内存+文件都包含 opencode-zen
+    /// - 网络不可达：内存+文件**都为空**（不再塞兜底模型，提示用户手动添加）
+    /// 关键断言：内存状态与文件状态**完全一致**（不会被半更新撕裂）
     #[tokio::test]
-    async fn seed_default_async_updates_in_memory_providers() {
+    async fn seed_default_async_keeps_memory_and_file_in_sync() {
         let temp_dir = tempfile::tempdir().expect("创建临时目录失败");
         let data_dir = temp_dir.path().to_path_buf();
         // 关键：数据目录里没有 llm_providers.json → 触发 seed
@@ -1840,34 +1845,67 @@ mod tests {
         let manager = LLMProviderManager::new(&data_dir);
         let arc_self = Arc::new(RwLock::new(manager));
 
-        // seed 前：内存为空
+        // seed 前：内存为空、文件不存在
         assert_eq!(
             arc_self.read().unwrap().list_providers().len(),
             0,
             "seed 前内存状态应为空"
         );
+        assert!(
+            !data_dir.join("llm_providers.json").exists(),
+            "seed 前配置文件应不存在"
+        );
 
         // 触发 seed
         LLMProviderManager::seed_default_async(&arc_self).await;
 
-        // 验证：内存状态被更新
-        let mgr = arc_self.read().unwrap();
-        let providers = mgr.list_providers();
-        assert!(
-            !providers.is_empty(),
-            "修复 BUG：seed 后内存状态必须包含默认供应商"
-        );
-        assert_eq!(providers[0].id, "opencode-zen", "默认供应商 id 应为 opencode-zen");
-        assert!(
-            !providers[0].models.is_empty(),
-            "默认供应商应至少包含一个模型（fallback 或网络拉取）"
-        );
-        drop(mgr);
+        // 关键不变量：内存与文件状态必须一致
+        let memory_providers = arc_self.read().unwrap().list_providers().to_vec();
+        let file_exists = data_dir.join("llm_providers.json").exists();
 
-        // 验证：文件也被写入了
-        assert!(
-            data_dir.join("llm_providers.json").exists(),
-            "seed 应同时写入配置文件"
+        assert_eq!(
+            memory_providers.is_empty(),
+            !file_exists,
+            "内存与文件状态撕裂：内存 has {} 个供应商，文件存在 = {}。修复前只写文件、不更新内存。",
+            memory_providers.len(),
+            file_exists
         );
+
+        if !memory_providers.is_empty() {
+            // 网络可达分支：opencode-zen 必须存在且至少有一个模型
+            assert_eq!(memory_providers[0].id, "opencode-zen", "默认供应商 id 应为 opencode-zen");
+            assert!(
+                !memory_providers[0].models.is_empty(),
+                "默认供应商应至少包含一个模型"
+            );
+        }
+        // 网络不可达分支：内存为空、文件未写入 — 这是允许的正确行为
+        // （用户需要到 Settings 手动添加供应商）
+    }
+
+    /// 单元测试：seed_default_opencode_zen 是纯函数
+    ///
+    /// 验证：空模型列表 → 空供应商列表（不再"猜测"兜底模型）
+    /// 验证：非空模型列表 → 单个 opencode-zen 供应商，第一个模型为默认
+    #[test]
+    fn seed_default_opencode_zen_returns_empty_when_no_models() {
+        let result = seed_default_opencode_zen(Vec::new());
+        assert!(
+            result.is_empty(),
+            "空模型列表必须返回空供应商列表，禁止硬塞兜底模型"
+        );
+    }
+
+    #[test]
+    fn seed_default_opencode_zen_wraps_models_in_opencode_zen_provider() {
+        let result = seed_default_opencode_zen(vec!["gpt-free".to_string(), "claude-free".to_string()]);
+        assert_eq!(result.len(), 1, "应只生成一个 opencode-zen 供应商");
+        let provider = &result[0];
+        assert_eq!(provider.id, "opencode-zen");
+        assert!(provider.is_default);
+        assert_eq!(provider.models.len(), 2);
+        assert_eq!(provider.models[0].id, "gpt-free");
+        assert!(provider.models[0].is_default, "第一个模型应为默认");
+        assert!(!provider.models[1].is_default);
     }
 }
