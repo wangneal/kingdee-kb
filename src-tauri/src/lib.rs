@@ -163,7 +163,7 @@ pub fn run() {
                     app.manage(app_state);
                 }
                 Err(e) => {
-                    eprintln!("Fatal error during app state initialization: {}", e);
+                    tracing::error!("AppState 初始化致命错误，降级到 minimal 模式: {}", e);
                     // 降级到 minimal AppState：磁盘初始化失败时仍能启动应用，
                     // 后续功能（whisper、LLM 等）由调用方按需提示用户重试
                     let fallback_dir = std::env::temp_dir().join("kingdee-kb-fallback");
@@ -175,7 +175,7 @@ pub fn run() {
 
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = setup_backend_async(app_handle).await {
-                    eprintln!("Backend setup error: {}", e);
+                    tracing::error!("后端异步初始化失败: {}", e);
                 }
             });
 

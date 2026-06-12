@@ -132,8 +132,8 @@ pub fn ingest_text(
             if existing_chunks == 0 {
                 // 孤儿文档：没有任何分块被写入，通常是首次导入时嵌入模型未就绪。
                 // 清理后允许重新导入。
-                eprintln!(
-                    "[Ingestion] Orphan document '{}' (id={}) — has SHA256 but 0 chunks, re-importing",
+                tracing::warn!(
+                    "[Ingestion] 孤儿文档 '{}'（id={}）— 仅有 SHA256 但 0 个分块，重新导入",
                     existing.title, existing.id
                 );
                 drop(meta); // 释放锁，避免 delete_document 重新加锁时阻塞
@@ -521,7 +521,7 @@ pub fn ingest_directory(
     )?;
 
     if imported.is_empty() && errors.is_empty() {
-        eprintln!("[Ingestion] No supported files found in {:?}", dir_path);
+        tracing::warn!("[Ingestion] 在 {:?} 中未找到支持的文件", dir_path);
     }
 
     Ok(DirectoryIngestionResult { imported, errors })
@@ -583,7 +583,7 @@ fn ingest_dir_recursive(
             ) {
                 Ok(result) => imported.push(result),
                 Err(e) => {
-                    eprintln!("[Ingestion] Failed to ingest {:?}: {}", path, e);
+                    tracing::error!("[Ingestion] 摄取 {:?} 失败: {}", path, e);
                     errors.push(FileError {
                         path: path.to_string_lossy().to_string(),
                         error: e,

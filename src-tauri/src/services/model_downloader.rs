@@ -94,8 +94,8 @@ pub fn ensure_model(model_dir: &Path, model_size: &str) -> Result<PathBuf, Strin
         // Validate file size is reasonable (at least 50% of expected)
         let min_size = size.expected_size() / 2;
         if file_size >= min_size {
-            eprintln!(
-                "[ModelDownloader] Model '{}' already exists at {} ({} bytes)",
+            tracing::info!(
+                "[ModelDownloader] 模型 '{}' 已存在：{}（{} 字节）",
                 model_size,
                 model_path.display(),
                 file_size
@@ -104,8 +104,8 @@ pub fn ensure_model(model_dir: &Path, model_size: &str) -> Result<PathBuf, Strin
         }
 
         // File too small — likely corrupted download
-        eprintln!(
-            "[ModelDownloader] Model file too small ({} bytes, expected ~{}), re-downloading",
+        tracing::warn!(
+            "[ModelDownloader] 模型文件过小（{} 字节，预期 ~{}），重新下载",
             file_size,
             size.expected_size()
         );
@@ -142,15 +142,15 @@ pub fn ensure_model(model_dir: &Path, model_size: &str) -> Result<PathBuf, Strin
                 let file_size = std::fs::metadata(&canonical).map(|m| m.len()).unwrap_or(0);
 
                 if file_size >= size.expected_size() / 2 {
-                    eprintln!(
-                        "[ModelDownloader] Copying bundled model from {} ({} bytes)",
+                    tracing::info!(
+                        "[ModelDownloader] 正在从打包资源复制模型：{}（{} 字节）",
                         canonical.display(),
                         file_size
                     );
                     std::fs::copy(&canonical, &model_path)
                         .map_err(|e| format!("Failed to copy bundled model: {}", e))?;
-                    eprintln!(
-                        "[ModelDownloader] Model '{}' copied from bundled resource",
+                    tracing::info!(
+                        "[ModelDownloader] 模型 '{}' 已从打包资源复制",
                         model_size
                     );
                     return Ok(model_path);
@@ -160,7 +160,7 @@ pub fn ensure_model(model_dir: &Path, model_size: &str) -> Result<PathBuf, Strin
     }
 
     // Fallback: download model from mirror
-    eprintln!("[ModelDownloader] No bundled model found, downloading from mirror...");
+    tracing::info!("[ModelDownloader] 未找到打包模型，开始从镜像下载");
     download_model(&size, &model_path)?;
 
     Ok(model_path)
@@ -171,7 +171,7 @@ pub fn ensure_model(model_dir: &Path, model_size: &str) -> Result<PathBuf, Strin
 /// Uses ureq (already in Cargo.toml) for HTTP download with progress tracking.
 fn download_model(size: &WhisperModelSize, target_path: &Path) -> Result<(), String> {
     let url = size.download_url();
-    eprintln!("[ModelDownloader] Starting download from {}", url);
+    tracing::info!("[ModelDownloader] 开始下载: {}", url);
 
     let expected_size = size.expected_size();
     let tmp_path = target_path.with_extension("bin.tmp");
@@ -193,8 +193,8 @@ fn download_model(size: &WhisperModelSize, target_path: &Path) -> Result<(), Str
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(expected_size);
 
-    eprintln!(
-        "[ModelDownloader] Downloading {} bytes (~{} MB)",
+    tracing::info!(
+        "[ModelDownloader] 准备下载 {} 字节（约 {} MB）",
         content_length,
         content_length / 1_000_000
     );
@@ -233,8 +233,8 @@ fn download_model(size: &WhisperModelSize, target_path: &Path) -> Result<(), Str
         let speed_bps = if elapsed > 0 { downloaded / elapsed } else { 0 };
 
         if downloaded % (content_length / 10 + 1) < 8192 {
-            eprintln!(
-                "[ModelDownloader] Progress: {}% ({}/{} bytes, {} KB/s)",
+            tracing::info!(
+                "[ModelDownloader] 进度: {}% ({}/{} 字节, {} KB/s)",
                 percent,
                 downloaded / 1_000_000,
                 content_length / 1_000_000,
@@ -262,8 +262,8 @@ fn download_model(size: &WhisperModelSize, target_path: &Path) -> Result<(), Str
     std::fs::rename(&tmp_path, target_path)
         .map_err(|e| format!("Failed to rename temporary model file: {}", e))?;
 
-    eprintln!(
-        "[ModelDownloader] Download complete: {} ({} bytes)",
+    tracing::info!(
+        "[ModelDownloader] 下载完成: {}（{} 字节）",
         target_path.display(),
         file_size
     );

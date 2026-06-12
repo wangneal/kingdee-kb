@@ -202,8 +202,8 @@ impl VectorIndex {
                 std::cmp::max(current_cap * 2, current_size + MIN_RESERVE_CAPACITY)
             };
 
-            eprintln!(
-                "[VectorIndex] Reserving capacity: {} (current size: {}, current cap: {})",
+            tracing::info!(
+                "[VectorIndex] 预分配容量: {}（当前 size: {}，当前 cap: {}）",
                 new_cap, current_size, current_cap
             );
 

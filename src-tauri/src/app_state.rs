@@ -382,10 +382,7 @@ impl AppState {
         let research_session_store = match ResearchSessionStore::new(&db_path) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!(
-                    "WARNING: ResearchSessionStore init failed (non-fatal): {}",
-                    e
-                );
+                tracing::error!("ResearchSessionStore 初始化失败（非致命，降级到内存库）: {}", e);
                 // 降级到内存库：当前会话可用，重启后数据丢失（仅辅助服务）
                 ResearchSessionStore::new_in_memory()
                     .expect("Fatal: cannot create in-memory ResearchSessionStore")
@@ -395,7 +392,7 @@ impl AppState {
         let outline_store = Arc::new(Mutex::new(match OutlineStore::new(&db_path) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("WARNING: OutlineStore init failed (non-fatal): {}", e);
+                tracing::error!("OutlineStore 初始化失败（非致命，降级到内存库）: {}", e);
                 OutlineStore::new_in_memory().expect("Fatal: cannot create in-memory OutlineStore")
             }
         }));
@@ -404,7 +401,7 @@ impl AppState {
             match RiskControlStore::new(&db_path) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("WARNING: RiskControlStore init failed (non-fatal): {}", e);
+                    tracing::error!("RiskControlStore 初始化失败（非致命，降级到内存库）: {}", e);
                     RiskControlStore::new_in_memory()
                         .expect("Fatal: cannot create in-memory RiskControlStore")
                 }
@@ -530,14 +527,14 @@ impl AppState {
 
         let mut write = self.reranker.write().ok()?;
         if write.is_none() {
-            println!("开始后台懒加载 Reranker 模型 (BAAI/bge-reranker-v2-m3)...");
+            tracing::info!("开始后台懒加载 Reranker 模型 (BAAI/bge-reranker-v2-m3)");
             match RerankerService::try_new(10) {
                 Ok(r) => {
                     *write = Some(Arc::new(r));
-                    println!("Reranker 模型加载成功！");
+                    tracing::info!("Reranker 模型加载成功");
                 }
                 Err(e) => {
-                    eprintln!("Reranker 模型懒加载失败: {}", e);
+                    tracing::error!("Reranker 模型懒加载失败: {}", e);
                 }
             }
         }
@@ -595,7 +592,7 @@ impl AppState {
         let emb = match self.embedding.read() {
             Ok(g) => g,
             Err(e) => {
-                eprintln!("[LazyLoad] Embedding lock poisoned: {}", e);
+                tracing::error!("[LazyLoad] Embedding 锁中毒: {}", e);
                 return;
             }
         };
@@ -610,7 +607,7 @@ impl AppState {
         };
         if !mm.is_ready() {
             if let Err(e) = mm.init() {
-                eprintln!("[LazyLoad] Model init failed: {}", e);
+                tracing::error!("[LazyLoad] 模型初始化失败: {}", e);
                 return;
             }
         }
@@ -618,7 +615,7 @@ impl AppState {
             let mut emb = match self.embedding.write() {
                 Ok(g) => g,
                 Err(e) => {
-                    eprintln!("[LazyLoad] Embedding lock poisoned: {}", e);
+                    tracing::error!("[LazyLoad] Embedding 锁中毒: {}", e);
                     return;
                 }
             };

@@ -48,14 +48,14 @@ impl SkillManager {
         self.skills.clear();
 
         if !self.skills_dir.exists() {
-            println!("Skills directory not found: {:?}", self.skills_dir);
+            tracing::warn!("技能目录不存在: {:?}", self.skills_dir);
             return;
         }
 
         let entries = match std::fs::read_dir(&self.skills_dir) {
             Ok(e) => e,
             Err(e) => {
-                eprintln!("Failed to read skills dir: {}", e);
+                tracing::error!("读取技能目录失败: {}", e);
                 return;
             }
         };
@@ -72,15 +72,15 @@ impl SkillManager {
                 }
             }
             if let Some(skill) = Self::load_skill_from_dir(&path) {
-                println!(
-                    "Loaded skill: {} ({:?})",
+                tracing::info!(
+                    "已加载技能: {} ({:?})",
                     skill.name, skill.metadata.category
                 );
                 self.skills.insert(skill.name.clone(), skill);
             }
         }
 
-        println!("Loaded {} skills", self.skills.len());
+        tracing::info!("已加载 {} 个技能", self.skills.len());
 
         // 重建触发引擎，确保技能匹配使用最新技能列表
         self.init_trigger_engine();

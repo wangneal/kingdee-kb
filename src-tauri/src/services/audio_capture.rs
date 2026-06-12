@@ -86,6 +86,9 @@ pub struct AudioInputDevice {
 }
 
 /// Internal mutable state shared between audio callback and main thread
+///
+/// 仅包含 `AtomicBool` 和 `Mutex<T: Send>` 字段，由 Rust 自动推导为 Send + Sync，
+/// 无需手写 unsafe impl。
 struct CaptureState {
     is_recording: AtomicBool,
     start_time: Mutex<Option<Instant>>,
@@ -106,13 +109,6 @@ pub struct AudioCapture {
     /// Directory for crash-safe temp recording files
     capture_dir: PathBuf,
 }
-
-// Explicit Send+Sync since CaptureState only uses thread-safe primitives
-unsafe impl Send for AudioCapture {}
-unsafe impl Sync for AudioCapture {}
-
-unsafe impl Send for CaptureState {}
-unsafe impl Sync for CaptureState {}
 
 impl AudioCapture {
     /// Create a new AudioCapture (not recording).
@@ -152,15 +148,15 @@ impl AudioCapture {
             let host = match cpal::host_from_id(host_id) {
                 Ok(host) => host,
                 Err(error) => {
-                    eprintln!("[AudioCapture] Host {} unavailable: {}", host_label, error);
+                    tracing::warn!("[AudioCapture] Host {} 不可用: {}", host_label, error);
                     continue;
                 }
             };
             let input_devices = match host.input_devices() {
                 Ok(input_devices) => input_devices,
                 Err(error) => {
-                    eprintln!(
-                        "[AudioCapture] Failed to query input devices on {}: {}",
+                    tracing::warn!(
+                        "[AudioCapture] 在 {} 上查询输入设备失败: {}",
                         host_label, error
                     );
                     continue;
@@ -258,8 +254,8 @@ impl AudioCapture {
         let device_sample_rate = config.sample_rate.0;
         let sample_format = supported_config.sample_format();
 
-        eprintln!(
-            "[AudioCapture] Recording from {}, {}Hz, {} channels",
+        tracing::info!(
+            "[AudioCapture] 正在从 {} 录音，{}Hz，{} 通道",
             selected_device_name, device_sample_rate, config.channels
         );
 
@@ -267,8 +263,8 @@ impl AudioCapture {
         let temp_path = self.temp_file_path();
         let temp_file =
             File::create(&temp_path).map_err(|e| format!("创建临时音频文件失败: {}", e))?;
-        eprintln!(
-            "[AudioCapture] Crash-safe temp file: {}",
+        tracing::info!(
+            "[AudioCapture] 崩溃安全临时文件: {}",
             temp_path.display()
         );
 
@@ -299,7 +295,7 @@ impl AudioCapture {
             let mut startup_tx = Some(startup_tx);
             let capture_state_err = capture_state.clone();
             let err_fn = move |err: cpal::StreamError| {
-                eprintln!("[AudioCapture] Stream error: {}", err);
+                tracing::error!("[AudioCapture] 音频流错误: {}", err);
                 // 发生严重音频流错误（例如设备被拔出）时，自动将录音状态设置为 false
                 capture_state_err
                     .is_recording
@@ -348,7 +344,7 @@ impl AudioCapture {
                     err_fn,
                 ),
                 sf => {
-                    eprintln!("[AudioCapture] Unsupported sample format: {:?}", sf);
+                    tracing::error!("[AudioCapture] 不支持的采样格式: {:?}", sf);
                     capture_state.is_recording.store(false, Ordering::SeqCst);
                     if let Some(tx) = startup_tx.take() {
                         let _ = tx.send(Err(format!("输入设备采样格式不支持: {:?}", sf)));
@@ -360,7 +356,7 @@ impl AudioCapture {
             let stream = match stream_result {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("[AudioCapture] Failed to build stream: {}", e);
+                    tracing::error!("[AudioCapture] 构建音频流失败: {}", e);
                     capture_state.is_recording.store(false, Ordering::SeqCst);
                     if let Some(tx) = startup_tx.take() {
                         let _ = tx.send(Err(format!("创建麦克风输入流失败: {}", e)));
@@ -370,7 +366,7 @@ impl AudioCapture {
             };
 
             if let Err(e) = stream.play() {
-                eprintln!("[AudioCapture] Failed to play stream: {}", e);
+                tracing::error!("[AudioCapture] 启动音频流失败: {}", e);
                 capture_state.is_recording.store(false, Ordering::SeqCst);
                 if let Some(tx) = startup_tx.take() {
                     let _ = tx.send(Err(format!("启动麦克风输入流失败: {}", e)));
@@ -381,7 +377,7 @@ impl AudioCapture {
             if let Some(tx) = startup_tx.take() {
                 let _ = tx.send(Ok(()));
             }
-            eprintln!("[AudioCapture] Stream active, recording in background thread");
+            tracing::info!("[AudioCapture] 音频流已启动，后台线程开始录音");
 
             // Keep thread alive while recording — stream is dropped when this
             // thread exits, which stops audio capture.
@@ -389,7 +385,7 @@ impl AudioCapture {
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
 
-            eprintln!("[AudioCapture] Recording stopped, dropping stream");
+            tracing::info!("[AudioCapture] 录音已停止，释放音频流");
             // stream dropped here → stops capture
         });
 
@@ -442,16 +438,16 @@ impl AudioCapture {
             let _ = file.flush();
             // Get the file path from the file (best effort)
             if let Ok(metadata) = file.metadata() {
-                eprintln!(
-                    "[AudioCapture] Temp file size: {} bytes ({} samples)",
+                tracing::info!(
+                    "[AudioCapture] 临时文件大小: {} 字节（约 {} 个采样）",
                     metadata.len(),
                     metadata.len() / 4
                 );
             }
         }
 
-        eprintln!(
-            "[AudioCapture] Stopped recording, captured {} samples ({} sec)",
+        tracing::info!(
+            "[AudioCapture] 停止录音，捕获 {} 个采样（约 {:.2} 秒）",
             buffer.len(),
             buffer.len() as f64 / self.sample_rate as f64
         );

@@ -166,27 +166,22 @@ fn seed_skills_dir(_app: &AppHandle, data_dir: &Path) -> Result<PathBuf, String>
 /// 初始化 AppState（同步，在 setup 中立刻调用）
 pub fn init_app_state(app: &AppHandle) -> Result<AppState, String> {
     let data_dir = ensure_data_dir()?;
-    println!("Data directory initialized at: {:?}", data_dir);
+    tracing::info!("数据目录已初始化: {:?}", data_dir);
 
     // 初始化技能管理器。外部 skill 包先拷贝到用户数据目录，后续导入也写入同一位置。
     let skills_dir = seed_skills_dir(app, &data_dir)?;
     let skill_manager = SkillManager::new(skills_dir);
-    println!(
-        "Skill manager initialized with {} skills",
-        skill_manager.count()
-    );
+    tracing::info!("技能管理器已初始化，共 {} 个技能", skill_manager.count());
 
     // 初始化阶段 2 服务
     match AppState::new(&data_dir, skill_manager) {
         Ok(app_state) => {
-            println!("Phase 2 services initialized (embedding, vector index, metadata)");
+            tracing::info!("阶段 2 服务已初始化（embedding、vector index、metadata）");
             Ok(app_state)
         }
         Err(e) => {
-            eprintln!("WARNING: Phase 2 services failed to initialize: {}", e);
-            eprintln!("The app will start in limited mode (no embedding/search/LLM).");
-            let app_state = AppState::minimal(&data_dir);
-            Ok(app_state)
+            tracing::error!("阶段 2 服务初始化失败: {}。将以受限模式启动（无 embedding/search/LLM）。", e);
+            Ok(AppState::minimal(&data_dir))
         }
     }
 }
@@ -216,21 +211,15 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
         if let Some(source) = candidates.into_iter().find(|path| path.exists()) {
             match copy_dir_recursive(&source, &skills_dir) {
                 Ok(_) => {
-                    println!(
-                        "Copied built-in skills in background from {:?} to {:?}",
+                    tracing::info!(
+                        "后台复制内置技能: {:?} -> {:?}",
                         source, &skills_dir
                     );
                     let mut sm = app_state.skill_manager.lock().await;
                     sm.scan();
-                    println!(
-                        "Skill manager background scan complete. Loaded {} skills",
-                        sm.count()
-                    );
+                    tracing::info!("技能管理器后台扫描完成，已加载 {} 个技能", sm.count());
                 }
-                Err(e) => eprintln!(
-                    "Warning: failed to seed built-in skills in background: {}",
-                    e
-                ),
+                Err(e) => tracing::warn!("后台 seed 内置技能失败: {}", e),
             }
         }
     }
@@ -244,7 +233,7 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
     }
 
     // 嵌入模型改为"首次使用时懒加载"，不占用启动时间。
-    println!("Embedding model will be loaded on first use (lazy load).");
+    tracing::info!("Embedding 模型改为首次使用时懒加载");
 
     // 无论后台异步同步任务是否发生非致命错误，都必须调用 set_complete，以防前端白屏挂死
     let _ = set_complete(
@@ -259,7 +248,7 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
     let app_clone = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if let Some(state) = app_clone.try_state::<AppState>() {
-            println!("后台异步预加载 Embedding 模型中...");
+            tracing::info!("后台异步预加载 Embedding 模型中");
             state.ensure_embedding_ready();
         }
     });
@@ -274,8 +263,8 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
             std::thread::sleep(std::time::Duration::from_secs(CHECK_INTERVAL_SECS));
             if let Some(state) = app_for_idle.try_state::<AppState>() {
                 if state.unload_idle_embedding(IDLE_TIMEOUT_SECS) {
-                    println!(
-                        "后台检查：本地 Embedding 模型空闲超过 {}秒，已自动释放内存",
+                    tracing::info!(
+                        "后台检查：本地 Embedding 模型空闲超过 {} 秒，已自动释放内存",
                         IDLE_TIMEOUT_SECS
                     );
                 }
@@ -322,7 +311,7 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
                         "items": items
                     }),
                 );
-                println!("后台熵检查：发现 {} 个过期技能", stale_skills.len());
+                tracing::info!("后台熵检查：发现 {} 个过期技能", stale_skills.len());
             }
 
             // 扫描索引漂移
@@ -335,7 +324,7 @@ pub async fn setup_backend_async(app: AppHandle) -> Result<(), String> {
                         "count": drifts.len()
                     }),
                 );
-                println!("后台熵检查：发现 {} 个索引漂移", drifts.len());
+                tracing::info!("后台熵检查：发现 {} 个索引漂移", drifts.len());
             }
         }
     });

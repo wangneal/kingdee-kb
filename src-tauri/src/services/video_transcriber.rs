@@ -97,8 +97,8 @@ pub fn extract_audio_to_file(
 
     let ffmpeg_path = ffmpeg_sidecar::paths::ffmpeg_path();
 
-    eprintln!(
-        "[VideoTranscriber] Using ffmpeg at: {}",
+    tracing::info!(
+        "[VideoTranscriber] 正在使用 ffmpeg: {}",
         ffmpeg_path.display()
     );
 
@@ -157,8 +157,8 @@ pub fn extract_audio_to_file(
     let total_samples = file_size as usize / BYTES_PER_SAMPLE;
     let duration_secs = total_samples as f32 / SAMPLE_RATE as f32;
 
-    eprintln!(
-        "[VideoTranscriber] Extracted {} samples ({:.1}s) → {}",
+    tracing::info!(
+        "[VideoTranscriber] 已提取 {} 个采样（{:.1}s）→ {}",
         total_samples,
         duration_secs,
         temp_path.display()
@@ -330,8 +330,8 @@ pub fn generate_meeting_minutes(
 
     // 如果转写文本超长（>30000字），截断以避免 token 超限
     let truncated = if transcript.len() > 30000 {
-        eprintln!(
-            "[VideoTranscriber] Transcript too long ({} chars), truncating to 30000",
+        tracing::warn!(
+            "[VideoTranscriber] 转写文本过长（{} 字符），截断到 30000",
             transcript.len()
         );
         &transcript[..30000]
@@ -356,8 +356,8 @@ pub fn generate_meeting_minutes(
 pub fn cleanup_temp_file(path: &Path) {
     if path.exists() {
         if let Err(e) = std::fs::remove_file(path) {
-            eprintln!(
-                "[VideoTranscriber] Failed to cleanup temp file {}: {}",
+            tracing::warn!(
+                "[VideoTranscriber] 清理临时文件 {} 失败: {}",
                 path.display(),
                 e
             );

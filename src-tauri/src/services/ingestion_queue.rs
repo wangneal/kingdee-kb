@@ -68,7 +68,7 @@ impl IngestionQueue {
         };
         self.items.push(item);
         if let Err(e) = self.save() {
-            eprintln!("保存摄入队列失败: {}", e);
+            tracing::error!("保存摄入队列失败: {}", e);
         }
         id
     }
@@ -81,7 +81,7 @@ impl IngestionQueue {
         item.status = "processing".to_string();
         let result = item.clone();
         if let Err(e) = self.save() {
-            eprintln!("保存摄入队列失败: {}", e);
+            tracing::error!("保存摄入队列失败: {}", e);
         }
         Some(result)
     }
@@ -94,7 +94,7 @@ impl IngestionQueue {
         item.status = "processing".to_string();
         let result = item.clone();
         if let Err(e) = self.save() {
-            eprintln!("保存摄入队列失败: {}", e);
+            tracing::error!("保存摄入队列失败: {}", e);
         }
         Some(result)
     }
@@ -106,10 +106,10 @@ impl IngestionQueue {
             let mut item = self.items.swap_remove(idx);
             item.status = "done".to_string();
             if let Err(e) = self.append_to_archive(&item) {
-                eprintln!("归档完成任务失败: {}", e);
+                tracing::error!("归档完成任务失败: {}", e);
             }
             if let Err(e) = self.save() {
-                eprintln!("保存摄入队列失败: {}", e);
+                tracing::error!("保存摄入队列失败: {}", e);
             }
         }
     }
@@ -126,10 +126,10 @@ impl IngestionQueue {
             item.retry_count += 1;
             item.error_message = Some(error.to_string());
             if let Err(e) = self.append_to_archive(&item) {
-                eprintln!("归档失败任务失败: {}", e);
+                tracing::error!("归档失败任务失败: {}", e);
             }
             if let Err(e) = self.save() {
-                eprintln!("保存摄入队列失败: {}", e);
+                tracing::error!("保存摄入队列失败: {}", e);
             }
         }
     }
@@ -172,7 +172,7 @@ impl IngestionQueue {
             }
         }
         if let Err(e) = self.save() {
-            eprintln!("保存摄入队列失败: {}", e);
+            tracing::error!("保存摄入队列失败: {}", e);
         }
     }
 
@@ -187,7 +187,7 @@ impl IngestionQueue {
             }
         }
         if let Err(e) = self.save() {
-            eprintln!("保存摄入队列失败: {}", e);
+            tracing::error!("保存摄入队列失败: {}", e);
         }
     }
 
@@ -263,7 +263,7 @@ impl IngestionQueue {
         self.items = match serde_json::from_str(&content) {
             Ok(items) => items,
             Err(e) => {
-                eprintln!("解析摄入队列文件失败: {}", e);
+                tracing::error!("解析摄入队列文件失败: {}", e);
                 return;
             }
         };
@@ -276,9 +276,9 @@ impl IngestionQueue {
             }
         }
         if changed {
-            eprintln!("检测到上次异常退出，已将 processing 任务重置为 pending");
+            tracing::info!("检测到上次异常退出，已将 processing 任务重置为 pending");
             if let Err(e) = self.save() {
-                eprintln!("崩溃恢复后保存摄入队列失败: {}", e);
+                tracing::error!("崩溃恢复后保存摄入队列失败: {}", e);
             }
         }
     }

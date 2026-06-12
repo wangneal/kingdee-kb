@@ -313,8 +313,8 @@ impl ProductStore {
             match self.export_product(product.id, target_dir, Some(project_id)) {
                 Ok(path) => exported.push(path),
                 Err(e) => {
-                    eprintln!(
-                        "Warning: Failed to export product {} ({}): {}",
+                    tracing::warn!(
+                        "导出产品 {}（{}）失败: {}",
                         product.id, product.template_name, e
                     );
                 }

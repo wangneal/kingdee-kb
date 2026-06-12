@@ -116,8 +116,8 @@ impl WhisperService {
             ));
         }
 
-        eprintln!(
-            "[WhisperService] Loading model '{}' from {}",
+        tracing::info!(
+            "[WhisperService] 正在加载模型 '{}'（来自 {}）",
             model_size,
             model_path.display()
         );
@@ -131,8 +131,8 @@ impl WhisperService {
         self.model_size = model_size.to_string();
         self.language = "zh".to_string();
 
-        eprintln!(
-            "[WhisperService] Model '{}' loaded successfully",
+        tracing::info!(
+            "[WhisperService] 模型 '{}' 加载成功",
             model_size
         );
         Ok(())
