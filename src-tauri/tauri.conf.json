@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "KingdeeKB",
+  "productName": "顾问工作台",
   "version": "0.1.0",
   "identifier": "com.neal.kingdee-kb",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "KingdeeKB",
+        "title": "顾问工作台",
         "width": 1000,
         "height": 700,
         "minWidth": 800,

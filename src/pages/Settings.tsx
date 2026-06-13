@@ -32,6 +32,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { useToast } from "../components/Toast"
+import { TOAST_AUTO_DISMISS_MS } from "../lib/constants"
 import {
   addLLMProvider,
   deleteLLMProvider,
@@ -681,7 +682,7 @@ export default function Settings() {
       const { api_key: _, ...safeConfig } = embeddingProviderConfig
       localStorage.setItem(EMBEDDING_PROVIDER_STORAGE_KEY, JSON.stringify(safeConfig))
       setEmbeddingProviderSaveMsg("配置已保存")
-      setTimeout(() => setEmbeddingProviderSaveMsg(null), 3000)
+      setTimeout(() => setEmbeddingProviderSaveMsg(null), TOAST_AUTO_DISMISS_MS)
     } catch (err) {
       setEmbeddingProviderSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
@@ -700,7 +701,7 @@ export default function Settings() {
       localStorage.setItem("model_spec_overrides", JSON.stringify(overrides))
       setOverrideKey((k) => k + 1)
       setOverrideSaveMsg("已保存")
-      setTimeout(() => setOverrideSaveMsg(null), 3000)
+      setTimeout(() => setOverrideSaveMsg(null), TOAST_AUTO_DISMISS_MS)
     } catch (err) {
       console.error("保存模型规格覆盖失败:", err)
       toast.error(`保存模型规格覆盖失败: ${String(err)}`)
@@ -1190,7 +1191,7 @@ export default function Settings() {
                         localStorage.removeItem("kdclub_pat_token")
                       }
                       setKdclubSaveMsg("配置已保存")
-                      setTimeout(() => setKdclubSaveMsg(null), 3000)
+                      setTimeout(() => setKdclubSaveMsg(null), TOAST_AUTO_DISMISS_MS)
                     } catch (err) {
                       setKdclubSaveMsg(
                         `保存失败：${err instanceof Error ? err.message : String(err)}`,
@@ -1288,7 +1289,7 @@ export default function Settings() {
                         setTencentMeetingStatus(status)
                         setTencentMeetingToken("")
                         setTencentMeetingSaveMsg("配置已保存")
-                        setTimeout(() => setTencentMeetingSaveMsg(null), 3000)
+                        setTimeout(() => setTencentMeetingSaveMsg(null), TOAST_AUTO_DISMISS_MS)
                       } catch (err) {
                         setTencentMeetingSaveMsg(
                           `保存失败：${err instanceof Error ? err.message : String(err)}`,
@@ -1326,7 +1327,7 @@ export default function Settings() {
                       const status = await getAsrConfigStatus()
                       setAsrConfigStatus(status)
                       setAsrSaveMsg("配置已保存")
-                      setTimeout(() => setAsrSaveMsg(null), 3000)
+                      setTimeout(() => setAsrSaveMsg(null), TOAST_AUTO_DISMISS_MS)
                     } catch (err) {
                       setAsrSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`)
                     }
@@ -3334,7 +3335,7 @@ function KnowledgeCompilationCard() {
     try {
       await setKbCompilationEnabled(next)
       setMessage(next ? "已开启知识编译" : "已关闭知识编译")
-      setTimeout(() => setMessage(null), 3000)
+      setTimeout(() => setMessage(null), TOAST_AUTO_DISMISS_MS)
     } catch (error) {
       setEnabled(!next)
       setMessage(`保存失败：${error instanceof Error ? error.message : String(error)}`)
@@ -3433,7 +3434,7 @@ function OcrConfigCard() {
       setOcrConfig(updated)
       setShowForm(false)
       setSaveMsg("OCR 配置已保存")
-      setTimeout(() => setSaveMsg(null), 3000)
+      setTimeout(() => setSaveMsg(null), TOAST_AUTO_DISMISS_MS)
     } catch (err) {
       setSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {

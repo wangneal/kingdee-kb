@@ -14,6 +14,7 @@ import {
 import { useEffect, useRef, useState } from "react"
 import { NavLink, Outlet, useNavigate } from "react-router-dom"
 import { useProject } from "../contexts/ProjectContext"
+import { LS_KEY_SIDEBAR_ANSWER, LS_KEY_SIDEBAR_QUESTION, PRODUCT_NAME } from "../lib/constants"
 import {
   agentChat,
   getModelStatus,
@@ -23,9 +24,6 @@ import {
 } from "../lib/tauri-commands"
 import ProjectSwitcher from "./ProjectSwitcher"
 import Spotlight from "./Spotlight"
-
-const LS_KEY_QUESTION = "kb_sidebar_question"
-const LS_KEY_ANSWER = "kb_sidebar_answer"
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "概览" },
@@ -173,7 +171,7 @@ export default function Layout() {
         try {
           if (sideQuestionIdRef.current) {
             localStorage.setItem(
-              LS_KEY_ANSWER,
+              LS_KEY_SIDEBAR_ANSWER,
               JSON.stringify({ id: sideQuestionIdRef.current, text: answer }),
             )
           }
@@ -194,11 +192,11 @@ export default function Layout() {
 
     const interval = setInterval(() => {
       try {
-        const raw = localStorage.getItem(LS_KEY_QUESTION)
+        const raw = localStorage.getItem(LS_KEY_SIDEBAR_QUESTION)
         if (!raw) return
         const q = JSON.parse(raw)
         if (!q.text || !q.id) return
-        localStorage.removeItem(LS_KEY_QUESTION)
+        localStorage.removeItem(LS_KEY_SIDEBAR_QUESTION)
         sideAnswerRef.current = ""
         sideQuestionIdRef.current = q.id
         const sid = `layout_${Date.now()}`
@@ -206,7 +204,7 @@ export default function Layout() {
         agentChat(q.text, sid, currentProjectId).catch((error) => {
           try {
             localStorage.setItem(
-              LS_KEY_ANSWER,
+              LS_KEY_SIDEBAR_ANSWER,
               JSON.stringify({ id: q.id, text: `AI 回答失败：${String(error)}` }),
             )
           } catch {
@@ -237,7 +235,7 @@ export default function Layout() {
           <div className="h-7 w-7 rounded-lg bg-[#1A6BD8] flex items-center justify-center">
             <BookOpen className="h-4 w-4 text-white" />
           </div>
-          <span className="text-sm font-semibold text-neutral-800">实施顾问AI助手</span>
+          <span className="text-sm font-semibold text-neutral-800">{PRODUCT_NAME}</span>
         </div>
 
         <ProjectSwitcher />

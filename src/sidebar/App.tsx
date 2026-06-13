@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-
-const LS_KEY_QUESTION = "kb_sidebar_question"
-const LS_KEY_ANSWER = "kb_sidebar_answer"
+import { LS_KEY_SIDEBAR_ANSWER, LS_KEY_SIDEBAR_QUESTION, PRODUCT_NAME } from "../lib/constants"
 
 type Theme = "light" | "dark"
 
@@ -33,10 +31,10 @@ export default function SidebarApp() {
   useEffect(() => {
     const interval = setInterval(() => {
       try {
-        const raw = localStorage.getItem(LS_KEY_ANSWER)
+        const raw = localStorage.getItem(LS_KEY_SIDEBAR_ANSWER)
         if (!raw) return
         const answer = JSON.parse(raw)
-        localStorage.removeItem(LS_KEY_ANSWER)
+        localStorage.removeItem(LS_KEY_SIDEBAR_ANSWER)
         if (answer.text) {
           setMessages((prev) => [...prev, { id: ++msgId, role: "assistant", content: answer.text }])
         }
@@ -63,7 +61,7 @@ export default function SidebarApp() {
 
     // 将问题写入 localStorage，交给桌面端处理
     try {
-      localStorage.setItem(LS_KEY_QUESTION, JSON.stringify({ id: msgId, text }))
+      localStorage.setItem(LS_KEY_SIDEBAR_QUESTION, JSON.stringify({ id: msgId, text }))
       setLoading(true)
     } catch {
       /* localStorage 不可用 */
@@ -74,20 +72,24 @@ export default function SidebarApp() {
       setLoading(false)
       setMessages((prev) => [
         ...prev,
-        { id: ++msgId, role: "assistant", content: "⚠️ 请求超时，请确保桌面端 KingdeeKB 正在运行" },
+        {
+          id: ++msgId,
+          role: "assistant",
+          content: `⚠️ 请求超时，请确保桌面端 ${PRODUCT_NAME} 正在运行`,
+        },
       ])
     }, 30000)
 
     // Listen for this specific answer
     const check = setInterval(() => {
       try {
-        const raw = localStorage.getItem(LS_KEY_ANSWER)
+        const raw = localStorage.getItem(LS_KEY_SIDEBAR_ANSWER)
         if (!raw) return
         const answer = JSON.parse(raw)
         if (answer.id === msgId) {
           clearTimeout(timeout)
           clearInterval(check)
-          localStorage.removeItem(LS_KEY_ANSWER)
+          localStorage.removeItem(LS_KEY_SIDEBAR_ANSWER)
           setLoading(false)
           setMessages((prev) => [...prev, { id: ++msgId, role: "assistant", content: answer.text }])
         }
@@ -135,7 +137,7 @@ export default function SidebarApp() {
       >
         <svg
           role="img"
-          aria-label="KingdeeKB"
+          aria-label={PRODUCT_NAME}
           width="18"
           height="18"
           viewBox="0 0 24 24"
@@ -148,7 +150,7 @@ export default function SidebarApp() {
           <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
           <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
         </svg>
-        <span style={{ fontSize: 14, fontWeight: 600, color: accent }}>KingdeeKB 实施助手</span>
+        <span style={{ fontSize: 14, fontWeight: 600, color: accent }}>{PRODUCT_NAME}</span>
       </div>
 
       {/* 消息 */}

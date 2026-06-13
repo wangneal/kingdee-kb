@@ -15,6 +15,7 @@ import ImportModal from "../components/ImportModal"
 import GraphRecommendations from "../components/wiki/GraphRecommendations"
 import WikiLinkEditor from "../components/wiki/WikiLinkEditor"
 import { useProject } from "../contexts/ProjectContext"
+import { TOAST_AUTO_DISMISS_MS } from "../lib/constants"
 import {
   approveAutoWikiPages,
   approveWikiPage,
@@ -65,7 +66,7 @@ export default function Browse() {
   // 反馈消息 3 秒后自动清除
   useEffect(() => {
     if (feedbackMessage == null) return
-    const timer = setTimeout(() => setFeedbackMessage(null), 3000)
+    const timer = setTimeout(() => setFeedbackMessage(null), TOAST_AUTO_DISMISS_MS)
     return () => clearTimeout(timer)
   }, [feedbackMessage])
 

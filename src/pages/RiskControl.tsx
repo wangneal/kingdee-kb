@@ -24,6 +24,7 @@ import { DEFAULT_SLOT, useAgent } from "../contexts/AgentContext"
 import { useAppError } from "../contexts/AppErrorContext"
 import { useProject } from "../contexts/ProjectContext"
 import { formatAppError, parseAppError } from "../lib/app-error"
+import { PRODUCT_NAME } from "../lib/constants"
 import {
   addScopeItem,
   analyzeFitGap,
@@ -1225,7 +1226,7 @@ function AnalysisTab({ projectId }: { projectId: number | null }) {
     setInput("")
 
     const prompt =
-      "请作为 KingdeeKB 双轨风险把控舱中的风控专家分析以下问题，必要时使用知识库搜索、范围蔓延检查、项目健康评分、差异分析或防身话术工具，并给出专业、简洁、可执行的回答。\n\n问题：" +
+      `请作为 ${PRODUCT_NAME} 双轨风险把控舱中的风控专家分析以下问题，必要时使用知识库搜索、范围蔓延检查、项目健康评分、差异分析或防身话术工具，并给出专业、简洁、可执行的回答。\n\n问题：` +
       text
     await agent.sendMessage(slotId, prompt, {
       projectId,
