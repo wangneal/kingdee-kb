@@ -1,70 +1,62 @@
-//! 文件内容提取器：根据文件扩展名分派到对应的文本提取策略
-//!
-//! 支持格式：
-//! - Markdown / TXT：直接读取纯文本
-//! - HTML：读取后去除标签
-//! - PDF：使用 PDF 提取库读取文本
-//! - DOC：使用本机 Microsoft Word 自动化提取文本（需要安装 Word）
-//! - DOCX：解压压缩包，解析正文 XML 并提取文本
-//! - XLSX/XLS：读取每个工作表的单元格文本
-//! - VSDX：解压压缩包，解析 Visio 页面 XML 并提取形状文字
-//! - VSD：使用本机 Microsoft Visio 自动化提取形状文字（需要安装 Visio）
-//! - 图片（PNG/JPG/GIF/BMP/WEBP）：需通过图片处理服务异步识别文本
+//! 文件内容提取器：根据扩展名分派到对应纯文本提取策略
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Cursor, Read, Seek};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing;
 
+// 每类格式的扩展名表（添加新格式只需改这里 + dispatch 分支）
+const TEXT_EXTS: &[&str] = &["md", "txt", "text", "markdown", "html", "htm"];
+const PDF_EXTS: &[&str] = &["pdf"];
+const DOC_EXTS: &[&str] = &["doc"];
+const DOCX_EXTS: &[&str] = &["docx"];
+const XLSX_EXTS: &[&str] = &["xlsx", "xls"];
+const VSDX_EXTS: &[&str] = &["vsdx", "vsd"];
+const MEDIA_EXTS: &[&str] = &[
+    "mp4", "webm", "avi", "mov", "mkv", "flv", "wmv", "m4a", "mp3", "wav",
+];
+const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "bmp", "webp"];
+
+/// 文件操作失败时的统一错误格式
+fn io_err(action: &str, path: &Path, e: impl std::fmt::Display) -> String {
+    format!("{} {:?}: {}", action, path.display(), e)
+}
+
 /// 根据文件扩展名提取纯文本内容
 pub fn extract_text(file_path: &Path) -> Result<String, String> {
-    let extension = file_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    match extension.as_str() {
-        // 纯文本格式：直接读取
-        "md" | "txt" | "text" | "markdown" => extract_plain_text(file_path),
-
-        // 网页文本：直接读取，后续由清洗模块去除标签
-        "html" | "htm" => extract_plain_text(file_path),
-
-        // PDF：使用提取库读取文本
-        "pdf" => extract_pdf_text(file_path),
-
-        // Word 文档：新版直接解包，旧版走本机 Word 自动化
-        "doc" => super::research_outline::parse_doc_file(file_path),
-        "docx" => extract_docx_text(file_path),
-
-        // 表格文档：读取单元格文本
-        "xlsx" | "xls" => extract_xlsx_text(file_path),
-
-        // Visio 蓝图：提取形状文本
-        "vsdx" => extract_vsdx_text(file_path),
-        "vsd" => extract_vsd_text(file_path),
-
-        // 视频和音频需要转写管道处理
-        "mp4" | "webm" | "avi" | "mov" | "mkv" | "flv" | "wmv" | "m4a" | "mp3" | "wav" => {
-            Err(format!(
-                "视频/音频文件 (.{}) 需要通过转写管道处理，请使用视频转写功能",
-                extension
-            ))
+    let ext = ext_lower(file_path);
+    if TEXT_EXTS.contains(&ext.as_str()) {
+        std::fs::read_to_string(file_path).map_err(|e| io_err("读取文件失败", file_path, e))
+    } else if PDF_EXTS.contains(&ext.as_str()) {
+        extract_pdf_text(file_path)
+    } else if DOC_EXTS.contains(&ext.as_str()) {
+        super::research_outline::parse_doc_file(file_path)
+    } else if DOCX_EXTS.contains(&ext.as_str()) {
+        extract_docx_text(file_path)
+    } else if XLSX_EXTS.contains(&ext.as_str()) {
+        if ext == "xls" {
+            extract_xls_text(file_path)
+        } else {
+            extract_xlsx_text(file_path)
         }
-
-        // 图片格式：需异步 OCR 处理，不能同步提取文本
-        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" => Err(format!(
-            "图片文件 (.{}) 需要通过 ImageProcessor 异步处理",
-            extension
-        )),
-
-        _ => Err(format!("不支持的文件格式：.{}", extension)),
+    } else if VSDX_EXTS.contains(&ext.as_str()) {
+        if ext == "vsd" {
+            extract_vsd_text(file_path)
+        } else {
+            extract_vsdx_text(file_path)
+        }
+    } else if MEDIA_EXTS.contains(&ext.as_str()) {
+        Err("视频/音频文件需通过转写管道处理".to_string())
+    } else if IMAGE_EXTS.contains(&ext.as_str()) {
+        Err("图片文件需通过 ImageProcessor 异步处理".to_string())
+    } else {
+        Err(format!("不支持的文件格式：.{}", ext))
     }
 }
 
-/// 获取所有支持的文件扩展名
+/// 拼接所有支持的文件扩展名（按类别顺序）
 pub fn supported_extensions() -> &'static [&'static str] {
     &[
         "md", "txt", "text", "markdown", "html", "htm", "pdf", "doc", "docx", "xlsx", "xls",
@@ -73,52 +65,35 @@ pub fn supported_extensions() -> &'static [&'static str] {
     ]
 }
 
-/// 检查文件是否为图片格式（需异步 OCR 处理）
-pub fn is_image_format(file_path: &Path) -> bool {
-    let extension = file_path
+/// 读取文件后缀（统一小写、缺失为空串）
+fn ext_lower(file_path: &Path) -> String {
+    file_path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
-        .to_lowercase();
-    matches!(
-        extension.as_str(),
-        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp"
-    )
+        .to_lowercase()
+}
+
+const EMPTY_VISIO_HINT: &str = "未提取到形状文字；如果蓝图主要是图片，请先导出为 PDF/图片后走 OCR，或在图形中补充文本标注";
+
+/// 检查文件是否为图片格式（需异步 OCR 处理）
+pub fn is_image_format(file_path: &Path) -> bool {
+    IMAGE_EXTS.contains(&ext_lower(file_path).as_str())
 }
 
 /// 检查文件扩展名是否受支持
 pub fn is_supported(file_path: &Path) -> bool {
-    let extension = file_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    supported_extensions().contains(&extension.as_str())
+    supported_extensions().contains(&ext_lower(file_path).as_str())
 }
 
 /// 检查文件是否为需要转写管道处理的视频或音频格式
 pub fn is_video_format(file_path: &Path) -> bool {
-    let extension = file_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    matches!(
-        extension.as_str(),
-        "mp4" | "webm" | "avi" | "mov" | "mkv" | "flv" | "wmv" | "m4a" | "mp3" | "wav"
-    )
+    MEDIA_EXTS.contains(&ext_lower(file_path).as_str())
 }
 
 /// 检查文件是否为 Visio 格式
 pub fn is_visio_format(file_path: &Path) -> bool {
-    let extension = file_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    matches!(extension.as_str(), "vsdx" | "vsd")
+    VSDX_EXTS.contains(&ext_lower(file_path).as_str())
 }
 
 /// 判断错误是否来自 DOCX 中不可直接读取的内嵌 OLE/Visio 对象。
@@ -130,13 +105,12 @@ pub fn is_unreadable_docx_embedded_object_error(error: &str) -> bool {
 pub fn extract_docx_preview_images(
     file_path: &Path,
     output_dir: &Path,
-) -> Result<Vec<std::path::PathBuf>, String> {
-    let file = File::open(file_path)
-        .map_err(|e| format!("打开 DOCX 失败 {:?}: {}", file_path.display(), e))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| format!("解析 DOCX ZIP 失败 {:?}: {}", file_path.display(), e))?;
+) -> Result<Vec<PathBuf>, String> {
+    let file = File::open(file_path).map_err(|e| io_err("打开 DOCX 失败", file_path, e))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| io_err("解析 DOCX ZIP 失败", file_path, e))?;
     std::fs::create_dir_all(output_dir)
-        .map_err(|e| format!("创建 DOCX 预览图目录失败 {:?}: {}", output_dir.display(), e))?;
+        .map_err(|e| io_err("创建 DOCX 预览图目录失败", output_dir, e))?;
 
     let mut image_names: Vec<String> = (0..archive.len())
         .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
@@ -161,13 +135,13 @@ pub fn extract_docx_preview_images(
         {
             let mut image_file = archive
                 .by_name(name)
-                .map_err(|e| format!("读取 DOCX 预览图失败 {}: {}", name, e))?;
+                .map_err(|e| io_err("读取 DOCX 预览图失败", Path::new(name), e))?;
             let mut bytes = Vec::new();
             image_file
                 .read_to_end(&mut bytes)
-                .map_err(|e| format!("读取 DOCX 预览图字节失败 {}: {}", name, e))?;
+                .map_err(|e| io_err("读取 DOCX 预览图字节失败", Path::new(name), e))?;
             std::fs::write(&raw_path, bytes)
-                .map_err(|e| format!("写入 DOCX 预览图失败 {:?}: {}", raw_path.display(), e))?;
+                .map_err(|e| io_err("写入 DOCX 预览图失败", &raw_path, e))?;
         }
 
         if matches!(extension.as_str(), "emf" | "wmf") {
@@ -186,8 +160,6 @@ pub fn extract_docx_preview_images(
 
     Ok(output_paths)
 }
-
-// ── 内部实现 ──────────────────────────────────────────────────────────────────
 
 fn preview_image_extension(name: &str) -> Option<String> {
     Path::new(name)
@@ -242,21 +214,10 @@ fn convert_metafile_to_png(path: &Path) -> Result<std::path::PathBuf, String> {
     Ok(target_path)
 }
 
-/// 读取纯文本文件
-fn extract_plain_text(file_path: &Path) -> Result<String, String> {
-    std::fs::read_to_string(file_path)
-        .map_err(|e| format!("读取文件失败 {:?}: {}", file_path.display(), e))
-}
-
 /// 从 PDF 文件提取文本
 fn extract_pdf_text(file_path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(file_path)
-        .map_err(|e| format!("读取 PDF 失败 {:?}: {}", file_path.display(), e))?;
-
-    let text = pdf_extract::extract_text_from_mem(&bytes)
-        .map_err(|e| format!("解析 PDF 失败 {:?}: {}", file_path.display(), e))?;
-
-    Ok(text)
+    let bytes = std::fs::read(file_path).map_err(|e| io_err("读取 PDF 失败", file_path, e))?;
+    pdf_extract::extract_text_from_mem(&bytes).map_err(|e| io_err("解析 PDF 失败", file_path, e))
 }
 
 /// 从 DOCX 文件提取文本
@@ -264,11 +225,10 @@ fn extract_pdf_text(file_path: &Path) -> Result<String, String> {
 /// DOCX 本质是 ZIP 压缩包，正文文本在 word/document.xml 的 <w:t> 节点中。
 /// 蓝图文档可能把 Visio 作为嵌入对象放在 word/embeddings 下，需要额外提取。
 fn extract_docx_text(file_path: &Path) -> Result<String, String> {
-    let file = File::open(file_path)
-        .map_err(|e| format!("打开 DOCX 失败 {:?}: {}", file_path.display(), e))?;
+    let file = File::open(file_path).map_err(|e| io_err("打开 DOCX 失败", file_path, e))?;
 
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| format!("解析 DOCX ZIP 失败 {:?}: {}", file_path.display(), e))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| io_err("解析 DOCX ZIP 失败", file_path, e))?;
 
     // 列出 ZIP 内所有文件，帮助诊断
     let file_list: Vec<String> = (0..archive.len())
@@ -308,7 +268,7 @@ fn extract_docx_text(file_path: &Path) -> Result<String, String> {
     }
 
     tracing::debug!(
-        "[DOCX] 提取文本长度: {} chars, 前200字: {:?}",
+        "[DOCX] 提取文本长度: {} chars, 前200字: {}",
         combined.len(),
         combined.chars().take(200).collect::<String>()
     );
@@ -408,32 +368,13 @@ fn extract_embedded_visio_text_from_docx<R: Read + Seek>(
     Ok(text_buffer)
 }
 
-/// 从 XLSX/XLS 文件提取文本
+/// 从 XLSX 文件提取文本
 ///
 /// 遍历所有工作表的所有单元格，将非空单元格的值拼接为文本。
-/// 每个 sheet 之间用分隔线隔开。
-///
-/// 实现要点：
-/// - 单元格值必须用 `get_formatted_value()` 而不是 `get_value()`：
-///   后者返回原始值（日期会变成 Excel 序列号 45292，数字会丢失千分位/小数位）
-/// - 第一行作为表头输出（"Headers: " 前缀），后续行作为数据（"Row N: " 前缀），
-///   让 LLM 明确列语义
-/// - 每个 sheet 的所有非空行都输出，列对齐到 max_col
+/// 第 1 行作为表头（"Headers: "），后续行作为数据（"Row N: "）。
 fn extract_xlsx_text(file_path: &Path) -> Result<String, String> {
-    let extension = file_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    if extension == "xls" {
-        // .xls 旧格式使用 calamine 直接提取文本
-        return extract_xls_text(file_path);
-    }
-
-    // .xlsx 新格式使用 umya-spreadsheet 读取
     let book = umya_spreadsheet::reader::xlsx::read(file_path)
-        .map_err(|e| format!("读取 Excel 失败 {:?}: {}", file_path.display(), e))?;
+        .map_err(|e| io_err("读取 Excel 失败", file_path, e))?;
 
     let mut text_buffer = String::new();
     let sheet_count = book.get_sheet_count();
@@ -453,16 +394,13 @@ fn extract_xlsx_text(file_path: &Path) -> Result<String, String> {
         text_buffer.push_str(&format!("## Sheet: {}\n\n", sheet_name));
 
         let cells = sheet.get_cell_collection();
-        let mut has_content = false;
 
         // 按行分组，输出接近表格的文本
-        use std::collections::BTreeMap;
         let mut rows: BTreeMap<u32, BTreeMap<u32, String>> = BTreeMap::new();
         let mut max_col: u32 = 0;
 
         for cell in cells.iter() {
-            // 必须用 get_formatted_value()：get_value() 对日期返回 Excel 序列号
-            // （如 "45292"），对数字丢失千分位/小数位，LLM 看到的是无意义数字
+            // 必须用 get_formatted_value()，否则日期/数字无意义
             let value = cell.get_formatted_value();
             if value.is_empty() {
                 continue;
@@ -474,15 +412,14 @@ fn extract_xlsx_text(file_path: &Path) -> Result<String, String> {
             if col > max_col {
                 max_col = col;
             }
-            has_content = true;
         }
 
-        if !has_content {
+        if rows.is_empty() {
             text_buffer.push_str("（空工作表）\n");
             continue;
         }
 
-        // 按行号顺序输出：第一行标记为表头，后续行带行号便于 LLM 关联
+        // 按行号顺序输出：第 1 行标记为表头，后续行带行号
         for (row, row_cells) in &rows {
             let mut row_texts: Vec<String> = Vec::new();
             for col in 1..=max_col {
@@ -496,13 +433,8 @@ fn extract_xlsx_text(file_path: &Path) -> Result<String, String> {
             if row_texts.is_empty() {
                 continue;
             }
-            // 跳过整行都是公式/错误的"伪空"行
-            if row_texts.iter().all(|s| s.is_empty()) {
-                continue;
-            }
 
-            // 第一行作为表头；后续行带行号
-            let is_header = *row == *rows.keys().next().unwrap_or(row);
+            let is_header = *row == 1;
             if is_header {
                 text_buffer.push_str("Headers: ");
             } else {
@@ -531,7 +463,7 @@ fn extract_xls_text(file_path: &Path) -> Result<String, String> {
     use calamine::{Reader, Xls};
 
     let mut workbook: Xls<_> = calamine::open_workbook(file_path)
-        .map_err(|e| format!("打开 XLS 文件失败 {:?}: {}", file_path.display(), e))?;
+        .map_err(|e| io_err("打开 XLS 文件失败", file_path, e))?;
 
     let sheet_names = workbook.sheet_names().to_owned();
     tracing::debug!("[Excel/XLS] 工作表: {:?}", sheet_names);
@@ -593,10 +525,9 @@ fn extract_xls_text(file_path: &Path) -> Result<String, String> {
 
 /// 从 VSDX 文件提取形状文本
 fn extract_vsdx_text(file_path: &Path) -> Result<String, String> {
-    let file = File::open(file_path)
-        .map_err(|e| format!("打开 VSDX 失败 {:?}: {}", file_path.display(), e))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| format!("解析 VSDX ZIP 失败 {:?}: {}", file_path.display(), e))?;
+    let file = File::open(file_path).map_err(|e| io_err("打开 VSDX 失败", file_path, e))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| io_err("解析 VSDX ZIP 失败", file_path, e))?;
     extract_vsdx_text_from_archive(&mut archive)
 }
 
@@ -703,20 +634,15 @@ fn extract_vsdx_text_from_archive<R: Read + Seek>(
     }
 
     if text_buffer.trim().is_empty() {
-        return Err("VSDX 未提取到形状文字；如果蓝图主要是图片，请先导出为 PDF/图片后走 OCR，或在图形中补充文本标注".to_string());
+        return Err(format!("VSDX {}", EMPTY_VISIO_HINT));
     }
 
     Ok(text_buffer)
 }
 
-/// 从 Visio 页面 XML 中提取形状文本与名称
+/// 从 Visio 页面 XML 中提取形状文本
 ///
-/// 提取两类信息供 LLM 消费：
-/// - `<Shape NameU="...">` / `<Shape Name="...">`：业务蓝图常用 Name 表达逻辑节点名
-///   （如 "ApprovalProcess"），是 LLM 识别流程步骤的关键
-/// - `<Shape>...<Text>...</Text></Shape>`：图形上显示的文本（中文标签）
-///
-/// 重复时不输出空字符串；Name 与 Text 同时存在时用 "[Name] Text" 形式合并。
+/// 输出 `[Name] Text` 形式（无 Text 时仅 `[Name]`），让 LLM 看到业务节点名。
 fn extract_text_from_visio_page_xml(xml: &str) -> Result<String, String> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
@@ -733,27 +659,27 @@ fn extract_text_from_visio_page_xml(xml: &str) -> Result<String, String> {
     let mut in_text_node = false;
 
     let flush_shape = |name: &mut Option<String>,
-                       text: &mut String,
-                       _out: &mut String|
+                       text: &mut String|
      -> Option<String> {
         let text_trimmed = text.trim();
-        if let Some(n) = name.as_ref() {
-            if !n.is_empty() {
-                if !text_trimmed.is_empty() {
-                    Some(format!("[{}] {}", n, text_trimmed))
-                } else {
-                    Some(format!("[{}]", n))
-                }
-            } else if !text_trimmed.is_empty() {
-                Some(text_trimmed.to_string())
-            } else {
-                None
-            }
-        } else if !text_trimmed.is_empty() {
-            Some(text_trimmed.to_string())
-        } else {
-            None
+        let name_str = name.as_deref().unwrap_or("");
+        match (name_str.is_empty(), text_trimmed.is_empty()) {
+            (true, true) => None,
+            (true, false) => Some(text_trimmed.to_string()),
+            (false, true) => Some(format!("[{}]", name_str)),
+            (false, false) => Some(format!("[{}] {}", name_str, text_trimmed)),
         }
+    };
+
+    let append_text = |text: &str, current_text: &mut String| {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        if !current_text.is_empty() && !current_text.ends_with(' ') {
+            current_text.push(' ');
+        }
+        current_text.push_str(text);
     };
 
     loop {
@@ -761,14 +687,13 @@ fn extract_text_from_visio_page_xml(xml: &str) -> Result<String, String> {
             Ok(Event::Start(ref e)) if e.name().as_ref() == b"Shape" => {
                 shape_depth += 1;
                 if shape_depth == 1 {
-                    // 仅顶层 Shape 计入；嵌套 Shape 视为子形状
                     current_name = read_shape_name(&e);
                     current_text.clear();
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"Shape" => {
                 if shape_depth == 1 {
-                    if let Some(line) = flush_shape(&mut current_name, &mut current_text, &mut text_buffer) {
+                    if let Some(line) = flush_shape(&mut current_name, &mut current_text) {
                         if !text_buffer.is_empty() && !text_buffer.ends_with('\n') {
                             text_buffer.push('\n');
                         }
@@ -784,31 +709,17 @@ fn extract_text_from_visio_page_xml(xml: &str) -> Result<String, String> {
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"Text" => {
                 in_text_node = false;
-                if shape_depth >= 1 && !current_text.is_empty() && !current_text.ends_with(' ') {
-                    current_text.push(' ');
-                }
             }
             Ok(Event::Text(e)) if in_text_node && shape_depth >= 1 => {
                 let text = e
                     .unescape()
-                    .map_err(|e| format!("解析 Visio 文本失败: {}", e))?
-                    .to_string();
-                let text = text.trim();
-                if !text.is_empty() {
-                    if !current_text.is_empty() && !current_text.ends_with(' ') {
-                        current_text.push(' ');
-                    }
-                    current_text.push_str(text);
-                }
+                    .map_err(|err| format!("解析 Visio 文本失败: {}", err))?
+                    .into_owned();
+                append_text(&text, &mut current_text);
             }
             Ok(Event::CData(e)) if in_text_node && shape_depth >= 1 => {
-                let text = String::from_utf8_lossy(e.as_ref()).trim().to_string();
-                if !text.is_empty() {
-                    if !current_text.is_empty() && !current_text.ends_with(' ') {
-                        current_text.push(' ');
-                    }
-                    current_text.push_str(&text);
-                }
+                let text = String::from_utf8_lossy(e.as_ref()).into_owned();
+                append_text(&text, &mut current_text);
             }
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("解析 Visio 页面 XML 失败: {}", e)),
@@ -886,7 +797,7 @@ fn extract_vsd_text(file_path: &Path) -> Result<String, String> {
     let text =
         String::from_utf8(output.stdout).map_err(|e| format!("VSD 输出不是有效 UTF-8: {}", e))?;
     if text.trim().is_empty() {
-        return Err("VSD 未提取到形状文字；如果蓝图主要是图片，请先导出为 PDF/图片后走 OCR，或在图形中补充文本标注".to_string());
+        return Err(format!("VSD {}", EMPTY_VISIO_HINT));
     }
     Ok(text)
 }

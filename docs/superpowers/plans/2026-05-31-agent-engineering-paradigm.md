@@ -2,6 +2,8 @@
 
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
+> **实施后状态（2026-06-13）：** 本计划规划的 `context_budget.rs` 模块在创建后未投入使用，已于 2026-06-13 清理。其余模块（`token.rs` / `model_metadata.rs` / `context_compressor.rs` / `agent_router.rs` 等）继续使用。
+
 **目标：** 在 KingdeeKB 项目中落地 Context Engineering + Plan-and-Execute + Harness Engineering 三层范式
 
 **架构：** 从下到上三层叠加：Context（精确 token 管理 + 动态预算）→ Plan（Planner + Replanner + 状态机）→ Harness（约束编码 + 验证循环 + 熵管理）。新增 10 个 Rust 服务模块，修改 rig_agent.rs、llm_service.rs、前端 Chat.tsx、AgentContext.tsx、Settings.tsx

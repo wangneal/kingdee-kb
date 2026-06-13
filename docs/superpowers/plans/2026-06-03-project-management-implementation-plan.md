@@ -2,6 +2,8 @@
 
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
+> **实施后状态（2026-06-13）：** 本计划提及的 `verification_cache.rs` / `verification_log.rs` / `smart_completion.rs` 模块在创建后未投入使用，已于 2026-06-13 清理。`verification_cache` / `verification_logs` 表的 `project_id` 隔离未实施。
+
 **目标：** 将 KingdeeKB 的字符串项目作用域统一升级为单数据库内的 `projects.id` 外键，并完成项目切换、阶段感知、跨项目搜索和风险跟踪统一归属。
 
 **架构：** 后端先在 `metadata.db` 中建立项目核心表和统一 `project_id` schema，再逐步改造各 Store、命令和搜索索引。前端随后把 `ProjectContext` 从字符串上下文升级为数字项目上下文，最后接入全局 ProjectSwitcher、概览页和各业务页面。

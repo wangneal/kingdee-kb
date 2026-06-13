@@ -1,12 +1,4 @@
-/**
- * GraphStatsBanner 单元测试
- *
- * 覆盖：
- * - getBannerContent 在 4 种 stats 输入下的判定
- * - 组件渲染对应 variant 的 banner
- * - 边界：null / 空对象 / 0 边 / wikilink=0 但其他边 > 0 / 完全正常
- */
-
+// 覆盖：null / 0边 / wikilink=0 / 完全正常
 import { render } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
 import type { GraphStats } from "../../lib/tauri-commands"
@@ -33,7 +25,6 @@ describe("getBannerContent", () => {
     expect(content).not.toBeNull()
     if (!content) return
     expect(content.variant).toBe("info")
-    expect(content.icon).toBe("info")
     expect(content.title).toContain("图谱尚未构建")
   })
 

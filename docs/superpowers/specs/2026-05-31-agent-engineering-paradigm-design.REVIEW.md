@@ -8,6 +8,8 @@
 - 实现计划：`docs/superpowers/plans/2026-05-31-agent-engineering-paradigm.md`
 - 实际代码：`src-tauri/src/`
 
+**更新（2026-06-13）**: 本审查报告所讨论的 `context_budget.rs`（Task 5）模块在创建后未投入使用，已于 2026-06-13 清理。
+
 ---
 
 ## 审查范围

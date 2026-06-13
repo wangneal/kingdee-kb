@@ -922,9 +922,6 @@ const MAX_RETRIES = 2
  * 前端应先调用 listenReActEvents() 监听事件，再调用此函数。
  *
  * 包含 3 分钟超时和最多 2 次指数退避重试（仅对超时错误重试）。
- *
- * 注意：Rust 端还有 _system_extra（未使用）参数，Tauri 默认 camelCase 转换后
- * 前端应传 _systemExtra。此处省略因为该参数在 Rust 中未使用。
  */
 export async function agentChat(
   message: string,
@@ -944,7 +941,6 @@ export async function agentChat(
         message,
         sessionId: sid,
         projectId: projectId ?? null,
-        riskProjectId: null,
         history: history ?? [],
         providerId: providerId ?? null,
         modelId: modelId ?? null,

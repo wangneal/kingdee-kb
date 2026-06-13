@@ -92,8 +92,6 @@ KingdeeKB/
 │       ├── tauri-commands.ts        # Tauri 命令封装（~1120 行）
 │       ├── skill-commands.ts        # 技能系统命令封装
 │       ├── skill-types.ts           # 技能系统类型
-│       ├── humanizer.ts             # 文本人性化
-│       ├── data-cleaner.ts          # 数据清洗
 │       └── clipboard-files.ts       # 剪贴板文件提取
 │
 ├── src-tauri/                      # Rust 后端

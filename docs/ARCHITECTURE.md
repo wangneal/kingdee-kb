@@ -318,7 +318,6 @@ sequenceDiagram
 | `token.rs` | 统一 Token 计数 | P0-a |
 | `types.rs` | 公共类型：AgentMode, BudgetPriority | P0-c |
 | `model_metadata.rs` | 模型能力自动获取 | P0-b |
-| `context_budget.rs` | 动态上下文预算 | P0-c |
 | `context_compressor.rs` | 分层摘要压缩 | P0-d |
 | `agent_router.rs` | 模式路由 (ReAct vs Plan-Execute) | P1-a |
 | `planner.rs` | Planner + Replanner | P1-b |

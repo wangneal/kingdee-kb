@@ -3,6 +3,7 @@
 > **版本**: v0.3（待审核）
 > **日期**: 2026-06-03
 > **状态**: 设计稿
+> **更新（2026-06-13）**: 本设计稿中规划的 `verification_cache` / `verification_logs` 表的 `project_id` 隔离字段、对应 `verification_cache.rs` / `verification_log.rs` / `smart_completion.rs` 模块均未投入使用，已于 2026-06-13 清理。
 
 ---
 

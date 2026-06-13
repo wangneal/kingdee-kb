@@ -1,24 +1,4 @@
-/**
- * AppError 全局 Provider — 监听后端 Tauri 错误，弹"配置 API Key"对话框。
- *
- * ## 工作流程
- *
- * 1. 业务代码在 catch 块里发现 LLM_INVALID_KEY，调
- *    `useAppError().showLlmKeyError(payload)` 把错误推到全局队列。
- * 2. Provider 维护一个 pending 错误队列，**同时只展示一个对话框**
- *    （避免错误风暴时弹十几个对话框把用户吓跑）。
- * 3. 用户点"去设置"→ 关闭对话框 + 跳转到 /settings。
- * 4. 用户点"稍后再说"→ 关闭对话框，错误继续保留在队列中（不再重弹，
- *    避免阻塞用户当前操作）。
- *
- * ## 边界
- *
- * - **不**接管普通 toast 错误，那些仍走 `useToast`。
- * - **不**自动 retry，避免静默重试造成雪崩。
- * - **不**在用户已经看到过一次 401 后继续弹；去重逻辑见 [`showLlmKeyError`]
- *   内的 `lastShownAt` 节流。
- */
-
+// 全局监听后端 Tauri 错误。错误进队列，同 provider 5 秒内不重复弹。
 import { AlertTriangle, Key, Settings, X } from "lucide-react"
 import {
   createContext,
@@ -33,15 +13,7 @@ import { useNavigate } from "react-router-dom"
 import type { AppErrorPayload } from "../lib/app-error"
 
 interface AppErrorContextValue {
-  /**
-   * 推送一个 LLM API Key 错误。
-   *
-   * 重复错误（同 provider_id 在 5 秒内）会被节流，避免多个并发失败
-   * 导致用户被弹 N 次对话框。
-   */
   showLlmKeyError: (payload: AppErrorPayload) => void
-  /** 当前是否正在显示 API Key 对话框 */
-  hasPendingLlmKeyError: boolean
 }
 
 const AppErrorContext = createContext<AppErrorContextValue | null>(null)
@@ -66,7 +38,6 @@ export function AppErrorProvider({ children }: { children: ReactNode }) {
 
       const now = Date.now()
       const last = lastShownAtRef.current
-      // 同 provider 5 秒内不重复弹
       if (
         last &&
         last.providerId === (payload.provider_id ?? "") &&
@@ -76,7 +47,6 @@ export function AppErrorProvider({ children }: { children: ReactNode }) {
       }
 
       if (currentError) {
-        // 已有对话框在展示 → 排队
         const providerKey = payload.provider_id ?? ""
         const duplicateInQueue = queueRef.current.some((e) => (e.provider_id ?? "") === providerKey)
         if (!duplicateInQueue) {
@@ -93,10 +63,8 @@ export function AppErrorProvider({ children }: { children: ReactNode }) {
 
   const dismiss = useCallback(() => {
     setCurrentError(null)
-    // 显示完一个后，弹队列里下一个（如果有）
     const next = queueRef.current.shift()
     if (next) {
-      // 跳过 throttle：队列里的都是用户没看过的
       lastShownAtRef.current = null
       setCurrentError(next)
     }
@@ -111,9 +79,8 @@ export function AppErrorProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AppErrorContextValue>(
     () => ({
       showLlmKeyError,
-      hasPendingLlmKeyError: currentError !== null,
     }),
-    [showLlmKeyError, currentError],
+    [showLlmKeyError],
   )
 
   return (
@@ -130,8 +97,6 @@ export function AppErrorProvider({ children }: { children: ReactNode }) {
   )
 }
 
-// ── 对话框组件 ──────────────────────────────────────────────────────
-
 interface ApiKeyConfigDialogProps {
   error: AppErrorPayload
   onDismiss: () => void
@@ -139,9 +104,6 @@ interface ApiKeyConfigDialogProps {
 }
 
 function ApiKeyConfigDialog({ error, onDismiss, onGoToSettings }: ApiKeyConfigDialogProps) {
-  // provider_id 缺失时仍展示（用户进设置页自查哪个 Key 失效了）
-  const hasProvider = Boolean(error.provider_id)
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
@@ -173,10 +135,7 @@ function ApiKeyConfigDialog({ error, onDismiss, onGoToSettings }: ApiKeyConfigDi
               LLM API Key 失效
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-neutral-600">
-              {hasProvider
-                ? `供应商「${error.provider_id}」的 API Key 已失效或被吊销。`
-                : "默认 LLM 供应商的 API Key 已失效或被吊销。"}
-              请到设置页更换 Key 后重试。
+              供应商「{error.provider_id ?? "默认"}」的 API Key 已失效或被吊销。请到设置页更换 Key 后重试。
             </p>
           </div>
         </div>

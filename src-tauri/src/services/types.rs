@@ -4,7 +4,7 @@
 use bitflags::bitflags;
 
 bitflags! {
-    /// Agent 执行模式（位掩码，支持 context_budget 的 mask 操作）
+    /// Agent 执行模式（位掩码）
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct AgentMode: u32 {
         const RagChat     = 0b001;

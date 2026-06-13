@@ -3,6 +3,8 @@
 > Context Engineering + Plan-and-Execute + Harness Engineering
 >
 > 日期：2026-05-31
+>
+> **更新（2026-06-13）**: 本设计稿中规划的 `context_budget.rs` 模块在创建后未投入使用，已于 2026-06-13 清理。其余模块（`token.rs` / `model_metadata.rs` / `context_compressor.rs` / `agent_router.rs` 等）继续使用。
 
 ## 1. 背景与动机
 

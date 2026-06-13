@@ -139,15 +139,10 @@ fn truncate_risk_evidence(content: &str, max_chars: usize) -> String {
 /// 两种是数据库里实际存的格式（planned_* 存日期，actual_* 存 datetime）。
 fn parse_flexible_date(input: &str) -> Option<chrono::NaiveDate> {
     use chrono::NaiveDate;
+    // 长串截前 10 字符即可剥掉 " 03:13:48" 形式的时分秒
     let s = input.trim();
-    if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return Some(d);
-    }
-    if let Ok(d) = NaiveDate::parse_from_str(&s[..10], "%Y-%m-%d") {
-        // `2026-06-04 03:13:48` 形式
-        return Some(d);
-    }
-    None
+    let date_part = if s.len() >= 10 { &s[..10] } else { s };
+    NaiveDate::parse_from_str(date_part, "%Y-%m-%d").ok()
 }
 
 /// 单阶段进度判定（无级联）
@@ -703,10 +698,8 @@ pub async fn analyze_fit_gap(
 pub async fn agent_chat(
     app_handle: tauri::AppHandle,
     message: String,
-    _system_extra: Option<String>,
     session_id: String,
     project_id: Option<i64>,
-    _risk_project_id: Option<i64>,
     history: Option<Vec<crate::services::llm_service::ChatMessage>>,
     provider_id: Option<String>,
     model_id: Option<String>,
