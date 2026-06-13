@@ -16,20 +16,22 @@ import {
   Trash2,
   X,
 } from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useToast } from "../components/Toast"
 import { DEFAULT_SLOT, useAgent } from "../contexts/AgentContext"
+import { useAppError } from "../contexts/AppErrorContext"
 import { useProject } from "../contexts/ProjectContext"
+import { formatAppError, parseAppError } from "../lib/app-error"
 import {
   addScopeItem,
   analyzeFitGap,
   type CandidateScopeItem,
   type ContractScopeItem,
+  type ContractScopeProgressEvent,
   checkScopeCreep,
   confirmScopeItems,
-  type ContractScopeProgressEvent,
   type DefenseScriptResult,
   type DocumentMeta,
   deleteScopeItem,
@@ -39,8 +41,8 @@ import {
   generateRiskReport,
   getProjectHealth,
   listDocuments,
-  listScopeItems,
   listenContractScopeProgress,
+  listScopeItems,
   type ProjectHealthScore,
   recordHealthMetric,
   type ScopeCreepResult,
@@ -120,6 +122,7 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [scopeProgress, setScopeProgress] = useState<ContractScopeProgressEvent | null>(null)
   const toast = useToast()
+  const { showLlmKeyError } = useAppError()
   const activeProjectRef = useRef(projectId)
 
   useEffect(() => {
@@ -253,7 +256,13 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
       const r = await checkScopeCreep(projectId, newReq.trim())
       if (activeProjectRef.current === projectId) setCheckResult(r)
     } catch (e) {
-      toast.error(String(e))
+      // LLM Key 失效 → 弹配置对话框
+      const parsed = parseAppError(e)
+      if (parsed?.code === "LLM_INVALID_KEY") {
+        showLlmKeyError(parsed)
+      } else {
+        toast.error(formatAppError(e))
+      }
     }
     if (activeProjectRef.current === projectId) setLoading(false)
   }
@@ -305,7 +314,14 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
         }
       }
     } catch (e) {
-      const message = `提取失败: ${String(e)}`
+      // LLM Key 失效 → 弹配置对话框
+      const parsed = parseAppError(e)
+      if (parsed?.code === "LLM_INVALID_KEY") {
+        showLlmKeyError(parsed)
+        setExtractError("LLM API Key 失效，请配置后重试")
+        return
+      }
+      const message = `提取失败: ${formatAppError(e)}`
       setExtractError(message)
       toast.error(message)
     }
@@ -528,7 +544,9 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
               <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
                 <div className="flex items-center gap-2">
                   <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-600" />
-                  <span className="text-xs font-medium text-amber-800">{scopeProgress.message}</span>
+                  <span className="text-xs font-medium text-amber-800">
+                    {scopeProgress.message}
+                  </span>
                 </div>
                 {scopeProgress.total > 0 && (
                   <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-amber-200">
@@ -672,6 +690,7 @@ function HealthTab({ projectId }: { projectId: number | null }) {
   const [metricNotes, setMetricNotes] = useState("")
   const [metricSaving, setMetricSaving] = useState(false)
   const toast = useToast()
+  const { showLlmKeyError } = useAppError()
   const activeProjectRef = useRef(projectId)
 
   useEffect(() => {
@@ -713,10 +732,16 @@ function HealthTab({ projectId }: { projectId: number | null }) {
       const report = await generateRiskReport(projectId, "")
       if (activeProjectRef.current === projectId) setAiReport(report)
     } catch (e) {
-      toast.error(`分析失败: ${String(e)}`)
+      // LLM Key 失效 → 弹配置对话框
+      const parsed = parseAppError(e)
+      if (parsed?.code === "LLM_INVALID_KEY") {
+        showLlmKeyError(parsed)
+      } else {
+        toast.error(`分析失败: ${formatAppError(e)}`)
+      }
     }
     if (activeProjectRef.current === projectId) setAiLoading(false)
-  }, [health, aiLoading, projectId, toast.error])
+  }, [health, aiLoading, projectId, toast, showLlmKeyError])
 
   const handleRecordMetric = useCallback(async () => {
     if (projectId === null) return
@@ -965,8 +990,17 @@ function HealthTab({ projectId }: { projectId: number | null }) {
               const result = await analyzeFitGap(projectId, fitGapInput)
               if (activeProjectRef.current === projectId) setFitGapResult(result)
             } catch (e) {
+              // LLM Key 失效 → 弹配置对话框
+              const parsed = parseAppError(e)
+              if (parsed?.code === "LLM_INVALID_KEY") {
+                showLlmKeyError(parsed)
+                if (activeProjectRef.current === projectId) {
+                  setFitGapResult("LLM API Key 失效，请配置后重试")
+                }
+                return
+              }
               if (activeProjectRef.current === projectId) {
-                setFitGapResult(`分析失败: ${String(e)}`)
+                setFitGapResult(`分析失败: ${formatAppError(e)}`)
               }
             }
             if (activeProjectRef.current === projectId) setFitGapLoading(false)
@@ -1016,6 +1050,7 @@ function ScriptsTab({ projectId }: { projectId: number | null }) {
   const [result, setResult] = useState<DefenseScriptResult | null>(null)
   const [loading, setLoading] = useState(false)
   const toast = useToast()
+  const { showLlmKeyError } = useAppError()
   const activeProjectRef = useRef(projectId)
 
   useEffect(() => {
@@ -1037,7 +1072,13 @@ function ScriptsTab({ projectId }: { projectId: number | null }) {
       })
       if (activeProjectRef.current === projectId) setResult(r)
     } catch (e) {
-      toast.error(String(e))
+      // LLM Key 失效 → 弹配置对话框
+      const parsed = parseAppError(e)
+      if (parsed?.code === "LLM_INVALID_KEY") {
+        showLlmKeyError(parsed)
+      } else {
+        toast.error(formatAppError(e))
+      }
     }
     if (activeProjectRef.current === projectId) setLoading(false)
   }

@@ -67,6 +67,82 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # ── Windows 专用：构建"绿色版" zip ───────────────────────────
+      # 思路：跳过 NSIS/MSI 打包，只产出原始 .exe + 运行时 DLL，
+      #       再用 PowerShell 打成 zip 作为便携版（绿色版）。
+      # 时机：在 tauri-action 之前跑，让 tauri-action 复用编译缓存。
+      - name: Build Windows portable (no bundle, then zip)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # 1) 仅编译二进制，不打包 installer
+          npm run tauri:build -- --target ${{ matrix.target }} --no-bundle
+          if ($LASTEXITCODE -ne 0) { throw "tauri build (no-bundle) 失败" }
+
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $binDir  = "src-tauri/target/${{ matrix.target }}/release"
+          $name    = "KingdeeKB-${version}-windows-x64-portable"
+          $stage   = "build/${name}"
+
+          if (-not (Test-Path "$binDir/kingdee-kb.exe")) {
+            throw "找不到编译产物 $binDir/kingdee-kb.exe"
+          }
+
+          # 2) 准备绿色版目录
+          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+
+          # 3) 复制主可执行文件
+          Copy-Item "$binDir/kingdee-kb.exe" $stage
+
+          # 4) 复制运行时 DLL（vcrt、WebView2Loader 等）
+          Get-ChildItem "$binDir/*.dll" -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $stage
+
+          # 5) 复制 resources 目录（embedding 模型 + skills）
+          #    tauri build --no-bundle 不会自动复制 bundle.resources，
+          #    这里从源码目录拷贝到与 .exe 同级，让 PathResolver 能找到。
+          $srcResources = "src-tauri/resources"
+          if (Test-Path $srcResources) {
+            Copy-Item $srcResources "$stage/resources" -Recurse -Force
+          }
+          $srcSkills = "skills"
+          if (Test-Path $srcSkills) {
+            Copy-Item $srcSkills "$stage/skills" -Recurse -Force
+          }
+
+          # 6) 写入使用说明
+          @"
+          KingdeeKB 绿色版 v${version}
+          ==============================
+
+          使用方法
+          --------
+          1. 解压到任意目录（建议路径无中文、无空格）
+          2. 双击 kingdee-kb.exe 即可运行
+          3. 首次启动会自动创建用户数据目录：%APPDATA%\com.neal.kingdee-kb
+          4. 进入「设置」配置 LLM API Key
+
+          注意事项
+          --------
+          - 需要 WebView2 Runtime：Win11 已预装，Win10 需手动安装
+            下载：https://developer.microsoft.com/microsoft-edge/webview2/
+          - 绿色版与安装版共用用户数据目录，可任意切换
+          - 升级时直接覆盖整个目录即可（保留数据目录）
+          - 杀毒软件可能误报，请将整个目录加入白名单
+          "@ | Out-File "$stage/README.txt" -Encoding UTF8
+
+          # 7) 打包成 zip
+          $zip = "build/${name}.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path $stage -DestinationPath $zip -CompressionLevel Optimal
+
+          Write-Host "=== 绿色版构建完成 ==="
+          Get-ChildItem $zip | Select-Object Name, @{N='Size(MB)';E={[math]::Round($_.Length/1MB,2)}}
+
+      # ── 标准安装包构建（NSIS / MSI / DMG / AppImage / deb）──
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -78,24 +154,45 @@ jobs:
           releaseName: "KingdeeKB ${{ github.ref_name }}"
           releaseBody: |
             ## KingdeeKB ${{ github.ref_name }}
-            
+
             金蝶 ERP 实施知识库桌面应用 — AI 驱动的调研助手、风险把控、文档生成。
-            
+
             ### 下载说明
-            - **Windows**: 下载 `.msi` 或 `.exe` 安装包
-            - **macOS**: 下载 `.dmg` 文件（ARM 用于 Apple Silicon，x64 用于 Intel）
-            - **Linux**: 下载 `.AppImage` 或 `.deb` 文件
-            
+
+            **Windows**
+            - `.msi` / `.exe`：标准安装包（推荐，含卸载程序、开始菜单快捷方式）
+            - `-portable.zip`：绿色版（无需安装，解压即用，适合便携场景）
+
+            **macOS**
+            - `.dmg`（ARM 用于 Apple Silicon，x64 用于 Intel）
+
+            **Linux**
+            - `.AppImage`：免安装，`chmod +x` 后直接运行
+            - `.deb`：Debian / Ubuntu 安装包
+
             ### 首次使用
-            1. 安装后打开应用
+            1. 启动应用
             2. 进入「设置」配置 LLM API Key
             3. 在「知识库」中导入文档
-            4. 开始在「AI 助手」中提问
+            4. 在「AI 助手」中开始提问
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
 
-  # Smoke test: verify the app compiles without errors
+      # ── Windows: 上传绿色版到 release ─────────────────────
+      - name: Upload portable to release
+        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Get-ChildItem build/KingdeeKB-*-windows-x64-portable.zip | Select-Object -First 1
+          if (-not $zip) { throw "找不到绿色版 zip" }
+          gh release upload "${{ github.ref_name }}" $zip.FullName --clobber
+          Write-Host "已上传 $($zip.Name) 到 release ${{ github.ref_name }}"
+
+  # 烟雾测试：每个 push 跑一次（不打 release）
   check:
     runs-on: ubuntu-22.04
     name: Lint & Type Check

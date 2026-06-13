@@ -15,9 +15,10 @@ static RE_YAML_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?s)```yaml\s*\n?(.*?)```").expect("编译正则失败: RE_YAML_BLOCK")
 });
 
-/// 匹配 markdown 代码块 ```markdown ... ```
+/// 匹配 markdown 代码块 ```markdown ... ``` 或 LLM 简写 ```md ... ```
 static RE_MD_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?s)```markdown\s*\n?(.*?)```").expect("编译正则失败: RE_MD_BLOCK")
+    Regex::new(r"(?s)```(?:markdown|md)\s*\n?(.*?)```")
+        .expect("编译正则失败: RE_MD_BLOCK")
 });
 
 use crate::services::analysis_cache::AnalysisCacheStore;
@@ -245,6 +246,7 @@ async fn run_llm_compilation(
         "",
         &valid_slugs,
     );
+
     let wikilinks_json = serde_json::to_string(&wikilinks)
         .map_err(|e| format!("序列化 wikilinks 失败: {}", e))?;
 
@@ -308,6 +310,28 @@ fn build_compilation_prompt(analysis: &DocumentAnalysis, existing_slugs: &[(Stri
             .join("\n")
     };
 
+    // 强制要求：LLM 必须在正文中使用 `[[slug]]` 引用至少 1 个已有页面，
+    // 否则知识图谱 S1 (wikilink) 信号为零，只有 tag/source 边。
+    let must_cite_section = if existing_slugs.is_empty() {
+        String::new()
+    } else {
+        let top_list: String = existing_slugs
+            .iter()
+            .take(5)
+            .map(|(s, _)| s.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            r#"
+## ⛔ 强制：正文必须含 `[[slug]]` 引用
+
+候选 slug（前 5）：{top_list}
+
+规则：至少 1 个 `[[xxx]]`；只能引用上述 slug，禁止编造。
+"#
+        )
+    };
+
     format!(
         r#"你是一个知识库维基页面生成专家。请根据以下文档分析结果，生成一篇维基百科风格的页面内容。
 
@@ -329,17 +353,14 @@ fn build_compilation_prompt(analysis: &DocumentAnalysis, existing_slugs: &[(Stri
 ## 项目已有页面（可被引用）
 
 {existing_pages}
+{must_cite}
 
-如果当前文档的内容涉及上述任何页面，请在正文中用 Obsidian 风格的 `[[slug]]` 或 `[[slug|显示文本]]` 引用它们。
-例如：本文档可以参考 `[[other-page-slug]]` 中的详细说明。
-**重要**：只能引用上述列表中的 slug，不要编造不存在的页面。
+## 输出要求（严格遵守）
 
-## 输出要求
-
-1. 生成标准 Markdown 格式内容，以 YAML 前置元数据开头
+1. 生成标准 Markdown 格式内容
 2. 第一段必须是页面概述（200 字以内）
 3. 随后展开详细内容，引用文档中的要点
-4. 涉及相关概念时优先用 `[[slug]]` 引用项目已有页面（而不是普通文本）
+4. **必须**在正文中使用 `[[slug]]` 引用项目已有页面（见上方"强制要求"）
 5. 输出格式（严格按此结构，``` 不可省略）：
 
 ```yaml
@@ -349,11 +370,11 @@ tags: [标签1, 标签2, 标签3]
 ```markdown
 ## 概述
 
-（概述内容）
+（概述内容，必须含至少 1 个 `[[slug]]` 引用）
 
 ## 正文
 
-（详细展开内容，含 `[[slug]]` 引用）
+（详细展开内容，每讨论一个相关概念都应使用 `[[slug]]` 引用）
 ```"#,
         title = analysis.title,
         keywords = keywords_str,
@@ -364,6 +385,7 @@ tags: [标签1, 标签2, 标签3]
         headings = headings_str,
         cross_refs = cross_refs_str,
         existing_pages = existing_pages_str,
+        must_cite = must_cite_section,
     )
 }
 
@@ -394,7 +416,17 @@ async fn call_llm_for_compilation(
     let messages = vec![
         crate::services::llm_service::ChatMessage {
             role: "system".to_string(),
-            content: "你是一个知识库维基页面生成专家。严格按照输出格式生成内容。".to_string(),
+            content: r#"你是金蝶 ERP 实施知识库的维基页面生成助手。
+
+## 核心要求
+
+1. **严格按输出格式**：必须输出 ` ```yaml ` 代码块（标签）和 ` ```markdown ` 代码块（正文），不要省略
+2. **必须生成 wiki 链接**：在正文中使用 `[[slug]]` 引用项目已有页面，**至少 1 个**。0 个引用 = 视为无效输出
+3. **禁止编造**：只能引用用户提供的 slug 列表中的页面，不存在的 slug 一律不写
+4. **忠于原文**：基于提供的文档分析结果（关键词/概念/实体）生成内容，不要凭空补充
+5. **结构清晰**：使用二级标题分章节，正文段落完整、含具体细节
+"#
+            .to_string(),
         },
         crate::services::llm_service::ChatMessage {
             role: "user".to_string(),
@@ -423,31 +455,26 @@ async fn call_llm_for_compilation(
     Ok((markdown_body, tags_json))
 }
 
-/// 解析 LLM 编译响应，提取 tags 和 markdown 正文
+/// 解析 LLM 编译响应，提取 tags 和 markdown 正文。
+/// 兼容 ```yaml / ```markdown / ```md 三种代码块形式。
 fn parse_compilation_response(text: &str) -> (String, String) {
     let text = text.trim();
-
-    // 尝试提取 ```yaml ... ``` 块中的 tags
-    let tags = if let Some(cap) = RE_YAML_BLOCK.captures(text) {
-        let yaml_block = cap[1].trim();
-        // 从 YAML 中提取 tags 行
-        if let Some(tags_line) = yaml_block.lines().find(|l| l.trim().starts_with("tags:")) {
-            tags_line.trim_start_matches("tags:").trim().to_string()
-        } else {
-            String::new()
-        }
-    } else {
-        String::new()
-    };
-
-    // 提取 ```markdown ... ``` 块中的正文
-    let body = if let Some(cap) = RE_MD_BLOCK.captures(text) {
-        cap[1].trim().to_string()
-    } else {
-        // 退回到直接取全部文本
-        text.to_string()
-    };
-
+    let tags = RE_YAML_BLOCK
+        .captures(text)
+        .and_then(|cap| {
+            cap[1]
+                .lines()
+                .find(|l| l.trim().starts_with("tags:"))
+                .map(|l| l.trim_start_matches("tags:").trim().to_string())
+        })
+        .unwrap_or_default();
+    let body = RE_MD_BLOCK
+        .captures(text)
+        .map(|cap| cap[1].trim().to_string())
+        .unwrap_or_else(|| {
+            // 没有 markdown 块：去掉 yaml 块后剩下的就是正文
+            RE_YAML_BLOCK.replace_all(text, "").trim().to_string()
+        });
     (tags, body)
 }
 
@@ -714,6 +741,31 @@ mod tests {
     #[test]
     fn test_slugify_empty() {
         assert_eq!(slugify(""), "");
+    }
+
+    #[test]
+    fn test_parse_compilation_response_fallback_to_md() {
+        let text = r#"```yaml
+tags: [a, b]
+```
+
+```md
+## 概述
+- 测试
+```"#;
+        let (tags, body) = parse_compilation_response(text);
+        assert!(tags.contains("a"));
+        assert!(body.contains("测试"));
+    }
+
+    #[test]
+    fn test_parse_compilation_response_fallback_to_text() {
+        let text = "## 概述\n\n这是概述内容。\n\n## 正文\n\n这是正文。";
+        let (tags, body) = parse_compilation_response(text);
+        // tags 应该是空的（没有 yaml 块）
+        assert!(tags.is_empty());
+        // body 应该包含正文
+        assert!(body.contains("这是概述内容"));
     }
 
     #[test]

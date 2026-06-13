@@ -2,6 +2,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::app_state::AppState;
+use crate::error::AppError;
 use crate::services::audio_capture::AudioCapture;
 use crate::services::llm_service::ChatMessage;
 use crate::services::model_downloader;
@@ -227,7 +228,7 @@ pub async fn transcribe_whisper_recording_chunk(
 pub async fn review_transcription_text(
     state: State<'_, AppState>,
     text: String,
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     let raw_text = text.trim();
     if raw_text.is_empty() {
         return Ok(String::new());
@@ -237,7 +238,8 @@ pub async fn review_transcription_text(
         return Ok(raw_text.to_string());
     }
 
-    let config = state.llm.get_active_config()?;
+    let config = state.llm.get_active_config().map_err(AppError::Internal)?;
+    let provider_id = config.id.clone();
     let clipped_text = truncate_to_tokens(raw_text, 6000);
     let messages = vec![
         ChatMessage {
@@ -260,7 +262,11 @@ pub async fn review_transcription_text(
         },
     ];
 
-    let reviewed = state.llm.chat_completion(&messages, &config).await?;
+    let reviewed = state
+        .llm
+        .chat_completion(&messages, &config)
+        .await
+        .map_err(|e| AppError::classify_llm_error(provider_id, &e))?;
     let reviewed = reviewed.trim();
     if reviewed.is_empty() {
         Ok(raw_text.to_string())

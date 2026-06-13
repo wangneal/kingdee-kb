@@ -3,6 +3,7 @@ use tauri::{Emitter, State};
 use std::collections::HashSet;
 
 use crate::app_state::AppState;
+use crate::error::AppError;
 use crate::services::hybrid_search;
 use crate::services::question_tool;
 use crate::services::react_agent::ReActEvent;
@@ -12,6 +13,33 @@ use crate::services::risk_control::{
 };
 
 // ─── P1: 双轨风险把控舱 ───
+
+/// 行业典型阶段排期窗口：(min_day, max_day)。不在表里的阶段不调整。
+const PHASE_WINDOWS: &[(&str, u32, u32)] = &[
+    ("上线", 1, 1),   // 月初或年初
+    ("验收", 8, 22),  // 月中
+    ("测试", 15, 31), // 月底前两周
+];
+
+/// 阶段级联：把线性顺延结果调整到行业窗口。
+/// - 早于当前月窗口起点 → 推到当前月窗口起点
+/// - 落在窗口内 → 不动
+/// - 晚于当前月窗口终点 → 推到下月窗口起点
+fn adjust_to_phase_window(phase_name: &str, linear: chrono::NaiveDate) -> chrono::NaiveDate {
+    use chrono::{Datelike, NaiveDate};
+    let Some(&(_, min_d, max_d)) = PHASE_WINDOWS.iter().find(|(n, _, _)| *n == phase_name) else {
+        return linear;
+    };
+    let day = linear.day();
+    if day < min_d {
+        return NaiveDate::from_ymd_opt(linear.year(), linear.month(), min_d).unwrap_or(linear);
+    }
+    if day > max_d {
+        let (y, m) = if linear.month() == 12 { (linear.year() + 1, 1) } else { (linear.year(), linear.month() + 1) };
+        return NaiveDate::from_ymd_opt(y, m, min_d).unwrap_or(linear);
+    }
+    linear
+}
 
 #[tauri::command]
 pub async fn add_scope_item(
@@ -107,15 +135,32 @@ fn truncate_risk_evidence(content: &str, max_chars: usize) -> String {
     }
 }
 
+/// 解析日期字符串：`%Y-%m-%d` 或 `%Y-%m-%d %H:%M:%S`。
+/// 两种是数据库里实际存的格式（planned_* 存日期，actual_* 存 datetime）。
+fn parse_flexible_date(input: &str) -> Option<chrono::NaiveDate> {
+    use chrono::NaiveDate;
+    let s = input.trim();
+    if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Some(d);
+    }
+    if let Ok(d) = NaiveDate::parse_from_str(&s[..10], "%Y-%m-%d") {
+        // `2026-06-04 03:13:48` 形式
+        return Some(d);
+    }
+    None
+}
+
+/// 单阶段进度判定（无级联）
+///
+/// 仅基于本阶段的 planned/actual 判定自身超期情况，不考虑前置阶段的顺延。
+/// 级联延迟由 `assess_phase_schedule_with_cascade` 统一处理。
 fn assess_phase_schedule(
     planned_end: Option<&str>,
     actual_end: Option<&str>,
     today: chrono::NaiveDate,
 ) -> String {
-    let planned_end =
-        planned_end.and_then(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok());
-    let actual_end =
-        actual_end.and_then(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok());
+    let planned_end = planned_end.and_then(parse_flexible_date);
+    let actual_end = actual_end.and_then(parse_flexible_date);
     match (planned_end, actual_end) {
         (Some(planned_end), Some(actual_end)) if actual_end > planned_end => {
             format!(
@@ -123,16 +168,69 @@ fn assess_phase_schedule(
                 (actual_end - planned_end).num_days()
             )
         }
+        (Some(_), Some(_)) => "已按计划日期完成（或提前完成）".to_string(),
         (Some(planned_end), None) if planned_end < today => {
             format!(
-                "截至分析日已超期 {} 天且未记录实际完成日期",
+                "计划完成日期已过 {} 天且未记录实际完成日期，判定为超期",
                 (today - planned_end).num_days()
             )
         }
-        (Some(_), Some(_)) => "已按计划日期完成".to_string(),
-        (Some(_), None) => "尚未到计划完成日或无法确认完成情况".to_string(),
-        (None, _) => "未设置计划完成日期，无法判断是否超期".to_string(),
+        (Some(_), None) => "计划完成日期未到，无实际完成记录".to_string(),
+        (None, Some(_)) => "无计划完成日期可比较，但已记录实际完成时间".to_string(),
+        (None, None) => "无计划完成日期且无实际完成记录".to_string(),
     }
+}
+
+/// 单阶段进度判定 + 级联延迟
+///
+/// 返回 (judgement, projected_end)：
+/// - judgement 含本阶段自身判定 + 可选"预计超期 N 天"段
+/// - projected_end 用于下一个阶段的 prev_projected_end
+fn assess_phase_schedule_with_cascade(
+    phase_name: Option<&str>,
+    planned_start: Option<&str>,
+    planned_end: Option<&str>,
+    actual_start: Option<&str>,
+    actual_end: Option<&str>,
+    prev_projected_end: Option<chrono::NaiveDate>,
+    today: chrono::NaiveDate,
+) -> (String, Option<chrono::NaiveDate>) {
+    let ps = planned_start.and_then(parse_flexible_date);
+    let pe = planned_end.and_then(parse_flexible_date);
+    let ae = actual_end.and_then(parse_flexible_date);
+    let mut judgement = assess_phase_schedule(planned_end, actual_end, today);
+
+    // 线性投影：本阶段"应该完成"的日期
+    let linear = if let Some(end) = ae {
+        Some(end) // 已完成
+    } else if actual_start.is_some() {
+        Some(today.max(pe.unwrap_or(today))) // 进行中
+    } else if let Some(prev) = prev_projected_end {
+        // 未开始 + 前置有延迟：最早开始 = max(prev, planned_start)；结束 = +计划工期
+        let dur = match (ps, pe) { (Some(s), Some(e)) => (e - s).num_days().max(0), _ => 0 };
+        Some(prev.max(ps.unwrap_or(prev)) + chrono::Duration::days(dur))
+    } else {
+        pe // 未开始 + 无前置延迟
+    };
+    // 行业窗口顺延（已完成不动；未完成 + 在典型窗口表内才调整）
+    let projected = linear.map(|d| match (ae, phase_name) {
+        (Some(_), _) => d,
+        (None, Some(name)) => adjust_to_phase_window(name, d),
+        _ => d,
+    });
+
+    // 级联延迟提示：本阶段未完成 + 投影晚于计划 → 追加"预计超期 N 天"
+    if let (Some(prev), Some(proj), Some(planned)) = (prev_projected_end, projected, pe) {
+        if ae.is_none() && proj > planned {
+            judgement.push_str(&format!(
+                "；前置阶段预计 {} 完成，本阶段预计超期 {} 天（计划完成 {}）",
+                prev,
+                (proj - planned).num_days(),
+                planned
+            ));
+        }
+    }
+    (judgement, projected)
 }
 
 fn collect_project_risk_evidence(
@@ -164,15 +262,25 @@ fn collect_project_risk_evidence(
         let phase_summary = if phases.is_empty() {
             "暂无项目阶段计划数据".to_string()
         } else {
-            phases
+            // 按 phase_index 排序，保证级联从前向后计算
+            let mut sorted_phases: Vec<&_> = phases.iter().collect();
+            sorted_phases.sort_by_key(|p| p.phase_index);
+
+            let mut prev_projected_end: Option<chrono::NaiveDate> = None;
+            sorted_phases
                 .iter()
                 .enumerate()
                 .map(|(index, phase)| {
-                    let schedule_judgement = assess_phase_schedule(
+                    let (schedule_judgement, projected) = assess_phase_schedule_with_cascade(
+                        Some(&phase.phase_name),
+                        phase.planned_start.as_deref(),
                         phase.planned_end.as_deref(),
+                        phase.actual_start.as_deref(),
                         phase.actual_end.as_deref(),
+                        prev_projected_end,
                         today,
                     );
+                    prev_projected_end = projected;
                     format!(
                         "【阶段计划{}】{}：状态={}；计划={} 至 {}；实际={} 至 {}；进度判断={}",
                         index + 1,
@@ -342,33 +450,72 @@ fn collect_project_risk_evidence(
 
 #[cfg(test)]
 mod risk_evidence_tests {
-    use super::assess_phase_schedule;
+    use super::{adjust_to_phase_window, assess_phase_schedule, assess_phase_schedule_with_cascade, parse_flexible_date};
 
+    /// 项目 19 蓝图回归：actual_end 存 "2026-06-04 03:13:48" 形式。
+    /// 修复前误判为"已超期 149 天且未记录实际完成日期"，修复后必须返回"实际完成晚于计划 140 天"。
     #[test]
-    fn identifies_overdue_unfinished_phase() {
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 4).unwrap();
+    fn blueprint_late_completion_with_datetime_actual() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 13).unwrap();
+        let result = assess_phase_schedule(
+            Some("2026-01-15"),
+            Some("2026-06-04 03:13:48"),
+            today,
+        );
+        assert_eq!(result, "实际完成晚于计划 140 天");
+    }
+
+    /// 单阶段判定：计划未到 + 无实际完成
+    #[test]
+    fn pending_before_deadline() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 13).unwrap();
         assert_eq!(
-            assess_phase_schedule(Some("2026-05-30"), None, today),
-            "截至分析日已超期 5 天且未记录实际完成日期"
+            assess_phase_schedule(Some("2026-06-20"), None, today),
+            "计划完成日期未到，无实际完成记录"
         );
     }
 
+    /// 日期解析：纯日期 vs datetime
     #[test]
-    fn identifies_late_completed_phase() {
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 4).unwrap();
+    fn parse_flexible_date_both_formats() {
+        assert_eq!(parse_flexible_date("2026-01-15"), chrono::NaiveDate::from_ymd_opt(2026, 1, 15));
+        assert_eq!(parse_flexible_date("2026-06-04 03:13:48"), chrono::NaiveDate::from_ymd_opt(2026, 6, 4));
+    }
+
+    /// 行业窗口调整关键场景：上线 5/15 → 6/1
+    #[test]
+    fn adjust_to_phase_window_pushes_to_next_window() {
         assert_eq!(
-            assess_phase_schedule(Some("2026-05-30"), Some("2026-06-02"), today),
-            "实际完成晚于计划 3 天"
+            adjust_to_phase_window("上线", chrono::NaiveDate::from_ymd_opt(2026, 5, 15).unwrap()),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 1).unwrap()
+        );
+        assert_eq!(
+            adjust_to_phase_window("验收", chrono::NaiveDate::from_ymd_opt(2026, 6, 25).unwrap()),
+            chrono::NaiveDate::from_ymd_opt(2026, 7, 8).unwrap()
+        );
+        // 无窗口的阶段不动
+        assert_eq!(
+            adjust_to_phase_window("调研", chrono::NaiveDate::from_ymd_opt(2026, 5, 7).unwrap()),
+            chrono::NaiveDate::from_ymd_opt(2026, 5, 7).unwrap()
         );
     }
 
+    /// 级联延迟：前置上线已超期，验收应输出"预计超期 N 天"
     #[test]
-    fn reports_missing_planned_end() {
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 4).unwrap();
-        assert_eq!(
-            assess_phase_schedule(None, None, today),
-            "未设置计划完成日期，无法判断是否超期"
+    fn cascade_acceptance_phase_should_report_expected_overdue() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 13).unwrap();
+        let prev = chrono::NaiveDate::from_ymd_opt(2026, 7, 29).unwrap();
+        let (judgement, projected) = assess_phase_schedule_with_cascade(
+            Some("验收"),
+            Some("2026-06-15"),
+            Some("2026-06-20"),
+            None,
+            None,
+            Some(prev),
+            today,
         );
+        assert!(judgement.contains("预计超期"), "实际: {}", judgement);
+        assert!(projected.is_some());
     }
 }
 
@@ -523,9 +670,10 @@ pub async fn analyze_fit_gap(
     state: State<'_, AppState>,
     project_id: i64,
     requirements: String,
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     use crate::services::llm_service::ChatMessage;
-    let evidence_context = collect_project_risk_evidence(&state, project_id, &requirements)?;
+    let evidence_context = collect_project_risk_evidence(&state, project_id, &requirements)
+        .map_err(|e| AppError::Internal(e))?;
     let messages = vec![
         ChatMessage {
             role: "system".to_string(),
@@ -539,8 +687,13 @@ pub async fn analyze_fit_gap(
             ),
         },
     ];
-    let config = state.llm.get_active_config()?;
-    state.llm.chat_completion(&messages, &config).await
+    let config = state.llm.get_active_config().map_err(AppError::Internal)?;
+    let provider_id = config.id.clone();
+    state
+        .llm
+        .chat_completion(&messages, &config)
+        .await
+        .map_err(|e| AppError::classify_llm_error(provider_id, &e))
 }
 
 // --- Agent 对话 ---

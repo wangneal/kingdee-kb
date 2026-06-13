@@ -521,6 +521,7 @@ impl RiskControlStore {
         llm: &LLMService,
         additional_context: &str,
     ) -> Result<String, String> {
+        let today = chrono::Local::now().date_naive();
         let health = self.calculate_health_score(project_id)?;
         let metrics = self.get_all_recent_metrics(project_id)?;
         let scope_items = self.list_scope_items(project_id, None, None)?;
@@ -568,26 +569,43 @@ impl RiskControlStore {
         };
 
         let prompt = format!(
-            "当前项目健康评分：{}\n\
-             告警数：{}\n\n\
-             健康指标数据完整度：{:.0}%（共 {} 条记录）\n\
-             各维度评分：\n{}\n\n\
-             原始指标记录：\n{}\n\n\
-             已确认的合同范围基线：\n{}\n\n\
-             项目文档检索证据与补充上下文：\n{}\n\n\
-             请生成一份基于证据的实施爆雷预警报告，要求：\n\
+            "【重要：分析基准日期 = {today}】\n\
+             当前项目健康评分：{health_summary}\n\
+             告警数：{alerts}\n\
+             健康指标数据完整度：{completeness:.0}%（共 {metric_count} 条记录）\n\
+             各维度评分：\n{dimensions}\n\
+             \n\
+             原始指标记录：\n{metrics}\n\
+             \n\
+             已确认的合同范围基线：\n{scope}\n\
+             \n\
+             项目文档检索证据与补充上下文：\n{ctx}\n\
+             \n\
+             **行业排期规律参考**：\n\
+             - 上线：月初（每月 1 日）或年初（1 月 1 日），绝少在月中上线\n\
+             - 验收：月中（每月 8-22 日）\n\
+             - 测试：月底前两周（每月 15-31 日）\n\
+             - 调研/蓝图/开发/关闭：用户自排，无固定窗口\n\
+             \n\
+             请基于以上证据生成一份实施爆雷预警报告，要求：\n\
              1. 首先说明分析覆盖范围、数据完整度和无法判断的事项\n\
              2. 分析合同/SOW范围风险、计划进度与超期风险、问题阻塞、交付与客户配合风险\n\
-             3. 涉及日期时，以证据中的分析基准日期判断是否超期\n\
-             4. 每个事实性结论必须引用对应的【证据N】、【范围基线N】或【阶段计划N】；没有依据时明确写“暂无证据，无法判断”\n\
+             3. 涉及日期时，以上方\"分析基准日期 = {today}\"为今天，超期判断 = 计划完成日期 < {today} 且无实际完成日期\n\
+             4. 每个事实性结论必须引用对应的【证据N】、【范围基线N】或【阶段计划N】；没有依据时明确写“暂无证据，无法判断”，并指出应该从哪个文档/字段获取\n\
              5. 严格区分文档事实与合理推断，禁止编造里程碑、日期、进度或风险数据\n\
              6. 给出按优先级排序的缓解措施、建议负责人和建议完成期限\n\
-             7. 报告末尾列出实际引用的证据索引，包含证据编号、文档标题和章节",
-            health_score_summary,
-            health.alert_count,
-            health.data_completeness * 100.0,
-            health.metric_count,
-            health
+             7. 报告末尾列出实际引用的证据索引，包含证据编号、文档标题和章节\n\
+             \n\
+             **再次强调**：\n\
+             - 不要写“报告生成日期：”、“项目名称：”、“项目编号：”等元数据标题（由前端渲染）\n\
+             - 禁止使用 `[xxx]`、`{{xxx}}`、`<xxx>` 等占位符\n\
+             - 涉及具体日期必须用 YYYY-MM-DD 格式，不要写“今天”、“最近”",
+            today = today,
+            health_summary = health_score_summary,
+            alerts = health.alert_count,
+            completeness = health.data_completeness * 100.0,
+            metric_count = health.metric_count,
+            dimensions = health
                 .dimensions
                 .iter()
                 .map(|d| {
@@ -599,13 +617,13 @@ impl RiskControlStore {
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),
-            if metrics_summary.is_empty() {
+            metrics = if metrics_summary.is_empty() {
                 "暂无健康指标记录"
             } else {
                 &metrics_summary
             },
-            scope_summary,
-            additional_context
+            scope = scope_summary,
+            ctx = additional_context,
         );
 
         let messages = vec![
@@ -1323,7 +1341,25 @@ const SYSTEM_RISK_PROMPT: &str = "\
 核心原则：\n\
 - 立场中立，基于合同条款和项目数据做判断\n\
 - 不偏向客户或实施方\n\
-- 建议必须具体可执行";
+- 建议必须具体可执行\n\
+\n\
+**行业排期规律（用于判断阶段排期合理性）**：\n\
+- 上线：通常安排在月初或年初（财年/自然年），**绝少在月中上线**（月中上线会让首月业务数据不完整）\n\
+- 验收：通常安排在月中（月初上线、中旬客户初步使用、中下旬正式验收）\n\
+- 测试：通常安排在月底前两周（用户 UAT / 顾问陪跑测试在月末 2 周内完成）\n\
+- 调研/蓝图/开发/关闭：由用户和实施方根据实际情况协商排期，无固定规律\n\
+\n\
+**输出格式硬性要求**：\n\
+1. 不要在报告开头自己写\"报告生成日期\"、\"项目名称\"、\"项目编号\"等元数据标题——这些由前端渲染。\n\
+2. 禁止使用任何占位符文本（`[xxx]`、`{{xxx}}`、`<xxx>`、`xxx：` 后留空 等），所有信息必须来自下方提供的证据。\n\
+3. 禁止在数据缺失时用\"暂无数据\"、\"待补充\"等占位——必须明确写\"暂无证据，无法判断\"，并指出应该从哪个文档/字段获取。\n\
+4. 涉及日期时，统一用 YYYY-MM-DD 格式；不要写\"今天\"、\"昨天\"、\"最近\"等模糊词。\n\
+5. 直接进入风险分析正文，不要寒暄、不要总结陈词。\n\
+\n\
+**风险定级与建议原则**：\n\
+- 评估计划进度风险时，结合上述行业排期规律判断\"建议完成期限\"是否合理\n\
+- 若某阶段的计划完成日期不在该阶段的典型窗口内，必须在报告中指出\"排期与行业惯例不符，建议调整为 X\"，并给出具体日期\n\
+- 若前置阶段已超期导致后续阶段必然顺延，参考典型窗口推算\"最早合理完成日期\"，而非简单线性顺延";
 
 const SCRIPT_SYSTEM_PROMPT: &str = "\
 你是一个ERP实施领域的沟通专家，擅长为实施顾问编写高情商的沟通话术。\n\

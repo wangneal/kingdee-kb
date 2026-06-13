@@ -14,12 +14,15 @@ import { useCallback, useEffect, useState } from "react"
 import { useProject } from "../contexts/ProjectContext"
 import { getImportDialogDefaultPath } from "../lib/dialog-options"
 import {
+  addProjectProduct,
   createRawSource,
+  deleteProjectProduct,
   enqueueIngestion,
   getProject,
   getProjectPhases,
   type IngestionQueueItem,
   listIngestionQueue,
+  listProjectProducts,
   listRawSources,
   type Project,
   type ProjectPhase,
@@ -30,9 +33,6 @@ import {
   softDeleteRawSource,
   updateProject,
   updateProjectPhasePlan,
-  listProjectProducts,
-  addProjectProduct,
-  deleteProjectProduct,
 } from "../lib/project-commands"
 
 type Tab = "details" | "phases" | "sources" | "queue"

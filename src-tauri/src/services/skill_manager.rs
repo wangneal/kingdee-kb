@@ -12,7 +12,7 @@ use std::sync::RwLock;
 use crate::services::embedding::EmbeddingService;
 use crate::services::prompt_assembler::PromptAssembler;
 use crate::services::skill_loader::SkillLoader;
-use crate::services::skill_trigger::{SkillMatch, SkillTriggerEngine, TriggerContext};
+use crate::services::skill_trigger::SkillTriggerEngine;
 use crate::services::skill_types::{
     parse_skill_md, SharedResource, Skill, SkillCategory, SkillFile, SkillFull, SkillMetadata,
     SkillPhase,
@@ -282,27 +282,6 @@ impl SkillManager {
     fn init_trigger_engine(&mut self) {
         let skills: Vec<Skill> = self.skills.values().cloned().collect();
         self.trigger_engine = Some(SkillTriggerEngine::new(&skills));
-    }
-
-    /// 已弃用：命令层已改为直接 clone engine 后调用，请勿使用此方法
-    #[deprecated(note = "命令层直接使用 SkillTriggerEngine，此入口已废弃")]
-    pub async fn match_best_skill(
-        &self,
-        _context: &TriggerContext,
-        _embedding: &RwLock<EmbeddingService>,
-    ) -> Option<SkillMatch> {
-        None
-    }
-
-    /// 已弃用：命令层已改为直接 clone engine 后调用，请勿使用此方法
-    #[deprecated(note = "命令层直接使用 SkillTriggerEngine，此入口已废弃")]
-    pub async fn match_candidates(
-        &self,
-        _user_input: &str,
-        _limit: usize,
-        _embedding: &RwLock<EmbeddingService>,
-    ) -> Vec<SkillMatch> {
-        Vec::new()
     }
 
     /// 生成技能列表系统提示

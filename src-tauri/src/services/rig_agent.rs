@@ -30,7 +30,7 @@ use crate::services::planner::{self, PlanState, PlanStateMachine};
 use crate::services::product_store::ProductStore;
 use crate::services::project_store::ProjectStore;
 use crate::services::question_tool::PendingQuestions;
-use crate::services::react_agent::ReActEvent;
+use crate::services::react_agent::{is_llm_auth_error, ReActEvent};
 use crate::services::rig_provider::{
     build_anthropic_client, build_ollama_client, build_openai_client,
 };
@@ -174,18 +174,18 @@ impl RigAgent {
                 Ok(store) => match store.ensure_default_project() {
                     Ok(pid) => pid,
                     Err(e) => {
-                        let _ = sender.send(ReActEvent::Error {
-                            session_id: sid.clone(),
-                            message: format!("获取默认项目失败: {}", e),
-                        });
+                        let _ = sender.send(ReActEvent::error(
+                            sid.clone(),
+                            format!("获取默认项目失败: {}", e),
+                        ));
                         return;
                     }
                 },
                 Err(e) => {
-                    let _ = sender.send(ReActEvent::Error {
-                        session_id: sid.clone(),
-                        message: format!("获取项目锁失败: {}", e),
-                    });
+                    let _ = sender.send(ReActEvent::error(
+                        sid.clone(),
+                        format!("获取项目锁失败: {}", e),
+                    ));
                     return;
                 }
             },
@@ -434,10 +434,9 @@ impl RigAgent {
         let config = match llm.get_config_for_provider_model(effective_provider_id, model_id) {
             Ok(c) => c,
             Err(e) => {
-                let _ = sender.send(ReActEvent::Error {
-                    session_id: sid,
-                    message: e,
-                });
+                // 配置阶段还没有 provider_id（错误来自 active runtime provider），
+                // 用占位 id 让前端知道是 LLM 相关错误；用户进设置页查看具体供应商
+                let _ = sender.send(ReActEvent::llm_error(sid, e, "default"));
                 return;
             }
         };
@@ -480,10 +479,7 @@ impl RigAgent {
         let tool_config = match load_rig_tool_config(&data_dir) {
             Ok(config) => config,
             Err(e) => {
-                let _ = sender.send(ReActEvent::Error {
-                    session_id: sid,
-                    message: e,
-                });
+                let _ = sender.send(ReActEvent::error(sid, e));
                 return;
             }
         };
@@ -604,10 +600,7 @@ question 工具使用 questions 数组；如果缺少多项相关信息，可以
                     let client = match build_openai_client(&config) {
                         Ok(c) => c,
                         Err(e) => {
-                            let _ = sender.send(ReActEvent::Error {
-                                session_id: sid,
-                                message: e,
-                            });
+                            let _ = sender.send(ReActEvent::llm_error(sid, e, &config.id));
                             return;
                         }
                     };
@@ -678,6 +671,7 @@ question 工具使用 questions 数组；如果缺少多项相关信息，可以
                         &mut rate_limiter,
                         cancel_flag.clone(),
                         &mut agents_log,
+                        &config.id,
                     )
                     .await;
                 }
@@ -685,10 +679,7 @@ question 工具使用 questions 数组；如果缺少多项相关信息，可以
                     let client = match build_ollama_client(&config) {
                         Ok(c) => c,
                         Err(e) => {
-                            let _ = sender.send(ReActEvent::Error {
-                                session_id: sid,
-                                message: e,
-                            });
+                            let _ = sender.send(ReActEvent::llm_error(sid, e, &config.id));
                             return;
                         }
                     };
@@ -755,6 +746,7 @@ question 工具使用 questions 数组；如果缺少多项相关信息，可以
                         &mut rate_limiter,
                         cancel_flag.clone(),
                         &mut agents_log,
+                        &config.id,
                     )
                     .await;
                 }
@@ -762,10 +754,7 @@ question 工具使用 questions 数组；如果缺少多项相关信息，可以
                     let client = match build_anthropic_client(&config) {
                         Ok(c) => c,
                         Err(e) => {
-                            let _ = sender.send(ReActEvent::Error {
-                                session_id: sid,
-                                message: e,
-                            });
+                            let _ = sender.send(ReActEvent::llm_error(sid, e, &config.id));
                             return;
                         }
                     };
@@ -832,6 +821,7 @@ question 工具使用 questions 数组；如果缺少多项相关信息，可以
                         &mut rate_limiter,
                         cancel_flag,
                         &mut agents_log,
+                        &config.id,
                     )
                     .await;
                 }
@@ -840,10 +830,10 @@ question 工具使用 questions 数组；如果缺少多项相关信息，可以
         .await;
 
         if result.is_err() {
-            let _ = timeout_sender.send(ReActEvent::Error {
-                session_id: timeout_sid.clone(),
-                message: "会话超时（超过10分钟），请重新开始对话".to_string(),
-            });
+            let _ = timeout_sender.send(ReActEvent::error(
+                timeout_sid.clone(),
+                "会话超时（超过10分钟），请重新开始对话",
+            ));
             let _ = timeout_sender.send(ReActEvent::Done {
                 session_id: timeout_sid,
                 verification_report: None,
@@ -861,6 +851,8 @@ question 工具使用 questions 数组；如果缺少多项相关信息，可以
         rate_limiter: &mut ToolRateLimiter,
         cancel_flag: Option<Arc<AtomicBool>>,
         agents_log: &mut AgentsLog,
+        // P0-5：流式 401 时附带 error_code，前端弹"配置 API Key"对话框
+        provider_id: &str,
     ) {
         use rig_core::agent::MultiTurnStreamItem;
         use rig_core::streaming::{StreamedAssistantContent, StreamedUserContent};
@@ -875,10 +867,10 @@ question 工具使用 questions 数组；如果缺少多项相关信息，可以
 
         loop {
             if is_cancelled(&cancel_flag) {
-                let _ = sender.send(ReActEvent::Error {
-                    session_id: sid.to_string(),
-                    message: "用户已取消操作".to_string(),
-                });
+                let _ = sender.send(ReActEvent::error(
+                    sid.to_string(),
+                    "用户已取消操作",
+                ));
                 let _ = sender.send(ReActEvent::Done {
                     session_id: sid.to_string(),
                     verification_report: None,
@@ -919,11 +911,10 @@ question 工具使用 questions 数组；如果缺少多项相关信息，可以
 
                             // 速率限制检查
                             if !rate_limiter.check_and_record() {
-                                let _ = sender.send(ReActEvent::Error {
-                                    session_id: sid.to_string(),
-                                    message: "工具调用过于频繁（每分钟上限30次），请稍后重试"
-                                        .to_string(),
-                                });
+                                let _ = sender.send(ReActEvent::error(
+                                    sid.to_string(),
+                                    "工具调用过于频繁（每分钟上限30次），请稍后重试",
+                                ));
                                 return;
                             }
 
@@ -943,13 +934,13 @@ question 工具使用 questions 数组；如果缺少多项相关信息，可以
                                     .front()
                                     .map_or(false, |first| recent_calls.iter().all(|c| c == first))
                             {
-                                let _ = sender.send(ReActEvent::Error {
-                                    session_id: sid.to_string(),
-                                    message: format!(
+                                let _ = sender.send(ReActEvent::error(
+                                    sid.to_string(),
+                                    format!(
                                         "检测到死循环：连续 {} 次相同的工具调用，已中断。",
                                         DOOM_LOOP_THRESHOLD
                                     ),
-                                });
+                                ));
                                 return;
                             }
 
@@ -957,10 +948,10 @@ question 工具使用 questions 数组；如果缺少多项相关信息，可以
                             if let Some(violation) =
                                 constraint_checker.check_call(&current_step_id, &name, &args)
                             {
-                                let _ = sender.send(ReActEvent::Error {
-                                    session_id: sid.to_string(),
-                                    message: format!("工具约束违规: {}", violation),
-                                });
+                                let _ = sender.send(ReActEvent::error(
+                                    sid.to_string(),
+                                    format!("工具约束违规: {}", violation),
+                                ));
                                 return;
                             }
                         }
@@ -1038,10 +1029,10 @@ question 工具使用 questions 数组；如果缺少多项相关信息，可以
                             VerificationStatus::Exhausted(reason) => {
                                 warn!(session = %sid, reason = %reason, "result verifier exhausted");
                                 agents_log.record_failure("exhausted", &reason, &sid);
-                                let _ = sender.send(ReActEvent::Error {
-                                    session_id: sid.to_string(),
-                                    message: format!("连续验证失败: {}", reason),
-                                });
+                                let _ = sender.send(ReActEvent::error(
+                                    sid.to_string(),
+                                    format!("连续验证失败: {}", reason),
+                                ));
                                 return;
                             }
                             VerificationStatus::Pass => {}
@@ -1069,6 +1060,7 @@ question 工具使用 questions 数组；如果缺少多项相关信息，可以
                         error = %raw,
                         "stream error"
                     );
+                    let is_auth = is_llm_auth_error(&raw);
                     let message = if raw.contains("MaxTurnError") {
                         "工具调用轮次已达到上限。当前任务可能需要多步澄清、依赖安装或脚本授权；请补充关键材料后重试，或让助手继续上一轮未完成的生成。".to_string()
                     } else if looks_like_output_limit_error(&raw) {
@@ -1076,9 +1068,11 @@ question 工具使用 questions 数组；如果缺少多项相关信息，可以
                     } else {
                         format!("流式错误: {}", raw)
                     };
-                    let _ = sender.send(ReActEvent::Error {
-                        session_id: sid.to_string(),
-                        message,
+                    // P0-5：流式 401 时附带 error_code，前端弹"配置 API Key"对话框
+                    let _ = sender.send(if is_auth {
+                        ReActEvent::llm_error(sid.to_string(), message, provider_id)
+                    } else {
+                        ReActEvent::error(sid.to_string(), message)
                     });
                     return;
                 }
@@ -1392,10 +1386,10 @@ fn preview_text(text: &str, max_chars: usize) -> String {
 }
 
 fn send_cancelled(sender: &mpsc::UnboundedSender<ReActEvent>, session_id: &str) {
-    let _ = sender.send(ReActEvent::Error {
-        session_id: session_id.to_string(),
-        message: "用户已取消操作".to_string(),
-    });
+    let _ = sender.send(ReActEvent::error(
+        session_id.to_string(),
+        "用户已取消操作",
+    ));
     let _ = sender.send(ReActEvent::Done {
         session_id: session_id.to_string(),
         verification_report: None,

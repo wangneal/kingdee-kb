@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::app_state::AppState;
+use crate::error::AppError;
 use crate::services::llm_providers::{
     ApiKeyConfig, LLMProtocol, LLMProviderConfig, ModelConfig, OcrProviderConfig, OcrProviderType,
     ProviderPolicyConfig,
@@ -67,17 +68,20 @@ pub async fn fetch_llm_endpoint_models(
     protocol: String,
     base_url: String,
     api_key: Option<String>,
-) -> Result<RemoteModelListResult, String> {
+) -> Result<RemoteModelListResult, AppError> {
     let protocol = match protocol.to_lowercase().as_str() {
         "openai" => LLMProtocol::OpenAI,
         "anthropic" => LLMProtocol::Anthropic,
         "local" => LLMProtocol::Local,
-        _ => return Err(format!("不支持的协议: {}", protocol)),
+        _ => return Err(AppError::InvalidArgument(format!("不支持的协议: {}", protocol))),
     };
     let api_key = api_key.unwrap_or_default();
 
     {
-        let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
+        let manager = state
+            .llm_providers
+            .read()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
         if let Some(models) = manager.cached_remote_models(&protocol, &base_url, &api_key) {
             return Ok(RemoteModelListResult {
                 models,
@@ -86,14 +90,21 @@ pub async fn fetch_llm_endpoint_models(
         }
     }
 
+    // 服务层错误是 String；在 IPC 边界归类为 AppError
     let models =
         crate::services::llm_providers::LLMProviderManager::fetch_remote_models_from_endpoint(
-            &protocol, &base_url, &api_key,
+            &protocol,
+            &base_url,
+            &api_key,
         )
-        .await?;
+        .await
+        .map_err(|e| AppError::classify_llm_error("custom", &e))?;
 
     {
-        let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
+        let mut manager = state
+            .llm_providers
+            .write()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
         manager.remember_remote_models(&protocol, &base_url, &api_key, models.clone());
     }
 

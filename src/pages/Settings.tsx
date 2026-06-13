@@ -1,4 +1,3 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
 import { open } from "@tauri-apps/plugin-dialog"
 import {
   AlertTriangle,
@@ -30,8 +29,9 @@ import {
   Wrench,
   X,
 } from "lucide-react"
-import { useToast } from "../components/Toast"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
+import { useToast } from "../components/Toast"
 import {
   addLLMProvider,
   deleteLLMProvider,
@@ -706,7 +706,7 @@ export default function Settings() {
       toast.error(`保存模型规格覆盖失败: ${String(err)}`)
       setOverrideSaveMsg("保存失败")
     }
-  }, [overrideModelId, overrideContextWindow, overrideMaxOutput])
+  }, [overrideModelId, overrideContextWindow, overrideMaxOutput, toast.error])
 
   if (loading) {
     return (

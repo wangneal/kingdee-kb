@@ -27,8 +27,10 @@ import MindmapView from "../components/outliner/MindmapView"
 import OutlineTree from "../components/outliner/OutlineTree"
 import { useToast } from "../components/Toast"
 import { DEFAULT_SLOT, useAgent } from "../contexts/AgentContext"
+import { useAppError } from "../contexts/AppErrorContext"
 import { useOutline } from "../contexts/OutlineContext"
 import { useProject } from "../contexts/ProjectContext"
+import { formatAppError, parseAppError } from "../lib/app-error"
 import {
   type AsrConfigStatus,
   type AsrProviderInfo,
@@ -463,6 +465,7 @@ function SessionDetailView({
   const [activeTab, setActiveTab] = useState<"qa" | "outline" | "mindmap">(initialTab)
   const [copilotTab, setCopilotTab] = useState<"assistant" | "transcript">("assistant")
   const toast = useToast()
+  const { showLlmKeyError } = useAppError()
   const liveSampleRef = useRef(0)
   const liveTranscribingRef = useRef(false)
   const lastAutoPromptTranscriptRef = useRef("")
@@ -719,7 +722,13 @@ function SessionDetailView({
         const reviewedText = await reviewTranscriptionText(finalText)
         outputText = reviewedText.trim() || finalText
       } catch (err) {
-        toast.warning(`LLM 校订失败，已使用原始转写: ${String(err)}`)
+        // LLM Key 失效 → 弹配置对话框而不是静默吞掉错误
+        const parsed = parseAppError(err)
+        if (parsed?.code === "LLM_INVALID_KEY") {
+          showLlmKeyError(parsed)
+        } else {
+          toast.warning(`LLM 校订失败，已使用原始转写: ${formatAppError(err)}`)
+        }
       } finally {
         setReviewingTranscript(false)
       }
@@ -884,7 +893,8 @@ function SessionDetailView({
               {/* 供应商描述说明 */}
               {selectedAsrProvider === "whisper" ? (
                 <p className="text-[10px] text-neutral-400 mt-0.5">
-                  本地离线语音识别，无需网络，支持中文/英文。需要先下载模型（约 80MB）。首次使用时自动下载。
+                  本地离线语音识别，无需网络，支持中文/英文。需要先下载模型（约
+                  80MB）。首次使用时自动下载。
                 </p>
               ) : (
                 asrProviders.find((p) => p.kind === selectedAsrProvider) && (
@@ -1142,95 +1152,100 @@ function SessionDetailView({
           </div>
 
           {/* AI 流式结果渲染区 */}
-          {newAnswer && (() => {
-            const lastMsg = slot.messages[slot.messages.length - 1]
-            const isReport = reportContextRef.current
-            const isError = lastMsg?.role === "assistant" && lastMsg.error === true
-            return (
-            <div className="rounded-lg border border-neutral-200 bg-white p-3 space-y-2 flex min-h-0 flex-1 flex-col overflow-hidden">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold text-neutral-400 uppercase">
-                  {isReport ? "调研报告（AI 生成，请审阅）" : "AI 助手响应"}
-                </span>
-                {isReport && !aiLoading && !isError && (
-                  <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600">
-                    📋 4 段结构
-                  </span>
-                )}
-              </div>
-              {isReport && isError && (
-                <div className="rounded border border-red-200 bg-red-50 px-2 py-1.5 text-[10px] text-red-700 flex items-center justify-between">
-                  <span>⚠️ 生成失败，可点击重试沿用原 prompt 再次发起</span>
-                  <button
-                    type="button"
-                    onClick={handleRetryReport}
-                    disabled={aiLoading || !lastReportPromptRef.current}
-                    className="rounded border border-red-300 bg-white px-2 py-0.5 text-[10px] font-medium text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    重试
-                  </button>
+          {newAnswer &&
+            (() => {
+              const lastMsg = slot.messages[slot.messages.length - 1]
+              const isReport = reportContextRef.current
+              const isError = lastMsg?.role === "assistant" && lastMsg.error === true
+              return (
+                <div className="rounded-lg border border-neutral-200 bg-white p-3 space-y-2 flex min-h-0 flex-1 flex-col overflow-hidden">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-neutral-400 uppercase">
+                      {isReport ? "调研报告（AI 生成，请审阅）" : "AI 助手响应"}
+                    </span>
+                    {isReport && !aiLoading && !isError && (
+                      <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600">
+                        📋 4 段结构
+                      </span>
+                    )}
+                  </div>
+                  {isReport && isError && (
+                    <div className="rounded border border-red-200 bg-red-50 px-2 py-1.5 text-[10px] text-red-700 flex items-center justify-between">
+                      <span>⚠️ 生成失败，可点击重试沿用原 prompt 再次发起</span>
+                      <button
+                        type="button"
+                        onClick={handleRetryReport}
+                        disabled={aiLoading || !lastReportPromptRef.current}
+                        className="rounded border border-red-300 bg-white px-2 py-0.5 text-[10px] font-medium text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        重试
+                      </button>
+                    </div>
+                  )}
+                  <div className="flex-1 overflow-y-auto text-xs prose prose-sm leading-relaxed max-w-none text-neutral-700 bg-neutral-50 p-2 rounded border border-neutral-100">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{newAnswer}</ReactMarkdown>
+                  </div>
+                  <div className="flex gap-1.5 pt-1 border-t border-neutral-100">
+                    {!isReport &&
+                      (activeTab === "outline" ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setInsertTextTrigger({
+                              text: `\n\n${newAnswer}`,
+                              timestamp: Date.now(),
+                            })
+                            toast.success("内容已插入到编辑器当前光标处")
+                          }}
+                          className="flex-1 text-center bg-[#1A6BD8] text-white rounded py-1 text-[10px] font-medium hover:bg-[#1558B0] transition-colors"
+                        >
+                          插入中栏光标
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={handleAddRecord}
+                          disabled={!newQuestion.trim()}
+                          className="flex-1 text-center bg-[#1A6BD8] text-white rounded py-1 text-[10px] font-medium hover:bg-[#1558B0] transition-colors"
+                        >
+                          保存为问答记录
+                        </button>
+                      ))}
+                    {isReport && newAnswer.trim() && !isError && (
+                      <button
+                        type="button"
+                        onClick={handleSaveReport}
+                        className="flex-1 text-center bg-[#1A6BD8] text-white rounded py-1 text-[10px] font-medium hover:bg-[#1558B0] transition-colors"
+                      >
+                        保存报告
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard
+                          .writeText(newAnswer)
+                          .then(() => toast.success("已复制到剪贴板"))
+                          .catch((err) => toast.error(`复制失败: ${String(err)}`))
+                      }}
+                      className="rounded border border-neutral-200 px-2 py-1 text-[10px] text-neutral-600 hover:bg-neutral-50 transition-colors"
+                    >
+                      复制
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewAnswer("")
+                        resetReportContext()
+                      }}
+                      className="rounded border border-neutral-200 px-2 py-1 text-[10px] text-red-500 hover:bg-red-50 transition-colors hover:border-red-200"
+                    >
+                      清空
+                    </button>
+                  </div>
                 </div>
-              )}
-              <div className="flex-1 overflow-y-auto text-xs prose prose-sm leading-relaxed max-w-none text-neutral-700 bg-neutral-50 p-2 rounded border border-neutral-100">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{newAnswer}</ReactMarkdown>
-              </div>
-              <div className="flex gap-1.5 pt-1 border-t border-neutral-100">
-                {!isReport && (activeTab === "outline" ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setInsertTextTrigger({ text: `\n\n${newAnswer}`, timestamp: Date.now() })
-                      toast.success("内容已插入到编辑器当前光标处")
-                    }}
-                    className="flex-1 text-center bg-[#1A6BD8] text-white rounded py-1 text-[10px] font-medium hover:bg-[#1558B0] transition-colors"
-                  >
-                    插入中栏光标
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleAddRecord}
-                    disabled={!newQuestion.trim()}
-                    className="flex-1 text-center bg-[#1A6BD8] text-white rounded py-1 text-[10px] font-medium hover:bg-[#1558B0] transition-colors"
-                  >
-                    保存为问答记录
-                  </button>
-                ))}
-                {isReport && newAnswer.trim() && !isError && (
-                  <button
-                    type="button"
-                    onClick={handleSaveReport}
-                    className="flex-1 text-center bg-[#1A6BD8] text-white rounded py-1 text-[10px] font-medium hover:bg-[#1558B0] transition-colors"
-                  >
-                    保存报告
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigator.clipboard
-                      .writeText(newAnswer)
-                      .then(() => toast.success("已复制到剪贴板"))
-                      .catch((err) => toast.error(`复制失败: ${String(err)}`))
-                  }}
-                  className="rounded border border-neutral-200 px-2 py-1 text-[10px] text-neutral-600 hover:bg-neutral-50 transition-colors"
-                >
-                  复制
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setNewAnswer("")
-                    resetReportContext()
-                  }}
-                  className="rounded border border-neutral-200 px-2 py-1 text-[10px] text-red-500 hover:bg-red-50 transition-colors hover:border-red-200"
-                >
-                  清空
-                </button>
-              </div>
-            </div>
-            )
-          })()}
+              )
+            })()}
         </div>
       </div>
     )
@@ -1257,7 +1272,10 @@ function SessionDetailView({
         filters: [{ name: "Markdown", extensions: ["md"] }],
       })
       if (dest) {
-        const savedPath = await invoke<string>("export_report", { content: newAnswer, filePath: dest })
+        const savedPath = await invoke<string>("export_report", {
+          content: newAnswer,
+          filePath: dest,
+        })
         toast.success(`已保存到：${savedPath}`)
       }
     } catch (err) {
@@ -1350,9 +1368,7 @@ function SessionDetailView({
 
   // 计算当前 records 的指纹 hash（id+answer+notes），用于重试时漂移检测
   const computeQaHash = (): string => {
-    const concat = records
-      .map((r) => `${r.id}|${r.answer_text}|${r.notes}`)
-      .join("\u0001")
+    const concat = records.map((r) => `${r.id}|${r.answer_text}|${r.notes}`).join("\u0001")
     // djb2 字符串 hash，不要求密码学安全
     let h = 5381
     for (let i = 0; i < concat.length; i++) {

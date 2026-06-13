@@ -412,6 +412,13 @@ fn extract_embedded_visio_text_from_docx<R: Read + Seek>(
 ///
 /// 遍历所有工作表的所有单元格，将非空单元格的值拼接为文本。
 /// 每个 sheet 之间用分隔线隔开。
+///
+/// 实现要点：
+/// - 单元格值必须用 `get_formatted_value()` 而不是 `get_value()`：
+///   后者返回原始值（日期会变成 Excel 序列号 45292，数字会丢失千分位/小数位）
+/// - 第一行作为表头输出（"Headers: " 前缀），后续行作为数据（"Row N: " 前缀），
+///   让 LLM 明确列语义
+/// - 每个 sheet 的所有非空行都输出，列对齐到 max_col
 fn extract_xlsx_text(file_path: &Path) -> Result<String, String> {
     let extension = file_path
         .extension()
@@ -454,7 +461,9 @@ fn extract_xlsx_text(file_path: &Path) -> Result<String, String> {
         let mut max_col: u32 = 0;
 
         for cell in cells.iter() {
-            let value = cell.get_value().to_string();
+            // 必须用 get_formatted_value()：get_value() 对日期返回 Excel 序列号
+            // （如 "45292"），对数字丢失千分位/小数位，LLM 看到的是无意义数字
+            let value = cell.get_formatted_value();
             if value.is_empty() {
                 continue;
             }
@@ -473,8 +482,8 @@ fn extract_xlsx_text(file_path: &Path) -> Result<String, String> {
             continue;
         }
 
-        // 按行号顺序输出
-        for (_row, row_cells) in &rows {
+        // 按行号顺序输出：第一行标记为表头，后续行带行号便于 LLM 关联
+        for (row, row_cells) in &rows {
             let mut row_texts: Vec<String> = Vec::new();
             for col in 1..=max_col {
                 let val = row_cells.get(&col).cloned().unwrap_or_default();
@@ -484,10 +493,23 @@ fn extract_xlsx_text(file_path: &Path) -> Result<String, String> {
             while row_texts.last().map(|s| s.as_str()) == Some("") {
                 row_texts.pop();
             }
-            if !row_texts.is_empty() {
-                text_buffer.push_str(&row_texts.join("\t"));
-                text_buffer.push('\n');
+            if row_texts.is_empty() {
+                continue;
             }
+            // 跳过整行都是公式/错误的"伪空"行
+            if row_texts.iter().all(|s| s.is_empty()) {
+                continue;
+            }
+
+            // 第一行作为表头；后续行带行号
+            let is_header = *row == *rows.keys().next().unwrap_or(row);
+            if is_header {
+                text_buffer.push_str("Headers: ");
+            } else {
+                text_buffer.push_str(&format!("Row {}: ", row));
+            }
+            text_buffer.push_str(&row_texts.join(" | "));
+            text_buffer.push('\n');
         }
     }
 
@@ -501,6 +523,10 @@ fn extract_xlsx_text(file_path: &Path) -> Result<String, String> {
 }
 
 /// 使用 calamine 读取旧版 .xls 格式并直接提取文本
+///
+/// calamine 的 `Data::to_string()` 对 DateTime 已经返回格式化的日期字符串，
+/// 对数字直接 to_string 是去掉千分位的字符串表示（不影响语义）。
+/// 输出格式与 XLSX 对齐：第一行 Headers、后续 Row N。
 fn extract_xls_text(file_path: &Path) -> Result<String, String> {
     use calamine::{Reader, Xls};
 
@@ -522,8 +548,8 @@ fn extract_xls_text(file_path: &Path) -> Result<String, String> {
         }
         text_buffer.push_str(&format!("## Sheet: {}\n\n", sheet_name));
 
-        let mut has_content = false;
-
+        // 先把所有行收集起来，再判断第一行是否为表头
+        let mut collected_rows: Vec<Vec<String>> = Vec::new();
         for row in range.rows() {
             let mut row_texts: Vec<String> = Vec::new();
             for cell in row.iter() {
@@ -536,14 +562,23 @@ fn extract_xls_text(file_path: &Path) -> Result<String, String> {
                 row_texts.pop();
             }
             if !row_texts.is_empty() {
-                text_buffer.push_str(&row_texts.join("\t"));
-                text_buffer.push('\n');
-                has_content = true;
+                collected_rows.push(row_texts);
             }
         }
 
-        if !has_content {
+        if collected_rows.is_empty() {
             text_buffer.push_str("（空工作表）\n");
+            continue;
+        }
+
+        for (idx, row_texts) in collected_rows.iter().enumerate() {
+            if idx == 0 {
+                text_buffer.push_str("Headers: ");
+            } else {
+                text_buffer.push_str(&format!("Row {}: ", idx + 1));
+            }
+            text_buffer.push_str(&row_texts.join(" | "));
+            text_buffer.push('\n');
         }
     }
 
@@ -674,7 +709,14 @@ fn extract_vsdx_text_from_archive<R: Read + Seek>(
     Ok(text_buffer)
 }
 
-/// 从 Visio 页面 XML 中提取 Text 节点内的文本
+/// 从 Visio 页面 XML 中提取形状文本与名称
+///
+/// 提取两类信息供 LLM 消费：
+/// - `<Shape NameU="...">` / `<Shape Name="...">`：业务蓝图常用 Name 表达逻辑节点名
+///   （如 "ApprovalProcess"），是 LLM 识别流程步骤的关键
+/// - `<Shape>...<Text>...</Text></Shape>`：图形上显示的文本（中文标签）
+///
+/// 重复时不输出空字符串；Name 与 Text 同时存在时用 "[Name] Text" 形式合并。
 fn extract_text_from_visio_page_xml(xml: &str) -> Result<String, String> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
@@ -683,39 +725,89 @@ fn extract_text_from_visio_page_xml(xml: &str) -> Result<String, String> {
     reader.config_mut().trim_text(true);
 
     let mut text_buffer = String::new();
-    let mut in_text = false;
+
+    // 当前 Shape 上下文：进入 <Shape> 时记录 Name，结束 <Shape> 时输出累积的 Text
+    let mut shape_depth: u32 = 0;
+    let mut current_name: Option<String> = None;
+    let mut current_text = String::new();
+    let mut in_text_node = false;
+
+    let flush_shape = |name: &mut Option<String>,
+                       text: &mut String,
+                       _out: &mut String|
+     -> Option<String> {
+        let text_trimmed = text.trim();
+        if let Some(n) = name.as_ref() {
+            if !n.is_empty() {
+                if !text_trimmed.is_empty() {
+                    Some(format!("[{}] {}", n, text_trimmed))
+                } else {
+                    Some(format!("[{}]", n))
+                }
+            } else if !text_trimmed.is_empty() {
+                Some(text_trimmed.to_string())
+            } else {
+                None
+            }
+        } else if !text_trimmed.is_empty() {
+            Some(text_trimmed.to_string())
+        } else {
+            None
+        }
+    };
 
     loop {
         match reader.read_event() {
-            Ok(Event::Start(ref e)) if e.name().as_ref() == b"Text" => {
-                in_text = true;
-            }
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"Text" => {
-                in_text = false;
-                if !text_buffer.ends_with('\n') {
-                    text_buffer.push('\n');
+            Ok(Event::Start(ref e)) if e.name().as_ref() == b"Shape" => {
+                shape_depth += 1;
+                if shape_depth == 1 {
+                    // 仅顶层 Shape 计入；嵌套 Shape 视为子形状
+                    current_name = read_shape_name(&e);
+                    current_text.clear();
                 }
             }
-            Ok(Event::Text(e)) if in_text => {
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"Shape" => {
+                if shape_depth == 1 {
+                    if let Some(line) = flush_shape(&mut current_name, &mut current_text, &mut text_buffer) {
+                        if !text_buffer.is_empty() && !text_buffer.ends_with('\n') {
+                            text_buffer.push('\n');
+                        }
+                        text_buffer.push_str(&line);
+                    }
+                    current_name = None;
+                    current_text.clear();
+                }
+                shape_depth = shape_depth.saturating_sub(1);
+            }
+            Ok(Event::Start(ref e)) if e.name().as_ref() == b"Text" => {
+                in_text_node = true;
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"Text" => {
+                in_text_node = false;
+                if shape_depth >= 1 && !current_text.is_empty() && !current_text.ends_with(' ') {
+                    current_text.push(' ');
+                }
+            }
+            Ok(Event::Text(e)) if in_text_node && shape_depth >= 1 => {
                 let text = e
                     .unescape()
                     .map_err(|e| format!("解析 Visio 文本失败: {}", e))?
                     .to_string();
                 let text = text.trim();
                 if !text.is_empty() {
-                    if !text_buffer.ends_with('\n') && !text_buffer.is_empty() {
-                        text_buffer.push(' ');
+                    if !current_text.is_empty() && !current_text.ends_with(' ') {
+                        current_text.push(' ');
                     }
-                    text_buffer.push_str(text);
+                    current_text.push_str(text);
                 }
             }
-            Ok(Event::CData(e)) if in_text => {
+            Ok(Event::CData(e)) if in_text_node && shape_depth >= 1 => {
                 let text = String::from_utf8_lossy(e.as_ref()).trim().to_string();
                 if !text.is_empty() {
-                    if !text_buffer.ends_with('\n') && !text_buffer.is_empty() {
-                        text_buffer.push(' ');
+                    if !current_text.is_empty() && !current_text.ends_with(' ') {
+                        current_text.push(' ');
                     }
-                    text_buffer.push_str(&text);
+                    current_text.push_str(&text);
                 }
             }
             Ok(Event::Eof) => break,
@@ -725,6 +817,23 @@ fn extract_text_from_visio_page_xml(xml: &str) -> Result<String, String> {
     }
 
     Ok(text_buffer)
+}
+
+/// 从 `<Shape>` 开始事件中读取 NameU / Name 属性
+fn read_shape_name(e: &quick_xml::events::BytesStart) -> Option<String> {
+    for attr in e.attributes().with_checks(false).flatten() {
+        let key = attr.key.as_ref();
+        if key == b"NameU" || key == b"Name" {
+            if let Ok(value) = attr.unescape_value() {
+                let value = value.to_string();
+                if !value.is_empty() && value != "Sheet.0" {
+                    // Visio 默认 Shape.Name="Sheet.0" 这样的容器名，对蓝图无意义，跳过
+                    return Some(value);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// 从旧版 VSD 文件提取形状文本
@@ -842,6 +951,119 @@ mod tests {
         assert!(text.contains("开始"));
         assert!(text.contains("销售订单"));
         assert!(text.contains("审核"));
+    }
+
+    /// Visio 业务蓝图中 Shape NameU 是 LLM 识别流程节点的关键，
+    /// 旧实现只抽 Text，会丢 NameU，导致"图上有名字但提取出来是空"。
+    #[test]
+    fn test_extract_visio_page_xml_with_shape_name() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <PageContents xmlns="http://schemas.microsoft.com/office/visio/2012/main">
+            <Shapes>
+                <Shape ID="1" NameU="ApprovalProcess" Name="动态.1">
+                    <Text>审核</Text>
+                </Shape>
+                <Shape ID="2" NameU="NotifyStep">
+                    <Text>通知申请人</Text>
+                </Shape>
+                <Shape ID="3" NameU="Sheet.0">
+                    <Text>容器文本</Text>
+                </Shape>
+            </Shapes>
+        </PageContents>"#;
+
+        let text = extract_text_from_visio_page_xml(xml).unwrap();
+        // 业务节点名必须出现
+        assert!(text.contains("ApprovalProcess"), "缺少 NameU: {}", text);
+        assert!(text.contains("NotifyStep"), "缺少 NameU: {}", text);
+        // Name + Text 合并形式
+        assert!(text.contains("[ApprovalProcess]"), "应输出 [Name] 形式: {}", text);
+        assert!(text.contains("审核"), "缺少 Text: {}", text);
+        // Sheet.0 容器名应被过滤
+        assert!(!text.contains("Sheet.0"), "Sheet.0 容器名不应输出: {}", text);
+    }
+
+    /// XLSX 提取必须使用 get_formatted_value()，否则日期变 Excel 序列号。
+    /// 旧实现用 get_value()，日期返回 "45292" 这类数字，LLM 无法理解。
+    #[test]
+    fn test_extract_xlsx_text_uses_formatted_values() {
+        use umya_spreadsheet::*;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_formatted.xlsx");
+
+        // 构造一个含字符串 + 数字 + 日期的 sheet
+        let mut book = new_file();
+        let sheet = book.get_sheet_mut(&0usize).unwrap();
+
+        // 表头
+        sheet.get_cell_mut("A1").set_value("Name");
+        sheet.get_cell_mut("B1").set_value("Amount");
+        sheet.get_cell_mut("C1").set_value("OrderDate");
+
+        // 数据行
+        sheet.get_cell_mut("A2").set_value("Alice");
+        sheet.get_cell_mut("B2").set_value_number(1234.5);
+        // Excel 日期序列号：2024-01-15 = 45306
+        sheet.get_cell_mut("C2").set_value_number(45306.0);
+
+        sheet.get_cell_mut("A3").set_value("Bob");
+        sheet.get_cell_mut("B3").set_value_number(999.99);
+        // 2024-03-13 = 45364
+        sheet.get_cell_mut("C3").set_value_number(45364.0);
+
+        // 给 B 列走千分位格式、C 列走日期格式
+        sheet
+            .get_style_mut("B2")
+            .get_number_format_mut()
+            .set_format_code("#,##0.00");
+        sheet
+            .get_style_mut("B3")
+            .get_number_format_mut()
+            .set_format_code("#,##0.00");
+        sheet
+            .get_style_mut("C2")
+            .get_number_format_mut()
+            .set_format_code("yyyy-mm-dd");
+        sheet
+            .get_style_mut("C3")
+            .get_number_format_mut()
+            .set_format_code("yyyy-mm-dd");
+
+        writer::xlsx::write(&book, &path).expect("write xlsx");
+
+        let text = extract_xlsx_text(&path).expect("extract xlsx");
+
+        // 第一行必须有 "Headers: " 标识
+        assert!(text.contains("Headers: "), "缺少 Headers 前缀: {}", text);
+        assert!(text.contains("Name | Amount | OrderDate"), "表头内容缺失: {}", text);
+
+        // 数据行必须带 "Row N: " 标识
+        assert!(text.contains("Row 2: "), "缺少 Row 2 标识: {}", text);
+        assert!(text.contains("Row 3: "), "缺少 Row 3 标识: {}", text);
+
+        // 关键断言：数字必须带千分位、日期必须是格式化字符串，不能是序列号
+        assert!(
+            text.contains("1,234.5"),
+            "B2 数字应格式化为 '1,234.5'，实际: {}",
+            text
+        );
+        assert!(
+            text.contains("2024-01-15"),
+            "C2 日期应格式化为 '2024-01-15' 而非序列号 45292，实际: {}",
+            text
+        );
+        assert!(
+            text.contains("2024-03-13"),
+            "C3 日期应格式化为 '2024-03-13'，实际: {}",
+            text
+        );
+        // 关键：绝对不能出现原始序列号
+        assert!(
+            !text.contains("| 45292"),
+            "不应出现 Excel 序列号 '45292'，实际: {}",
+            text
+        );
     }
 
     #[test]

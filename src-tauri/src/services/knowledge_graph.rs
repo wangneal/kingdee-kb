@@ -84,7 +84,10 @@ impl GraphStore {
         Self { db }
     }
 
-    /// 创建 knowledge_graph 表及其索引（幂等）
+    /// 创建 knowledge_graph 表及其索引（幂等）。
+    ///
+    /// 单一 schema：`project_id INTEGER REFERENCES projects(id)`。项目尚未发布，
+    /// 不存在老 schema 兼容问题，迁移函数一律不写。
     pub fn ensure_table(&self) -> Result<(), String> {
         self.db
             .execute_batch(
@@ -104,68 +107,6 @@ impl GraphStore {
             )
             .map_err(|e| format!("创建 knowledge_graph 表失败: {}", e))?;
 
-        // Schema 迁移：检测并修复老 schema（`project TEXT NOT NULL` + `project_id INTEGER` 残留）
-        //
-        // 历史 bug：早期版本用 `project TEXT NOT NULL` 做主键关联字段（项目名字符串），
-        // 后来改用 `project_id INTEGER REFERENCES projects(id)`，但 CREATE TABLE IF NOT EXISTS
-        // 看到表已存在就不动，导致老 schema 残留。新 build 代码 INSERT 时只给 `project_id`，
-        // 老 schema 要求 `project NOT NULL`，所有 INSERT 静默失败 → knowledge_graph 永远是空的。
-        //
-        // 修法：检测到 `project` 老字段还在就 DROP 重建（表 0 行，丢 0 数据）。
-        self.migrate_drop_old_project_column()?;
-
-        Ok(())
-    }
-
-    /// 检测并修复 knowledge_graph 的老 schema
-    fn migrate_drop_old_project_column(&self) -> Result<(), String> {
-        let cols: Vec<String> = self
-            .db
-            .prepare("PRAGMA table_info(knowledge_graph)")
-            .map_err(|e| format!("PRAGMA table_info 失败: {}", e))?
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(|e| format!("读取表字段失败: {}", e))?
-            .filter_map(|r| r.ok())
-            .collect();
-        if cols.iter().any(|c| c == "project") {
-            // 检查是否有数据：有数据则拒绝迁移（保护数据）
-            let count: i64 = self
-                .db
-                .query_row("SELECT COUNT(*) FROM knowledge_graph", [], |row| {
-                    row.get(0)
-                })
-                .unwrap_or(0);
-            if count > 0 {
-                return Err(format!(
-                    "knowledge_graph 残留老字段 `project` 且有 {} 行数据；\
-                     请人工迁移后再启动。SQL 参考：\
-                     ALTER TABLE knowledge_graph RENAME TO knowledge_graph_old; \
-                     CREATE TABLE knowledge_graph (...); \
-                     INSERT INTO knowledge_graph SELECT ... FROM knowledge_graph_old;",
-                    count
-                ));
-            }
-            tracing::warn!(
-                "检测到 knowledge_graph 老 schema（`project` 字段残留），自动 drop + 重建"
-            );
-            self.db
-                .execute_batch(
-                    "DROP TABLE knowledge_graph;
-                     CREATE TABLE knowledge_graph (
-                         id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                         project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                         source_slug TEXT NOT NULL,
-                         target_slug TEXT NOT NULL,
-                         signal      TEXT NOT NULL CHECK(signal IN ('wikilink','tag','source','co_citation')),
-                         weight      REAL NOT NULL DEFAULT 1.0,
-                         created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                         UNIQUE(project_id, source_slug, target_slug, signal)
-                     );
-                     CREATE INDEX idx_kg_source ON knowledge_graph(project_id, source_slug);
-                     CREATE INDEX idx_kg_target ON knowledge_graph(project_id, target_slug);",
-                )
-                .map_err(|e| format!("迁移 knowledge_graph schema 失败: {}", e))?;
-        }
         Ok(())
     }
 
@@ -1249,9 +1190,7 @@ mod tests {
                 }
             }
             let _ = journal; // 未使用
-            let conn = Connection::open(&tmp).map_err(|e| format!("打开副本失败: {}", e))?;
-            let tmp_path = tmp.to_string_lossy().to_string();
-            Ok(conn)
+            Connection::open(&tmp).map_err(|e| format!("打开副本失败: {}", e))
         };
         // 写操作不能用只读副本：直接 open，失败时给出明确错误
         let open_writable = || -> Result<Connection, String> {

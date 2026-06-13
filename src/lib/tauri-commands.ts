@@ -756,7 +756,16 @@ export type ReActEvent =
   | { type: "tool_call"; session_id: string; sessionId?: string; name: string; args: string }
   | { type: "tool_result"; session_id: string; sessionId?: string; name: string; result: string }
   | { type: "text_delta"; session_id: string; sessionId?: string; content: string }
-  | { type: "error"; session_id: string; sessionId?: string; message: string }
+  | {
+      type: "error"
+      session_id: string
+      sessionId?: string
+      message: string
+      /** 结构化错误码（与后端 `AppError::code()` 一致），目前仅 LLM 错误会带 */
+      error_code?: string
+      /** 当 `error_code === "LLM_INVALID_KEY"` 时携带，定位到具体供应商 */
+      provider_id?: string
+    }
   | { type: "done"; session_id: string; sessionId?: string }
   | { type: "plan_generated"; session_id: string; sessionId?: string; steps: PlanStep[] }
   | {

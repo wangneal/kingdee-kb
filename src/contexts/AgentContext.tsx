@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react"
+import { formatAppError, parseAppError } from "../lib/app-error"
 import {
   type AttachmentInfo,
   agentChat,
@@ -19,6 +20,7 @@ import {
   rejectQuestion,
   runVerification,
 } from "../lib/tauri-commands"
+import { useAppError } from "./AppErrorContext"
 
 // ── 导出类型 ──────────────────────────────────────────────────────────
 
@@ -328,6 +330,11 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   const cancelledSlots = useRef<Set<string>>(new Set())
   const latestSlots = useRef(slots)
   latestSlots.current = slots
+  // 错误事件 → LLM API Key 对话框的桥接
+  // 用 ref 持有最新回调，避免在 dialog 开/关时重订阅 listenReActEvents
+  const { showLlmKeyError } = useAppError()
+  const showLlmKeyErrorRef = useRef(showLlmKeyError)
+  showLlmKeyErrorRef.current = showLlmKeyError
 
   // 更新 slots 辅助函数（同步保持 ref）
   const updateSlots = useCallback(
@@ -559,6 +566,14 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           }
 
           case "error": {
+            // LLM API Key 失效 → 触发全局对话框，让用户去设置页更换 Key
+            if (event.error_code === "LLM_INVALID_KEY") {
+              showLlmKeyErrorRef.current({
+                code: "LLM_INVALID_KEY",
+                message: event.message,
+                provider_id: event.provider_id,
+              })
+            }
             slot.messages = slot.messages.map((m) =>
               m.streaming
                 ? {
@@ -730,7 +745,13 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           options?.attachments,
         )
       } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err)
+        // agent_chat 在 reject 时可能直接抛出结构化 LLM_INVALID_KEY 错误
+        // （例如 provider_id 错误 / 模型未配置），需要走到 AppErrorProvider
+        const parsed = parseAppError(err)
+        if (parsed?.code === "LLM_INVALID_KEY") {
+          showLlmKeyErrorRef.current(parsed)
+        }
+        const errorMsg = formatAppError(err, "请求失败")
         updateSlots((prev) => {
           const next = new Map(prev)
           const internal = next.get(slotId)
