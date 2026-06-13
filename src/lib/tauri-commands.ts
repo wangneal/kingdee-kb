@@ -1328,6 +1328,66 @@ export async function fetchTencentMeetingTranscript(input: {
   })
 }
 
+export async function convertTencentMeetingTimestamp(
+  argumentsValue: Record<string, unknown>,
+): Promise<unknown> {
+  return invoke("convert_tencent_meeting_timestamp", { arguments: argumentsValue })
+}
+
+export async function scheduleTencentMeeting(
+  argumentsValue: Record<string, unknown>,
+): Promise<unknown> {
+  return invoke("schedule_tencent_meeting", { arguments: argumentsValue })
+}
+
+export async function updateTencentMeeting(
+  argumentsValue: Record<string, unknown>,
+): Promise<unknown> {
+  return invoke("update_tencent_meeting", { arguments: argumentsValue })
+}
+
+export async function cancelTencentMeeting(
+  argumentsValue: Record<string, unknown>,
+): Promise<unknown> {
+  return invoke("cancel_tencent_meeting", { arguments: argumentsValue })
+}
+
+export async function getTencentMeeting(
+  argumentsValue: Record<string, unknown>,
+): Promise<unknown> {
+  return invoke("get_tencent_meeting", { arguments: argumentsValue })
+}
+
+export async function getTencentMeetingByCode(
+  argumentsValue: Record<string, unknown>,
+): Promise<unknown> {
+  return invoke("get_tencent_meeting_by_code", { arguments: argumentsValue })
+}
+
+export async function listTencentUserMeetings(
+  argumentsValue: Record<string, unknown> = {},
+): Promise<unknown> {
+  return invoke("list_tencent_user_meetings", { arguments: argumentsValue })
+}
+
+export async function listTencentUserEndedMeetings(
+  argumentsValue: Record<string, unknown> = {},
+): Promise<unknown> {
+  return invoke("list_tencent_user_ended_meetings", { arguments: argumentsValue })
+}
+
+export async function listTencentMeetingRecords(
+  argumentsValue: Record<string, unknown>,
+): Promise<unknown> {
+  return invoke("list_tencent_meeting_records", { arguments: argumentsValue })
+}
+
+export async function submitTencentMeetingFeedback(
+  argumentsValue: Record<string, unknown>,
+): Promise<unknown> {
+  return invoke("submit_tencent_meeting_feedback", { arguments: argumentsValue })
+}
+
 // ── Wiki 页面 ────────────────────────────────────────────────────────────────
 
 /** Wiki 页面 */

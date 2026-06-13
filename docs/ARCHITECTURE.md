@@ -485,7 +485,8 @@ KingdeeKB/
 | LLM 供应商管理 | `pages/Settings.tsx` | `commands/llm_provider.rs`、`services/llm_providers.rs` |
 | 嵌入模型下载与加载 | `pages/Settings.tsx` | `commands/embedding.rs`、`services/model_downloader.rs` |
 | ASR 配置 | `pages/Settings.tsx` | `commands/media.rs` |
-| 腾讯会议 MCP | `pages/Settings.tsx` | `commands/tencent_meeting.rs` |
+| 腾讯会议 MCP（Token 配置） | `pages/Settings.tsx` | `commands/tencent_meeting.rs` |
+| 腾讯会议预约/管理/转写 | `pages/Meetings.tsx`、`pages/Home.tsx` | `services/tencent_meeting_mcp.rs` + `skills/tencent-meeting-mcp/` |
 | 全局快捷键 | `pages/Settings.tsx`、`components/Spotlight.tsx` | （`tauri-plugin-global-shortcut`） |
 | 数据导入/导出 | `pages/Settings.tsx` | `commands/core.rs` |
 
@@ -638,3 +639,35 @@ pnpm tauri build
 ```
 
 CI：`.github/workflows/build.yml`（跨平台矩阵构建）。
+
+---
+
+## 11. 已实现与未实现（透明化记录）
+
+| 模块 | 已实现 | 未实现（已知限制） |
+|------|-------|------------------|
+| 腾讯会议预约 / 取消 / 查询 | ✅ 全部经 MCP（v1.0.10） | 无 |
+| 会议转写 / AI 智能纪要 | ✅ 一键拉取 | 自动定时同步缺失（需手动） |
+| 会议纪要落盘到 `00_项目管理/会议纪要/*.md` | ❌ 需在 AI 对话中触发 stakeholder-comms 技能 | 自动落盘 + 待办提取 缺失 |
+| 会议预约的 Agent 工具注册 | ⚠️ MCP 透传已就绪，未在 Rig Agent 工具注册 | 智能对话中说"明天上午 10 点开会"尚不能自动预约 |
+| 操作手册 / 培训材料 截图 | ❌ 不实现 | 真实界面截图由顾问从知识库中挑图或人工补图 |
+| Mermaid 流程图 → PNG 渲染管线 | ❌ 不实现 | 当前为文本占位，导出时需手动渲染 |
+| 蓝图 / 流程图 | ⚠️ 调用 `ux-flow-designer` 生成 Mermaid 文本 | 渲染嵌 Word/PPT 缺失 |
+| 调研助手 → stakeholder-comms 技能 | ⚠️ 技能 SKILL.md 完整 | 未被 video_transcriber.rs 的硬编码 prompt 替换（待 P2） |
+
+**已实现闭环**：
+
+```
+用户 AI 对话 → Rig Agent 工具 → MCP 透传 → 腾讯会议服务端
+                  ↓
+           MCP 返回会议号 / 详情
+                  ↓
+           前端渲染
+```
+
+**未完整闭环**（优先级 P2）：
+
+```
+会议结束 → 自动检测 → 拉转写 → stakeholder-comms 技能 → 落盘 00_项目管理/会议纪要/*.md → 提取待办 → 写入活动日志
+         ↑ 这条链当前断在第一步
+```

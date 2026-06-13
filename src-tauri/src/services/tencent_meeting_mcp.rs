@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 const BASE_URL: &str = "https://mcp.meeting.tencent.com/mcp/wemeet-open/v1";
-const SKILL_VERSION: &str = "v1.0.9";
+const SKILL_VERSION: &str = "v1.0.10";
 
 #[derive(Debug, Clone)]
 pub struct TencentMeetingMcpClient {
@@ -178,6 +178,71 @@ impl TencentMeetingMcpClient {
             transcript_raw: transcript_result.raw,
             minutes_raw,
         })
+    }
+
+    /// 转换相对时间（"今天下午 5 点"）→ ISO 8601。
+    pub async fn convert_timestamp(&self, arguments: Value) -> Result<Value, String> {
+        self.call_tool("convert_timestamp", arguments).await.map(|r| r.raw)
+    }
+
+    /// 创建/预约会议。
+    pub async fn schedule_meeting(&self, arguments: Value) -> Result<Value, String> {
+        self.call_tool("schedule_meeting", arguments).await.map(|r| r.raw)
+    }
+
+    /// 修改会议。
+    pub async fn update_meeting(&self, arguments: Value) -> Result<Value, String> {
+        self.call_tool("update_meeting", arguments).await.map(|r| r.raw)
+    }
+
+    /// 取消会议。
+    pub async fn cancel_meeting(&self, arguments: Value) -> Result<Value, String> {
+        self.call_tool("cancel_meeting", arguments).await.map(|r| r.raw)
+    }
+
+    /// 通过 meeting_id 查询会议详情。
+    pub async fn get_meeting(&self, arguments: Value) -> Result<Value, String> {
+        self.call_tool("get_meeting", arguments).await.map(|r| r.raw)
+    }
+
+    /// 通过会议号转换为 meeting_id。
+    pub async fn get_meeting_by_code(&self, arguments: Value) -> Result<Value, String> {
+        self.call_tool("get_meeting_by_code", arguments).await.map(|r| r.raw)
+    }
+
+    /// 查询未开始/进行中的会议列表。
+    pub async fn get_user_meetings(&self, arguments: Value) -> Result<Value, String> {
+        self.call_tool("get_user_meetings", arguments).await.map(|r| r.raw)
+    }
+
+    /// 查询已结束的历史会议列表。
+    pub async fn get_user_ended_meetings(&self, arguments: Value) -> Result<Value, String> {
+        self.call_tool("get_user_ended_meetings", arguments).await.map(|r| r.raw)
+    }
+
+    /// 查询会议录制列表。
+    pub async fn get_records_list(&self, arguments: Value) -> Result<Value, String> {
+        self.call_tool("get_records_list", arguments).await.map(|r| r.raw)
+    }
+
+    /// 获取 AI 智能纪要。
+    pub async fn get_smart_minutes(&self, arguments: Value) -> Result<Value, String> {
+        self.call_tool("get_smart_minutes", arguments).await.map(|r| r.raw)
+    }
+
+    /// 搜索转写关键词。
+    pub async fn search_transcripts(&self, arguments: Value) -> Result<Value, String> {
+        self.call_tool("search_transcripts", arguments).await.map(|r| r.raw)
+    }
+
+    /// 提交 Agent 反馈。
+    pub async fn submit_feedback(&self, arguments: Value) -> Result<Value, String> {
+        self.call_tool("submit_feedback", arguments).await.map(|r| r.raw)
+    }
+
+    /// 检查技能版本。
+    pub async fn check_skill_version(&self, arguments: Value) -> Result<Value, String> {
+        self.call_tool("check_skill_version", arguments).await.map(|r| r.raw)
     }
 }
 

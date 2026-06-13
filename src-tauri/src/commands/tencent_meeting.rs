@@ -88,3 +88,103 @@ pub async fn fetch_tencent_meeting_transcript(
         .fetch_transcript(meeting_id, meeting_code, record_file_id, include_minutes)
         .await
 }
+
+/// 转换相对时间为 ISO 8601（用于自然语言预约）。
+#[tauri::command]
+pub async fn convert_tencent_meeting_timestamp(
+    _state: State<'_, AppState>,
+    arguments: Value,
+) -> Result<Value, String> {
+    let client = client_from_keyring()?;
+    client.convert_timestamp(arguments).await
+}
+
+/// 创建/预约腾讯会议。
+#[tauri::command]
+pub async fn schedule_tencent_meeting(
+    _state: State<'_, AppState>,
+    arguments: Value,
+) -> Result<Value, String> {
+    let client = client_from_keyring()?;
+    client.schedule_meeting(arguments).await
+}
+
+/// 修改腾讯会议。
+#[tauri::command]
+pub async fn update_tencent_meeting(
+    _state: State<'_, AppState>,
+    arguments: Value,
+) -> Result<Value, String> {
+    let client = client_from_keyring()?;
+    client.update_meeting(arguments).await
+}
+
+/// 取消腾讯会议。
+#[tauri::command]
+pub async fn cancel_tencent_meeting(
+    _state: State<'_, AppState>,
+    arguments: Value,
+) -> Result<Value, String> {
+    let client = client_from_keyring()?;
+    client.cancel_meeting(arguments).await
+}
+
+/// 查询会议详情（meeting_id 或会议号）。
+#[tauri::command]
+pub async fn get_tencent_meeting(
+    _state: State<'_, AppState>,
+    arguments: Value,
+) -> Result<Value, String> {
+    let client = client_from_keyring()?;
+    client.get_meeting(arguments).await
+}
+
+/// 会议号转 meeting_id。
+#[tauri::command]
+pub async fn get_tencent_meeting_by_code(
+    _state: State<'_, AppState>,
+    arguments: Value,
+) -> Result<Value, String> {
+    let client = client_from_keyring()?;
+    client.get_meeting_by_code(arguments).await
+}
+
+/// 查询未开始/进行中的会议列表。
+#[tauri::command]
+pub async fn list_tencent_user_meetings(
+    _state: State<'_, AppState>,
+    arguments: Value,
+) -> Result<Value, String> {
+    let client = client_from_keyring()?;
+    client.get_user_meetings(arguments).await
+}
+
+/// 查询已结束的历史会议列表。
+#[tauri::command]
+pub async fn list_tencent_user_ended_meetings(
+    _state: State<'_, AppState>,
+    arguments: Value,
+) -> Result<Value, String> {
+    let client = client_from_keyring()?;
+    client.get_user_ended_meetings(arguments).await
+}
+
+/// 查询会议录制列表。
+#[tauri::command]
+pub async fn list_tencent_meeting_records(
+    _state: State<'_, AppState>,
+    arguments: Value,
+) -> Result<Value, String> {
+    let client = client_from_keyring()?;
+    client.get_records_list(arguments).await
+}
+
+/// 提交 Agent 反馈到腾讯会议 MCP 意见箱。
+#[tauri::command]
+pub async fn submit_tencent_meeting_feedback(
+    _state: State<'_, AppState>,
+    arguments: Value,
+) -> Result<Value, String> {
+    let client = client_from_keyring()?;
+    client.submit_feedback(arguments).await
+}

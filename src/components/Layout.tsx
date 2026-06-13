@@ -1,5 +1,6 @@
 import {
   BookOpen,
+  Calendar,
   ClipboardList,
   FolderKanban,
   LayoutDashboard,
@@ -34,6 +35,7 @@ const navItems = [
   { to: "/risk", icon: ShieldAlert, label: "风险把控" },
   { to: "/products", icon: Package, label: "产物管理" },
   { to: "/projects", icon: FolderKanban, label: "项目管理" },
+  { to: "/meetings", icon: Calendar, label: "会议管理" },
   // { to: "/import", icon: Upload, label: "导入" }, // 入口已移至知识库右键菜单，配置在设置页
   { to: "/skills", icon: Zap, label: "技能体系" },
   { to: "/graph", icon: Network, label: "知识图谱" },

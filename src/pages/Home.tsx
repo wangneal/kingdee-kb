@@ -5,6 +5,7 @@ import {
   Calendar,
   Check,
   ClipboardList,
+  Clock,
   FileText,
   FolderOpen,
   Loader2,
@@ -24,9 +25,30 @@ import {
 import {
   getStats,
   type KnowledgeStats,
+  getTencentMeetingConfigStatus,
   listProducts,
+  listTencentUserMeetings,
   type ProductMeta,
 } from "../lib/tauri-commands"
+
+interface UpcomingMeeting {
+  meeting_id?: string
+  meeting_code?: string
+  subject?: string
+  start_time?: string
+  end_time?: string
+  [key: string]: unknown
+}
+
+function pickMeetings(payload: unknown): UpcomingMeeting[] {
+  if (!payload) return []
+  const root = (payload as Record<string, unknown>)?.result ?? payload
+  const container = (root as Record<string, unknown>)?.meeting_info_list
+  if (Array.isArray(container)) {
+    return container.filter((item): item is UpcomingMeeting => !!item)
+  }
+  return []
+}
 
 export default function Home() {
   const { currentProjectId, currentProject } = useProject()
@@ -38,6 +60,8 @@ export default function Home() {
   const [loading, setLoading] = useState(true)
   const [dashboardError, setDashboardError] = useState<string | null>(null)
   const [phaseError, setPhaseError] = useState<string | null>(null)
+  const [meetings, setMeetings] = useState<UpcomingMeeting[]>([])
+  const [meetingsConfigured, setMeetingsConfigured] = useState(false)
 
   useEffect(() => {
     ;(async () => {
@@ -76,6 +100,35 @@ export default function Home() {
       }
     })()
   }, [currentProjectId])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const status = await getTencentMeetingConfigStatus()
+        if (cancelled) return
+        setMeetingsConfigured(status.configured)
+        if (!status.configured) {
+          setMeetings([])
+          return
+        }
+        const list = await listTencentUserMeetings({})
+        if (cancelled) return
+        const items = pickMeetings(list)
+          .sort(
+            (a, b) =>
+              (Date.parse(a.start_time ?? "") || 0) - (Date.parse(b.start_time ?? "") || 0),
+          )
+          .slice(0, 5)
+        setMeetings(items)
+      } catch {
+        if (!cancelled) setMeetings([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const recentProducts = [...products]
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
@@ -189,7 +242,7 @@ export default function Home() {
       )}
 
       {/* 统计卡片 */}
-      <div className="grid grid-cols-3 gap-4 mb-8">
+      <div className="grid grid-cols-4 gap-4 mb-8">
         <div className="rounded-lg border border-neutral-200 bg-white p-5">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-violet-100">
@@ -227,7 +280,82 @@ export default function Home() {
             </div>
           </div>
         </div>
+
+        <button
+          type="button"
+          onClick={() => navigate("/meetings")}
+          className="rounded-lg border border-neutral-200 bg-white p-5 text-left transition-colors hover:border-blue-300 hover:bg-blue-50/30"
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-sky-100">
+              <Calendar className="h-5 w-5 text-sky-600" />
+            </div>
+            <div>
+              <p className="text-2xl font-semibold text-neutral-800">
+                {meetingsConfigured ? meetings.length : "—"}
+              </p>
+              <p className="text-xs text-neutral-500">
+                {meetingsConfigured ? "未开始 / 进行中" : "腾讯会议未配置"}
+              </p>
+            </div>
+          </div>
+        </button>
       </div>
+
+      {/* 今日会议 */}
+      {meetingsConfigured && meetings.length > 0 && (
+        <div className="mb-8 rounded-lg border border-neutral-200 bg-white p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-neutral-700">即将开始的会议</h2>
+              <p className="mt-1 text-xs text-neutral-400">同步自腾讯会议 MCP</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate("/meetings")}
+              className="inline-flex items-center gap-1 text-xs text-[#1A6BD8] hover:underline"
+            >
+              进入会议管理
+              <ArrowRight className="h-3 w-3" />
+            </button>
+          </div>
+          <ul className="divide-y divide-neutral-100">
+            {meetings.map((meeting, idx) => {
+              const start = meeting.start_time
+                ? new Date(meeting.start_time).toLocaleString("zh-CN", {
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })
+                : "—"
+              return (
+                <li
+                  key={meeting.meeting_id ?? meeting.meeting_code ?? `m-${idx}`}
+                  className="flex items-center justify-between gap-3 py-2.5"
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <Clock className="h-4 w-4 shrink-0 text-neutral-400" />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm text-neutral-800">
+                        {meeting.subject ?? "(未命名会议)"}
+                      </p>
+                      <p className="text-xs text-neutral-500">
+                        {start}
+                        {meeting.meeting_code && (
+                          <span className="ml-2 rounded bg-neutral-100 px-1.5 py-0.5 font-mono">
+                            {meeting.meeting_code}
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
 
       {/* 项目进度 */}
       <div className="mb-8 rounded-lg border border-neutral-200 bg-white p-5">

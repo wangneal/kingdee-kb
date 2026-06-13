@@ -12,6 +12,7 @@ import Chat from "./pages/Chat"
 import Home from "./pages/Home"
 import Import from "./pages/Import"
 import KnowledgeGraph from "./pages/KnowledgeGraph"
+import Meetings from "./pages/Meetings"
 import Products from "./pages/Products"
 import ProjectManagement from "./pages/ProjectManagement"
 import ResearchAssistant from "./pages/ResearchAssistant"
@@ -59,6 +60,7 @@ function App() {
                   <Route path="import" element={<Import />} />
                   <Route path="products" element={<Products />} />
                   <Route path="projects" element={<ProjectManagement />} />
+                  <Route path="meetings" element={<Meetings />} />
                   <Route path="settings" element={<Settings />} />
                 </Route>
               </Routes>

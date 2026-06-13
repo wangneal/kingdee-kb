@@ -1306,7 +1306,7 @@ export default function Settings() {
                   </button>
                 </div>
                 <p className="text-[10px] text-neutral-400 mt-1">
-                  在腾讯会议 AI Skill 页面获取 Token，用于同步线上会议录制、转写和智能纪要。
+                  在腾讯会议 AI Skill 页面获取 Token，用于预约/查询/取消会议、同步转写、获取 AI 智能纪要。详见会议管理页。
                 </p>
                 {tencentMeetingSaveMsg && (
                   <p className="mt-1 text-[10px] text-neutral-500">{tencentMeetingSaveMsg}</p>
