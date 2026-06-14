@@ -826,3 +826,336 @@ fn row_to_meeting(row: &rusqlite::Row) -> rusqlite::Result<Meeting> {
         updated_at: row.get(15)?,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// 构造测试用 TencentMeetingUpsert
+    fn make_upsert(meeting_id: &str, status: &str) -> TencentMeetingUpsert {
+        TencentMeetingUpsert {
+            meeting_id: meeting_id.to_string(),
+            meeting_code: Some("123-456-789".to_string()),
+            subject: "测试会议".to_string(),
+            host_user_id: None,
+            invitees_json: "[]".to_string(),
+            start_time: "2026-06-14T10:00:00".to_string(),
+            end_time: Some("2026-06-14T11:00:00".to_string()),
+            duration_minutes: Some(60),
+            status: status.to_string(),
+            raw_payload_json: "{}".to_string(),
+        }
+    }
+
+    /// 建临时库 + 会议三表 + projects 依赖表，返回 (store, project_id)
+    fn setup() -> (MeetingStore, i64) {
+        let dir = tempdir().expect("创建临时目录失败");
+        let db_path = dir.path().join("test.db");
+        let store = MeetingStore::new(&db_path).expect("创建会议存储失败");
+        store.ensure_table().expect("创建会议表失败");
+
+        // 建 projects 依赖表（link_project 查 projects.status）
+        store
+            .db
+            .execute_batch(
+                "CREATE TABLE projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    client_name TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    current_phase TEXT NOT NULL DEFAULT 'survey',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    CHECK (status IN ('active', 'archived'))
+                );
+                -- 会议三表的外键依赖（SQLite 建表时解析 REFERENCES 即要求表存在）
+                CREATE TABLE raw_sources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER
+                );
+                CREATE TABLE products (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER
+                );",
+            )
+            .expect("创建依赖表失败");
+
+        let project_id: i64 = store
+            .db
+            .query_row(
+                "INSERT INTO projects (name) VALUES ('测试项目') RETURNING id",
+                [],
+                |r| r.get(0),
+            )
+            .expect("插入项目失败");
+
+        (store, project_id)
+    }
+
+    #[test]
+    fn upsert_inserts_and_updates() {
+        let (store, _) = setup();
+
+        // 首次插入
+        let id1 = store
+            .upsert_from_tencent(&make_upsert("mtg-1", "scheduled"), None)
+            .expect("首次 upsert 失败");
+        assert!(id1 > 0);
+
+        // 同 meeting_id 再次 upsert 应更新而非重复
+        let id2 = store
+            .upsert_from_tencent(&make_upsert("mtg-1", "ended"), None)
+            .expect("二次 upsert 失败");
+        assert_eq!(id1, id2, "同 meeting_id 的 upsert 应返回相同 id");
+
+        // 验证状态已更新
+        let meeting = store.get(id1).expect("查询失败").expect("会议应存在");
+        assert_eq!(meeting.status, "ended");
+    }
+
+    #[test]
+    fn upsert_preserves_ignored_link_status() {
+        let (store, _) = setup();
+
+        let id = store
+            .upsert_from_tencent(&make_upsert("mtg-2", "scheduled"), None)
+            .expect("upsert 失败");
+
+        // 手动标记为 ignored
+        store.ignore(id).expect("标记忽略失败");
+
+        // 再次 upsert（project_id=None）不应改变 ignored 状态
+        store
+            .upsert_from_tencent(&make_upsert("mtg-2", "ended"), None)
+            .expect("upsert 失败");
+
+        let meeting = store.get(id).expect("查询失败").expect("会议应存在");
+        assert_eq!(
+            meeting.link_status, "ignored",
+            "ignored 状态应被保护，不被 upsert 覆盖"
+        );
+    }
+
+    #[test]
+    fn link_project_rejects_archived_project() {
+        let (store, project_id) = setup();
+
+        let meeting_id = store
+            .upsert_from_tencent(&make_upsert("mtg-3", "scheduled"), None)
+            .expect("upsert 失败");
+
+        // 将项目标记为 archived
+        store
+            .db
+            .execute(
+                "UPDATE projects SET status = 'archived' WHERE id = ?1",
+                params![project_id],
+            )
+            .expect("归档项目失败");
+
+        let result = store.link_project(meeting_id, project_id);
+        assert!(
+            result.is_err(),
+            "关联到已归档项目应报错，实际: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn unlink_project_blocked_when_minutes_exist() {
+        let (store, project_id) = setup();
+
+        let meeting_id = store
+            .upsert_from_tencent(&make_upsert("mtg-4", "ended"), Some(project_id))
+            .expect("upsert 失败");
+
+        // 保存转写
+        let transcript_input = SaveTranscript {
+            meeting_id,
+            project_id,
+            record_file_id: Some("rec-1".to_string()),
+            transcript_text: "会议转写内容".to_string(),
+            transcript_raw: "{}".to_string(),
+            raw_source_id: None,
+        };
+        store
+            .save_transcript(&transcript_input)
+            .expect("保存转写失败");
+
+        // 保存纪要
+        let minutes_input = SaveMinutes {
+            meeting_id,
+            project_id,
+            transcript_id: Some(1),
+            content_md: "# 纪要内容".to_string(),
+            official_minutes: None,
+            decisions_json: "[]".to_string(),
+            todos_json: "[]".to_string(),
+            file_path: "/tmp/minutes.md".to_string(),
+            product_id: None,
+            generator: "test".to_string(),
+            model_used: None,
+        };
+        store.save_minutes(&minutes_input).expect("保存纪要失败");
+
+        // 有纪要时应拒绝取消关联
+        let result = store.unlink_project(meeting_id);
+        assert!(
+            result.is_err(),
+            "已生成纪要的会议不能取消关联，实际: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn save_transcript_protects_ignored_status() {
+        let (store, project_id) = setup();
+
+        let meeting_id = store
+            .upsert_from_tencent(&make_upsert("mtg-5", "ended"), None)
+            .expect("upsert 失败");
+
+        // 标记为 ignored（此时 project_id 仍为 NULL）
+        store.ignore(meeting_id).expect("标记忽略失败");
+
+        // save_transcript 应拒绝（保护 ignored 状态）
+        let transcript_input = SaveTranscript {
+            meeting_id,
+            project_id,
+            record_file_id: None,
+            transcript_text: "转写".to_string(),
+            transcript_raw: "{}".to_string(),
+            raw_source_id: None,
+        };
+        let result = store.save_transcript(&transcript_input);
+        assert!(
+            result.is_err(),
+            "ignored 会议不应被自动关联，实际: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn save_transcript_rejects_project_mismatch() {
+        let (store, project_id) = setup();
+
+        let meeting_id = store
+            .upsert_from_tencent(&make_upsert("mtg-6", "ended"), Some(project_id))
+            .expect("upsert 失败");
+
+        // 用不同的 project_id（不存在的 999）保存转写应报错
+        let transcript_input = SaveTranscript {
+            meeting_id,
+            project_id: 999,
+            record_file_id: None,
+            transcript_text: "转写".to_string(),
+            transcript_raw: "{}".to_string(),
+            raw_source_id: None,
+        };
+        let result = store.save_transcript(&transcript_input);
+        assert!(
+            result.is_err(),
+            "转写 project_id 与会议不一致应报错，实际: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn save_minutes_and_get_with_assets() {
+        let (store, project_id) = setup();
+
+        let meeting_id = store
+            .upsert_from_tencent(&make_upsert("mtg-7", "ended"), Some(project_id))
+            .expect("upsert 失败");
+
+        // 保存转写
+        let transcript_input = SaveTranscript {
+            meeting_id,
+            project_id,
+            record_file_id: Some("rec-7".to_string()),
+            transcript_text: "完整转写内容".to_string(),
+            transcript_raw: "{}".to_string(),
+            raw_source_id: None,
+        };
+        store
+            .save_transcript(&transcript_input)
+            .expect("保存转写失败");
+
+        // 保存纪要
+        let minutes_input = SaveMinutes {
+            meeting_id,
+            project_id,
+            transcript_id: Some(1),
+            content_md: "# 完整纪要".to_string(),
+            official_minutes: None,
+            decisions_json: "[\"决策一\"]".to_string(),
+            todos_json: "[\"待办一\"]".to_string(),
+            file_path: "/tmp/minutes7.md".to_string(),
+            product_id: None,
+            generator: "test".to_string(),
+            model_used: None,
+        };
+        store.save_minutes(&minutes_input).expect("保存纪要失败");
+
+        // get_with_assets 应返回完整关联
+        let assets = store
+            .get_with_assets(meeting_id)
+            .expect("查询失败")
+            .expect("应返回会议资产");
+        assert!(assets.transcript.is_some(), "转写应存在");
+        assert!(assets.minutes.is_some(), "纪要应存在");
+        assert_eq!(
+            assets.project_name,
+            Some("测试项目".to_string()),
+            "项目名应正确关联"
+        );
+        assert_eq!(
+            assets.minutes.unwrap().file_path,
+            "/tmp/minutes7.md"
+        );
+    }
+
+    #[test]
+    fn mcp_json_to_upsert_status_mapping() {
+        use serde_json::json;
+
+        // 有 status 字段时按枚举映射
+        let ongoing = json!({
+            "meeting_id": "m1",
+            "subject": "进行中会议",
+            "status": "MEETING_STATE_STARTED"
+        });
+        let upsert = mcp_json_to_upsert(&ongoing, MeetingDataSource::Upcoming).expect("应解析");
+        assert_eq!(upsert.status, "ongoing");
+
+        let ended_explicit = json!({
+            "meeting_id": "m2",
+            "subject": "已结束",
+            "status": "MEETING_STATE_ENDED"
+        });
+        let upsert = mcp_json_to_upsert(&ended_explicit, MeetingDataSource::Ended).expect("应解析");
+        assert_eq!(upsert.status, "ended");
+
+        // 已结束接口不返回 status 字段时，按 source_hint 兜底为 ended
+        let ended_no_status = json!({
+            "meeting_id": "m3",
+            "subject": "无状态字段的已结束会议"
+        });
+        let upsert = mcp_json_to_upsert(&ended_no_status, MeetingDataSource::Ended).expect("应解析");
+        assert_eq!(
+            upsert.status, "ended",
+            "已结束接口无 status 字段时应兜底为 ended"
+        );
+
+        // 进行中接口无 status 字段时，兜底为 scheduled
+        let upcoming_no_status = json!({
+            "meeting_id": "m4",
+            "subject": "无状态字段的待开始会议"
+        });
+        let upsert =
+            mcp_json_to_upsert(&upcoming_no_status, MeetingDataSource::Upcoming).expect("应解析");
+        assert_eq!(upsert.status, "scheduled");
+    }
+}
