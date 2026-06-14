@@ -598,14 +598,29 @@ export async function desensitizeText(
   return invoke("desensitize_text", { text })
 }
 
-export async function addSensitiveKeyword(keyword: string): Promise<void> {
-  return invoke("add_sensitive_keyword", { keyword })
+/** 敏感词语义类型（决定占位符标签，影响 LLM 推理质量） */
+export type SensitiveKind = "name" | "term" | "code" | "custom"
+
+/** 自定义敏感词条目（带类型） */
+export interface SensitiveKeyword {
+  text: string
+  kind: SensitiveKind
 }
 
-export async function listSensitiveKeywords(): Promise<string[]> {
+/** 添加敏感词（kind 默认 custom；类型越准确，LLM 推理质量越高） */
+export async function addSensitiveKeyword(
+  keyword: string,
+  kind?: SensitiveKind,
+): Promise<void> {
+  return invoke("add_sensitive_keyword", { keyword, kind: kind ?? null })
+}
+
+/** 查询全部敏感词（带类型） */
+export async function listSensitiveKeywords(): Promise<SensitiveKeyword[]> {
   return invoke("list_sensitive_keywords")
 }
 
+/** 删除敏感词 */
 export async function removeSensitiveKeyword(keyword: string): Promise<boolean> {
   return invoke("remove_sensitive_keyword", { keyword })
 }

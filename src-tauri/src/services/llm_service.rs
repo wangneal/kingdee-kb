@@ -208,16 +208,34 @@ mod tests {
 
 // 鈹€鈹€鈹€ 娴佸紡鑴辨晱杩樺師宸ュ叿 鈹€鈹€鈹€
 
+/// 归一化占位符：去空白、转大写，用于 LLM 改写占位符时的容错匹配。
+///
+/// 例：`[ $_name_1 ]` → `[$_NAME_1]`。
+/// StreamingRestorer 在精确匹配失败时用它做二次查找。
+fn normalize_placeholder_key(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
 struct StreamingRestorer {
     buffer: String,
     mapping: std::collections::HashMap<String, String>,
+    /// 归一化占位符 → 原始值（去空白+大写），用于 LLM 改写占位符时的容错匹配
+    normalized_mapping: std::collections::HashMap<String, String>,
 }
 
 impl StreamingRestorer {
     fn new(mapping: std::collections::HashMap<String, String>) -> Self {
+        let normalized_mapping: std::collections::HashMap<String, String> = mapping
+            .iter()
+            .map(|(k, v)| (normalize_placeholder_key(k), v.clone()))
+            .collect();
         Self {
             buffer: String::new(),
             mapping,
+            normalized_mapping,
         }
     }
 
@@ -227,7 +245,7 @@ impl StreamingRestorer {
         let mut output = String::new();
 
         loop {
-            if let Some(start_idx) = self.buffer.find("[$$") {
+            if let Some(start_idx) = self.buffer.find("[$") {
                 if start_idx > 0 {
                     output.push_str(&self.buffer[..start_idx]);
                     self.buffer = self.buffer[start_idx..].to_string();
@@ -238,7 +256,13 @@ impl StreamingRestorer {
                     if let Some(original) = self.mapping.get(placeholder) {
                         output.push_str(original);
                     } else {
-                        output.push_str(placeholder);
+                        // 容错：LLM 可能改写占位符（加空格/改大小写），归一化后重试
+                        let norm = normalize_placeholder_key(placeholder);
+                        if let Some(original) = self.normalized_mapping.get(&norm) {
+                            output.push_str(original);
+                        } else {
+                            output.push_str(placeholder);
+                        }
                     }
                     self.buffer = self.buffer[end_idx + 1..].to_string();
                 } else {

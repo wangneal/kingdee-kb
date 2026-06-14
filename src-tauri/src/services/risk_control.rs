@@ -1407,6 +1407,7 @@ mod tests {
             section_path: None,
             tags: None,
             line_no: None,
+            parent_chunk_id: None,
             created_at: "2026-06-07 00:00:00".to_string(),
         }
     }

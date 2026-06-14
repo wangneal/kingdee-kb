@@ -90,6 +90,8 @@ import {
   revokeSkillPermissionRule,
   type SkillPermissionRuleInfo,
   saveAsrConfig,
+  type SensitiveKind,
+  type SensitiveKeyword,
   saveTencentMeetingToken,
   setAgentToolConfig,
   setEmbeddingModelConfig,
@@ -395,6 +397,16 @@ const MODEL_SPECS = [
   { id: "glm-4-plus", context_window: 128000, max_output: 4096, thinking: false },
 ]
 
+/** 敏感词类型的中文标签（用于列表展示） */
+function kindLabel(kind: SensitiveKind): string {
+  switch (kind) {
+    case "name": return "人名"
+    case "term": return "术语"
+    case "code": return "编号"
+    case "custom": return "自定义"
+  }
+}
+
 export default function Settings() {
   const toast = useToast()
   const [stats, setStats] = useState<KnowledgeStats | null>(null)
@@ -415,7 +427,8 @@ export default function Settings() {
   const [embeddingProviderSaveMsg, setEmbeddingProviderSaveMsg] = useState<string | null>(null)
   const [showEmbeddingApiKey, setShowEmbeddingApiKey] = useState(false)
   const [keywordInput, setKeywordInput] = useState("")
-  const [keywords, setKeywords] = useState<string[]>([])
+  const [keywordKind, setKeywordKind] = useState<SensitiveKind>("custom")
+  const [keywords, setKeywords] = useState<SensitiveKeyword[]>([])
   const [keywordError, setKeywordError] = useState<string | null>(null)
 
   // ASR 配置状态
@@ -454,6 +467,109 @@ export default function Settings() {
   const [overrideMaxOutput, setOverrideMaxOutput] = useState("")
   const [overrideSaveMsg, setOverrideSaveMsg] = useState<string | null>(null)
   const [overrideKey, setOverrideKey] = useState(0)
+
+  // 计算是否有覆盖的模型规格
+  const hasOverride = useMemo(() => {
+    void overrideKey
+    try {
+      const overrides = JSON.parse(localStorage.getItem("model_spec_overrides") || "{}")
+      return new Set(Object.keys(overrides))
+    } catch {
+      return new Set<string>()
+    }
+  }, [overrideKey])
+
+  // 恢复默认规格
+  const handleRemoveOverride = useCallback(
+    (modelId: string) => {
+      try {
+        const overrides = JSON.parse(localStorage.getItem("model_spec_overrides") || "{}")
+        delete overrides[modelId]
+        localStorage.setItem("model_spec_overrides", JSON.stringify(overrides))
+        setOverrideKey((k) => k + 1)
+        toast.success(`已恢复模型 ${modelId} 的默认规格`)
+      } catch (err) {
+        console.error("删除模型规格覆盖失败:", err)
+        toast.error(`恢复默认规格失败: ${String(err)}`)
+      }
+    },
+    [toast.success, toast.error],
+  )
+
+  // 自动保存 kdclub token
+  const handleSaveKdclubToken = useCallback(
+    async (token?: string) => {
+      const val = token !== undefined ? token : kdclubToken
+      setKdclubSaving(true)
+      setKdclubSaveMsg(null)
+      try {
+        if (val.trim()) {
+          localStorage.setItem("kdclub_pat_token", val.trim())
+        } else {
+          localStorage.removeItem("kdclub_pat_token")
+        }
+        setKdclubSaveMsg("已自动保存")
+        setTimeout(() => setKdclubSaveMsg(null), TOAST_AUTO_DISMISS_MS)
+      } catch (err) {
+        setKdclubSaveMsg(`自动保存失败：${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        setKdclubSaving(false)
+      }
+    },
+    [kdclubToken],
+  )
+
+  // 自动保存腾讯会议 token
+  const handleSaveTencentMeetingToken = useCallback(
+    async (token?: string) => {
+      const val = token !== undefined ? token : tencentMeetingToken
+      if (!val.trim()) return
+      setTencentMeetingSaving(true)
+      setTencentMeetingSaveMsg(null)
+      try {
+        await saveTencentMeetingToken(val.trim())
+        const status = await getTencentMeetingConfigStatus()
+        setTencentMeetingStatus(status)
+        setTencentMeetingToken("")
+        setTencentMeetingSaveMsg("已自动保存")
+        setTimeout(() => setTencentMeetingSaveMsg(null), TOAST_AUTO_DISMISS_MS)
+      } catch (err) {
+        setTencentMeetingSaveMsg(
+          `自动保存失败：${err instanceof Error ? err.message : String(err)}`,
+        )
+      } finally {
+        setTencentMeetingSaving(false)
+      }
+    },
+    [tencentMeetingToken],
+  )
+
+  // 自动保存 ASR 配置
+  const handleSaveAsrConfig = useCallback(
+    async (secretId?: string, secretKey?: string) => {
+      const id = secretId !== undefined ? secretId : tencentSecretId
+      const key = secretKey !== undefined ? secretKey : tencentSecretKey
+      // 只有非空时才保存，避免首次加载未完成时触发清空
+      if (!id.trim() && !key.trim()) return
+      setAsrSaving(true)
+      setAsrSaveMsg(null)
+      try {
+        await saveAsrConfig({
+          tencent_secret_id: id || undefined,
+          tencent_secret_key: key || undefined,
+        })
+        const status = await getAsrConfigStatus()
+        setAsrConfigStatus(status)
+        setAsrSaveMsg("已自动保存")
+        setTimeout(() => setAsrSaveMsg(null), TOAST_AUTO_DISMISS_MS)
+      } catch (err) {
+        setAsrSaveMsg(`自动保存失败：${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        setAsrSaving(false)
+      }
+    },
+    [tencentSecretId, tencentSecretKey],
+  )
 
   // 合并内置规格和 localStorage 覆盖
   const mergedModelSpecs = useMemo(() => {
@@ -596,6 +712,34 @@ export default function Settings() {
     }
   }, [])
 
+  const handleSaveEmbeddingConfig = useCallback(
+    async (targetDir?: string) => {
+      const dir =
+        (targetDir !== undefined ? targetDir : (embeddingConfig.custom_model_dir ?? "")).trim() ||
+        null
+      setEmbeddingConfigSaving(true)
+      setInitResult(null)
+      try {
+        const ok = await setEmbeddingModelConfig(dir)
+        setModelReady(ok)
+        setEmbeddingConfig({ custom_model_dir: dir })
+        setInitResult({
+          ok,
+          msg: dir ? "已自动保存自定义 Embedding 模型配置" : "已切换为内置 Embedding 模型",
+        })
+        setTimeout(() => setInitResult(null), TOAST_AUTO_DISMISS_MS)
+      } catch (err) {
+        setInitResult({
+          ok: false,
+          msg: `自动保存失败：${err instanceof Error ? err.message : String(err)}`,
+        })
+      } finally {
+        setEmbeddingConfigSaving(false)
+      }
+    },
+    [embeddingConfig.custom_model_dir],
+  )
+
   const handleChooseEmbeddingDir = useCallback(async () => {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog")
@@ -606,6 +750,7 @@ export default function Settings() {
       })
       if (typeof selected === "string") {
         setEmbeddingConfig({ custom_model_dir: selected })
+        await handleSaveEmbeddingConfig(selected)
       }
     } catch (err) {
       setInitResult({
@@ -613,29 +758,7 @@ export default function Settings() {
         msg: `选择目录失败：${err instanceof Error ? err.message : String(err)}`,
       })
     }
-  }, [])
-
-  const handleSaveEmbeddingConfig = useCallback(async () => {
-    setEmbeddingConfigSaving(true)
-    setInitResult(null)
-    try {
-      const dir = embeddingConfig.custom_model_dir?.trim() || null
-      const ok = await setEmbeddingModelConfig(dir)
-      setModelReady(ok)
-      setEmbeddingConfig({ custom_model_dir: dir })
-      setInitResult({
-        ok,
-        msg: dir ? "自定义 Embedding 模型已加载" : "已切换为内置 Embedding 模型",
-      })
-    } catch (err) {
-      setInitResult({
-        ok: false,
-        msg: `Embedding 模型配置失败：${err instanceof Error ? err.message : String(err)}`,
-      })
-    } finally {
-      setEmbeddingConfigSaving(false)
-    }
-  }, [embeddingConfig.custom_model_dir])
+  }, [handleSaveEmbeddingConfig])
 
   const handleResetEmbeddingConfig = useCallback(async () => {
     setEmbeddingConfig({ custom_model_dir: null })
@@ -645,6 +768,7 @@ export default function Settings() {
       const ok = await setEmbeddingModelConfig(null)
       setModelReady(ok)
       setInitResult({ ok, msg: "已切换为内置 Embedding 模型" })
+      setTimeout(() => setInitResult(null), TOAST_AUTO_DISMISS_MS)
     } catch (err) {
       setInitResult({
         ok: false,
@@ -655,40 +779,53 @@ export default function Settings() {
     }
   }, [])
 
-  const handleEmbeddingProviderChange = useCallback((provider: EmbeddingProviderType) => {
-    const defaults = EMBEDDING_PROVIDERS[provider]
-    setEmbeddingProviderConfig((prev) => ({
-      ...prev,
-      provider,
-      // 仅当 base_url 仍为上一供应商默认值时自动填充
-      base_url:
-        prev.base_url === EMBEDDING_PROVIDERS[prev.provider]?.baseUrl || prev.base_url === ""
-          ? defaults.baseUrl
-          : prev.base_url,
-      // 仅当 model_name 属于上一供应商预设模型时自动填充
-      model_name:
-        EMBEDDING_PROVIDERS[prev.provider]?.models.includes(prev.model_name) ||
-        prev.model_name === ""
-          ? (defaults.models[0] ?? "")
-          : prev.model_name,
-    }))
-  }, [])
+  const handleSaveEmbeddingProviderConfig = useCallback(
+    async (targetConfig?: EmbeddingProviderConfig) => {
+      const configToSave = targetConfig || embeddingProviderConfig
+      setEmbeddingProviderSaving(true)
+      setEmbeddingProviderSaveMsg(null)
+      try {
+        // 不将 API Key 持久化到 localStorage，避免安全风险
+        const { api_key: _, ...safeConfig } = configToSave
+        localStorage.setItem(EMBEDDING_PROVIDER_STORAGE_KEY, JSON.stringify(safeConfig))
+        setEmbeddingProviderSaveMsg("配置已自动保存")
+        setTimeout(() => setEmbeddingProviderSaveMsg(null), TOAST_AUTO_DISMISS_MS)
+      } catch (err) {
+        setEmbeddingProviderSaveMsg(
+          `自动保存失败：${err instanceof Error ? err.message : String(err)}`,
+        )
+      } finally {
+        setEmbeddingProviderSaving(false)
+      }
+    },
+    [embeddingProviderConfig],
+  )
 
-  const handleSaveEmbeddingProviderConfig = useCallback(async () => {
-    setEmbeddingProviderSaving(true)
-    setEmbeddingProviderSaveMsg(null)
-    try {
-      // 不将 API Key 持久化到 localStorage，避免安全风险
-      const { api_key: _, ...safeConfig } = embeddingProviderConfig
-      localStorage.setItem(EMBEDDING_PROVIDER_STORAGE_KEY, JSON.stringify(safeConfig))
-      setEmbeddingProviderSaveMsg("配置已保存")
-      setTimeout(() => setEmbeddingProviderSaveMsg(null), TOAST_AUTO_DISMISS_MS)
-    } catch (err) {
-      setEmbeddingProviderSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setEmbeddingProviderSaving(false)
-    }
-  }, [embeddingProviderConfig])
+  const handleEmbeddingProviderChange = useCallback(
+    (provider: EmbeddingProviderType) => {
+      const defaults = EMBEDDING_PROVIDERS[provider]
+      setEmbeddingProviderConfig((prev) => {
+        const next = {
+          ...prev,
+          provider,
+          // 仅当 base_url 仍为上一供应商默认值时自动填充
+          base_url:
+            prev.base_url === EMBEDDING_PROVIDERS[prev.provider]?.baseUrl || prev.base_url === ""
+              ? defaults.baseUrl
+              : prev.base_url,
+          // 仅当 model_name 属于上一供应商预设模型时自动填充
+          model_name:
+            EMBEDDING_PROVIDERS[prev.provider]?.models.includes(prev.model_name) ||
+            prev.model_name === ""
+              ? (defaults.models[0] ?? "")
+              : prev.model_name,
+        }
+        handleSaveEmbeddingProviderConfig(next)
+        return next
+      })
+    },
+    [handleSaveEmbeddingProviderConfig],
+  )
 
   const handleSaveOverride = useCallback(() => {
     if (!overrideModelId.trim()) return
@@ -839,6 +976,7 @@ export default function Settings() {
                         type="text"
                         value={embeddingConfig.custom_model_dir ?? ""}
                         onChange={(e) => setEmbeddingConfig({ custom_model_dir: e.target.value })}
+                        onBlur={() => handleSaveEmbeddingConfig()}
                         placeholder="默认使用内置 BGE 模型；可选择本地 ONNX 模型目录"
                         className="flex-1 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
                       />
@@ -870,19 +1008,6 @@ export default function Settings() {
                   <div className="flex items-center gap-3">
                     <button
                       type="button"
-                      onClick={handleSaveEmbeddingConfig}
-                      disabled={embeddingConfigSaving}
-                      className="flex items-center gap-1.5 rounded-lg border border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
-                    >
-                      {embeddingConfigSaving ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Save className="h-4 w-4" />
-                      )}
-                      保存模型设置
-                    </button>
-                    <button
-                      type="button"
                       onClick={handleInitModel}
                       disabled={initializing || modelReady}
                       className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
@@ -894,6 +1019,13 @@ export default function Settings() {
                       )}
                       {initializing ? "下载模型中..." : modelReady ? "已初始化" : "初始化模型"}
                     </button>
+
+                    {embeddingConfigSaving && (
+                      <span className="flex items-center gap-1 text-xs text-neutral-400">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        自动保存中...
+                      </span>
+                    )}
 
                     {initResult && (
                       <span
@@ -934,6 +1066,7 @@ export default function Settings() {
                         onChange={(e) =>
                           setEmbeddingProviderConfig((c) => ({ ...c, base_url: e.target.value }))
                         }
+                        onBlur={() => handleSaveEmbeddingProviderConfig()}
                         placeholder={EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].baseUrl}
                         className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
                       />
@@ -952,6 +1085,7 @@ export default function Settings() {
                           onChange={(e) =>
                             setEmbeddingProviderConfig((c) => ({ ...c, api_key: e.target.value }))
                           }
+                          onBlur={() => handleSaveEmbeddingProviderConfig()}
                           placeholder="输入 API Key..."
                           className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 pr-10 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
                         />
@@ -984,6 +1118,7 @@ export default function Settings() {
                         onChange={(e) =>
                           setEmbeddingProviderConfig((c) => ({ ...c, model_name: e.target.value }))
                         }
+                        onBlur={() => handleSaveEmbeddingProviderConfig()}
                         placeholder="选择或输入模型名称"
                         className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
                       />
@@ -1001,9 +1136,11 @@ export default function Settings() {
                           <button
                             key={m}
                             type="button"
-                            onClick={() =>
-                              setEmbeddingProviderConfig((c) => ({ ...c, model_name: m }))
-                            }
+                            onClick={() => {
+                              const nextConfig = { ...embeddingProviderConfig, model_name: m }
+                              setEmbeddingProviderConfig(nextConfig)
+                              handleSaveEmbeddingProviderConfig(nextConfig)
+                            }}
                             className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
                               embeddingProviderConfig.model_name === m
                                 ? "bg-[#1A6BD8] text-white"
@@ -1017,24 +1154,16 @@ export default function Settings() {
                     )}
                   </div>
 
-                  {/* 保存按钮 */}
+                  {/* 自动保存状态提示 */}
                   <div className="mt-4 flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={handleSaveEmbeddingProviderConfig}
-                      disabled={embeddingProviderSaving}
-                      className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
-                    >
-                      {embeddingProviderSaving ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Save className="h-4 w-4" />
-                      )}
-                      保存配置
-                    </button>
-                    {embeddingProviderSaveMsg && (
-                      <span className="text-xs text-neutral-500">{embeddingProviderSaveMsg}</span>
-                    )}
+                    {embeddingProviderSaving ? (
+                      <span className="flex items-center gap-1 text-xs text-neutral-400">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        自动保存中...
+                      </span>
+                    ) : embeddingProviderSaveMsg ? (
+                      <span className="text-xs text-green-600">{embeddingProviderSaveMsg}</span>
+                    ) : null}
                   </div>
                 </>
               )}
@@ -1061,7 +1190,8 @@ export default function Settings() {
                       <th className="pb-2 pr-3 font-medium">模型</th>
                       <th className="pb-2 pr-3 font-medium">上下文窗口</th>
                       <th className="pb-2 pr-3 font-medium">最大输出</th>
-                      <th className="pb-2 font-medium">思维链</th>
+                      <th className="pb-2 pr-3 font-medium">思维链</th>
+                      <th className="pb-2 font-medium">操作</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1074,7 +1204,20 @@ export default function Settings() {
                         <td className="py-1.5 pr-3 text-xs">
                           {(spec.max_output / 1000).toFixed(0)}K
                         </td>
-                        <td className="py-1.5 text-xs">{spec.thinking ? "✓" : "—"}</td>
+                        <td className="py-1.5 pr-3 text-xs">{spec.thinking ? "✓" : "—"}</td>
+                        <td className="py-1.5 text-xs">
+                          {hasOverride.has(spec.id) ? (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveOverride(spec.id)}
+                              className="text-red-500 hover:text-red-700 transition-colors"
+                            >
+                              恢复默认
+                            </button>
+                          ) : (
+                            <span className="text-neutral-300">—</span>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1158,6 +1301,7 @@ export default function Settings() {
                     type={showKdclubToken ? "text" : "password"}
                     value={kdclubToken}
                     onChange={(e) => setKdclubToken(e.target.value)}
+                    onBlur={() => handleSaveKdclubToken()}
                     placeholder="kdt_xxxxxxxx..."
                     className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 pr-10 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
                   />
@@ -1177,39 +1321,16 @@ export default function Settings() {
                 </p>
               </div>
 
+              {/* 自动保存状态提示 */}
               <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={async () => {
-                    setKdclubSaving(true)
-                    setKdclubSaveMsg(null)
-                    try {
-                      // 保存到 localStorage，不写入文件以降低安全风险
-                      if (kdclubToken) {
-                        localStorage.setItem("kdclub_pat_token", kdclubToken)
-                      } else {
-                        localStorage.removeItem("kdclub_pat_token")
-                      }
-                      setKdclubSaveMsg("配置已保存")
-                      setTimeout(() => setKdclubSaveMsg(null), TOAST_AUTO_DISMISS_MS)
-                    } catch (err) {
-                      setKdclubSaveMsg(
-                        `保存失败：${err instanceof Error ? err.message : String(err)}`,
-                      )
-                    }
-                    setKdclubSaving(false)
-                  }}
-                  disabled={kdclubSaving}
-                  className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
-                >
-                  {kdclubSaving ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Save className="h-4 w-4" />
-                  )}
-                  保存配置
-                </button>
-                {kdclubSaveMsg && <span className="text-xs text-neutral-500">{kdclubSaveMsg}</span>}
+                {kdclubSaving ? (
+                  <span className="flex items-center gap-1 text-xs text-neutral-400">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    自动保存中...
+                  </span>
+                ) : kdclubSaveMsg ? (
+                  <span className="text-xs text-green-600">{kdclubSaveMsg}</span>
+                ) : null}
               </div>
             </div>
           </section>
@@ -1225,18 +1346,29 @@ export default function Settings() {
             <div className="p-5 space-y-4">
               {/* 腾讯 ASR */}
               <div className="rounded-lg border border-neutral-200 p-4">
-                <h3 className="text-xs font-semibold text-neutral-700 mb-2">
-                  腾讯云语音识别
-                  {asrConfigStatus?.tencent_configured && (
-                    <span className="ml-2 text-green-600">✓ 已配置</span>
-                  )}
-                </h3>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-semibold text-neutral-700">
+                    腾讯云语音识别
+                    {asrConfigStatus?.tencent_configured && (
+                      <span className="ml-2 text-green-600">✓ 已配置</span>
+                    )}
+                  </h3>
+                  {asrSaving ? (
+                    <span className="flex items-center gap-1 text-[11px] text-neutral-400">
+                      <Loader2 className="h-3 w-3 animate-spin text-[#1A6BD8]" />
+                      自动保存中...
+                    </span>
+                  ) : asrSaveMsg ? (
+                    <span className="text-[11px] text-green-600">{asrSaveMsg}</span>
+                  ) : null}
+                </div>
                 <div className="grid grid-cols-3 gap-2">
                   <input
                     type="text"
                     placeholder="SecretId"
                     value={tencentSecretId}
                     onChange={(e) => setTencentSecretId(e.target.value)}
+                    onBlur={() => handleSaveAsrConfig()}
                     className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
                   />
                   <input
@@ -1244,6 +1376,7 @@ export default function Settings() {
                     placeholder="SecretKey"
                     value={tencentSecretKey}
                     onChange={(e) => setTencentSecretKey(e.target.value)}
+                    onBlur={() => handleSaveAsrConfig()}
                     className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
                   />
                 </div>
@@ -1253,12 +1386,22 @@ export default function Settings() {
               </div>
 
               <div className="rounded-lg border border-neutral-200 p-4">
-                <h3 className="text-xs font-semibold text-neutral-700 mb-2">
-                  腾讯会议 MCP
-                  {tencentMeetingStatus?.configured && (
-                    <span className="ml-2 text-green-600">✓ 已配置</span>
-                  )}
-                </h3>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-semibold text-neutral-700">
+                    腾讯会议 MCP
+                    {tencentMeetingStatus?.configured && (
+                      <span className="ml-2 text-green-600">✓ 已配置</span>
+                    )}
+                  </h3>
+                  {tencentMeetingSaving ? (
+                    <span className="flex items-center gap-1 text-[11px] text-neutral-400">
+                      <Loader2 className="h-3 w-3 animate-spin text-[#1A6BD8]" />
+                      自动保存中...
+                    </span>
+                  ) : tencentMeetingSaveMsg ? (
+                    <span className="text-[11px] text-green-600">{tencentMeetingSaveMsg}</span>
+                  ) : null}
+                </div>
                 <div className="flex gap-2">
                   <input
                     type={showTencentMeetingToken ? "text" : "password"}
@@ -1267,6 +1410,7 @@ export default function Settings() {
                     }
                     value={tencentMeetingToken}
                     onChange={(event) => setTencentMeetingToken(event.target.value)}
+                    onBlur={() => handleSaveTencentMeetingToken()}
                     className="min-w-0 flex-1 rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
                   />
                   <button
@@ -1276,74 +1420,11 @@ export default function Settings() {
                   >
                     {showTencentMeetingToken ? "隐藏" : "显示"}
                   </button>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      setTencentMeetingSaving(true)
-                      setTencentMeetingSaveMsg(null)
-                      try {
-                        if (tencentMeetingToken.trim()) {
-                          await saveTencentMeetingToken(tencentMeetingToken)
-                        }
-                        const status = await getTencentMeetingConfigStatus()
-                        setTencentMeetingStatus(status)
-                        setTencentMeetingToken("")
-                        setTencentMeetingSaveMsg("配置已保存")
-                        setTimeout(() => setTencentMeetingSaveMsg(null), TOAST_AUTO_DISMISS_MS)
-                      } catch (err) {
-                        setTencentMeetingSaveMsg(
-                          `保存失败：${err instanceof Error ? err.message : String(err)}`,
-                        )
-                      } finally {
-                        setTencentMeetingSaving(false)
-                      }
-                    }}
-                    disabled={tencentMeetingSaving}
-                    className="flex items-center gap-1 rounded bg-[#1A6BD8] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#1558B0] disabled:opacity-50"
-                  >
-                    {tencentMeetingSaving && <Loader2 className="h-3 w-3 animate-spin" />}
-                    保存
-                  </button>
                 </div>
                 <p className="text-[10px] text-neutral-400 mt-1">
-                  在腾讯会议 AI Skill 页面获取 Token，用于预约/查询/取消会议、同步转写、获取 AI 智能纪要。详见会议管理页。
+                  在腾讯会议 AI Skill 页面获取 Token，用于预约/查询/取消会议、同步转写、获取 AI
+                  智能纪要。详见会议管理页。
                 </p>
-                {tencentMeetingSaveMsg && (
-                  <p className="mt-1 text-[10px] text-neutral-500">{tencentMeetingSaveMsg}</p>
-                )}
-              </div>
-
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={async () => {
-                    setAsrSaving(true)
-                    setAsrSaveMsg(null)
-                    try {
-                      await saveAsrConfig({
-                        tencent_secret_id: tencentSecretId || undefined,
-                        tencent_secret_key: tencentSecretKey || undefined,
-                      })
-                      const status = await getAsrConfigStatus()
-                      setAsrConfigStatus(status)
-                      setAsrSaveMsg("配置已保存")
-                      setTimeout(() => setAsrSaveMsg(null), TOAST_AUTO_DISMISS_MS)
-                    } catch (err) {
-                      setAsrSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`)
-                    }
-                    setAsrSaving(false)
-                  }}
-                  disabled={asrSaving}
-                  className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
-                >
-                  {asrSaving ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Save className="h-4 w-4" />
-                  )}
-                  保存配置
-                </button>
-                {asrSaveMsg && <span className="text-xs text-neutral-500">{asrSaveMsg}</span>}
               </div>
             </div>
           </section>
@@ -1415,12 +1496,23 @@ export default function Settings() {
                   placeholder="输入敏感词..."
                   className="flex-1 rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-amber-500"
                 />
+                <select
+                  value={keywordKind}
+                  onChange={(e) => setKeywordKind(e.target.value as SensitiveKind)}
+                  className="rounded-lg border border-neutral-200 px-2 py-2 text-sm outline-none focus:border-amber-500 bg-white"
+                  title="敏感词类型（决定占位符标签，影响 LLM 推理质量）"
+                >
+                  <option value="name">人名</option>
+                  <option value="term">术语/代号</option>
+                  <option value="code">编号</option>
+                  <option value="custom">自定义</option>
+                </select>
                 <button
                   type="button"
                   onClick={async () => {
                     if (!keywordInput.trim()) return
                     try {
-                      await addSensitiveKeyword(keywordInput.trim())
+                      await addSensitiveKeyword(keywordInput.trim(), keywordKind)
                       setKeywordInput("")
                       const kw = await listSensitiveKeywords()
                       setKeywords(kw)
@@ -1438,15 +1530,18 @@ export default function Settings() {
                 <div className="mt-3 flex flex-wrap gap-2">
                   {keywords.map((kw) => (
                     <span
-                      key={kw}
+                      key={kw.text}
                       className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-xs text-amber-700"
                     >
-                      {kw}
+                      {kw.text}
+                      <span className="rounded bg-amber-200/60 px-1 text-[10px] text-amber-800">
+                        {kindLabel(kw.kind)}
+                      </span>
                       <button
                         type="button"
                         onClick={async () => {
                           try {
-                            await removeSensitiveKeyword(kw)
+                            await removeSensitiveKeyword(kw.text)
                             setKeywords(await listSensitiveKeywords())
                           } catch (e) {
                             setKeywordError(String(e))
@@ -2171,20 +2266,23 @@ function AgentToolOutputLimitsPanel({
             超出限制时返回预览，并把完整输出保存到审计输出目录。
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onSave}
-          disabled={saving || !dirty || !valid}
-          className="inline-flex items-center gap-1.5 rounded-md bg-[#1A6BD8] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-[#1558B0] disabled:cursor-not-allowed disabled:opacity-50"
-          title="保存输出截断限制"
-        >
+        <div className="flex items-center gap-1.5">
           {saving ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <span className="flex items-center gap-1 text-xs text-neutral-400">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-[#1A6BD8]" />
+              自动保存中...
+            </span>
+          ) : !valid ? (
+            <span className="text-xs text-red-500">格式错误</span>
+          ) : dirty ? (
+            <span className="text-xs text-amber-500">有修改未保存</span>
           ) : (
-            <Save className="h-3.5 w-3.5" />
+            <span className="flex items-center gap-1 text-xs text-green-600">
+              <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
+              已自动保存
+            </span>
           )}
-          保存
-        </button>
+        </div>
       </div>
       <div className="grid gap-3 p-3 md:grid-cols-3">
         {(
@@ -2210,6 +2308,11 @@ function AgentToolOutputLimitsPanel({
                 step={key === "max_bytes" ? 1024 : 1}
                 value={Number.isFinite(value) ? value : 0}
                 onChange={(event) => updateLimit(key, event.target.value)}
+                onBlur={() => {
+                  if (dirty && valid && !saving) {
+                    onSave()
+                  }
+                }}
                 className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-1 ${
                   invalid
                     ? "border-red-200 bg-red-50 text-red-700 focus:border-red-400 focus:ring-red-100"
@@ -3395,7 +3498,6 @@ function KnowledgeCompilationCard() {
 function OcrConfigCard() {
   const [ocrConfig, setOcrConfig] = useState<OcrProviderConfig | null>(null)
   const [loading, setLoading] = useState(true)
-  const [showForm, setShowForm] = useState(false)
   const [provider, setProvider] = useState<string>("baidu")
   const [name, setName] = useState("")
   const [apiKey, setApiKey] = useState("")
@@ -3419,28 +3521,43 @@ function OcrConfigCard() {
       .finally(() => setLoading(false))
   }, [])
 
-  const handleSave = useCallback(async () => {
-    setSaving(true)
-    setSaveMsg(null)
-    try {
-      await saveOcrConfig({
-        id: ocrConfig?.id ?? crypto.randomUUID(),
-        name: name.trim() || `${provider === "baidu" ? "百度" : "腾讯"} OCR`,
-        provider,
-        apiKey,
-        secretKey: secretKey || undefined,
-      })
-      const updated = await getOcrConfig()
-      setOcrConfig(updated)
-      setShowForm(false)
-      setSaveMsg("OCR 配置已保存")
-      setTimeout(() => setSaveMsg(null), TOAST_AUTO_DISMISS_MS)
-    } catch (err) {
-      setSaveMsg(`保存失败：${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setSaving(false)
-    }
-  }, [ocrConfig, provider, name, apiKey, secretKey])
+  const handleSave = useCallback(
+    async (
+      targetProvider?: string,
+      targetName?: string,
+      targetApiKey?: string,
+      targetSecretKey?: string,
+    ) => {
+      const p = targetProvider !== undefined ? targetProvider : provider
+      const n = targetName !== undefined ? targetName : name
+      const key = targetApiKey !== undefined ? targetApiKey : apiKey
+      const secret = targetSecretKey !== undefined ? targetSecretKey : secretKey
+
+      // 只有在 API Key 不为空时才保存，避免清空配置
+      if (!key.trim()) return
+
+      setSaving(true)
+      setSaveMsg(null)
+      try {
+        await saveOcrConfig({
+          id: ocrConfig?.id ?? crypto.randomUUID(),
+          name: n.trim() || `${p === "baidu" ? "百度" : "腾讯"} OCR`,
+          provider: p,
+          apiKey: key.trim(),
+          secretKey: secret.trim() || undefined,
+        })
+        const updated = await getOcrConfig()
+        setOcrConfig(updated)
+        setSaveMsg("已自动保存")
+        setTimeout(() => setSaveMsg(null), TOAST_AUTO_DISMISS_MS)
+      } catch (err) {
+        setSaveMsg(`自动保存失败：${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        setSaving(false)
+      }
+    },
+    [ocrConfig, provider, name, apiKey, secretKey],
+  )
 
   if (loading) {
     return (
@@ -3460,148 +3577,111 @@ function OcrConfigCard() {
             <h2 className="text-sm font-semibold text-neutral-700">OCR 文字识别</h2>
             <p className="mt-0.5 text-xs text-neutral-400">配置 OCR 服务，用于图片文字提取</p>
           </div>
-          {ocrConfig && (
-            <span className="flex items-center gap-1 rounded-full bg-green-50 px-2.5 py-0.5 text-xs font-medium text-green-700">
-              <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
-              已配置
-            </span>
-          )}
+          <div className="flex items-center gap-1.5 text-xs">
+            {saving ? (
+              <span className="flex items-center gap-1 text-neutral-400">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-[#1A6BD8]" />
+                自动保存中...
+              </span>
+            ) : saveMsg ? (
+              <span className="text-green-600 font-medium">{saveMsg}</span>
+            ) : ocrConfig ? (
+              <span className="flex items-center gap-1 rounded-full bg-green-50 px-2.5 py-0.5 font-medium text-green-700">
+                <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                已配置
+              </span>
+            ) : null}
+          </div>
         </div>
       </div>
 
       <div className="p-5">
-        {ocrConfig && !showForm ? (
-          <div className="space-y-3">
-            <div className="rounded-lg border border-neutral-200 p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-neutral-800">{ocrConfig.name}</p>
-                  <p className="mt-1 text-xs text-neutral-500">
-                    服务商：{ocrConfig.provider === "baidu" ? "百度 OCR" : "腾讯 OCR"}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowForm(true)}
-                  className="rounded-lg p-1.5 text-neutral-400 hover:bg-blue-50 hover:text-blue-600 transition-colors"
-                  title="编辑"
-                >
-                  <Pencil className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-            {saveMsg && <span className="text-xs text-green-600">{saveMsg}</span>}
+        <div className="space-y-4">
+          <div>
+            <label
+              htmlFor="ocr-provider"
+              className="mb-1.5 block text-xs font-medium text-neutral-600"
+            >
+              OCR 服务商
+            </label>
+            <select
+              id="ocr-provider"
+              value={provider}
+              onChange={(e) => {
+                const nextProvider = e.target.value
+                setProvider(nextProvider)
+                handleSave(nextProvider)
+              }}
+              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+            >
+              <option value="baidu">百度 OCR（推荐，中文最强）</option>
+              <option value="tencent">腾讯 OCR</option>
+            </select>
           </div>
-        ) : (
-          <div className="space-y-4">
-            <div>
-              <label
-                htmlFor="ocr-provider"
-                className="mb-1.5 block text-xs font-medium text-neutral-600"
-              >
-                OCR 服务商
-              </label>
-              <select
-                id="ocr-provider"
-                value={provider}
-                onChange={(e) => setProvider(e.target.value)}
-                className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-              >
-                <option value="baidu">百度 OCR（推荐，中文最强）</option>
-                <option value="tencent">腾讯 OCR</option>
-              </select>
-            </div>
 
+          <div>
+            <label htmlFor="ocr-name" className="mb-1.5 block text-xs font-medium text-neutral-600">
+              名称
+            </label>
+            <input
+              id="ocr-name"
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onBlur={() => handleSave()}
+              placeholder={provider === "baidu" ? "百度 OCR" : "腾讯 OCR"}
+              className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+            />
+          </div>
+
+          <div>
+            <label
+              htmlFor="ocr-api-key"
+              className="mb-1.5 block text-xs font-medium text-neutral-600"
+            >
+              API Key
+            </label>
+            <div className="relative">
+              <input
+                id="ocr-api-key"
+                type={showApiKey ? "text" : "password"}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                onBlur={() => handleSave()}
+                placeholder="输入 API Key"
+                className="w-full rounded-lg border border-neutral-200 px-3 py-2 pr-10 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey((v) => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
+                tabIndex={-1}
+              >
+                {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+
+          {provider === "baidu" && (
             <div>
               <label
-                htmlFor="ocr-name"
+                htmlFor="ocr-secret-key"
                 className="mb-1.5 block text-xs font-medium text-neutral-600"
               >
-                名称
+                Secret Key
               </label>
               <input
-                id="ocr-name"
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder={provider === "baidu" ? "百度 OCR" : "腾讯 OCR"}
+                id="ocr-secret-key"
+                type="password"
+                value={secretKey}
+                onChange={(e) => setSecretKey(e.target.value)}
+                onBlur={() => handleSave()}
+                placeholder="输入 Secret Key"
                 className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
               />
             </div>
-
-            <div>
-              <label
-                htmlFor="ocr-api-key"
-                className="mb-1.5 block text-xs font-medium text-neutral-600"
-              >
-                API Key
-              </label>
-              <div className="relative">
-                <input
-                  id="ocr-api-key"
-                  type={showApiKey ? "text" : "password"}
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="输入 API Key"
-                  className="w-full rounded-lg border border-neutral-200 px-3 py-2 pr-10 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowApiKey((v) => !v)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
-                  tabIndex={-1}
-                >
-                  {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
-            </div>
-
-            {provider === "baidu" && (
-              <div>
-                <label
-                  htmlFor="ocr-secret-key"
-                  className="mb-1.5 block text-xs font-medium text-neutral-600"
-                >
-                  Secret Key
-                </label>
-                <input
-                  id="ocr-secret-key"
-                  type="password"
-                  value={secretKey}
-                  onChange={(e) => setSecretKey(e.target.value)}
-                  placeholder="输入 Secret Key"
-                  className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-                />
-              </div>
-            )}
-
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={handleSave}
-                disabled={saving || !apiKey.trim()}
-                className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
-              >
-                {saving ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Save className="h-4 w-4" />
-                )}
-                保存配置
-              </button>
-              {ocrConfig && (
-                <button
-                  type="button"
-                  onClick={() => setShowForm(false)}
-                  className="rounded-lg border border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-50 transition-colors"
-                >
-                  取消
-                </button>
-              )}
-              {saveMsg && <span className="text-xs text-red-600">{saveMsg}</span>}
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </section>
   )

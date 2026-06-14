@@ -635,14 +635,33 @@ pub fn desensitize_text(
 }
 
 #[tauri::command]
-pub fn add_sensitive_keyword(state: State<'_, AppState>, keyword: String) -> Result<(), String> {
-    state.desensitizer.add_keyword(&keyword);
+pub fn add_sensitive_keyword(
+    state: State<'_, AppState>,
+    keyword: String,
+    kind: Option<String>,
+) -> Result<(), String> {
+    use crate::services::desensitize::SensitiveKind;
+    let kind = SensitiveKind::from_str_lossy(&kind.unwrap_or_default());
+    // 持久化到 DB
+    state
+        .sensitive_keyword_store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .upsert(&keyword, kind)?;
+    // 同步到内存脱敏器
+    state.desensitizer.add_typed_keyword(&keyword, kind);
     Ok(())
 }
 
 #[tauri::command]
-pub fn list_sensitive_keywords(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    Ok(state.desensitizer.get_keywords())
+pub fn list_sensitive_keywords(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::services::desensitize::SensitiveKeyword>, String> {
+    // 优先读 DB（持久化源），失败则读内存
+    match state.sensitive_keyword_store.lock() {
+        Ok(store) => store.list(),
+        Err(_) => Ok(state.desensitizer.get_keywords()),
+    }
 }
 
 #[tauri::command]
@@ -650,7 +669,15 @@ pub fn remove_sensitive_keyword(
     state: State<'_, AppState>,
     keyword: String,
 ) -> Result<bool, String> {
-    Ok(state.desensitizer.remove_keyword(&keyword))
+    // 从 DB 删除
+    let db_deleted = state
+        .sensitive_keyword_store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .delete(&keyword)?;
+    // 从内存删除（即便 DB 没有，也清理内存）
+    let mem_deleted = state.desensitizer.remove_keyword(&keyword);
+    Ok(db_deleted || mem_deleted)
 }
 
 // --- P2.3: Fit-Gap 分析 ---
@@ -750,6 +777,8 @@ pub async fn agent_chat(
     let image_processor = state.image_processor.clone();
     let llm_providers = state.llm_providers.clone();
     let ledger_metadata = state.metadata.clone();
+    let meeting_store = state.meeting_store.clone();
+    let raw_sources = state.raw_sources.clone();
 
     // 注册取消标志
     let cancel_flag = state.register_cancel_flag(&sid);
@@ -786,6 +815,8 @@ pub async fn agent_chat(
             image_processor,
             llm_providers,
             None, // wiki_pages
+            Some(meeting_store),
+            Some(raw_sources),
         )
         .await;
     });

@@ -9,7 +9,7 @@
 use crate::services::analysis_cache::AnalysisCacheStore;
 use crate::services::audio_capture::AudioCapture;
 use crate::services::bm25_service::BM25Service;
-use crate::services::desensitize::Desensitizer;
+use crate::services::desensitize::{Desensitizer, SensitiveKeywordStore};
 use crate::services::embedding::{EmbeddingService, ModelManager};
 use crate::services::image_processor::ImageProcessor;
 use crate::services::ingest_cache::IngestCacheStore;
@@ -119,6 +119,8 @@ pub struct AppState {
     pub risk_control_store: Arc<tokio::sync::Mutex<RiskControlStore>>,
     /// 数据脱敏器（本地敏感信息过滤）
     pub desensitizer: Arc<Desensitizer>,
+    /// 敏感词持久化存储（sensitive_keywords 表）
+    pub sensitive_keyword_store: Arc<Mutex<SensitiveKeywordStore>>,
     /// Rig Agent（新推理引擎 — 基于 rig 的原生 function calling）
     pub rig_agent: RigAgent,
     /// 问题工具的待处理问题（跨进程状态）
@@ -248,6 +250,27 @@ impl AppState {
 
         let desensitizer = Arc::new(Desensitizer::new());
 
+        // 初始化敏感词持久化存储，并加载已有敏感词到脱敏器内存
+        let sensitive_keyword_store = {
+            let store = SensitiveKeywordStore::new(&db_path).unwrap_or_else(|e| {
+                tracing::error!("敏感词存储初始化失败（降级为内存库）: {}", e);
+                SensitiveKeywordStore::with_conn(
+                    Connection::open_in_memory().expect("Fatal: 无法创建敏感词内存库"),
+                )
+                .expect("Fatal: 无法初始化敏感词内存库")
+            });
+            match store.list() {
+                Ok(keywords) => {
+                    if !keywords.is_empty() {
+                        desensitizer.add_typed_keywords(&keywords);
+                        tracing::info!("已加载 {} 个持久化敏感词", keywords.len());
+                    }
+                }
+                Err(e) => tracing::warn!("加载持久化敏感词失败: {}", e),
+            }
+            Arc::new(Mutex::new(store))
+        };
+
         let pending_questions = question_tool::create_pending_questions();
 
         let whisper_service = WhisperService::new();
@@ -350,6 +373,7 @@ impl AppState {
             outline_store,
             risk_control_store,
             desensitizer,
+            sensitive_keyword_store,
             whisper_service: Arc::new(RwLock::new(whisper_service)),
             audio_capture: Arc::new(RwLock::new(audio_capture)),
             asr_config: Arc::new(RwLock::new(asr_config)),
@@ -427,6 +451,27 @@ impl AppState {
 
         let desensitizer = Arc::new(Desensitizer::new());
 
+        // 敏感词持久化：minimal 模式下尝试加载，失败降级为内存库
+        let sensitive_keyword_store =
+            match SensitiveKeywordStore::new(&db_path) {
+                Ok(store) => {
+                    if let Ok(keywords) = store.list() {
+                        desensitizer.add_typed_keywords(&keywords);
+                    }
+                    Arc::new(Mutex::new(store))
+                }
+                Err(e) => {
+                    tracing::error!("minimal 模式敏感词存储初始化失败: {}", e);
+                    Arc::new(Mutex::new(
+                        SensitiveKeywordStore::with_conn(
+                            Connection::open_in_memory()
+                                .expect("Fatal: 无法创建敏感词内存库"),
+                        )
+                        .expect("Fatal: 无法初始化敏感词内存库"),
+                    ))
+                }
+            };
+
         let pending_questions = question_tool::create_pending_questions();
 
         let whisper_service = WhisperService::new();
@@ -499,6 +544,7 @@ impl AppState {
             outline_store,
             risk_control_store,
             desensitizer,
+            sensitive_keyword_store,
             rig_agent: RigAgent,
             pending_questions,
             whisper_service: Arc::new(RwLock::new(whisper_service)),
