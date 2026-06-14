@@ -32,7 +32,6 @@ import { useOutline } from "../contexts/OutlineContext"
 import { useProject } from "../contexts/ProjectContext"
 import { formatAppError, parseAppError } from "../lib/app-error"
 import {
-  type AsrConfigStatus,
   type AsrProviderInfo,
   type AudioInputDeviceInfo,
   addQARecord,
@@ -42,7 +41,6 @@ import {
   exportSessionCsv,
   exportSessionMarkdown,
   fetchInvestigationRecipe,
-  getAsrConfigStatus,
   getResearchSession,
   getWhisperStatus,
   isLLMConfigured,
@@ -455,7 +453,6 @@ function SessionDetailView({
   const [llmReviewEnabled, setLlmReviewEnabled] = useState(true)
   const [autoPromptEnabled, setAutoPromptEnabled] = useState(true)
   const [reviewingTranscript, setReviewingTranscript] = useState(false)
-  const [_asrConfigStatus, setAsrConfigStatus] = useState<AsrConfigStatus | null>(null)
   const [newQuestion, setNewQuestion] = useState("")
   const [newAnswer, setNewAnswer] = useState("")
   const [editingRecord, setEditingRecord] = useState<number | null>(null)
@@ -529,7 +526,6 @@ function SessionDetailView({
         setLlmReviewEnabled(false)
         setAutoPromptEnabled(false)
       })
-    getAsrConfigStatus().then(setAsrConfigStatus).catch(console.error)
   }, [])
 
   useEffect(() => {
