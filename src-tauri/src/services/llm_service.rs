@@ -38,8 +38,8 @@ use crate::services::verification::types::{ScenarioType, VerificationInput, Veri
 /// 系统提示词 - ERP 顾问知识助手，带有反幻觉防护。
 static SYSTEM_PROMPT: &str = include_str!("../../resources/prompts/system_prompt.md");
 
-/// 为助手响应保留的 token 数
-const RESPONSE_TOKENS: u32 = 1024;
+/// 为助手响应保留的 token 数（知识密集型回答需 2048-4096 tokens）
+const RESPONSE_TOKENS: u32 = 4096;
 
 /// 非流式结构化任务的输出预算，避免推理模型只返回 thinking 不返回正文
 const NON_STREAM_RESPONSE_TOKENS: u32 = 4096;
@@ -47,8 +47,72 @@ const NON_STREAM_RESPONSE_TOKENS: u32 = 4096;
 /// 推理模型只返回 thinking 时的重试输出预算
 const NON_STREAM_THINKING_RETRY_TOKENS: u32 = 8192;
 
-/// 对话压缩的 token 阈值
-const COMPRESS_THRESHOLD: u32 = 2000;
+/// HyDE (Hypothetical Document Embeddings) 查询增强阈值：短查询（< 50 字符）时
+/// 先生成假设答案再进行检索，弥合短查询与长文档之间的词汇鸿沟
+/// 业界基准：nDCG@10 61.3 vs 44.5 baseline (Gao et al., 2023)
+const HYDE_QUERY_MIN_CHARS: usize = 50;
+
+/// HyDE 假设答案生成的用户提示词模板
+const HYDE_PROMPT: &str = "请根据以下问题，生成一份假设的答案文档（200 字以内，仅输出答案内容，不要前言或解释）：\n";
+
+/// 查询分类路由：根据查询特征决定处理管道
+///
+/// Anthropic 2025 Routing 模式：用轻量规则将查询分为三类，
+/// Chitchat 跳过检索直接回复，降低延迟和无效计算。
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum QueryCategory {
+    /// 寒暄/问候 — 跳过检索，直接 LLM 回复
+    Chitchat,
+    /// 事实查询 — 全管道（HyDE → QueryRewrite → HybridSearch）
+    Factoid,
+    /// 分析型长查询 — QueryRewrite + HybridSearch，跳过 HyDE（长查询自身已足够丰富）
+    Analytical,
+}
+
+/// 零延迟关键词规则分类查询
+fn classify_query(query: &str) -> QueryCategory {
+    let trimmed = query.trim();
+    let char_count = trimmed.chars().count();
+
+    // 寒暄模式匹配（中文 + 英文常见寒暄）
+    let chitchat_patterns = [
+        "你好", "您好", "嗨", "哈喽", "早上好", "下午好", "晚上好",
+        "谢谢", "感谢", "多谢",
+        "再见", "拜拜", "bye",
+        "哈哈", "呵呵", "嗯", "哦", "好的",
+        "hi", "hello", "hey", "thanks", "thank you",
+    ];
+
+    let lower = trimmed.to_lowercase();
+    for pattern in &chitchat_patterns {
+        if lower.starts_with(pattern) && char_count <= 10 {
+            return QueryCategory::Chitchat;
+        }
+    }
+
+    // 极短查询且无专业术语 → Chitchat
+    if char_count < 5 {
+        // 检查是否包含中文或技术性内容
+        let has_chinese = trimmed.chars().any(|c| c >= '\u{4e00}' && c <= '\u{9fff}');
+        let has_tech = trimmed.contains('?') || trimmed.contains('？');
+        if !has_chinese && !has_tech {
+            return QueryCategory::Chitchat;
+        }
+    }
+
+    // 长查询（>100 字符）→ Analytical（跳过 HyDE，查询本身已足够丰富）
+    if char_count > 100 {
+        return QueryCategory::Analytical;
+    }
+
+    QueryCategory::Factoid
+}
+
+/// 对话压缩的 token 阈值（提升到 4000 以减少不必要压缩，保留更多对话上下文）
+const COMPRESS_THRESHOLD: u32 = 4000;
+
+/// 压缩输入的最大字符数：超过此值分批压缩，避免摘要 prompt 超出上下文窗口
+const MAX_COMPRESS_INPUT_CHARS: usize = 30_000;
 
 /// 压缩期间保持未压缩的最近消息对数
 const KEEP_LAST_PAIRS: usize = 2;
@@ -437,12 +501,55 @@ fn parse_age_days(iso: &str, now_secs: f64) -> Option<f64> {
 // 上下文组装
 
 /// 将混合搜索结果格式化为 LLM 提示词中的上下文字符串。
-pub fn assemble_context(results: &[HybridSearchResult], max_tokens: u32) -> String {
+///
+/// 支持可选的邻居 chunk 上下文扩展（句子窗口检索）：
+/// 当提供 neighbors 时，每个检索到的 chunk 会被前后相邻 chunk 的内容包裹，
+/// 形成 `<context_chunk>` 标签结构的富上下文。
+pub fn assemble_context(
+    results: &[HybridSearchResult],
+    max_tokens: u32,
+    neighbors: Option<&std::collections::HashMap<i64, (Option<String>, Option<String>)>>,
+) -> String {
     let mut context = String::new();
 
     for result in results {
         let section = result.section_path.as_deref().unwrap_or("（无章节信息）");
 
+        // 如果有邻居信息，构建句子窗口上下文
+        if let Some(neighbor_map) = neighbors {
+            if let Some((prev, next)) = neighbor_map.get(&result.chunk_id) {
+                context.push_str(&format!(
+                    "<context_chunk id=\"{}\" title=\"{}\" section=\"{}\">\n",
+                    result.chunk_id, result.title, section
+                ));
+                if let Some(prev_text) = prev {
+                    let truncated = token::truncate_to_tokens(prev_text, 150);
+                    if !truncated.is_empty() {
+                        context.push_str(&format!(
+                            "  <previous_context>{}</previous_context>\n",
+                            truncated
+                        ));
+                    }
+                }
+                context.push_str(&format!(
+                    "  <current_chunk>{}</current_chunk>\n",
+                    result.content
+                ));
+                if let Some(next_text) = next {
+                    let truncated = token::truncate_to_tokens(next_text, 150);
+                    if !truncated.is_empty() {
+                        context.push_str(&format!(
+                            "  <next_context>{}</next_context>\n",
+                            truncated
+                        ));
+                    }
+                }
+                context.push_str("</context_chunk>\n\n");
+                continue;
+            }
+        }
+
+        // 无邻居信息时使用平铺格式
         let entry = format!(
             "[chunk:{} | {} | {}]\n{}\n\n",
             result.chunk_id, result.title, section, result.content
@@ -452,6 +559,71 @@ pub fn assemble_context(results: &[HybridSearchResult], max_tokens: u32) -> Stri
 
     // Truncate if exceeds budget
     token::truncate_to_tokens(&context, max_tokens)
+}
+
+/// Small-to-Big 检索：将子块结果映射为父块完整内容
+///
+/// 搜索可能命中子块（更精准的向量匹配），但上下文组装需要父块完整内容。
+/// 此函数检测结果中的子块，将其替换为父块，去重后返回。
+/// 回退：若子块无 parent_chunk_id（旧数据），保持不变。
+fn resolve_small_to_big(
+    results: Vec<HybridSearchResult>,
+    metadata: &Mutex<MetadataStore>,
+) -> Vec<HybridSearchResult> {
+    // 分离子块和父块
+    let (children, mut resolved): (Vec<_>, Vec<_>) = results
+        .into_iter()
+        .partition(|r| r.parent_chunk_id.is_some());
+
+    if children.is_empty() {
+        return resolved; // 无子块，直接返回
+    }
+
+    // 收集子块 ID 并查询父块
+    let child_ids: Vec<i64> = children.iter().map(|r| r.chunk_id).collect();
+    let parent_chunks = metadata
+        .lock()
+        .ok()
+        .and_then(|meta| meta.get_parent_chunks_for_child_ids(&child_ids).ok())
+        .unwrap_or_default();
+
+    let parent_map: std::collections::HashMap<i64, &crate::services::metadata::ChunkMeta> = parent_chunks
+        .iter()
+        .map(|p| (p.id, p))
+        .collect();
+
+    // 用父块内容替换子块结果
+    let mut seen_parents = std::collections::HashSet::new();
+    for child in children {
+        if let Some(parent_id) = child.parent_chunk_id {
+            if seen_parents.insert(parent_id) {
+                if let Some(parent) = parent_map.get(&parent_id) {
+                    resolved.push(HybridSearchResult {
+                        chunk_id: parent.id,
+                        title: child.title.clone(),
+                        content: parent.content.clone(),
+                        score: child.score,
+                        source: child.source,
+                        document_id: child.document_id,
+                        section_path: parent.section_path.clone(),
+                        project: child.project,
+                        parent_chunk_id: None, // 已解析为父块
+                    });
+                } else {
+                    // 父块不存在（罕见：数据不一致），保留原子块
+                    resolved.push(HybridSearchResult {
+                        parent_chunk_id: None,
+                        ..child
+                    });
+                }
+            }
+            // 已见过此父块，跳过（去重）
+        }
+    }
+
+    // 按分数重新排序并限制数量
+    resolved.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    resolved
 }
 
 /// 构造带上下文与问题的用户 prompt。
@@ -1067,6 +1239,137 @@ impl LLMService {
         Ok(config)
     }
 
+    /// HyDE (Hypothetical Document Embeddings) 查询增强。
+    ///
+    /// 对于短查询（< HYDE_QUERY_MIN_CHARS 字符），调用 LLM 生成一份假设答案，
+    /// 将假设答案与原始查询拼接后用于嵌入检索，弥合词汇鸿沟。
+    /// 若 LLM 不可用或生成失败，回退到原始查询。
+    ///
+    /// 业界基准：nDCG@10 从 44.5 提升到 61.3 (Gao et al., 2023)
+    pub fn enhance_query_hyde(&self, query: &str) -> String {
+        let query_trimmed = query.trim();
+        if query_trimmed.chars().count() >= HYDE_QUERY_MIN_CHARS {
+            return query.to_string();
+        }
+
+        // 检查 LLM 是否已配置
+        if !self.is_configured() {
+            tracing::debug!("[HyDE] LLM 未配置，跳过查询增强");
+            return query.to_string();
+        }
+
+        let user_prompt = format!("{}{}", HYDE_PROMPT, query_trimmed);
+
+        match self.generate_text_sync(
+            "你是一位 ERP 实施顾问。请生成一段简洁的知识库文档片段作为假设答案。",
+            &user_prompt,
+        ) {
+            Ok(hypothetical) if !hypothetical.trim().is_empty() => {
+                let enhanced = format!("{}\n\n---\n假设答案片段：\n{}", query, hypothetical.trim());
+                tracing::debug!(
+                    "[HyDE] 查询增强成功：原始 {} 字符 → 增强后 {} 字符",
+                    query_trimmed.chars().count(),
+                    enhanced.chars().count()
+                );
+                enhanced
+            }
+            Err(e) => {
+                tracing::warn!("[HyDE] 假设答案生成失败: {}，回退到原始查询", e);
+                query.to_string()
+            }
+            Ok(_) => {
+                tracing::debug!("[HyDE] 假设答案为空，回退到原始查询");
+                query.to_string()
+            }
+        }
+    }
+
+    /// Chitchat 快速回复：跳过检索管道，直接 LLM 回复寒暄语
+    ///
+    /// 零延迟路由，避免对"你好""谢谢"等寒暄触发嵌入计算和混合搜索。
+    async fn chitchat_reply(
+        &self,
+        query: &str,
+        conversation_history: &[ChatMessage],
+    ) -> Result<Vec<StreamChunk>, String> {
+        if !self.is_configured() {
+            return Ok(vec![StreamChunk {
+                content: "您好！我是金蝶ERP实施顾问助手，请问有什么可以帮您的？".to_string(),
+                done: true,
+                thinking: None,
+            }]);
+        }
+
+        let config = self.get_active_config()?;
+        let mut messages: Vec<ChatMessage> = Vec::new();
+        for msg in conversation_history.iter().rev().take(4).rev() {
+            messages.push(msg.clone());
+        }
+        messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: query.to_string(),
+        });
+
+        // 寒暄回复（"你好""谢谢"）由 LLM 独立生成，不引用用户消息中的具体内容，
+        // 因此无需用 master_mapping 还原脱敏占位符。脱敏仍执行以保证发往 LLM 的内容不含敏感信息。
+        let (desensitized_messages, _master_mapping) = self.desensitize_messages(&messages);
+        self.rag_query_rig(&config, SYSTEM_PROMPT, &desensitized_messages)
+            .await
+    }
+
+    /// 查询重写（Query Rewriting）：将多轮对话中的模糊引用改写为独立查询。
+    ///
+    /// 当对话历史非空时，用 LLM 将当前查询 + 最近 2 轮对话重写为上下文完整的独立查询。
+    /// 若 LLM 不可用或对话历史为空，回退到原始查询。
+    pub fn rewrite_query(&self, query: &str, conversation_history: &[ChatMessage]) -> String {
+        if conversation_history.is_empty() {
+            return query.to_string();
+        }
+
+        if !self.is_configured() {
+            return query.to_string();
+        }
+
+        // 只取最近 2 轮对话（4 条消息）作为上下文
+        let recent: Vec<&ChatMessage> = conversation_history
+            .iter()
+            .rev()
+            .take(4)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+
+        let history_text = recent
+            .iter()
+            .map(|m| format!("{}: {}", m.role, m.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let rewrite_prompt = format!(
+            "请将以下对话中的最后一条用户问题改写为独立、完整的查询语句，包含足够的上下文信息（如项目名、模块名等）。只输出改写后的查询，不要添加任何解释。\n\n对话历史：\n{}\n\n当前问题：{}\n\n改写后的查询：",
+            history_text, query
+        );
+
+        match self.generate_text_sync(
+            "你是一个查询改写助手。将依赖上下文的模糊问题改写为独立查询。",
+            &rewrite_prompt,
+        ) {
+            Ok(rewritten) if !rewritten.trim().is_empty() => {
+                let rewritten = rewritten.trim().to_string();
+                if rewritten != query.trim() {
+                    tracing::debug!(
+                        "[QueryRewrite] \"{}\" → \"{}\"",
+                        query,
+                        rewritten
+                    );
+                }
+                rewritten
+            }
+            _ => query.to_string(),
+        }
+    }
+
     /// Synchronous text generation (non-streaming) for internal backend use.
     ///
     /// Uses `ureq` for a simple blocking HTTP call. Returns the complete generated text.
@@ -1213,12 +1516,28 @@ impl LLMService {
         bm25: &RwLock<BM25Service>,
         metadata: &Mutex<MetadataStore>,
     ) -> Result<Vec<StreamChunk>, String> {
+        // Step 0: 查询分类路由 — Chitchat 跳过检索直接回复
+        let query_category = classify_query(query);
+        if query_category == QueryCategory::Chitchat {
+            return self.chitchat_reply(query, &conversation_history).await;
+        }
+
+        // Step 0a: Query Rewriting — 多轮对话中模糊引用改写为独立查询
+        let standalone_query = self.rewrite_query(query, &conversation_history);
+        // Step 0b: HyDE 查询增强 — 短查询生成假设答案弥合词汇鸿沟
+        //          Analytical（>100 字符）查询跳过 HyDE，查询本身已足够丰富
+        let enhanced_query = if query_category == QueryCategory::Analytical {
+            standalone_query.clone()
+        } else {
+            self.enhance_query_hyde(&standalone_query)
+        };
+
         // Step 1: Hybrid search (KB documents)
         let mut search_results = hybrid_search::hybrid_search(
-            query,
+            &enhanced_query,
             project_id,
             &[],
-            5,
+            15,
             embedding,
             vector_index,
             bm25,
@@ -1229,7 +1548,7 @@ impl LLMService {
 
         // Step 2: Memory retrieval — search "记忆库" project for relevant past memories
         if let Ok(mut memories) = hybrid_search::hybrid_search(
-            query,
+            &enhanced_query,
             Some("记忆库"),
             &[],
             5,
@@ -1249,6 +1568,9 @@ impl LLMService {
             }
         }
 
+        // Small-to-Big: resolve child chunks to parent chunks for richer context
+        search_results = resolve_small_to_big(search_results, metadata);
+
         // Step 2: Check if LLM is configured 鈥?fallback to search-only
         if !self.is_configured() {
             return Ok(self.fallback_response(&search_results));
@@ -1265,12 +1587,18 @@ impl LLMService {
             Err(_) => conversation_history,
         };
 
-        // Step 5: Assemble context
+        // Step 5: Assemble context with sentence window (neighbor chunks)
         let system_tokens = token::count_tokens_with_fallback(SYSTEM_PROMPT);
         let budget = config
             .max_tokens
             .saturating_sub(system_tokens + RESPONSE_TOKENS + 200);
-        let context = assemble_context(&search_results, budget);
+        // 获取邻居 chunk 用于句子窗口上下文扩展
+        let chunk_ids: Vec<i64> = search_results.iter().map(|r| r.chunk_id).collect();
+        let neighbors = metadata
+            .lock()
+            .ok()
+            .and_then(|meta| meta.get_chunk_neighbors_batch(&chunk_ids).ok());
+        let context = assemble_context(&search_results, budget, neighbors.as_ref());
         let user_prompt = build_user_prompt(&context, query);
 
         // Step 6: Build messages array (common for both providers)
@@ -1346,11 +1674,40 @@ impl LLMService {
         bm25: &RwLock<BM25Service>,
         metadata: &Mutex<MetadataStore>,
     ) -> Result<RAGResponse, String> {
+        // Step 0: 查询分类路由 — Chitchat 跳过检索直接回复
+        if classify_query(query) == QueryCategory::Chitchat {
+            if !self.is_configured() {
+                return Ok(RAGResponse {
+                    answer: "您好！我是金蝶ERP实施顾问助手，请问有什么可以帮您的？".to_string(),
+                    sources: Vec::new(),
+                    llm_available: false,
+                });
+            }
+            let chunks = self.chitchat_reply(query, &conversation_history).await?;
+            let answer: String = chunks.iter().map(|c| c.content.as_str()).collect();
+            return Ok(RAGResponse {
+                answer,
+                sources: Vec::new(),
+                llm_available: true,
+            });
+        }
+
+        // Step 0a: Query Rewriting — 多轮对话中模糊引用改写为独立查询
+        let standalone_query = self.rewrite_query(query, &conversation_history);
+        // Step 0b: HyDE 查询增强 — 短查询生成假设答案弥合词汇鸿沟
+        //          Analytical（>100 字符）查询跳过 HyDE
+        let query_category = classify_query(query);
+        let enhanced_query = if query_category == QueryCategory::Analytical {
+            standalone_query.clone()
+        } else {
+            self.enhance_query_hyde(&standalone_query)
+        };
+
         let search_results = hybrid_search::hybrid_search(
-            query,
+            &enhanced_query,
             project_id,
             &[],
-            5,
+            15,
             embedding,
             vector_index,
             bm25,
@@ -1358,6 +1715,9 @@ impl LLMService {
             None,
             None,
         )?;
+
+        // Small-to-Big: resolve child chunks to parent chunks
+        let search_results = resolve_small_to_big(search_results, metadata);
 
         if !self.is_configured() {
             let sources = search_results
@@ -1855,14 +2215,38 @@ impl LLMService {
         tx: mpsc::Sender<StreamChunk>,
         precomputed_results: Option<Vec<HybridSearchResult>>,
     ) -> Result<(), String> {
+        // Step 0: 查询分类路由 — Chitchat 跳过检索直接回复
+        let query_category = classify_query(query);
+        if query_category == QueryCategory::Chitchat {
+            if !self.is_configured() {
+                let _ = tx.send(StreamChunk { content: "您好！我是金蝶ERP实施顾问助手，请问有什么可以帮您的？".to_string(), done: true, thinking: None }).await;
+                return Ok(());
+            }
+            let chunks = self.chitchat_reply(query, &conversation_history).await?;
+            for chunk in chunks {
+                let _ = tx.send(chunk).await;
+            }
+            return Ok(());
+        }
+
+        // Step 0a: Query Rewriting — 多轮对话中模糊引用改写为独立查询
+        let standalone_query = self.rewrite_query(query, &conversation_history);
+        // Step 0b: HyDE 查询增强
+        //          Analytical（>100 字符）查询跳过 HyDE
+        let enhanced_query = if query_category == QueryCategory::Analytical {
+            standalone_query.clone()
+        } else {
+            self.enhance_query_hyde(&standalone_query)
+        };
+
         // Step 1: Hybrid search (skip if precomputed)
         let mut search_results: Vec<HybridSearchResult> = match precomputed_results {
             Some(results) => results,
             None => hybrid_search::hybrid_search(
-                query,
+                &enhanced_query,
                 project_id,
                 &[],
-                5,
+                15,
                 embedding,
                 vector_index,
                 bm25,
@@ -1874,7 +2258,7 @@ impl LLMService {
 
         // Step 1b: Memory retrieval — search "记忆库" project for relevant past memories
         if let Ok(mut memories) = hybrid_search::hybrid_search(
-            query,
+            &enhanced_query,
             Some("记忆库"),
             &[],
             5,
@@ -1892,6 +2276,9 @@ impl LLMService {
                 }
             }
         }
+
+        // Small-to-Big: resolve child chunks to parent chunks for richer context
+        search_results = resolve_small_to_big(search_results, metadata);
 
         // Step 2: Check if LLM is configured
         if !self.is_configured() {
@@ -1912,12 +2299,18 @@ impl LLMService {
             Err(_) => conversation_history,
         };
 
-        // Step 4: Assemble context
+        // Step 4: Assemble context with sentence window (neighbor chunks)
         let system_tokens = token::count_tokens_with_fallback(SYSTEM_PROMPT);
         let budget = config
             .max_tokens
             .saturating_sub(system_tokens + RESPONSE_TOKENS + 200);
-        let context = assemble_context(&search_results, budget);
+        // 获取邻居 chunk 用于句子窗口上下文扩展
+        let chunk_ids: Vec<i64> = search_results.iter().map(|r| r.chunk_id).collect();
+        let neighbors = metadata
+            .lock()
+            .ok()
+            .and_then(|meta| meta.get_chunk_neighbors_batch(&chunk_ids).ok());
+        let context = assemble_context(&search_results, budget, neighbors.as_ref());
         let user_prompt = build_user_prompt(&context, query);
 
         // Step 5: Build messages array
@@ -2015,9 +2408,109 @@ impl LLMService {
             .join("\n\n");
 
         let config = self.get_active_config()?;
-        let summary_prompt = format!(
-            "请从以下对话中提取关键上下文，保留项目背景、关键决策、待办事项和约束。\n\n---\n\n{}",
-            head_text
+
+        // 分批压缩：若 head_text 过长，分批生成摘要再合并
+        let summary = if head_text.chars().count() > MAX_COMPRESS_INPUT_CHARS {
+            self.compress_in_batches(&head_text, &config).await?
+        } else {
+            let summary_prompt = format!(
+                "请从以下对话中提取关键上下文，保留项目背景、关键决策、待办事项和约束。\n\n---\n\n{}",
+                head_text
+            );
+
+            let messages = vec![
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: "你是一个对话摘要助手。直接输出结构化摘要，不要添加前言。".to_string(),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: summary_prompt,
+                },
+            ];
+
+            self.chat_completion(&messages, &config).await?
+        };
+
+        let mut result = Vec::new();
+        result.push(ChatMessage {
+            role: "system".to_string(),
+            content: format!("【历史对话摘要】\n{}", summary.trim()),
+        });
+        result.extend(tail.iter().cloned());
+        info!(
+            target: "llm",
+            head_count = head.len(),
+            compressed_tokens = estimate_tokens(&result),
+            total_tokens,
+            tail_count = tail.len(),
+            "[Compress] Summarized head messages"
+        );
+        Ok(result)
+    }
+
+    /// 分批压缩超长对话历史：将 head_text 分批次压缩，合并后再次压缩为最终摘要
+    async fn compress_in_batches(
+        &self,
+        head_text: &str,
+        config: &LLMProviderConfig,
+    ) -> Result<String, String> {
+        let chars: Vec<char> = head_text.chars().collect();
+        let batch_size = MAX_COMPRESS_INPUT_CHARS / 2; // 每批 15K 字符
+        let mut batch_summaries: Vec<String> = Vec::new();
+        let mut start = 0usize;
+
+        while start < chars.len() {
+            let end = (start + batch_size).min(chars.len());
+            let batch: String = chars[start..end].iter().collect();
+
+            let batch_prompt = format!(
+                "请从以下对话片段（第 {}/{} 部分）中提取关键上下文，保留项目背景、关键决策、待办事项和约束。\n\n---\n\n{}",
+                batch_summaries.len() + 1,
+                ((chars.len() + batch_size - 1) / batch_size),
+                batch
+            );
+
+            let messages = vec![
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: "你是一个对话摘要助手。直接输出结构化摘要，不要添加前言。".to_string(),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: batch_prompt,
+                },
+            ];
+
+            match self.chat_completion(&messages, config).await {
+                Ok(summary) if !summary.trim().is_empty() => {
+                    batch_summaries.push(summary.trim().to_string());
+                }
+                Err(e) => {
+                    tracing::warn!("[Compress] 批次 {} 压缩失败: {}", batch_summaries.len() + 1, e);
+                }
+                _ => {}
+            }
+
+            if end >= chars.len() {
+                break;
+            }
+            start = end;
+        }
+
+        if batch_summaries.is_empty() {
+            return Err("所有批次压缩均失败".to_string());
+        }
+
+        if batch_summaries.len() == 1 {
+            return Ok(batch_summaries.into_iter().next().unwrap());
+        }
+
+        // 合并多个批次摘要为最终摘要
+        let combined = batch_summaries.join("\n\n---\n\n");
+        let merge_prompt = format!(
+            "以下是对话历史的多段摘要。请将它们合并为一份连贯的摘要，保留项目背景、关键决策、待办事项和约束。\n\n---\n\n{}",
+            combined
         );
 
         let messages = vec![
@@ -2027,37 +2520,11 @@ impl LLMService {
             },
             ChatMessage {
                 role: "user".to_string(),
-                content: summary_prompt,
+                content: merge_prompt,
             },
         ];
 
-        match self.chat_completion(&messages, &config).await {
-            Ok(summary) => {
-                let mut result = Vec::new();
-                result.push(ChatMessage {
-                    role: "system".to_string(),
-                    content: format!("【历史对话摘要】\n{}", summary.trim()),
-                });
-                result.extend(tail.iter().cloned());
-                info!(
-                    target: "llm",
-                    head_count = head.len(),
-                    compressed_tokens = estimate_tokens(&result),
-                    total_tokens,
-                    tail_count = tail.len(),
-                    "[Compress] Summarized head messages"
-                );
-                Ok(result)
-            }
-            Err(e) => {
-                warn!(
-                    target: "llm",
-                    error = %e,
-                    "[Compress] LLM summarization failed; keeping full history"
-                );
-                Ok(conversation.to_vec())
-            }
-        }
+        self.chat_completion(&messages, config).await
     }
 
     /// 测试 LLM API 连通性，无需 embedding 或 RAG 管线。
