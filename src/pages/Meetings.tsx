@@ -18,10 +18,10 @@ import {
   X,
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { useToast } from "../components/Toast"
-import { useProject } from "../contexts/ProjectContext"
-import { formatAppError } from "../lib/app-error"
-import { PRODUCT_NAME } from "../lib/constants"
+import { useToast } from "@/components/Toast"
+import { useProject } from "@/contexts/ProjectContext"
+import { formatAppError } from "@/lib/app-error"
+import { PRODUCT_NAME } from "@/lib/constants"
 import {
   cancelTencentMeeting,
   convertTencentMeetingTimestamp,
@@ -36,7 +36,7 @@ import {
   syncTencentMeetings,
   type LocalMeeting,
   type MeetingWithAssets,
-} from "../lib/tauri-commands"
+} from "@/lib/tauri-commands"
 
 type Tab = "linked" | "unlinked" | "all"
 

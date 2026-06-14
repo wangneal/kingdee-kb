@@ -15,8 +15,8 @@ import {
   Trash2,
 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
-import { useProject } from "../contexts/ProjectContext"
-import { deleteProduct, exportProduct, listProducts, type ProductMeta } from "../lib/tauri-commands"
+import { useProject } from "@/contexts/ProjectContext"
+import { deleteProduct, exportProduct, listProducts, type ProductMeta } from "@/lib/tauri-commands"
 
 interface ProjectGroup {
   projectId: number

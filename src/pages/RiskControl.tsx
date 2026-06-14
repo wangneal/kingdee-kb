@@ -19,12 +19,12 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { useToast } from "../components/Toast"
-import { DEFAULT_SLOT, useAgent } from "../contexts/AgentContext"
-import { useAppError } from "../contexts/AppErrorContext"
-import { useProject } from "../contexts/ProjectContext"
-import { formatAppError, parseAppError } from "../lib/app-error"
-import { PRODUCT_NAME } from "../lib/constants"
+import { useToast } from "@/components/Toast"
+import { DEFAULT_SLOT, useAgent } from "@/contexts/AgentContext"
+import { useAppError } from "@/contexts/AppErrorContext"
+import { useProject } from "@/contexts/ProjectContext"
+import { formatAppError, parseAppError } from "@/lib/app-error"
+import { PRODUCT_NAME } from "@/lib/constants"
 import {
   addScopeItem,
   analyzeFitGap,
@@ -47,7 +47,7 @@ import {
   type ProjectHealthScore,
   recordHealthMetric,
   type ScopeCreepResult,
-} from "../lib/tauri-commands"
+} from "@/lib/tauri-commands"
 
 type Tab = "scope" | "health" | "scripts" | "analysis"
 

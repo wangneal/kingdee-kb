@@ -30,7 +30,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import { useNavigate } from "react-router-dom"
 import remarkGfm from "remark-gfm"
-import { VerificationBadge } from "../components/VerificationBadge"
+import { VerificationBadge } from "@/components/VerificationBadge"
 import {
   type AgentMessage,
   buildAgentHistory,
@@ -39,12 +39,12 @@ import {
   type RAGSource,
   type ReActTrace,
   useAgent,
-} from "../contexts/AgentContext"
-import { useProject } from "../contexts/ProjectContext"
-import { extractFilesFromDropEvent, extractFilesFromPasteEvent } from "../lib/clipboard-files"
-import { listRuntimeLLMProviders } from "../lib/skill-commands"
-import type { LLMProviderConfig } from "../lib/skill-types"
-import type { AgentSessionSnapshot } from "../lib/tauri-commands"
+} from "@/contexts/AgentContext"
+import { useProject } from "@/contexts/ProjectContext"
+import { extractFilesFromDropEvent, extractFilesFromPasteEvent } from "@/lib/clipboard-files"
+import { listRuntimeLLMProviders } from "@/lib/skill-commands"
+import type { LLMProviderConfig } from "@/lib/skill-types"
+import type { AgentSessionSnapshot } from "@/lib/tauri-commands"
 import {
   type ClarificationPayload,
   type ClarificationQuestion,
@@ -53,7 +53,7 @@ import {
   isLLMConfigured,
   type QuestionOption,
   saveChatMemory,
-} from "../lib/tauri-commands"
+} from "@/lib/tauri-commands"
 
 interface ChatAttachment {
   id: string
@@ -534,7 +534,7 @@ export default function Chat() {
   }, [])
 
   const addFilesAsAttachments = useCallback(
-    (files: import("../lib/clipboard-files").PastedFile[]) => {
+    (files: import("@/lib/clipboard-files").PastedFile[]) => {
       const newAttachments = files.map((f) => {
         const att = createAttachment(f.path)
         return f.previewUrl ? { ...att, previewUrl: f.previewUrl } : att

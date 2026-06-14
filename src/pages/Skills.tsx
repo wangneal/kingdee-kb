@@ -25,19 +25,19 @@ import {
   readSkillFile,
   rescanSkills,
   searchSkills,
-} from "../lib/skill-commands"
+} from "@/lib/skill-commands"
 import type {
   ExecutionResult,
   Skill,
   SkillFile,
   SkillFull,
   SkillStatsResponse,
-} from "../lib/skill-types"
+} from "@/lib/skill-types"
 import {
   SKILL_CATEGORY_LABELS,
   SKILL_FILE_TYPE_ICONS,
   SKILL_FILE_TYPE_LABELS,
-} from "../lib/skill-types"
+} from "@/lib/skill-types"
 
 const CATEGORY_ORDER = ["core", "stage", "mgmt", "tool"]
 

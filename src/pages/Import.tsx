@@ -16,9 +16,9 @@ import {
   X,
 } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { useKbCompilation } from "../contexts/KbCompilationContext"
-import { useProject } from "../contexts/ProjectContext"
-import { getImportDialogDefaultPath } from "../lib/dialog-options"
+import { useKbCompilation } from "@/contexts/KbCompilationContext"
+import { useProject } from "@/contexts/ProjectContext"
+import { getImportDialogDefaultPath } from "@/lib/dialog-options"
 import {
   checkFfmpegStatus,
   getWhisperStatus,
@@ -32,7 +32,7 @@ import {
   type FfmpegStatus,
   type VideoPipelineResult,
   type VideoProgressEvent,
-} from "../lib/tauri-commands"
+} from "@/lib/tauri-commands"
 
 type ImportStatus = "idle" | "loading" | "success" | "error"
 

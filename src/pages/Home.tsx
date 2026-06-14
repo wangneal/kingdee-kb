@@ -16,12 +16,12 @@ import {
 } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { useProject } from "../contexts/ProjectContext"
+import { useProject } from "@/contexts/ProjectContext"
 import {
   getProjectPhases,
   type ProjectPhase,
   setCurrentProjectPhase,
-} from "../lib/project-commands"
+} from "@/lib/project-commands"
 import {
   getStats,
   type KnowledgeStats,
@@ -31,7 +31,7 @@ import {
   type LocalMeeting,
   type LocalMeetingMinutes,
   type ProductMeta,
-} from "../lib/tauri-commands"
+} from "@/lib/tauri-commands"
 
 
 

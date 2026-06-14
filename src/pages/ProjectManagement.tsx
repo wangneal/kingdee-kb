@@ -11,8 +11,8 @@ import {
   Trash2,
 } from "lucide-react"
 import { useCallback, useEffect, useState } from "react"
-import { useProject } from "../contexts/ProjectContext"
-import { getImportDialogDefaultPath } from "../lib/dialog-options"
+import { useProject } from "@/contexts/ProjectContext"
+import { getImportDialogDefaultPath } from "@/lib/dialog-options"
 import {
   addProjectProduct,
   createRawSource,
@@ -33,7 +33,7 @@ import {
   softDeleteRawSource,
   updateProject,
   updateProjectPhasePlan,
-} from "../lib/project-commands"
+} from "@/lib/project-commands"
 
 type Tab = "details" | "phases" | "sources" | "queue"
 

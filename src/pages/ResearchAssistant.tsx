@@ -22,15 +22,15 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import { useParams } from "react-router-dom"
 import remarkGfm from "remark-gfm"
-import MarkdownEditor from "../components/outliner/MarkdownEditor"
-import MindmapView from "../components/outliner/MindmapView"
-import OutlineTree from "../components/outliner/OutlineTree"
-import { useToast } from "../components/Toast"
-import { DEFAULT_SLOT, useAgent } from "../contexts/AgentContext"
-import { useAppError } from "../contexts/AppErrorContext"
-import { useOutline } from "../contexts/OutlineContext"
-import { useProject } from "../contexts/ProjectContext"
-import { formatAppError, parseAppError } from "../lib/app-error"
+import MarkdownEditor from "@/components/outliner/MarkdownEditor"
+import MindmapView from "@/components/outliner/MindmapView"
+import OutlineTree from "@/components/outliner/OutlineTree"
+import { useToast } from "@/components/Toast"
+import { DEFAULT_SLOT, useAgent } from "@/contexts/AgentContext"
+import { useAppError } from "@/contexts/AppErrorContext"
+import { useOutline } from "@/contexts/OutlineContext"
+import { useProject } from "@/contexts/ProjectContext"
+import { formatAppError, parseAppError } from "@/lib/app-error"
 import {
   type AsrProviderInfo,
   type AudioInputDeviceInfo,
@@ -56,7 +56,7 @@ import {
   transcribeWhisperRecordingChunk,
   updateQARecord,
   type WhisperStatus,
-} from "../lib/tauri-commands"
+} from "@/lib/tauri-commands"
 
 export default function ResearchAssistant() {
   const { currentProjectId } = useProject()

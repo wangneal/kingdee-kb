@@ -8,8 +8,8 @@ import {
   Tag,
 } from "lucide-react"
 import { useCallback, useMemo, useState } from "react"
-import { useProject } from "../contexts/ProjectContext"
-import { type HybridSearchResult, hybridSearch } from "../lib/tauri-commands"
+import { useProject } from "@/contexts/ProjectContext"
+import { type HybridSearchResult, hybridSearch } from "@/lib/tauri-commands"
 
 function highlightText(text: string, query: string): React.ReactNode {
   if (!query.trim()) return text

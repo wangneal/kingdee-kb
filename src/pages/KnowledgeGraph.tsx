@@ -6,19 +6,19 @@
  */
 import { BookOpen, Loader2, Network, RefreshCw } from "lucide-react"
 import { useEffect, useState } from "react"
-import { useToast } from "../components/Toast"
-import GraphRecommendations from "../components/wiki/GraphRecommendations"
-import GraphStatsBanner from "../components/wiki/GraphStatsBanner"
-import { useAppError } from "../contexts/AppErrorContext"
-import { useProject } from "../contexts/ProjectContext"
-import { formatAppError, parseAppError } from "../lib/app-error"
+import { useToast } from "@/components/Toast"
+import GraphRecommendations from "@/components/wiki/GraphRecommendations"
+import GraphStatsBanner from "@/components/wiki/GraphStatsBanner"
+import { useAppError } from "@/contexts/AppErrorContext"
+import { useProject } from "@/contexts/ProjectContext"
+import { formatAppError, parseAppError } from "@/lib/app-error"
 import {
   buildKnowledgeGraph,
   type GraphStats,
   getGraphStats,
   listWikiPages,
   type WikiPageBrief,
-} from "../lib/tauri-commands"
+} from "@/lib/tauri-commands"
 
 const SIGNAL_LABELS: Record<string, string> = {
   wikilink: "wikilink",

@@ -31,10 +31,10 @@ import {
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
-import { useToast } from "../components/Toast"
-import { useAsrConfig } from "../contexts/AsrConfigContext"
-import { TOAST_AUTO_DISMISS_MS } from "../lib/constants"
-import { getKdclubToken, saveKdclubToken } from "../lib/kdclub-commands"
+import { useToast } from "@/components/Toast"
+import { useAsrConfig } from "@/contexts/AsrConfigContext"
+import { TOAST_AUTO_DISMISS_MS } from "@/lib/constants"
+import { getKdclubToken, saveKdclubToken } from "@/lib/kdclub-commands"
 import {
   addLLMProvider,
   deleteLLMProvider,
@@ -48,7 +48,7 @@ import {
   setDefaultLLMProvider,
   setProviderPolicy,
   updateLLMProvider,
-} from "../lib/skill-commands"
+} from "@/lib/skill-commands"
 import type {
   ApiKeyConfig,
   LLMProtocol,
@@ -56,8 +56,8 @@ import type {
   ModelConfig,
   OcrProviderConfig,
   ProviderPolicyConfig,
-} from "../lib/skill-types"
-import { useKbCompilation } from "../contexts/KbCompilationContext"
+} from "@/lib/skill-types"
+import { useKbCompilation } from "@/contexts/KbCompilationContext"
 import {
   type AgentToolAuditRecord,
   type AgentToolAuditSummary,
@@ -96,7 +96,7 @@ import {
   setAgentToolConfig,
   setEmbeddingModelConfig,
   type TencentMeetingConfigStatus,
-} from "../lib/tauri-commands"
+} from "@/lib/tauri-commands"
 
 type ProviderPreset = {
   id: string

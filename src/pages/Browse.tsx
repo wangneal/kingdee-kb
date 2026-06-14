@@ -12,13 +12,13 @@ import {
   Trash2,
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import ContextMenu, { type ContextMenuItem } from "../components/ContextMenu"
-import ImportModal from "../components/ImportModal"
-import GraphRecommendations from "../components/wiki/GraphRecommendations"
-import WikiLinkEditor from "../components/wiki/WikiLinkEditor"
-import WikiPageForm from "../components/wiki/WikiPageForm"
-import { useProject } from "../contexts/ProjectContext"
-import { TOAST_AUTO_DISMISS_MS } from "../lib/constants"
+import ContextMenu, { type ContextMenuItem } from "@/components/ContextMenu"
+import ImportModal from "@/components/ImportModal"
+import GraphRecommendations from "@/components/wiki/GraphRecommendations"
+import WikiLinkEditor from "@/components/wiki/WikiLinkEditor"
+import WikiPageForm from "@/components/wiki/WikiPageForm"
+import { useProject } from "@/contexts/ProjectContext"
+import { TOAST_AUTO_DISMISS_MS } from "@/lib/constants"
 import {
   approveAutoWikiPages,
   approveWikiPage,
@@ -37,7 +37,7 @@ import {
   startKbRecompile,
   type WikiPage,
   type WikiPageBrief,
-} from "../lib/tauri-commands"
+} from "@/lib/tauri-commands"
 
 function formatOperationError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
