@@ -21,12 +21,15 @@ import {
   approveWikiPage,
   batchDeleteWikiPages,
   buildKnowledgeGraph,
+  deleteDocument,
   deleteWikiPage,
   getGraphNeighbors,
   getKbRecompileStatus,
   getWikiPage,
   type KbRecompileStatus,
+  listDocuments,
   listWikiPages,
+  type DocumentMeta,
   rejectWikiPage,
   startKbRecompile,
   type WikiPage,
@@ -54,6 +57,10 @@ export default function Browse() {
   // 非重编译相关的反馈消息（用于批量删除等操作后的提示），3 秒后自动清除
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  // 左侧栏视图：wiki 知识页面 / documents 原始文档
+  const [listView, setListView] = useState<"wiki" | "documents">("wiki")
+  const [documents, setDocuments] = useState<DocumentMeta[]>([])
+  const [docsLoading, setDocsLoading] = useState(false)
   // 内容视图：current 已批准；candidate 候选全文；diff 行级对比
   const [viewMode, setViewMode] = useState<"current" | "candidate" | "diff">("current")
   // 候选内容为空时自动从 diff 回退到 current 模式
@@ -90,6 +97,39 @@ export default function Browse() {
       setLoading(false)
     }
   }, [currentProjectId])
+
+  const refreshDocuments = useCallback(async () => {
+    if (currentProjectId == null) {
+      setDocuments([])
+      setDocsLoading(false)
+      return
+    }
+    setDocsLoading(true)
+    try {
+      setDocuments(await listDocuments(currentProjectId))
+    } catch {
+      setDocuments([])
+    } finally {
+      setDocsLoading(false)
+    }
+  }, [currentProjectId])
+
+  // 切换到 documents 视图时加载
+  useEffect(() => {
+    if (listView === "documents") void refreshDocuments()
+  }, [listView, refreshDocuments])
+
+  async function handleDeleteDocument(docId: number) {
+    if (currentProjectId == null) return
+    if (!window.confirm("删除该文档将同时清理其向量索引和全文索引，且不可恢复。确认删除？")) return
+    try {
+      await deleteDocument(docId, currentProjectId)
+      setFeedbackMessage("文档已删除")
+      void refreshDocuments()
+    } catch (err) {
+      setFeedbackMessage(`删除失败：${formatOperationError(err)}`)
+    }
+  }
 
   const contextMenuItems: ContextMenuItem[] = useMemo(
     () => [
@@ -363,8 +403,66 @@ export default function Browse() {
       {/* biome-ignore lint/a11y/noStaticElementInteractions: 面板右键菜单是标准交互模式 */}
       <div className="flex h-full gap-4 p-6" onContextMenu={handleContextMenu}>
         <div className="w-72 shrink-0 border-r border-neutral-200 pr-4">
+          <div className="mb-3 flex gap-1 rounded-md border border-neutral-200 bg-white p-1 text-xs">
+            <button
+              type="button"
+              onClick={() => setListView("wiki")}
+              className={`flex-1 rounded px-2 py-1 transition-colors ${
+                listView === "wiki" ? "bg-blue-50 text-blue-700" : "text-neutral-500 hover:bg-neutral-50"
+              }`}
+            >
+              知识页面
+            </button>
+            <button
+              type="button"
+              onClick={() => setListView("documents")}
+              className={`flex-1 rounded px-2 py-1 transition-colors ${
+                listView === "documents" ? "bg-blue-50 text-blue-700" : "text-neutral-500 hover:bg-neutral-50"
+              }`}
+            >
+              原始文档
+            </button>
+          </div>
+
+          {/* 原始文档视图 */}
+          {listView === "documents" ? (
+            <div className="space-y-1">
+              {docsLoading ? (
+                <div className="py-8 text-center text-sm text-neutral-400">加载中...</div>
+              ) : documents.length === 0 ? (
+                <div className="py-8 text-center text-sm text-neutral-400">
+                  暂无原始文档
+                </div>
+              ) : (
+                documents.map((doc) => (
+                  <div
+                    key={doc.id}
+                    className="group flex items-center justify-between gap-2 rounded-md px-2 py-1.5 hover:bg-neutral-50"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium text-neutral-700">
+                        {doc.title || "(未命名)"}
+                      </div>
+                      <div className="mt-0.5 truncate text-[11px] text-neutral-400">
+                        {doc.source_path || "—"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleDeleteDocument(doc.id)}
+                      className="shrink-0 rounded p-1 text-neutral-300 opacity-0 transition-opacity hover:bg-red-50 hover:text-red-500 group-hover:opacity-100"
+                      title="删除文档"
+                      aria-label="删除文档"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          ) : (
+            <>
           <div className="mb-3 flex items-center justify-between gap-2">
-            <h3 className="text-sm font-medium text-neutral-600">知识页面</h3>
             <span className="text-xs text-neutral-400">{wikiPages.length} 页</span>
           </div>
 
@@ -481,8 +579,11 @@ export default function Browse() {
               ))}
             </div>
           )}
+            </>
+          )}
         </div>
 
+        {listView === "wiki" && (
         <div className="flex-1 overflow-y-auto">
           {selectedWiki ? (
             <div>
@@ -676,6 +777,7 @@ export default function Browse() {
             </div>
           )}
         </div>
+        )}
       </div>
 
       {contextMenu && (

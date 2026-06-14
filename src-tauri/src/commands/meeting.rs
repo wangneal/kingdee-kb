@@ -254,6 +254,19 @@ pub async fn generate_meeting_minutes(
         &state.llm,
     )?;
 
+    // 从待办数量推断"未解决问题积压"健康指标（尽力而为）
+    if output.todo_count > 0 {
+        let value = (output.todo_count as f64 * 10.0).min(100.0);
+        if let Ok(store) = state.risk_control_store.try_lock() {
+            let _ = store.record_health_metric(
+                effective_project_id,
+                "issue_count",
+                value,
+                "会议纪要自动推断",
+            );
+        }
+    }
+
     Ok(json!({
         "minutes_id": output.minutes_id,
         "file_path": output.file_path,

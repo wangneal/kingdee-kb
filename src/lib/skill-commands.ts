@@ -53,11 +53,6 @@ export async function rescanSkills(): Promise<SkillScanResult> {
   return invoke("rescan_skills")
 }
 
-/** 匹配最适合的技能 */
-export async function matchSkill(input: string): Promise<Skill | null> {
-  return invoke("match_skill", { input })
-}
-
 /** 导入新技能：选择 SKILL.md 文件，复制到 skills/ 目录 */
 export async function importSkill(filePath: string): Promise<string> {
   return invoke("import_skill", { filePath })
@@ -81,18 +76,6 @@ export async function readSkillFile(skillName: string, relativePath: string): Pr
 /** 获取技能支撑文件列表 */
 export async function listSkillFiles(name: string): Promise<SkillFile[]> {
   return invoke("list_skill_files", { name })
-}
-
-// ─── Phase 2: 触发匹配命令 ──────────────────────────────────
-
-/** 触发技能匹配（使用完整触发上下文） */
-export async function triggerSkillMatch(context: TriggerContext): Promise<SkillMatch[]> {
-  return invoke("trigger_skill_match", { context })
-}
-
-/** 匹配多个候选技能 */
-export async function matchSkillCandidates(input: string, limit?: number): Promise<SkillMatch[]> {
-  return invoke("match_skill_candidates", { input, limit })
 }
 
 /** 生成技能列表系统提示 */

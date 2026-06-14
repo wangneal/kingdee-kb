@@ -87,6 +87,11 @@ export default function ResearchAssistant() {
     refreshList()
   }, [refreshList])
 
+  // 切换项目时回退到列表，避免停留在已不属于当前项目的会话详情
+  useEffect(() => {
+    setMode("list")
+  }, [currentProjectId])
+
   const openSession = useCallback(async (id: number) => {
     setLoading(true)
     setError(null)
@@ -1026,6 +1031,16 @@ function SessionDetailView({
                 )}
                 {aiLoading ? "AI 检索中..." : "AI 辅助提词"}
               </button>
+              {aiLoading && (
+                <button
+                  type="button"
+                  onClick={() => void agent.cancelSession("research")}
+                  className="flex items-center justify-center gap-1.5 rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"
+                >
+                  <Square className="h-3.5 w-3.5" />
+                  停止
+                </button>
+              )}
             </div>
           </div>
 
@@ -1047,6 +1062,16 @@ function SessionDetailView({
                       </span>
                     )}
                   </div>
+                  {slot.currentTrace?.thinking && (
+                    <details className="text-xs text-amber-700 italic leading-relaxed">
+                      <summary className="cursor-pointer text-amber-500 not-italic font-medium">
+                        💭 推理过程
+                      </summary>
+                      {slot.currentTrace.thinking.length > 2000
+                        ? `...${slot.currentTrace.thinking.slice(-2000)}`
+                        : slot.currentTrace.thinking}
+                    </details>
+                  )}
                   {isReport && isError && (
                     <div className="rounded border border-red-200 bg-red-50 px-2 py-1.5 text-[10px] text-red-700 flex items-center justify-between">
                       <span>⚠️ 生成失败，可点击重试沿用原 prompt 再次发起</span>

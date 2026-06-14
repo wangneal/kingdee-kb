@@ -2097,7 +2097,7 @@ impl Tool for CheckScopeCreepTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.to_string(),
-            description: "检查新需求是否超出合同范围。适用于客户提出了新需求，需要判断是否在合同范围内并给出风险评级。".to_string(),
+            description: "检查新需求是否超出合同范围。当用户提到新需求、功能变更、加需求、二开、额外功能时自动调用，判断是否在合同范围内并给出风险评级。".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {

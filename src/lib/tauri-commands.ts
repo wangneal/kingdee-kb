@@ -218,13 +218,6 @@ export interface KbRecompileStatus {
   finished_at?: string | null
 }
 
-export async function recompileFailedKbSources(
-  projectId: number,
-  force: boolean = false,
-): Promise<RecompileFailedSourcesResult> {
-  return invoke("recompile_failed_kb_sources", { projectId, force })
-}
-
 export async function startKbRecompile(
   projectId: number,
   force: boolean = false,
@@ -234,24 +227,6 @@ export async function startKbRecompile(
 
 export async function getKbRecompileStatus(): Promise<KbRecompileStatus> {
   return invoke("get_kb_recompile_status")
-}
-
-/// 强制重编译指定的源（用于"删 wiki 后原地重生成"场景）
-/// 流程：按 source_id 取出 raw_source → 重读文件 → 清 ingest/analysis cache →
-/// 调 process_with_kb_compilation(force_recompile=true) 跳过 Step 0 cache 命中
-export interface ForceRecompileResult {
-  analysis?: unknown
-  engine: string
-  cache_hit: boolean
-  generated_pages: string[]
-  compilation_done: boolean
-}
-
-export async function forceRecompileKbSource(
-  projectId: number,
-  sourceId: number,
-): Promise<ForceRecompileResult> {
-  return invoke<ForceRecompileResult>("force_recompile_kb_source", { projectId, sourceId })
 }
 
 export async function listDocuments(projectId?: number | null): Promise<DocumentMeta[]> {
@@ -479,10 +454,6 @@ export async function exportSessionCsv(sessionId: number): Promise<string> {
 
 export async function exportSessionMarkdown(sessionId: number): Promise<string> {
   return invoke("export_session_markdown", { sessionId })
-}
-
-export async function reorderQARecords(sessionId: number, recordIds: number[]): Promise<void> {
-  return invoke("reorder_qa_records", { sessionId, recordIds })
 }
 
 // ── 阶段 12：Whisper 语音识别 ───────────────────────────────────────────
@@ -1084,11 +1055,6 @@ export interface VideoPipelineResult {
   meeting_minutes: MeetingMinutesResult | null
 }
 
-/** 通过 Whisper 转写视频文件中的音频，需要先加载 Whisper 模型。 */
-export async function transcribeVideoFile(videoPath: string): Promise<VideoTranscriptionResult> {
-  return invoke("transcribe_video_file", { videoPath })
-}
-
 /** 完整视频流程：转写、入库、可选生成会议纪要。 */
 export async function transcribeAndIngestVideo(
   videoPath: string,
@@ -1102,14 +1068,6 @@ export async function transcribeAndIngestVideo(
   })
 }
 
-/** 根据已有转写稿生成会议纪要。 */
-export async function generateMeetingMinutesFromTranscript(
-  transcript: string,
-  projectId: number,
-  title?: string,
-): Promise<MeetingMinutesResult> {
-  return invoke("generate_meeting_minutes_from_transcript", { transcript, projectId, title })
-}
 
 /** 视频处理进度事件载荷 */
 export interface VideoProgressEvent {

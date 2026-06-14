@@ -85,7 +85,17 @@ pub async fn run_sync_cycle(app: AppHandle) -> Result<(), String> {
         if transcript.is_empty() { continue; }
         let inp = GenerateMeetingMinutesInput { project_id: pid, meeting_id: Some(meeting.id), title: meeting.subject.clone(), start_time: Some(meeting.start_time.clone()), end_time: meeting.end_time.clone(), meeting_code: meeting.meeting_code.clone(), transcript, official_minutes, source: MeetingMinutesSource::TencentMeeting };
         match MeetingMinutesService::generate(&inp, &state.data_dir, &state.project_store, &state.meeting_store, &state.raw_sources, &state.products, &state.llm) {
-            Ok(o) => { processed += 1; emit(&app, "success", &format!("「{}」纪要: {}", meeting.subject, o.file_path)); }
+            Ok(o) => {
+                processed += 1;
+                emit(&app, "success", &format!("「{}」纪要: {}", meeting.subject, o.file_path));
+                // 从待办数量推断健康指标（尽力而为）
+                if o.todo_count > 0 {
+                    let value = (o.todo_count as f64 * 10.0).min(100.0);
+                    if let Ok(store) = state.risk_control_store.try_lock() {
+                        let _ = store.record_health_metric(pid, "issue_count", value, "会议纪要自动推断");
+                    }
+                }
+            }
             Err(e) => { warn!("纪要失败: {}", e); emit(&app, "error", &format!("「{}」纪要失败: {}", meeting.subject, e)); }
         }
     }

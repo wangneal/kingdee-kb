@@ -59,7 +59,7 @@ export default function RiskControl() {
   const tabs: { key: Tab; label: string; icon: typeof Shield }[] = [
     { key: "scope", label: "需求蔓延警报", icon: AlertTriangle },
     { key: "health", label: "项目健康度", icon: Shield },
-    { key: "scripts", label: "防身话术库", icon: BookOpen },
+    { key: "scripts", label: "话术生成器", icon: BookOpen },
     { key: "analysis", label: "AI 深度分析", icon: Brain },
   ]
 
@@ -219,6 +219,23 @@ function ScopeTab({ projectId }: { projectId: number | null }) {
       if (unlisten) unlisten()
     }
   }, [projectId, extractDocId])
+
+  // 监听文档导入事件：提示用户检查范围蔓延
+  useEffect(() => {
+    let listenFn: (() => void) | null = null
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen<{ project_id: number }>("document-imported", (event) => {
+        if (event.payload.project_id === projectId) {
+          toast.info("检测到新文档导入，建议在「需求蔓延警报」中检查是否超出合同范围")
+        }
+      }).then((fn) => {
+        listenFn = fn
+      })
+    })
+    return () => {
+      if (listenFn) listenFn()
+    }
+  }, [projectId, toast])
 
   // 打开提取对话框时加载文档列表
   useEffect(() => {
@@ -1092,7 +1109,7 @@ function ScriptsTab({ projectId }: { projectId: number | null }) {
         </div>
       )}
       <div className="rounded-lg border border-neutral-200 bg-white p-4">
-        <h2 className="mb-3 text-sm font-semibold text-neutral-700">生成防身话术</h2>
+        <h2 className="mb-3 text-sm font-semibold text-neutral-700">生成沟通话术</h2>
         <div className="space-y-3">
           <div>
             <label
@@ -1177,7 +1194,7 @@ function ScriptsTab({ projectId }: { projectId: number | null }) {
               <button
                 type="button"
                 onClick={async () => {
-                  const md = `# 防身话术\n\n## ${result.scenario_label}\n\n${result.scripts.map((s) => `### ${s.phase}\n\n${s.content}\n\n> 💡 ${s.tip}\n`).join("\n")}`
+                  const md = `# 沟通话术\n\n## ${result.scenario_label}\n\n${result.scripts.map((s) => `### ${s.phase}\n\n${s.content}\n\n> 💡 ${s.tip}\n`).join("\n")}`
                   try {
                     const { save } = await import("@tauri-apps/plugin-dialog")
                     const path = await save({ filters: [{ name: "Markdown", extensions: ["md"] }] })

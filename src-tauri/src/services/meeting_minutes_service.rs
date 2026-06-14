@@ -51,6 +51,8 @@ pub struct GenerateMeetingMinutesOutput {
     pub content_md: String,
     pub decisions_json: String,
     pub todos_json: String,
+    /// 提取到的待办数量（供调用方推断健康指标等，无需再解析 todos_json）
+    pub todo_count: usize,
     pub file_path: String,
     pub product_id: Option<i64>,
     pub raw_source_id: Option<i64>,
@@ -257,6 +259,7 @@ impl MeetingMinutesService {
             content_md,
             decisions_json,
             todos_json,
+            todo_count: extras.todos.len(),
             file_path: file_path.to_string_lossy().to_string(),
             product_id,
             raw_source_id,

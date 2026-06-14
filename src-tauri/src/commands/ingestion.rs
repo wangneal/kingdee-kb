@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use anyhow::{Context as _, anyhow};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::app_state::AppState;
 use crate::error::{AppError, AppResult};
@@ -421,6 +421,9 @@ pub async fn ingest_file(
         result.kb_analysis_engine = engine;
         result.kb_compilation_error = error;
     }
+
+    // 通知前端文档已导入（RiskControl 页可据此提示检查范围蔓延）
+    let _ = app.emit("document-imported", serde_json::json!({ "project_id": project_id }));
 
     Ok(result)
 }
