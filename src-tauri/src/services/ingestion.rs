@@ -268,15 +268,48 @@ pub fn ingest_text(
     let mut bm25_chunks: Vec<(i64, String, String, Option<String>, String)> = Vec::new();
 
     for (batch_idx, chunk_batch) in chunks.chunks(batch_size).enumerate() {
-        // 提取待嵌入文本
-        let texts: Vec<&str> = chunk_batch.iter().map(|c| c.content.as_str()).collect();
+        // 提取待嵌入文本 — Contextual Retrieval：将文档级上下文前缀与分块内容拼接
+        let texts: Vec<String> = chunk_batch
+            .iter()
+            .map(|c| {
+                if let Some(ref prefix) = c.context_prefix {
+                    format!("{}：\n{}", prefix, c.content)
+                } else {
+                    c.content.clone()
+                }
+            })
+            .collect();
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
 
-        // 批量嵌入，不与元数据、BM25、向量索引锁同时持有
-        let embeddings = {
+        // 收集子块嵌入文本（Small-to-Big 检索）
+        // 格式: (parent_batch_idx, child_content, child_bm25_text)
+        let mut child_texts: Vec<String> = Vec::new();
+        let mut child_meta: Vec<(usize, String)> = Vec::new(); // (parent_batch_idx, bm25_text)
+        for (i, chunk) in chunk_batch.iter().enumerate() {
+            for child_content in &chunk.child_contents {
+                let bm25_text = if let Some(ref prefix) = chunk.context_prefix {
+                    format!("{}：\n{}", prefix, child_content)
+                } else {
+                    child_content.clone()
+                };
+                child_texts.push(child_content.clone());
+                child_meta.push((i, bm25_text));
+            }
+        }
+        let child_text_refs: Vec<&str> = child_texts.iter().map(|s| s.as_str()).collect();
+
+        // 批量嵌入父块，不与元数据、BM25、向量索引锁同时持有
+        let (parent_embeddings, child_embeddings) = {
             let mut emb = embedding
                 .write()
                 .map_err(|e| format!("Lock error: {}", e))?;
-            emb.embed_batch(&texts)?
+            let parent_embs = emb.embed_batch(&text_refs)?;
+            let child_embs = if child_texts.is_empty() {
+                Vec::new()
+            } else {
+                emb.embed_batch(&child_text_refs)?
+            };
+            (parent_embs, child_embs)
         };
 
         // 按规格锁顺序写入：metadata → bm25 → vector_index
@@ -289,7 +322,10 @@ pub fn ingest_text(
                 .write()
                 .map_err(|e| format!("Lock error: {}", e))?;
 
-            for (chunk, embedding) in chunk_batch.iter().zip(embeddings.iter()) {
+            // 记录每个父块的 chunk_id，用于子块关联
+            let mut parent_chunk_ids: Vec<i64> = Vec::with_capacity(chunk_batch.len());
+
+            for (chunk, embedding) in chunk_batch.iter().zip(parent_embeddings.iter()) {
                 let vector_key = meta.next_vector_key()?;
 
                 // 防御性处理：添加前先移除同 key 的孤儿向量。
@@ -307,21 +343,74 @@ pub fn ingest_text(
                 );
 
                 // 插入分块元数据
-                meta.insert_chunk(
+                let parent_id = meta.insert_chunk(
                     vector_key,
                     doc_id,
                     &chunk.content,
                     chunk.metadata.section_path.as_deref(),
                     Some(&tags),
                     Some(chunk.metadata.line_start as i64),
+                    None, // parent_chunk_id: parent chunks have no parent
                 )?;
+                parent_chunk_ids.push(parent_id);
 
-                // 收集 BM25 索引数据，锁释放后写入
+                // 收集 BM25 索引数据（使用上下文增强文本提升检索精度）
+                let bm25_text = if let Some(ref prefix) = chunk.context_prefix {
+                    format!("{}：\n{}", prefix, chunk.content)
+                } else {
+                    chunk.content.clone()
+                };
                 bm25_chunks.push((
                     vector_key,
                     title.to_string(),
-                    chunk.content.clone(),
+                    bm25_text,
                     chunk.metadata.section_path.clone(),
+                    project_id.to_string(),
+                ));
+
+                vector_count += 1;
+            }
+
+            // Small-to-Big: 为每个父块插入子块
+            for (child_idx, ((parent_idx, bm25_text), child_embedding)) in
+                child_meta.iter().zip(child_embeddings.iter()).enumerate()
+            {
+                let parent_chunk_id = parent_chunk_ids[*parent_idx];
+                let child_vector_key = meta.next_vector_key()?;
+                let child_content = &child_texts[child_idx];
+
+                let _ = idx.remove(child_vector_key as u64);
+                idx.add(child_vector_key as u64, child_embedding)?;
+
+                // 子块标签沿用父块标签
+                let tags = extract_tags(
+                    chunk_batch[*parent_idx]
+                        .metadata
+                        .source_file
+                        .as_deref()
+                        .unwrap_or("untitled"),
+                    chunk_batch[*parent_idx]
+                        .metadata
+                        .section_path
+                        .as_deref(),
+                );
+
+                meta.insert_chunk(
+                    child_vector_key,
+                    doc_id,
+                    child_content,
+                    chunk_batch[*parent_idx].metadata.section_path.as_deref(),
+                    Some(&tags),
+                    Some(chunk_batch[*parent_idx].metadata.line_start as i64),
+                    Some(parent_chunk_id), // 子块指向父块
+                )?;
+
+                // BM25 索引子块内容（提高关键词搜索精度）
+                bm25_chunks.push((
+                    child_vector_key,
+                    title.to_string(),
+                    bm25_text.clone(),
+                    chunk_batch[*parent_idx].metadata.section_path.clone(),
                     project_id.to_string(),
                 ));
 

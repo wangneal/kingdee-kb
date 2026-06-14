@@ -135,7 +135,8 @@ function ApiKeyConfigDialog({ error, onDismiss, onGoToSettings }: ApiKeyConfigDi
               LLM API Key 失效
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-neutral-600">
-              供应商「{error.provider_id ?? "默认"}」的 API Key 已失效或被吊销。请到设置页更换 Key 后重试。
+              供应商「{error.provider_id ?? "默认"}」的 API Key 已失效或被吊销。请到设置页更换 Key
+              后重试。
             </p>
           </div>
         </div>

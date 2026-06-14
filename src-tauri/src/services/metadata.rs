@@ -32,6 +32,7 @@ pub struct ChunkMeta {
     pub section_path: Option<String>,
     pub tags: Option<String>,
     pub line_no: Option<i64>,
+    pub parent_chunk_id: Option<i64>,
     pub created_at: String,
 }
 
@@ -175,9 +176,12 @@ impl MetadataStore {
                 section_path TEXT,
                 tags TEXT,
                 line_no INTEGER,
+                parent_chunk_id INTEGER,
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
+            -- Migrate: add parent_chunk_id column for existing tables (Small-to-Big retrieval)
+            -- Use ALTER TABLE with IF NOT EXISTS pattern via try/catch
             CREATE TABLE IF NOT EXISTS vector_key_seq (
                 id INTEGER PRIMARY KEY AUTOINCREMENT
             );
@@ -248,6 +252,13 @@ impl MetadataStore {
             ",
             )
             .map_err(|e| format!("Failed to initialize schema: {}", e))?;
+
+        // 迁移：为旧数据库添加 parent_chunk_id 列（Small-to-Big 检索）
+        // SQLite 不支持 IF NOT EXISTS 的 ALTER TABLE，忽略"重复列"错误
+        let _ = self.db.execute(
+            "ALTER TABLE chunks ADD COLUMN parent_chunk_id INTEGER",
+            [],
+        );
 
         self.db
             .execute_batch(
@@ -705,20 +716,22 @@ impl MetadataStore {
         section_path: Option<&str>,
         tags: Option<&[String]>,
         line_no: Option<i64>,
+        parent_chunk_id: Option<i64>,
     ) -> Result<i64, String> {
         let tags_json = tags.map(|t| serde_json::to_string(t).unwrap_or_default());
 
         self.db
             .execute(
-                "INSERT INTO chunks (vector_key, document_id, content, section_path, tags, line_no)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO chunks (vector_key, document_id, content, section_path, tags, line_no, parent_chunk_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     vector_key,
                     document_id,
                     content,
                     section_path,
                     tags_json,
-                    line_no
+                    line_no,
+                    parent_chunk_id
                 ],
             )
             .map_err(|e| format!("Failed to insert chunk: {}", e))?;
@@ -729,7 +742,7 @@ impl MetadataStore {
     /// 按 vector key 获取一条 chunk
     pub fn get_chunk_by_vector_key(&self, vector_key: i64) -> Result<Option<ChunkMeta>, String> {
         self.query_one_chunk(
-            "SELECT id, vector_key, document_id, content, section_path, tags, line_no, created_at
+            "SELECT id, vector_key, document_id, content, section_path, tags, line_no, parent_chunk_id, created_at
              FROM chunks WHERE vector_key = ?1",
             params![vector_key],
         )
@@ -747,7 +760,7 @@ impl MetadataStore {
             .map(|(i, _)| format!("?{}", i + 1))
             .collect();
         let sql = format!(
-            "SELECT id, vector_key, document_id, content, section_path, tags, line_no, created_at
+            "SELECT id, vector_key, document_id, content, section_path, tags, line_no, parent_chunk_id, created_at
              FROM chunks WHERE vector_key IN ({})",
             placeholders.join(",")
         );
@@ -789,10 +802,88 @@ impl MetadataStore {
     /// 获取指定文档的所有 chunk
     pub fn get_chunks_by_document(&self, document_id: i64) -> Result<Vec<ChunkMeta>, String> {
         self.query_chunks(
-            "SELECT id, vector_key, document_id, content, section_path, tags, line_no, created_at
+            "SELECT id, vector_key, document_id, content, section_path, tags, line_no, parent_chunk_id, created_at
              FROM chunks WHERE document_id = ?1 ORDER BY line_no, id",
             params![document_id],
         )
+    }
+
+    /// 获取指定 chunk 的前后邻居 chunk（句子窗口检索）
+    ///
+    /// 返回 (prev_chunk, next_chunk)，基于同一文档内的 line_no 排序。
+    /// 用于在上下文组装时扩展检索到的 chunk 的周围语境。
+    pub fn get_chunk_neighbors(&self, chunk_id: i64) -> Result<(Option<ChunkMeta>, Option<ChunkMeta>), String> {
+        // 先获取当前 chunk 的 document_id 和 line_no
+        let current = self
+            .query_one_chunk(
+                "SELECT id, vector_key, document_id, content, section_path, tags, line_no, parent_chunk_id, created_at
+                 FROM chunks WHERE id = ?1",
+                params![chunk_id],
+            )?
+            .ok_or_else(|| format!("chunk {} 不存在", chunk_id))?;
+
+        let doc_id = current.document_id;
+        let line = current.line_no.unwrap_or(0);
+
+        // 查找前一个邻居（同一文档内 line_no 最大但小于当前 line_no）
+        let prev = self.query_one_chunk(
+            "SELECT id, vector_key, document_id, content, section_path, tags, line_no, parent_chunk_id, created_at
+             FROM chunks WHERE document_id = ?1 AND line_no < ?2
+             ORDER BY line_no DESC LIMIT 1",
+            params![doc_id, line],
+        )?;
+
+        // 查找后一个邻居（同一文档内 line_no 最小但大于当前 line_no）
+        let next = self.query_one_chunk(
+            "SELECT id, vector_key, document_id, content, section_path, tags, line_no, parent_chunk_id, created_at
+             FROM chunks WHERE document_id = ?1 AND line_no > ?2
+             ORDER BY line_no ASC LIMIT 1",
+            params![doc_id, line],
+        )?;
+
+        Ok((prev, next))
+    }
+
+    /// 批量获取多个 chunk 的邻居（去重合并，减少 SQL 查询次数）
+    ///
+    /// 返回 HashMap<chunk_id, (Option<prev_content>, Option<next_content>)>
+    pub fn get_chunk_neighbors_batch(
+        &self,
+        chunk_ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, (Option<String>, Option<String>)>, String> {
+        let mut result = std::collections::HashMap::new();
+        let mut processed_docs = std::collections::HashSet::new();
+
+        for &chunk_id in chunk_ids {
+            // 先从缓存的结果中查找（同一文档批次内）
+            if result.contains_key(&chunk_id) {
+                continue;
+            }
+
+            match self.get_chunk_neighbors(chunk_id) {
+                Ok((prev, next)) => {
+                    result.insert(
+                        chunk_id,
+                        (
+                            prev.map(|c| c.content),
+                            next.map(|c| c.content),
+                        ),
+                    );
+                    // 标记文档已处理（避免同文档内重复全量查询）
+                    if let Ok(Some(current)) = self.query_one_chunk(
+                        "SELECT document_id FROM chunks WHERE id = ?1",
+                        params![chunk_id],
+                    ) {
+                        processed_docs.insert(current.document_id);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("获取 chunk {} 邻居失败: {}", chunk_id, e);
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     /// Delete a chunk by its vector key
@@ -822,6 +913,102 @@ impl MetadataStore {
             .filter_map(|r| r.ok())
             .collect();
         Ok(ids)
+    }
+
+    /// Small-to-Big 检索：将子块 ID 映射为父块
+    ///
+    /// 给定一组子块 ID，查找其 parent_chunk_id，返回去重后的父块。
+    /// 若子块 parent_chunk_id 为 NULL（旧数据），则保留该子块自身作为结果。
+    pub fn get_parent_chunks_for_child_ids(
+        &self,
+        child_ids: &[i64],
+    ) -> Result<Vec<ChunkMeta>, String> {
+        if child_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // 先查询所有子块的 parent_chunk_id
+        let placeholders: Vec<String> = child_ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect();
+        let sql = format!(
+            "SELECT id, parent_chunk_id FROM chunks WHERE id IN ({})",
+            placeholders.join(",")
+        );
+
+        let mut stmt = self
+            .db
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare query: {}", e))?;
+
+        let params: Vec<&dyn rusqlite::types::ToSql> = child_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
+
+        let rows = stmt
+            .query_map(params.as_slice(), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?))
+            })
+            .map_err(|e| format!("Failed to query child-parent mappings: {}", e))?;
+
+        // 收集唯一的父块 ID（若为 NULL 则保留子块自身 ID）
+        let mut parent_ids: Vec<i64> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for row in rows {
+            let (child_id, parent_id) =
+                row.map_err(|e| format!("Failed to read child-parent row: {}", e))?;
+            let resolved = parent_id.unwrap_or(child_id); // 无父块则用自身
+            if seen.insert(resolved) {
+                parent_ids.push(resolved);
+            }
+        }
+
+        // 回退：若无子块有父块（旧数据），无操作
+        if parent_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // 批量查询父块完整内容
+        self.get_chunks_by_ids(&parent_ids)
+    }
+
+    /// 按 chunk ID 列表批量获取 chunk
+    fn get_chunks_by_ids(&self, ids: &[i64]) -> Result<Vec<ChunkMeta>, String> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let placeholders: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect();
+        let sql = format!(
+            "SELECT id, vector_key, document_id, content, section_path, tags, line_no, parent_chunk_id, created_at
+             FROM chunks WHERE id IN ({})",
+            placeholders.join(",")
+        );
+
+        let mut stmt = self
+            .db
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare query: {}", e))?;
+
+        let params: Vec<&dyn rusqlite::types::ToSql> = ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
+        let rows = stmt
+            .query_map(params.as_slice(), Self::row_to_chunk)
+            .map_err(|e| format!("Failed to query chunks: {}", e))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| format!("Failed to read chunk row: {}", e))?);
+        }
+        Ok(results)
     }
 
     // ─── Stats ───
@@ -1330,7 +1517,8 @@ impl MetadataStore {
             section_path: row.get(4)?,
             tags: row.get(5)?,
             line_no: row.get(6)?,
-            created_at: row.get(7)?,
+            parent_chunk_id: row.get(7)?,
+            created_at: row.get(8)?,
         })
     }
 
@@ -1496,6 +1684,7 @@ mod tests {
                 Some("section/1"),
                 Some(&["tag1".to_string()]),
                 Some(1),
+                None,
             )
             .unwrap();
         assert!(chunk_id > 0);

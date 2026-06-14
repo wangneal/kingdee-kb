@@ -6,12 +6,19 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Target chunk size in characters (~384 tokens ≈ 500-700 chars for Chinese)
-const TARGET_CHUNK_CHARS: usize = 600;
-/// Minimum chunk size — merge with adjacent if smaller
-const MIN_CHUNK_CHARS: usize = 100;
-/// Maximum chunk size — force split if larger
-const MAX_CHUNK_CHARS: usize = 1500;
+/// 目标分块字符数（中文近似值，英文实际会更大）
+const TARGET_CHUNK_CHARS: usize = 800;
+/// 最小分块字符数 — 过小时合并到相邻块
+const MIN_CHUNK_CHARS: usize = 160;
+/// 子块目标字符数（Small-to-Big 检索，~150 tokens，约 300 中文字符）
+const CHILD_TARGET_CHARS: usize = 300;
+/// 子块最小字符数 — 低于此值不拆分（保持语义完整性）
+const CHILD_MIN_CHARS: usize = 100;
+/// 最大分块字符数 — 过大时强制拆分
+const MAX_CHUNK_CHARS: usize = 2400;
+/// 重叠比例：每个 chunk 前缀包含前一个 chunk 末尾的 15%
+/// 业界标准 10-20% 重叠，防止边界上下文丢失
+const OVERLAP_RATIO: f32 = 0.15;
 
 /// Chinese sentence separators (in priority order)
 const SENTENCE_SEPARATORS: &[&str] = &["。", "！", "？", "；"];
@@ -32,6 +39,14 @@ pub struct ChunkInputMeta {
 pub struct Chunk {
     /// Chunk text content
     pub content: String,
+    /// Contextual Retrieval 前缀：文档级上下文，嵌入/索引时前置到 content 前
+    /// 格式示例："文档《实施方法论》第三章 采购管理"
+    /// 业界标准（Anthropic Contextual Retrieval）：上下文前缀可降低 67% 检索失败率
+    pub context_prefix: Option<String>,
+    /// 子块内容列表（Small-to-Big 检索）
+    /// 每个父块拆分为 2-3 个子块（~150 tokens），子块独立嵌入索引，
+    /// 检索命中时扩展为父块完整内容。空 Vec 表示未拆分（短文本）。
+    pub child_contents: Vec<String>,
     /// Metadata for this chunk
     pub metadata: ChunkMetadata,
 }
@@ -92,6 +107,11 @@ pub fn recursive_chunk(text: &str, meta: &ChunkInputMeta) -> Vec<Chunk> {
     // Post-process: merge small chunks, truncate large ones
     merge_small_chunks(&mut all_chunks);
     truncate_large_chunks(&mut all_chunks);
+
+    // Small-to-Big: generate child chunks for each parent chunk
+    for chunk in &mut all_chunks {
+        chunk.child_contents = generate_child_chunks(&chunk.content);
+    }
 
     all_chunks
 }
@@ -162,7 +182,10 @@ fn split_by_headings(text: &str) -> Vec<Section> {
     sections
 }
 
-/// Chunk a single section by paragraphs, then by sentences
+/// 对一个段落缓冲区执行分块，带重叠
+///
+/// 每个 chunk（除第一个外）的前缀包含前一个 chunk 末尾的 OVERLAP_RATIO 比例文字，
+/// 防止语义在 chunk 边界丢失。重叠部分不计算在偏移量中（重叠内容指向原文位置）。
 fn chunk_section(
     text: &str,
     meta: &ChunkInputMeta,
@@ -177,6 +200,8 @@ fn chunk_section(
 
     let mut current_text = String::new();
     let mut current_offset = base_offset;
+    // 上一个已输出 chunk 的末尾内容，用作下一个 chunk 的重叠前缀
+    let mut overlap_text: Option<String> = None;
 
     for para in &paragraphs {
         let para_trimmed = para.trim();
@@ -184,14 +209,28 @@ fn chunk_section(
             continue;
         }
 
-        if current_text.len() + para_trimmed.len() + 2 <= TARGET_CHUNK_CHARS {
+        // 计算当前缓冲区的有效长度（不含重叠部分）
+        let overlap_len = overlap_text.as_ref().map(|o| o.len() + 2).unwrap_or(0);
+        let effective_len = current_text.len().saturating_sub(overlap_len);
+
+        if effective_len + para_trimmed.len() + 2 <= TARGET_CHUNK_CHARS {
             if !current_text.is_empty() {
                 current_text.push_str("\n\n");
             }
             current_text.push_str(para_trimmed);
         } else {
-            // Flush current buffer
+            // 输出当前缓冲区为一个 chunk
             if !current_text.is_empty() {
+                // 计算重叠文本用于下一个 chunk
+                let overlap_chars = (current_text.chars().count() as f32 * OVERLAP_RATIO) as usize;
+                let overlap: String = if overlap_chars > 0 {
+                    let char_count = current_text.chars().count();
+                    let skip = char_count.saturating_sub(overlap_chars);
+                    current_text.chars().skip(skip).collect()
+                } else {
+                    String::new()
+                };
+
                 chunks.push(make_chunk(
                     &current_text,
                     meta,
@@ -201,22 +240,35 @@ fn chunk_section(
                 ));
                 current_offset += current_text.len();
                 current_text.clear();
+
+                // 为下一个 chunk 设置重叠前缀
+                if !overlap.is_empty() {
+                    overlap_text = Some(overlap);
+                } else {
+                    overlap_text = None;
+                }
             }
 
-            // If paragraph itself is too large, split by sentences
+            // 大段落 → 按句子拆分
             if para_trimmed.len() > TARGET_CHUNK_CHARS {
                 let sentence_chunks =
                     split_by_sentences(para_trimmed, meta, section_path, current_offset);
                 let para_end = current_offset + para_trimmed.len();
                 chunks.extend(sentence_chunks);
                 current_offset = para_end;
+                overlap_text = None; // 句子拆分后重置重叠
             } else {
-                current_text = para_trimmed.to_string();
+                // 新缓冲区以重叠前缀开头（如果有的话）
+                if let Some(ref overlap) = overlap_text {
+                    current_text.push_str(overlap);
+                    current_text.push_str("\n\n");
+                }
+                current_text.push_str(para_trimmed);
             }
         }
     }
 
-    // Flush remaining
+    // 输出剩余内容
     if !current_text.is_empty() {
         chunks.push(make_chunk(
             &current_text,
@@ -301,6 +353,25 @@ fn split_keeping_separator<'a>(text: &'a str, separators: &[&str]) -> Vec<&'a st
     result
 }
 
+/// Build a contextual prefix for Contextual Retrieval (Anthropic, 2024).
+///
+/// Format: "文档《{title}》{section}" to provide document-level context
+/// for each chunk during embedding/indexing, reducing retrieval failures by up to 67%.
+fn build_context_prefix(title: &str, section_path: Option<&str>) -> Option<String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return None;
+    }
+    let mut prefix = format!("文档《{}》", title);
+    if let Some(section) = section_path {
+        let section = section.trim();
+        if !section.is_empty() {
+            prefix.push_str(&format!(" {}章节", section));
+        }
+    }
+    Some(prefix)
+}
+
 /// Create a Chunk with metadata
 fn make_chunk(
     content: &str,
@@ -309,8 +380,11 @@ fn make_chunk(
     line_start: usize,
     line_end: usize,
 ) -> Chunk {
+    let context_prefix = build_context_prefix(&meta.title, section_path);
     Chunk {
         content: content.to_string(),
+        context_prefix,
+        child_contents: Vec::new(), // populated later by generate_child_chunks()
         metadata: ChunkMetadata {
             source_file: meta.source_file.clone(),
             title: meta.title.clone(),
@@ -321,6 +395,47 @@ fn make_chunk(
             tags: meta.tags.clone(),
         },
     }
+}
+
+/// 从父块内容生成子块（Small-to-Big 检索）
+///
+/// 将父块（~400 tokens）按句子边界拆分为 2-3 个子块（~150 tokens），
+/// 子块独立嵌入索引以提高检索精度，命中时扩展为父块完整内容。
+/// 短文本（<200 chars）不拆分，返回空 Vec。
+fn generate_child_chunks(parent_content: &str) -> Vec<String> {
+    let parent_len = parent_content.chars().count();
+    // 太短的父块不拆分（无法产生有意义的子块）
+    if parent_len < CHILD_MIN_CHARS * 2 {
+        return Vec::new();
+    }
+
+    let sentences = split_keeping_separator(parent_content, SENTENCE_SEPARATORS);
+    if sentences.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut children = Vec::new();
+    let mut current = String::new();
+
+    for sentence in &sentences {
+        if current.len() + sentence.len() > CHILD_TARGET_CHARS && !current.is_empty() {
+            // 当前句子会使子块过大，先输出当前子块
+            if current.chars().count() >= CHILD_MIN_CHARS {
+                children.push(current.clone());
+            }
+            current.clear();
+        }
+        current.push_str(sentence);
+    }
+
+    // 输出最后一个子块
+    if !current.is_empty() && current.chars().count() >= CHILD_MIN_CHARS {
+        children.push(current);
+    }
+
+    // 限制为最多 3 个子块
+    children.truncate(3);
+    children
 }
 
 /// Merge chunks smaller than MIN_CHUNK_CHARS with their neighbor
@@ -378,6 +493,7 @@ fn truncate_large_chunks(chunks: &mut Vec<Chunk>) {
         if chunks[i].content.len() > MAX_CHUNK_CHARS {
             let original = chunks[i].content.clone();
             let meta_backup = chunks[i].metadata.clone();
+            let original_context = chunks[i].context_prefix.clone();
 
             // Split at sentence boundaries
             let sentences = split_keeping_separator(&original, SENTENCE_SEPARATORS);
@@ -401,6 +517,8 @@ fn truncate_large_chunks(chunks: &mut Vec<Chunk>) {
                 for (j, part) in parts.iter().enumerate() {
                     let mut chunk = Chunk {
                         content: part.clone(),
+                        context_prefix: original_context.clone(),
+                        child_contents: Vec::new(),
                         metadata: meta_backup.clone(),
                     };
                     // Adjust offsets

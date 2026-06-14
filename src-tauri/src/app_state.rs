@@ -250,15 +250,9 @@ impl AppState {
 
         let desensitizer = Arc::new(Desensitizer::new());
 
-        // 初始化敏感词持久化存储，并加载已有敏感词到脱敏器内存
+        // 敏感词持久化存储：读取已有敏感词加载到内存脱敏器
         let sensitive_keyword_store = {
-            let store = SensitiveKeywordStore::new(&db_path).unwrap_or_else(|e| {
-                tracing::error!("敏感词存储初始化失败（降级为内存库）: {}", e);
-                SensitiveKeywordStore::with_conn(
-                    Connection::open_in_memory().expect("Fatal: 无法创建敏感词内存库"),
-                )
-                .expect("Fatal: 无法初始化敏感词内存库")
-            });
+            let store = SensitiveKeywordStore::new(&db_path)?;
             match store.list() {
                 Ok(keywords) => {
                     if !keywords.is_empty() {
@@ -451,23 +445,21 @@ impl AppState {
 
         let desensitizer = Arc::new(Desensitizer::new());
 
-        // 敏感词持久化：minimal 模式下尝试加载，失败降级为内存库
-        let sensitive_keyword_store =
-            match SensitiveKeywordStore::new(&db_path) {
-                Ok(store) => {
-                    if let Ok(keywords) = store.list() {
-                        desensitizer.add_typed_keywords(&keywords);
-                    }
-                    Arc::new(Mutex::new(store))
+        // 敏感词持久化：minimal 模式下尝试加载已有敏感词，DB 不可用时用内存库保证可启动
+        let sensitive_keyword_store = match SensitiveKeywordStore::new(&db_path) {
+            Ok(store) => {
+                if let Ok(keywords) = store.list() {
+                    desensitizer.add_typed_keywords(&keywords);
                 }
-                Err(e) => {
-                    tracing::error!("minimal 模式敏感词存储初始化失败: {}", e);
-                    Arc::new(Mutex::new(
-                        SensitiveKeywordStore::with_conn(
-                            Connection::open_in_memory()
-                                .expect("Fatal: 无法创建敏感词内存库"),
-                        )
-                        .expect("Fatal: 无法初始化敏感词内存库"),
+                Arc::new(Mutex::new(store))
+            }
+            Err(e) => {
+                tracing::error!("minimal 模式敏感词存储初始化失败: {}", e);
+                Arc::new(Mutex::new(
+                    SensitiveKeywordStore::with_conn(
+                        Connection::open_in_memory().expect("Fatal: 无法创建敏感词内存库"),
+                    )
+                    .expect("Fatal: 无法初始化敏感词内存库"),
                     ))
                 }
             };

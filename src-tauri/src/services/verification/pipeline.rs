@@ -1,4 +1,5 @@
 use super::types::{Checker, VerificationInput, VerificationReport};
+use std::sync::{Arc, RwLock};
 
 /// 验证策略配置
 #[derive(Debug, Clone)]
@@ -28,14 +29,23 @@ pub struct VerificationPipeline {
 }
 
 impl VerificationPipeline {
-    pub fn new(config: VerificationConfig) -> Self {
+    /// 创建验证管线
+    ///
+    /// `embedding` 可选：提供时事实一致性检查器启用嵌入相似度模式，
+    /// 否则使用词项匹配回退。
+    pub fn new(
+        config: VerificationConfig,
+        embedding: Option<Arc<RwLock<crate::services::embedding::EmbeddingService>>>,
+    ) -> Self {
         let mut checkers: Vec<Box<dyn Checker>> = Vec::new();
 
         if config.enable_citation_check {
             checkers.push(Box::new(super::citation::CitationExistenceChecker));
         }
         if config.enable_consistency_check {
-            checkers.push(Box::new(super::consistency::FactualConsistencyChecker));
+            checkers.push(Box::new(super::consistency::FactualConsistencyChecker::new(
+                embedding,
+            )));
         }
         if config.enable_contradiction_check {
             checkers.push(Box::new(super::contradiction::SelfContradictionChecker));
@@ -47,19 +57,29 @@ impl VerificationPipeline {
         Self { checkers, config }
     }
 
-    /// 默认配置（全部开启）
+    /// 默认配置（全部开启，无嵌入支持，回退到词项匹配）
     pub fn default_with_all() -> Self {
-        Self::new(VerificationConfig::default())
+        Self::new(VerificationConfig::default(), None)
+    }
+
+    /// 默认配置 + 嵌入支持
+    pub fn default_with_embedding(
+        embedding: Arc<RwLock<crate::services::embedding::EmbeddingService>>,
+    ) -> Self {
+        Self::new(VerificationConfig::default(), Some(embedding))
     }
 
     /// 仅开启引用校验（最轻量）
     pub fn citation_only() -> Self {
-        Self::new(VerificationConfig {
-            enable_citation_check: true,
-            enable_consistency_check: false,
-            enable_contradiction_check: false,
-            enable_uncertainty_marker: false,
-        })
+        Self::new(
+            VerificationConfig {
+                enable_citation_check: true,
+                enable_consistency_check: false,
+                enable_contradiction_check: false,
+                enable_uncertainty_marker: false,
+            },
+            None,
+        )
     }
 
     /// 对输入执行完整验证管线

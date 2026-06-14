@@ -428,6 +428,8 @@ mod tests {
                     Vec::new(),
                     None,
                     None, // 会话ID
+                    None, // meeting_store
+                    None, // raw_sources
                 ))
                 .max_tokens(32)
                 .temperature(0.0)
@@ -445,3 +447,4 @@ mod tests {
         });
     }
 }
+

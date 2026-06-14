@@ -55,6 +55,8 @@ pub struct HybridSearchResult {
     pub section_path: Option<String>,
     /// Project name this chunk belongs to
     pub project: String,
+    /// Parent chunk ID for Small-to-Big retrieval (None = this is a parent chunk)
+    pub parent_chunk_id: Option<i64>,
 }
 
 // ─── Internal helper: resolved chunk info for fusion ───
@@ -68,6 +70,7 @@ struct ResolvedChunk {
     document_id: i64,
     section_path: Option<String>,
     project: String,
+    parent_chunk_id: Option<i64>,
 }
 
 // ─── RRFR Fusion ───
@@ -189,6 +192,7 @@ pub fn hybrid_search(
                         document_id: c.document_id,
                         section_path: c.section_path,
                         project,
+                        parent_chunk_id: c.parent_chunk_id,
                     })
                 })
                 .collect()
@@ -221,6 +225,7 @@ pub fn hybrid_search(
             document_id: 0,
             section_path: r.section_path,
             project: r.project,
+            parent_chunk_id: None, // BM25 results don't track parent-child relationships
         })
         .collect();
 
@@ -253,6 +258,7 @@ pub fn hybrid_search(
                     document_id: r.document_id,
                     section_path: r.section_path,
                     project: r.project,
+                    parent_chunk_id: r.parent_chunk_id,
                 })
                 .collect());
         }
@@ -327,6 +333,7 @@ fn build_results(
                 document_id,
                 section_path: r.section_path.clone(),
                 project: r.project.clone(),
+                parent_chunk_id: r.parent_chunk_id,
             });
         }
     }

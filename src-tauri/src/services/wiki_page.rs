@@ -741,6 +741,7 @@ impl WikiPageStore {
                         document_id: row.get::<_, i64>(0)?,
                         section_path: None,
                         project: row.get::<_, i64>(1)?.to_string(),
+                        parent_chunk_id: None,
                     })
                 })
                 .map_err(|e| format!("执行搜索 wiki_pages 查询失败: {}", e))?;
@@ -774,6 +775,7 @@ impl WikiPageStore {
                         document_id: row.get::<_, i64>(0)?,
                         section_path: None,
                         project: row.get::<_, i64>(1)?.to_string(),
+                        parent_chunk_id: None,
                     })
                 })
                 .map_err(|e| format!("执行搜索 wiki_pages 查询失败: {}", e))?;

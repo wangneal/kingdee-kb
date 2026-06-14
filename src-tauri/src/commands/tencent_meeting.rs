@@ -7,7 +7,7 @@ use crate::services::tencent_meeting_mcp::{
     TencentMeetingMcpClient, TencentMeetingToolResult, TencentMeetingTranscriptResult,
 };
 
-const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
+const KEYRING_SERVICE: &str = "com.neal.kingdee.kb";
 const TOKEN_ACCOUNT: &str = "tencent_meeting_token";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

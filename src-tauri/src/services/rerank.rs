@@ -24,6 +24,7 @@ pub struct RerankedResult {
     pub document_id: i64,
     pub section_path: Option<String>,
     pub project: String,
+    pub parent_chunk_id: Option<i64>,
 }
 
 /// Reranker 服务 — 包装 fastembed TextRerank
@@ -85,6 +86,7 @@ impl RerankerService {
                     document_id: orig.document_id,
                     section_path: orig.section_path.clone(),
                     project: orig.project.clone(),
+                    parent_chunk_id: orig.parent_chunk_id,
                 })
             })
             .collect();

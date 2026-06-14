@@ -108,6 +108,7 @@ mod tests {
                 document_id: 1,
                 section_path: None,
                 project: "test".to_string(),
+                parent_chunk_id: None,
             },
             HybridSearchResult {
                 chunk_id: 2,
@@ -118,6 +119,7 @@ mod tests {
                 document_id: 1,
                 section_path: None,
                 project: "test".to_string(),
+                parent_chunk_id: None,
             },
         ];
         let quality = assess_quality(&results);
