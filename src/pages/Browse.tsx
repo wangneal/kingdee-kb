@@ -4,7 +4,9 @@ import {
   BookOpen,
   CheckCircle,
   CheckSquare,
+  FilePlus,
   FileUp,
+  Pencil,
   RefreshCw,
   Square,
   Trash2,
@@ -14,6 +16,7 @@ import ContextMenu, { type ContextMenuItem } from "../components/ContextMenu"
 import ImportModal from "../components/ImportModal"
 import GraphRecommendations from "../components/wiki/GraphRecommendations"
 import WikiLinkEditor from "../components/wiki/WikiLinkEditor"
+import WikiPageForm from "../components/wiki/WikiPageForm"
 import { useProject } from "../contexts/ProjectContext"
 import { TOAST_AUTO_DISMISS_MS } from "../lib/constants"
 import {
@@ -51,6 +54,12 @@ export default function Browse() {
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [importModalOpen, setImportModalOpen] = useState(false)
+  // Wiki 手动创建/编辑表单：null = 关闭；"create" = 新建；{ mode: "edit", page } = 编辑
+  const [wikiFormMode, setWikiFormMode] = useState<
+    | { kind: "create" }
+    | { kind: "edit"; page: WikiPage }
+    | null
+  >(null)
   const [recompileStatus, setRecompileStatus] = useState<KbRecompileStatus | null>(null)
   const lastHandledRecompileFinishRef = useRef<string | null>(null)
   const [autoApproving, setAutoApproving] = useState(false)
@@ -430,6 +439,35 @@ export default function Browse() {
             </button>
           </div>
 
+          {/* Wiki 手动操作：新建 + 编辑当前选中 */}
+          {listView === "wiki" && currentProjectId != null && (
+            <div className="mb-3 flex gap-1">
+              <button
+                type="button"
+                onClick={() => setWikiFormMode({ kind: "create" })}
+                className="flex flex-1 items-center justify-center gap-1 rounded-md border border-neutral-200 bg-white px-2 py-1.5 text-xs text-neutral-700 hover:border-[#1A6BD8] hover:text-[#1A6BD8]"
+                title="手动新建 Wiki 页面（绕开 KB 编译自动生成）"
+              >
+                <FilePlus className="h-3.5 w-3.5" />
+                新建页面
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedWiki) {
+                    setWikiFormMode({ kind: "edit", page: selectedWiki })
+                  }
+                }}
+                disabled={!selectedWiki}
+                className="flex flex-1 items-center justify-center gap-1 rounded-md border border-neutral-200 bg-white px-2 py-1.5 text-xs text-neutral-700 hover:border-[#1A6BD8] hover:text-[#1A6BD8] disabled:cursor-not-allowed disabled:opacity-40"
+                title={selectedWiki ? "编辑当前选中的 Wiki 页面" : "先在右侧选中要编辑的页面"}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                编辑当前
+              </button>
+            </div>
+          )}
+
           {/* 原始文档视图 */}
           {listView === "documents" ? (
             <div className="space-y-1">
@@ -801,6 +839,27 @@ export default function Browse() {
         onImported={refreshWikiPages}
         project={currentProjectId ?? undefined}
       />
+
+      {wikiFormMode && currentProjectId != null && (
+        <WikiPageForm
+          mode={wikiFormMode.kind}
+          projectId={currentProjectId}
+          initial={wikiFormMode.kind === "edit" ? wikiFormMode.page : undefined}
+          onCancel={() => setWikiFormMode(null)}
+          onSaved={(page) => {
+            setWikiFormMode(null)
+            setFeedbackMessage(
+              wikiFormMode.kind === "create"
+                ? `已创建 Wiki 页面：${page.title}`
+                : `已保存：${page.title}`,
+            )
+            // 刷新列表 + 选中刚保存的页面
+            void refreshWikiPages().then(() => {
+              setSelectedWiki(page)
+            })
+          }}
+        />
+      )}
     </>
   )
 }

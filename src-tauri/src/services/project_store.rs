@@ -478,6 +478,51 @@ impl ProjectStore {
         Ok(())
     }
 
+    /// 硬删除项目：级联清空所有子表数据并删除 `projects` 行。
+    ///
+    /// 依赖子表 `ON DELETE CASCADE` 外键约束自动级联：
+    /// documents / document_chunks / raw_sources / project_products / project_phases /
+    /// wiki_pages / meeting_records / ingest_cache / analysis_cache /
+    /// project_default_documents 等。
+    ///
+    /// 事务：用 `unchecked_transaction()` 包裹 `DELETE FROM projects WHERE id=?`，
+    /// 失败显式 rollback（drop guard 不会自动 rollback）。
+    ///
+    /// 校验：默认项目拒绝（与 `archive_project` 一致）；调用方应先校验"无 pending 队列"。
+    /// 物理文件（`data_dir/raw/<project_id>/`）由调用方在事务成功后清理。
+    pub fn delete_project(&self, project_id: i64) -> Result<(), String> {
+        if self
+            .get_project(project_id)?
+            .is_some_and(|p| p.name == "默认项目")
+        {
+            return Err("默认项目不能删除".to_string());
+        }
+        let tx = self
+            .db
+            .unchecked_transaction()
+            .map_err(|e| format!("启动项目删除事务失败: {}", e))?;
+        let body: Result<(), String> = (|| {
+            let rows = tx
+                .execute("DELETE FROM projects WHERE id = ?1", params![project_id])
+                .map_err(|e| format!("删除项目行失败: {}", e))?;
+            if rows == 0 {
+                return Err(format!("项目不存在: {}", project_id));
+            }
+            Ok(())
+        })();
+        match body {
+            Ok(()) => tx
+                .commit()
+                .map_err(|e| format!("提交项目删除事务失败: {}", e))?,
+            Err(e) => {
+                // rollback 失败不回写 — 事务会随 drop 隐式回滚，但显式回滚更稳妥
+                let _ = tx.rollback();
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
     /// 设置项目的当前阶段。
     ///
     /// 用 `unchecked_transaction()` 包裹 3 步写入，**使用 `&self`**（其他方法都 `&self`），

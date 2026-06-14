@@ -147,6 +147,14 @@ export async function restoreProject(projectId: number): Promise<void> {
   return invoke("restore_project", { projectId })
 }
 
+/**
+ * 硬删除项目：级联删除所有关联数据（documents / wiki_pages / 向量 / bm25 / 物理文件）。
+ * 不可恢复。前端必须用 DestructiveConfirmDialog 二次确认。
+ */
+export async function deleteProject(projectId: number): Promise<void> {
+  return invoke("delete_project", { projectId })
+}
+
 export async function setCurrentProjectPhase(projectId: number, phaseKey: string): Promise<void> {
   return invoke("set_current_project_phase", { projectId, phaseKey })
 }

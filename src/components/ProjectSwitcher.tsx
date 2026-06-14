@@ -6,10 +6,16 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  Trash2,
 } from "lucide-react"
 import { useMemo, useState } from "react"
 import { useProject } from "../contexts/ProjectContext"
-import { archiveProject, createProject, restoreProject } from "../lib/project-commands"
+import {
+  archiveProject,
+  createProject,
+  deleteProject,
+  restoreProject,
+} from "../lib/project-commands"
 
 export default function ProjectSwitcher() {
   const {
@@ -25,6 +31,9 @@ export default function ProjectSwitcher() {
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState("")
   const [actionError, setActionError] = useState<string | null>(null)
+  // 硬删除二次确认：null = 不在删除流程；string = 正在删除该项目名
+  const [deletingProject, setDeletingProject] = useState<{ id: number; name: string } | null>(null)
+  const [deleteConfirmInput, setDeleteConfirmInput] = useState("")
 
   const activeProjects = useMemo(
     () => projects.filter((project) => project.status === "active"),
@@ -73,6 +82,29 @@ export default function ProjectSwitcher() {
       await refreshProjects()
     } catch (err) {
       setActionError(`恢复项目失败：${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  async function handleConfirmDelete() {
+    if (!deletingProject) return
+    if (deleteConfirmInput !== deletingProject.name) return
+    const { id } = deletingProject
+    const wasCurrent = id === currentProjectId
+    setActionError(null)
+    setDeletingProject(null)
+    setDeleteConfirmInput("")
+    try {
+      await deleteProject(id)
+      await refreshProjects()
+      // 删的是当前项目时，切换到首个剩余 active 项目
+      if (wasCurrent) {
+        const next = projects.find((p) => p.status === "active" && p.id !== id)
+        if (next) {
+          setCurrentProjectId(next.id)
+        }
+      }
+    } catch (err) {
+      setActionError(`删除项目失败：${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -145,9 +177,63 @@ export default function ProjectSwitcher() {
                   >
                     <RotateCcw className="h-3.5 w-3.5" />
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionError(null)
+                      setDeletingProject({ id: project.id, name: project.name })
+                      setDeleteConfirmInput("")
+                    }}
+                    className="ml-1 rounded p-1 text-neutral-400 hover:bg-red-50 hover:text-red-600"
+                    title={`硬删除项目“${project.name}”（不可恢复）`}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
                 </div>
               ))}
             </>
+          )}
+
+          {/* 硬删除二次确认 dialog：必须输入项目名才能确认 */}
+          {deletingProject && (
+            <div className="mt-2 rounded-md border border-red-200 bg-red-50 p-2 text-xs">
+              <p className="font-medium text-red-700">
+                硬删除项目“{deletingProject.name}”
+              </p>
+              <p className="mt-1 text-red-600">
+                此操作不可撤销，将永久删除该项目的所有文档、Wiki 候选、向量索引、BM25 索引和物理文件。
+              </p>
+              <p className="mt-1 text-neutral-600">
+                请输入项目名 <code className="font-mono">{deletingProject.name}</code> 以确认：
+              </p>
+              <input
+                value={deleteConfirmInput}
+                onChange={(event) => setDeleteConfirmInput(event.target.value)}
+                className="mt-1 w-full rounded border border-red-200 px-2 py-1 text-xs outline-none focus:border-red-400"
+                placeholder={deletingProject.name}
+                autoFocus
+              />
+              <div className="mt-2 flex justify-end gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeletingProject(null)
+                    setDeleteConfirmInput("")
+                  }}
+                  className="rounded px-2 py-1 text-neutral-600 hover:bg-neutral-100"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleConfirmDelete()}
+                  disabled={deleteConfirmInput !== deletingProject.name}
+                  className="rounded bg-red-600 px-2 py-1 text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  永久删除
+                </button>
+              </div>
+            </div>
           )}
 
           <div className="my-1 border-t border-neutral-100" />

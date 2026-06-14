@@ -267,6 +267,7 @@ pub fn run() {
             commands::project::update_project_phase_plan,
             commands::project::archive_project,
             commands::project::restore_project,
+            commands::project::delete_project,
             commands::project::set_current_project_phase,
             commands::project::list_project_products,
             commands::project::add_project_product,
