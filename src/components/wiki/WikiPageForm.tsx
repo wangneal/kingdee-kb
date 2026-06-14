@@ -11,7 +11,7 @@ import {
   type CreateWikiPage,
   updateWikiPage,
   type WikiPage,
-} from "../../lib/tauri-commands"
+} from "@/lib/tauri-commands"
 
 type Mode = "create" | "edit"
 

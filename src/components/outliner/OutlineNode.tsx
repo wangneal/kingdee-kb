@@ -15,8 +15,8 @@ import {
   Trash2,
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useAudio } from "../../contexts/AudioContext"
-import { type TreeNode, useOutline } from "../../contexts/OutlineContext"
+import { useAudio } from "@/contexts/AudioContext"
+import { type TreeNode, useOutline } from "@/contexts/OutlineContext"
 
 interface OutlineNodeProps {
   node: TreeNode

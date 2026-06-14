@@ -1,6 +1,6 @@
 // 图谱页状态提示横幅：边=0 → 提示构建；wikilink=0 → 提示 LLM 未生成 [[slug]] 引用
 import { AlertTriangle, Info } from "lucide-react"
-import type { GraphStats } from "../../lib/tauri-commands"
+import type { GraphStats } from "@/lib/tauri-commands"
 
 export type BannerVariant = "info" | "warning"
 

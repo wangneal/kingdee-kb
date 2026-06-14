@@ -3,7 +3,7 @@
  *
  * 递归渲染大纲节点树，处理空状态、加载状态和错误状态。
  */
-import { useOutline } from "../../contexts/OutlineContext"
+import { useOutline } from "@/contexts/OutlineContext"
 import OutlineNode from "./OutlineNode"
 
 interface OutlineTreeProps {

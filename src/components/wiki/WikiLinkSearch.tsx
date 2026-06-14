@@ -7,7 +7,7 @@
 
 import { Search, X } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { searchWikilinkCandidates, type WikiPageBrief } from "../../lib/wiki-commands"
+import { searchWikilinkCandidates, type WikiPageBrief } from "@/lib/wiki-commands"
 
 interface WikiLinkSearchProps {
   /** 当前项目标识 */

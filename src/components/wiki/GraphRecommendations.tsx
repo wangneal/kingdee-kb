@@ -7,7 +7,7 @@
 
 import { AlertCircle, Loader2, Network } from "lucide-react"
 import { useCallback, useEffect, useState } from "react"
-import { type GraphRecommendation, graphExpandSearch } from "../../lib/wiki-commands"
+import { type GraphRecommendation, graphExpandSearch } from "@/lib/wiki-commands"
 
 interface GraphRecommendationsProps {
   /** 当前项目标识 */

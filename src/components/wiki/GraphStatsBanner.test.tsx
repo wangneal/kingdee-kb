@@ -1,7 +1,7 @@
 // 覆盖：null / 0边 / wikilink=0 / 完全正常
 import { render } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
-import type { GraphStats } from "../../lib/tauri-commands"
+import type { GraphStats } from "@/lib/tauri-commands"
 import GraphStatsBanner, { getBannerContent } from "./GraphStatsBanner"
 
 function makeStats(overrides: Partial<GraphStats> = {}): GraphStats {

@@ -13,7 +13,7 @@ import {
   removeWikilink,
   type WikiLinkTarget,
   type WikiPageBrief,
-} from "../../lib/wiki-commands"
+} from "@/lib/wiki-commands"
 import WikiLinkSearch from "./WikiLinkSearch"
 
 interface WikiLinkEditorProps {

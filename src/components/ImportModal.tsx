@@ -17,9 +17,9 @@ import {
   X,
 } from "lucide-react"
 import { useCallback, useEffect, useState } from "react"
-import { useImport } from "../hooks/useImport"
-import { getImportDialogDefaultPath } from "../lib/dialog-options"
-import type { IngestionResult } from "../lib/tauri-commands"
+import { useImport } from "@/hooks/useImport"
+import { getImportDialogDefaultPath } from "@/lib/dialog-options"
+import type { IngestionResult } from "@/lib/tauri-commands"
 
 type ImportStatus = "idle" | "loading" | "success" | "error"
 

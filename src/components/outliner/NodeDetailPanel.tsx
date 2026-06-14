@@ -6,8 +6,8 @@
 
 import { Download, FileText, Hash, Link2, List } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { type TreeNode, useOutline } from "../../contexts/OutlineContext"
-import { exportOutline } from "../../lib/outline-commands"
+import { type TreeNode, useOutline } from "@/contexts/OutlineContext"
+import { exportOutline } from "@/lib/outline-commands"
 import { useToast } from "../Toast"
 
 interface NodeDetailPanelProps {

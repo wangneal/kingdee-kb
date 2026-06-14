@@ -9,13 +9,13 @@ import {
   Trash2,
 } from "lucide-react"
 import { useMemo, useState } from "react"
-import { useProject } from "../contexts/ProjectContext"
+import { useProject } from "@/contexts/ProjectContext"
 import {
   archiveProject,
   createProject,
   deleteProject,
   restoreProject,
-} from "../lib/project-commands"
+} from "@/lib/project-commands"
 
 export default function ProjectSwitcher() {
   const {

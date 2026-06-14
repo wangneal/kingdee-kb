@@ -7,8 +7,8 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { useOutline } from "../../contexts/OutlineContext"
-import { exportOutline } from "../../lib/outline-commands"
+import { useOutline } from "@/contexts/OutlineContext"
+import { exportOutline } from "@/lib/outline-commands"
 import { useToast } from "../Toast"
 
 interface MarkdownEditorProps {

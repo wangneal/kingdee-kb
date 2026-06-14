@@ -14,15 +14,15 @@ import {
 } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { NavLink, Outlet, useNavigate } from "react-router-dom"
-import { useProject } from "../contexts/ProjectContext"
-import { LS_KEY_SIDEBAR_ANSWER, LS_KEY_SIDEBAR_QUESTION, PRODUCT_NAME } from "../lib/constants"
+import { useProject } from "@/contexts/ProjectContext"
+import { LS_KEY_SIDEBAR_ANSWER, LS_KEY_SIDEBAR_QUESTION, PRODUCT_NAME } from "@/lib/constants"
 import {
   agentChat,
   getModelStatus,
   getStats,
   isLLMConfigured,
   listenReActEvents,
-} from "../lib/tauri-commands"
+} from "@/lib/tauri-commands"
 import ProjectSwitcher from "./ProjectSwitcher"
 import Spotlight from "./Spotlight"
 

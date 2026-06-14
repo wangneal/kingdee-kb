@@ -1,7 +1,7 @@
 import { Loader2, Search, Send, X } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { useProject } from "../contexts/ProjectContext"
-import { agentChat, listenReActEvents } from "../lib/tauri-commands"
+import { useProject } from "@/contexts/ProjectContext"
+import { agentChat, listenReActEvents } from "@/lib/tauri-commands"
 
 export default function Spotlight() {
   const { currentProjectId } = useProject()

@@ -1,4 +1,4 @@
-import type { VerificationReport } from "../contexts/AgentContext"
+import type { VerificationReport } from "@/contexts/AgentContext"
 
 /** 置信度徽章组件 — 在 AI 回答底部展示验证结果 */
 export function VerificationBadge({ report }: { report: VerificationReport }) {

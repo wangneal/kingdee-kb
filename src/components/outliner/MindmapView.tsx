@@ -10,8 +10,8 @@ import type { IPureNode } from "markmap-common"
 import { Transformer } from "markmap-lib"
 import { Markmap } from "markmap-view"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { useOutline } from "../../contexts/OutlineContext"
-import { exportOutline } from "../../lib/outline-commands"
+import { useOutline } from "@/contexts/OutlineContext"
+import { exportOutline } from "@/lib/outline-commands"
 
 /** Transformer 实例（模块级复用） */
 const transformer = new Transformer()
