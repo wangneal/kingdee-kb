@@ -98,24 +98,6 @@ export const SKILL_FILE_TYPE_ICONS: Record<string, string> = {
 
 // ─── Phase 2: 触发匹配类型 ──────────────────────────────────
 
-/** 匹配类型 */
-export type MatchType = "keyword" | "semantic" | "path"
-
-/** 技能匹配结果 */
-export interface SkillMatch {
-  skill_id: string
-  score: number
-  match_type: MatchType
-}
-
-/** 触发上下文 */
-export interface TriggerContext {
-  user_input: string
-  accessed_files: string[]
-  current_phase?: string
-  session_id: string
-}
-
 /** 技能提示条目（用于系统提示注入） */
 export interface SkillPromptEntry {
   id: string
@@ -124,20 +106,6 @@ export interface SkillPromptEntry {
   category: string
   phase?: string
   triggers: string[]
-}
-
-/** 匹配类型标签 */
-export const MATCH_TYPE_LABELS: Record<MatchType, string> = {
-  keyword: "关键词匹配",
-  semantic: "语义匹配",
-  path: "路径匹配",
-}
-
-/** 匹配类型图标 */
-export const MATCH_TYPE_ICONS: Record<MatchType, string> = {
-  keyword: "🔤",
-  semantic: "🧠",
-  path: "📁",
 }
 
 // ─── Phase 3: 脚本执行与模板类型 ──────────────────────────────
@@ -173,9 +141,6 @@ export interface Template {
 }
 
 // ─── Phase 4: 图像处理类型 ──────────────────────────────────
-
-/** 图像类型 */
-export type ImageType = "text_screenshot" | "flowchart" | "architecture" | "table" | "mixed"
 
 /** OCR 提供商类型 */
 export type OcrProviderType = "baidu" | "tencent"
@@ -237,12 +202,6 @@ export interface OcrProviderConfig {
   is_default: boolean
 }
 
-/** 供应商探测结果 */
-export interface ProviderProbeResult {
-  id: string
-  is_multimodal: boolean
-}
-
 /** 模型探测结果 */
 export interface ModelProbeResult {
   provider_id: string
@@ -250,48 +209,8 @@ export interface ModelProbeResult {
   is_multimodal: boolean
 }
 
-/** 自动路由结果 */
-export interface AutoRouteResult {
-  provider_id: string
-  model_id: string
-  model_name: string
-  base_url: string
-}
-
-/** 可用模型 */
-export interface AvailableModel {
-  provider_id: string
-  provider_name: string
-  model_id: string
-  model_name: string
-  is_default: boolean
-  is_multimodal: boolean | null
-}
-
 /** 端点模型列表 */
 export interface RemoteModelListResult {
   models: string[]
   cached: boolean
-}
-
-/** 下一个可用 API Key */
-export interface NextApiKeyResult {
-  key_id: string
-  key_value: string
-}
-
-/** 图像处理依赖状态 */
-export interface ImageDepsStatus {
-  ocr_configured: boolean
-  vision_configured: boolean
-  ocr_provider: string | null
-  llm_multimodal: boolean
-}
-
-/** 图像处理结果 */
-export interface ImageProcessResult {
-  image_type: ImageType
-  ocr_text: string | null
-  description: string | null
-  processing_time_ms: number
 }

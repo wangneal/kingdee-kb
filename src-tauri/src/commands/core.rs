@@ -8,34 +8,10 @@ use crate::app_state::AppState;
 use crate::error::{AppError, AppResult};
 use crate::services::skill_manager::SkillManager;
 
-const KEYRING_SERVICE: &str = "com.neal.kingdee-kb";
-
-/// 跟踪启动任务完成状态，用于关闭启动画面
+/// 跟踪启动任务完成状态
 pub struct SetupState {
     pub frontend_task: bool,
     pub backend_task: bool,
-}
-
-/// 存储 API 密钥到系统凭据存储
-#[tauri::command]
-pub fn set_api_key(service: String, key: String) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &service)
-        .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
-    entry
-        .set_password(&key)
-        .map_err(|e| format!("Failed to store API key: {}", e))?;
-    Ok(())
-}
-
-/// 从系统凭据存储删除 API 密钥
-#[tauri::command]
-pub fn delete_api_key(service: String) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &service)
-        .map_err(|e| format!("Failed to access keyring: {}", e))?;
-    entry
-        .delete_credential()
-        .map_err(|e| format!("Failed to delete API key: {}", e))?;
-    Ok(())
 }
 
 /// 前端 React 挂载完成后的回调

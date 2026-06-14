@@ -115,14 +115,6 @@ pub async fn set_current_project_phase(
 }
 
 #[tauri::command]
-pub async fn ensure_project_active(
-    state: State<'_, AppState>,
-    project_id: i64,
-) -> Result<(), String> {
-    with_project_store(state, move |store| store.ensure_project_active(project_id)).await
-}
-
-#[tauri::command]
 pub async fn list_project_products(
     state: State<'_, AppState>,
     project_id: i64,

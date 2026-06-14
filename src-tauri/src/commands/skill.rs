@@ -8,13 +8,40 @@ use std::path::PathBuf;
 use tauri::State;
 
 use crate::app_state::AppState;
-use crate::services::llm_providers::LLMProtocol;
 use crate::services::prompt_assembler::SkillPromptEntry;
 use crate::services::signal_writer::SignalEvent;
 use crate::services::skill_executor::{ExecutionResult, SubstitutionContext};
 use crate::services::skill_trigger::{SkillMatch, TriggerContext};
 use crate::services::skill_types::{SharedResource, Skill, SkillFile, SkillFull};
-use crate::services::template_manager::TemplateManifest;
+
+// ─── 模板清单数据类型 ───
+// 原属 services/template_manager.rs，该模块的 TemplateManager 下载器为死代码已删除，
+// 仅保留这三个被 get/save_template_manifest 命令使用的清单数据类型。
+
+/// 模板清单
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TemplateManifest {
+    pub version: String,
+    pub phases: Vec<PhaseTemplates>,
+}
+
+/// 阶段模板
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PhaseTemplates {
+    pub phase: String,
+    pub templates: Vec<Template>,
+}
+
+/// 单个模板
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Template {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub url: String,
+    pub size: u64,
+    pub checksum: String,
+}
 
 /// 列出所有技能
 #[tauri::command]
@@ -447,224 +474,6 @@ pub async fn save_template_manifest(
     Ok(())
 }
 
-// ─── Phase 4: 图像处理命令 ──────────────────────────────────
-
-/// 检查图像处理依赖状态
-#[tauri::command]
-pub async fn check_image_deps(state: State<'_, AppState>) -> Result<ImageDepsStatus, String> {
-    let processor = state.image_processor.read().map_err(|e| e.to_string())?;
-
-    Ok(ImageDepsStatus {
-        ocr_configured: processor.has_ocr(),
-        vision_configured: processor.can_process_images(),
-        ocr_provider: processor.get_ocr_provider(),
-        llm_multimodal: processor.is_llm_multimodal(),
-    })
-}
-
-/// 探测当前 LLM 是否支持多模态
-#[tauri::command]
-pub async fn probe_llm_multimodal(state: State<'_, AppState>) -> Result<bool, String> {
-    // 从 LLMProviderManager 获取默认供应商配置
-    let (llm_api_key, llm_base_url, llm_model, protocol) = {
-        let mgr = state.llm_providers.read().map_err(|e| e.to_string())?;
-        mgr.get_default_provider()
-            .map(|p| {
-                (
-                    p.get_default_key_value(),
-                    p.base_url.clone(),
-                    p.get_default_model_name(),
-                    Some(p.protocol.clone()),
-                )
-            })
-            .unwrap_or_default()
-    };
-
-    // 创建临时处理器进行探测
-    let mut processor =
-        crate::services::image_processor::ImageProcessor::new(llm_api_key, llm_base_url, llm_model);
-    if let Some(proto) = protocol {
-        processor.set_protocol(proto);
-    }
-    Ok(processor.probe_multimodal().await)
-}
-
-/// 保存图像处理 API 配置
-#[tauri::command]
-pub async fn save_image_config(
-    state: State<'_, AppState>,
-    ocr_provider: Option<String>,
-    ocr_api_key: Option<String>,
-    ocr_secret_key: Option<String>,
-) -> Result<(), String> {
-    let mut processor = state.image_processor.write().map_err(|e| e.to_string())?;
-
-    // 配置 OCR
-    if let (Some(provider), Some(api_key)) = (ocr_provider, ocr_api_key) {
-        let ocr_provider = match provider.as_str() {
-            "baidu" => crate::services::image_processor::OcrProvider::Baidu,
-            "tencent" => crate::services::image_processor::OcrProvider::Tencent,
-            "llm" => crate::services::image_processor::OcrProvider::Llm,
-            _ => return Err(format!("不支持的 OCR 提供商: {}", provider)),
-        };
-
-        let config = crate::services::image_processor::OcrConfig {
-            provider: ocr_provider,
-            api_key,
-            secret_key: ocr_secret_key,
-        };
-        processor.set_ocr_config(config);
-    }
-
-    Ok(())
-}
-
-/// 处理单张图片
-///
-/// 自动路由 + 多模型回退策略：
-/// 1. 获取所有可能支持多模态的模型候选列表（按优先级排序）
-/// 2. 逐个尝试，直到某个模型成功处理图片
-/// 3. 如果所有模型都失败，尝试 OCR（如果配置了）
-/// 4. 全部失败则返回最后一个错误
-#[tauri::command]
-pub async fn process_image(
-    state: State<'_, AppState>,
-    image_path: String,
-) -> Result<ImageProcessResult, String> {
-    // 获取 OCR 配置（所有尝试共享）
-    let ocr_config = {
-        let processor = state.image_processor.read().map_err(|e| e.to_string())?;
-        processor.get_ocr_config_cloned()
-    };
-
-    // 获取所有多模态候选模型
-    let candidates = {
-        let mgr = state.llm_providers.read().map_err(|e| e.to_string())?;
-        mgr.get_vision_candidates()
-    };
-
-    // 逐个尝试候选模型
-    let mut last_error: Option<String> = None;
-
-    for (api_key, base_url, model_name, provider_id, _model_id, protocol) in &candidates {
-        // Local protocol (e.g. Ollama) doesn't need an API key — skip only remote models with empty keys
-        if api_key.is_empty() && *protocol != LLMProtocol::Local {
-            continue;
-        }
-
-        tracing::info!(
-            "Trying vision model: provider={}, model={} for image: {}",
-            provider_id,
-            model_name,
-            image_path
-        );
-
-        let mut processor = crate::services::image_processor::ImageProcessor::new(
-            api_key.clone(),
-            base_url.clone(),
-            model_name.clone(),
-        );
-        processor.set_protocol(protocol.clone());
-        if let Some(ref ocr) = ocr_config {
-            processor.set_ocr_config(ocr.clone());
-        }
-
-        match processor.process_image(&image_path).await {
-            Ok(result) => {
-                // 成功！同步多模态状态回全局
-                if processor.is_llm_multimodal() {
-                    let mut global = state.image_processor.write().map_err(|e| e.to_string())?;
-                    global.set_llm_multimodal(true);
-                }
-
-                tracing::info!(
-                    "Image processed successfully with model: provider={}, model={}",
-                    provider_id,
-                    model_name
-                );
-
-                return Ok(ImageProcessResult {
-                    image_type: match result.image_type {
-                        crate::services::image_processor::ImageType::TextScreenshot => {
-                            "text_screenshot".to_string()
-                        }
-                        crate::services::image_processor::ImageType::Flowchart => {
-                            "flowchart".to_string()
-                        }
-                        crate::services::image_processor::ImageType::Architecture => {
-                            "architecture".to_string()
-                        }
-                        crate::services::image_processor::ImageType::Table => "table".to_string(),
-                        crate::services::image_processor::ImageType::Mixed => "mixed".to_string(),
-                    },
-                    ocr_text: Some(result.text),
-                    description: None,
-                    processing_time_ms: result.processing_time_ms,
-                });
-            }
-            Err(e) => {
-                let err_str = e.to_string();
-                tracing::warn!(
-                    "Vision model provider={}, model={} failed: {}",
-                    provider_id,
-                    model_name,
-                    err_str
-                );
-                last_error = Some(format!("{} ({} > {})", err_str, provider_id, model_name));
-                // 继续尝试下一个模型
-            }
-        }
-    }
-
-    // 所有 LLM 模型都失败了，尝试纯 OCR（如果配置了）
-    if let Some(ref ocr) = ocr_config {
-        tracing::info!(
-            "All vision models failed, trying pure OCR fallback for image: {}",
-            image_path
-        );
-
-        // OCR fallback: 创建处理器用于纯 OCR，不再走 vision 路径
-        let (api_key, base_url, model_name) = candidates
-            .first()
-            .map(|(k, u, m, _, _, _)| (k.clone(), u.clone(), m.clone()))
-            .unwrap_or_default();
-
-        let mut processor =
-            crate::services::image_processor::ImageProcessor::new(api_key, base_url, model_name);
-        processor.set_ocr_config(ocr.clone());
-
-        match processor.ocr_only(&image_path).await {
-            Ok(result) => {
-                return Ok(ImageProcessResult {
-                    image_type: match result.image_type {
-                        crate::services::image_processor::ImageType::TextScreenshot => {
-                            "text_screenshot".to_string()
-                        }
-                        crate::services::image_processor::ImageType::Flowchart => {
-                            "flowchart".to_string()
-                        }
-                        crate::services::image_processor::ImageType::Architecture => {
-                            "architecture".to_string()
-                        }
-                        crate::services::image_processor::ImageType::Table => "table".to_string(),
-                        crate::services::image_processor::ImageType::Mixed => "mixed".to_string(),
-                    },
-                    ocr_text: Some(result.text),
-                    description: None,
-                    processing_time_ms: result.processing_time_ms,
-                });
-            }
-            Err(e) => {
-                last_error = Some(format!("OCR 回退也失败: {}", e));
-            }
-        }
-    }
-
-    // 全部失败
-    let err_msg = last_error.unwrap_or_else(|| "没有可用的 LLM 供应商配置".to_string());
-    Err(format!("图片处理失败：{}", err_msg))
-}
-
 // ─── 响应类型 ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -677,20 +486,4 @@ pub struct SkillStatsResponse {
 pub struct SkillScanResult {
     pub total: usize,
     pub by_category: Vec<(String, usize)>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImageDepsStatus {
-    pub ocr_configured: bool,
-    pub vision_configured: bool,
-    pub ocr_provider: Option<String>,
-    pub llm_multimodal: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImageProcessResult {
-    pub image_type: String,
-    pub ocr_text: Option<String>,
-    pub description: Option<String>,
-    pub processing_time_ms: u64,
 }

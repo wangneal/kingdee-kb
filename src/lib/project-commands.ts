@@ -151,10 +151,6 @@ export async function setCurrentProjectPhase(projectId: number, phaseKey: string
   return invoke("set_current_project_phase", { projectId, phaseKey })
 }
 
-export async function ensureProjectActive(projectId: number): Promise<void> {
-  return invoke("ensure_project_active", { projectId })
-}
-
 // ─── 产品版本管理 ───
 
 export interface ProjectProduct {
