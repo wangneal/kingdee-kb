@@ -16,7 +16,7 @@ import {
   useEffect,
   useState,
 } from "react"
-import { type AsrConfigStatus, getAsrConfigStatus } from "../lib/tauri-commands"
+import { type AsrConfigStatus, getAsrConfigStatus } from "@/lib/tauri-commands"
 
 interface AsrConfigContextValue {
   /** 后端 ASR 配置状态；加载中为 null */
