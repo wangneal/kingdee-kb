@@ -1757,5 +1757,5 @@ export async function listRecentMeetingMinutes(
 
 /** 读取项目活动日志内容（00_项目管理/活动日志.md）。文件不存在时返回空字符串。 */
 export async function readProjectActivityLog(projectId: number): Promise<string> {
-  return invoke("read_project_activity_log", { projectId })
+  return invoke("read_project_activity_log", { project_id: projectId })
 }

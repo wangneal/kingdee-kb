@@ -408,20 +408,23 @@ CREATE INDEX IF NOT EXISTS idx_meeting_minutes_project ON meeting_minutes(projec
     /// 保存转写（project_id 必须非空）
     pub fn save_transcript(&self, input: &SaveTranscript) -> Result<i64, String> {
         // 校验会议的项目归属一致
-        let meeting_project_id: Option<i64> = self
+        let (meeting_project_id, meeting_link_status): (Option<i64>, String) = self
             .db
             .query_row(
-                "SELECT project_id FROM meetings WHERE id = ?1",
+                "SELECT project_id, link_status FROM meetings WHERE id = ?1",
                 params![input.meeting_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(|e| format!("查询会议失败: {}", e))?
             .ok_or_else(|| format!("会议 id={} 不存在", input.meeting_id))?;
 
         if meeting_project_id != Some(input.project_id) {
-            // 如果会议尚未关联项目，自动关联
+            // 会议尚未关联项目时自动关联；但用户标记为 ignored 的不覆盖
             if meeting_project_id.is_none() {
+                if meeting_link_status == "ignored" {
+                    return Err("该会议已被标记为忽略，请先取消忽略再保存转写".to_string());
+                }
                 self.db
                     .execute(
                         "UPDATE meetings SET project_id = ?1, link_status = 'linked', updated_at = datetime('now') WHERE id = ?2",

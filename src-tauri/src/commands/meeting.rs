@@ -181,10 +181,14 @@ pub async fn fetch_meeting_transcript(
 
     // 保存到本地：官方纪要存入 transcript_raw（结构化 JSON），供后续纪要生成读取
     let store = state.meeting_store.lock().map_err(|e| e.to_string())?;
+    let record_file_id = {
+        let r = transcript_result.record_file_id.trim();
+        if r.is_empty() { None } else { Some(r.to_string()) }
+    };
     let input = SaveTranscript {
         meeting_id,
         project_id: effective_project_id,
-        record_file_id: Some(transcript_result.record_file_id),
+        record_file_id,
         transcript_text: transcript_result.transcript,
         transcript_raw: build_transcript_raw(transcript_result.minutes.as_deref()),
         raw_source_id: None,

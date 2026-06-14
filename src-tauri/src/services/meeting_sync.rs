@@ -76,7 +76,7 @@ pub async fn run_sync_cycle(app: AppHandle) -> Result<(), String> {
                 if r.transcript.is_empty() { continue; }
                 // Step 3: 保存转写，并把官方纪要存入 transcript_raw（结构化 JSON）
                 let transcript_raw = build_transcript_raw(r.minutes.as_deref());
-                let inp = SaveTranscript { meeting_id: meeting.id, project_id: pid, record_file_id: Some(r.record_file_id), transcript_text: r.transcript.clone(), transcript_raw, raw_source_id: None };
+                let inp = SaveTranscript { meeting_id: meeting.id, project_id: pid, record_file_id: empty_to_none(&r.record_file_id), transcript_text: r.transcript.clone(), transcript_raw, raw_source_id: None };
                 let store = state.meeting_store.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
                 let _ = store.save_transcript(&inp);
                 (r.transcript, r.minutes)
@@ -105,4 +105,12 @@ pub fn start_sync_loop(app: AppHandle) {
     });
 }
 
-
+/// 空字符串转为 None，避免存 Some("") 脏数据。
+fn empty_to_none(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}

@@ -4848,7 +4848,10 @@ impl Tool for TencentFetchTranscriptTool {
         let input = SaveTranscript {
             meeting_id: args.meeting_id,
             project_id,
-            record_file_id: Some(result.record_file_id),
+            record_file_id: {
+                let r = result.record_file_id.trim();
+                if r.is_empty() { None } else { Some(r.to_string()) }
+            },
             transcript_text: transcript_text.clone(),
             // 官方纪要存入 transcript_raw，供后续 generate_meeting_minutes 读取
             transcript_raw: crate::services::meeting_store::build_transcript_raw(
