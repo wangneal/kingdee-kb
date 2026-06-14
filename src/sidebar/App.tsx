@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { LS_KEY_SIDEBAR_ANSWER, LS_KEY_SIDEBAR_QUESTION, PRODUCT_NAME } from "../lib/constants"
+import { LS_KEY_SIDEBAR_ANSWER, LS_KEY_SIDEBAR_QUESTION, PRODUCT_NAME } from "@/lib/constants"
 
 type Theme = "light" | "dark"
 
