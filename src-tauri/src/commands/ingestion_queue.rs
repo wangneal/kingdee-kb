@@ -2,6 +2,7 @@ use tauri::State;
 
 use crate::app_state::AppState;
 use crate::services::ingestion::ingest_file as ingest_file_fn;
+use crate::services::ingestion_pipeline::process_with_kb_compilation;
 use crate::services::ingestion_queue::QueueItem;
 
 /// 添加一个文件到摄入队列
@@ -129,6 +130,11 @@ fn process_one_queue_item(state: &AppState, item: &QueueItem) -> Result<(), Stri
         return Err(format!("原始资料已删除: {}", item.source_identity));
     }
 
+    // 防重复：已 `ingested` 的 raw_source 跳过 KB 编译（但仍允许底层 ingest 幂等更新）。
+    // 用 raw_source.status 标记而非 SHA256，因为同一 source_identity 可能被
+    // 编辑后再摄入，此时 SHA256 变了但 status 应仍反映"已处理过"。
+    let already_ingested = raw_source.status == "ingested";
+
     let result = ingest_file_fn(
         std::path::Path::new(&raw_source.storage_path),
         item.project_id,
@@ -146,5 +152,57 @@ fn process_one_queue_item(state: &AppState, item: &QueueItem) -> Result<(), Stri
         .lock()
         .map_err(|e| format!("获取 metadata 锁失败: {}", e))?;
     meta.update_document_raw_source_identity(result.document_id, &item.source_identity)?;
+    drop(meta);
+
+    // 触发 KB 编译：与主路径（commands::ingestion）行为对齐，让队列处理也生成 wiki 候选。
+    // 策略：从 metadata 读取用户开关（与主路径 UseSetting 行为一致）。
+    let kb_enabled = state
+        .metadata
+        .lock()
+        .ok()
+        .and_then(|m| m.get_kb_compilation_enabled().ok())
+        .unwrap_or(false);
+
+    if kb_enabled && !already_ingested {
+        // 读取已提取的文本（来自 `ingest_file_fn` 的 result.extracted_text）
+        let text = result.extracted_text.as_deref().unwrap_or("");
+
+        // 同步阻塞等待 KB 编译（与主路径行为一致）
+        let analysis_cache = state.analysis_cache.clone();
+        let llm_providers = state.llm_providers.clone();
+        let wiki_pages = state.wiki_pages.clone();
+        let ingest_cache_store = state.ingest_cache_store.clone();
+        let source_identity = item.source_identity.clone();
+        let sha256 = result.sha256.clone();
+        let title = result.title.clone();
+        let document_id = result.document_id;
+        let project_id = item.project_id;
+
+        let _ = tauri::async_runtime::block_on(async move {
+            process_with_kb_compilation(
+                text,
+                &source_identity,
+                &sha256,
+                project_id,
+                &title,
+                true,
+                analysis_cache,
+                llm_providers,
+                wiki_pages,
+                ingest_cache_store,
+                Some(document_id),
+                false,
+            )
+            .await
+        });
+
+        // 标记 raw_source 为 ingested（best-effort）
+        if let Ok(store) = state.raw_sources.lock() {
+            let _ = store.set_status(item.project_id, &item.source_identity, "ingested");
+        }
+    } else if kb_enabled {
+        // 已 ingested 但 KB 开关仍启用：跳过 KB 编译（防重复）
+    }
+
     Ok(())
 }

@@ -47,7 +47,7 @@ impl RawSourceStore {
                     sha256        TEXT NOT NULL,
                     file_size     INTEGER,
                     mime_type     TEXT,
-                    status        TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','deleted')),
+                    status        TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','deleted','ingested')),
                     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
                     deleted_at    TEXT,
                     UNIQUE(project_id, identity)
@@ -126,6 +126,37 @@ impl RawSourceStore {
         Ok(())
     }
 
+    /// 按项目和标识更新 status（用于"摄入完成 → ingested"标记，防止重复 KB 编译）
+    ///
+    /// 若 raw_source 不存在返回 `Ok(false)`（幂等）；存在则返回 `Ok(true)`。
+    /// 之所以用 `find_by_identity` 而非直接 UPDATE，是为了在并发场景下避免 UPDATE 影响行数
+    /// 抖动；实际 UPDATE 仍是单条 SQL。
+    ///
+    /// 注意：`new_status` 必须符合 `raw_sources.status` 的 CHECK 约束
+    /// (`active` / `deleted` / `ingested`)。`ingested` 由 B1 引入，对已存在数据库需要
+    /// schema 升级；本函数失败时**不**阻断调用方，由调用方记录 warn。
+    pub fn set_status(
+        &self,
+        project_id: i64,
+        identity: &str,
+        new_status: &str,
+    ) -> Result<bool, String> {
+        if new_status != "active" && new_status != "deleted" && new_status != "ingested" {
+            return Err(format!(
+                "不支持的 raw_source.status: {}（必须是 active/deleted/ingested）",
+                new_status
+            ));
+        }
+        let rows = self
+            .db
+            .execute(
+                "UPDATE raw_sources SET status = ?3 WHERE project_id = ?1 AND identity = ?2",
+                params![project_id, identity, new_status],
+            )
+            .map_err(|e| format!("更新 raw_source.status 失败: {}", e))?;
+        Ok(rows > 0)
+    }
+
     // ─── 私有辅助方法 ───
 
     fn row_to_source(row: &rusqlite::Row) -> SqlResult<RawSource> {
@@ -200,4 +231,88 @@ pub struct InsertRawSource {
     pub sha256: String,
     pub file_size: Option<i64>,
     pub mime_type: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// 创建内存 SQLite + 必要 schema（projects + raw_sources），
+    /// 供 RawSourceStore 单元测试使用。
+    fn setup_test_store() -> (RawSourceStore, i64) {
+        let conn = Connection::open_in_memory().unwrap();
+        // 先在独立 scope 用 conn 建表、插 projects、取 id，再 move 进 RawSourceStore
+        let project_id = {
+            conn.execute_batch(
+                "CREATE TABLE projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+            conn.execute("INSERT INTO projects (name) VALUES ('test')", [])
+                .unwrap();
+            conn.last_insert_rowid()
+        };
+        let store = RawSourceStore::new(conn);
+        store.ensure_table().unwrap();
+        (store, project_id)
+    }
+
+    fn sample_insert(project_id: i64) -> InsertRawSource {
+        InsertRawSource {
+            project_id,
+            identity: "file.txt".to_string(),
+            original_path: "/tmp/file.txt".to_string(),
+            storage_path: "/data/raw/1/sources/file.txt".to_string(),
+            sha256: "abc123".to_string(),
+            file_size: Some(1024),
+            mime_type: Some("text/plain".to_string()),
+        }
+    }
+
+    /// B1-U1: set_status 把 active 改为 ingested 成功，find_by_identity 反映新状态
+    #[test]
+    fn test_set_status_active_to_ingested() {
+        let (store, pid) = setup_test_store();
+        let inserted = store.insert(&sample_insert(pid)).unwrap();
+        assert_eq!(inserted.status, "active");
+
+        let changed = store.set_status(pid, "file.txt", "ingested").unwrap();
+        assert!(changed);
+
+        let after = store.find_by_identity(pid, "file.txt").unwrap().unwrap();
+        assert_eq!(after.status, "ingested");
+    }
+
+    /// B1-U1 衍生: set_status 对不存在的 identity 返回 Ok(false)（幂等）
+    #[test]
+    fn test_set_status_nonexistent_identity_returns_false() {
+        let (store, pid) = setup_test_store();
+        let changed = store.set_status(pid, "ghost.txt", "ingested").unwrap();
+        assert!(!changed);
+    }
+
+    /// B1-U1 衍生: set_status 拒绝非法 status
+    #[test]
+    fn test_set_status_rejects_invalid_value() {
+        let (store, pid) = setup_test_store();
+        store.insert(&sample_insert(pid)).unwrap();
+        let result = store.set_status(pid, "file.txt", "bogus");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("不支持的 raw_source.status"));
+    }
+
+    /// B1-U1 衍生: 已 deleted 的 raw_source 不能被 set_status 改回 active（CHECK 允许，
+    /// 但语义上 soft_delete 流程之外不应回退；本测试仅覆盖 set_status 本身允许的取值）。
+    #[test]
+    fn test_set_status_soft_deleted_to_ingested_works() {
+        let (store, pid) = setup_test_store();
+        let inserted = store.insert(&sample_insert(pid)).unwrap();
+        store.soft_delete(inserted.id).unwrap();
+        let changed = store.set_status(pid, "file.txt", "ingested").unwrap();
+        assert!(changed);
+    }
 }

@@ -297,6 +297,9 @@ pub async fn ingest_text(
         result.kb_compilation_error = error;
     }
 
+    // 主路径自动 enqueue：让 ProjectManagement 队列 tab 看到这次活动
+    auto_enqueue_main_path(&state, project_id, &source_identity);
+
     Ok(result)
 }
 
@@ -369,25 +372,25 @@ pub async fn ingest_file(
                 .unwrap_or("unknown")
                 .to_string();
 
-            let (engine, error) = run_kb_compilation(
-                &image_text,
-                &source_identity,
-                &result.sha256,
-                project_id,
-                &title,
-                result.document_id,
-                state.analysis_cache.clone(),
-                state.llm_providers.clone(),
-                state.wiki_pages.clone(),
-                state.ingest_cache_store.clone(),
-            )
-            .await;
-            result.kb_analysis_engine = engine;
-            result.kb_compilation_error = error;
-        }
-
-        return Ok(result);
+        let (engine, error) = run_kb_compilation(
+            &image_text,
+            &source_identity,
+            &result.sha256,
+            project_id,
+            &title,
+            result.document_id,
+            state.analysis_cache.clone(),
+            state.llm_providers.clone(),
+            state.wiki_pages.clone(),
+            state.ingest_cache_store.clone(),
+        )
+        .await;
+        result.kb_analysis_engine = engine;
+        result.kb_compilation_error = error;
     }
+
+    return Ok(result);
+}
 
     // ─── 非图片文件：先提取文本，DOCX 内嵌 Visio 失败时自动走预览图 OCR ───
     let text = extract_text_with_docx_preview_fallback(&state, path.as_path())
@@ -424,6 +427,13 @@ pub async fn ingest_file(
 
     // 通知前端文档已导入（RiskControl 页可据此提示检查范围蔓延）
     let _ = app.emit("document-imported", serde_json::json!({ "project_id": project_id }));
+
+    // 主路径自动 enqueue（用文件名作为 source_identity）
+    let file_identity = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    auto_enqueue_main_path(&state, project_id, file_identity);
 
     Ok(result)
 }
@@ -668,5 +678,44 @@ pub async fn ingest_directory(
         }
     }
 
+    // 主路径自动 enqueue：对每个成功导入的文件入队（与单文件 ingest_file 行为一致）
+    for imported in &result.imported {
+        if let Some(ref sp) = imported.source_path {
+            if let Some(name) = std::path::Path::new(sp).file_name().and_then(|n| n.to_str()) {
+                auto_enqueue_main_path(&state, project_id, name);
+            }
+        }
+    }
+
     Ok(result)
+}
+
+// ─── 主路径自动 enqueue 辅助 ───
+
+/// 主路径摄入成功后，把对应的 source_identity 自动加入摄入队列，
+/// 让 ProjectManagement 的"摄入队列"tab 反映所有活动（包括主路径导入的）。
+///
+/// 行为：
+/// - 仅在 `source_identity` 非空且对应 raw_source 存在时入队
+/// - 失败仅 warn，不阻断主路径返回值
+/// - 与 `commands::ingestion_queue::enqueue_ingestion` 行为一致
+fn auto_enqueue_main_path(state: &AppState, project_id: i64, source_identity: &str) {
+    if source_identity.is_empty() {
+        return;
+    }
+    // 校验 raw_source 存在（避免给不存在的 identity 入队）
+    let exists = state
+        .raw_sources
+        .lock()
+        .ok()
+        .and_then(|store| store.find_by_identity(project_id, source_identity).ok().flatten())
+        .is_some();
+    if !exists {
+        return;
+    }
+    if let Ok(mut queue) = state.ingest_queue.lock() {
+        let _ = queue.enqueue(project_id, source_identity);
+    } else {
+        tracing::warn!("主路径自动 enqueue：无法获取队列锁");
+    }
 }
