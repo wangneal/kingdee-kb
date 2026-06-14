@@ -44,11 +44,15 @@ npm-debug.log*
 test-results/
 playwright-report/
 
-# GSD planning framework
-.planning/
-
 # OpenCode framework skills
 .opencode/
+
+# AI assistant configs (per-developer, not shared)
+CLAUDE.md
+AGENTS.md
+
+# OpenSpec
+OpenSpec/
 
 # Embedding model cache (运行时自动下载)
 .fastembed_cache/
@@ -73,7 +77,3 @@ task-summary-*.md
 
 # Cargo review logs
 cargo-*-review.log
-
-# Playwright test output
-test-results/
-playwright-report/
