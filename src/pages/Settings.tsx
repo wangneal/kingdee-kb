@@ -32,7 +32,9 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { useToast } from "../components/Toast"
+import { useAsrConfig } from "../contexts/AsrConfigContext"
 import { TOAST_AUTO_DISMISS_MS } from "../lib/constants"
+import { getKdclubToken, saveKdclubToken } from "../lib/kdclub-commands"
 import {
   addLLMProvider,
   deleteLLMProvider,
@@ -63,14 +65,12 @@ import {
   type AgentToolOutputContent,
   type AgentToolOutputLimits,
   type AgentToolProfile,
-  type AsrConfigStatus,
   addSensitiveKeyword,
   type EmbeddingModelConfig,
   type EmbeddingProviderConfig,
   type EmbeddingProviderType,
   exportDatabase,
   getAgentToolConfig,
-  getAsrConfigStatus,
   getDownloadProgress,
   getEmbeddingModelConfig,
   getModelStatus,
@@ -408,6 +408,8 @@ function kindLabel(kind: SensitiveKind): string {
 
 export default function Settings() {
   const toast = useToast()
+  // ASR 配置状态：跨 Settings/ResearchAssistant 共享
+  const { status: asrConfigStatus, reload: reloadAsrConfig } = useAsrConfig()
   const [stats, setStats] = useState<KnowledgeStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [modelReady, setModelReady] = useState(false)
@@ -431,7 +433,6 @@ export default function Settings() {
   const [keywordError, setKeywordError] = useState<string | null>(null)
 
   // ASR 配置状态
-  const [asrConfigStatus, setAsrConfigStatus] = useState<AsrConfigStatus | null>(null)
   const [tencentSecretId, setTencentSecretId] = useState("")
   const [tencentSecretKey, setTencentSecretKey] = useState("")
   const [asrSaving, setAsrSaving] = useState(false)
@@ -495,18 +496,14 @@ export default function Settings() {
     [toast.success, toast.error],
   )
 
-  // 自动保存 kdclub token
+  // 自动保存 kdclub token：走系统钥匙串，不留 localStorage 明文
   const handleSaveKdclubToken = useCallback(
     async (token?: string) => {
       const val = token !== undefined ? token : kdclubToken
       setKdclubSaving(true)
       setKdclubSaveMsg(null)
       try {
-        if (val.trim()) {
-          localStorage.setItem("kdclub_pat_token", val.trim())
-        } else {
-          localStorage.removeItem("kdclub_pat_token")
-        }
+        await saveKdclubToken(val)
         setKdclubSaveMsg("已自动保存")
         setTimeout(() => setKdclubSaveMsg(null), TOAST_AUTO_DISMISS_MS)
       } catch (err) {
@@ -557,8 +554,7 @@ export default function Settings() {
           tencent_secret_id: id || undefined,
           tencent_secret_key: key || undefined,
         })
-        const status = await getAsrConfigStatus()
-        setAsrConfigStatus(status)
+        await reloadAsrConfig()
         setAsrSaveMsg("已自动保存")
         setTimeout(() => setAsrSaveMsg(null), TOAST_AUTO_DISMISS_MS)
       } catch (err) {
@@ -615,15 +611,16 @@ export default function Settings() {
           /* 忽略解析错误 */
         }
 
-        // 从 localStorage 加载 kdclub token
-        try {
-          const kdclubStored = localStorage.getItem("kdclub_pat_token")
-          if (kdclubStored) {
-            setKdclubToken(kdclubStored)
-          }
-        } catch {
-          /* 忽略读取错误 */
-        }
+        // 从后端 keyring 加载 kdclub token（异步：异步回调里不能用 await）
+        getKdclubToken()
+          .then((kdclubStored) => {
+            if (kdclubStored) {
+              setKdclubToken(kdclubStored)
+            }
+          })
+          .catch(() => {
+            /* 忽略读取错误 */
+          })
       },
     )
 
@@ -654,9 +651,7 @@ export default function Settings() {
     listSensitiveKeywords()
       .then(setKeywords)
       .catch(() => {})
-    getAsrConfigStatus()
-      .then(setAsrConfigStatus)
-      .catch(() => {})
+    // ASR config 状态由 AsrConfigContext 统一管理，无需本地副本
     getTencentMeetingConfigStatus()
       .then(setTencentMeetingStatus)
       .catch(() => {})

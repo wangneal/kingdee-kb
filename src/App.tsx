@@ -4,6 +4,7 @@ import Layout from "./components/Layout"
 import { ToastProvider } from "./components/Toast"
 import { AgentProvider } from "./contexts/AgentContext"
 import { AppErrorProvider } from "./contexts/AppErrorContext"
+import { AsrConfigProvider } from "./contexts/AsrConfigContext"
 import { AudioProvider } from "./contexts/AudioContext"
 import { KbCompilationProvider } from "./contexts/KbCompilationContext"
 import { OutlineProvider } from "./contexts/OutlineContext"
@@ -28,8 +29,9 @@ function App() {
       <ToastProvider>
         <ProjectProvider>
           <KbCompilationProvider>
-            <AppErrorProvider>
-              <AgentProvider>
+            <AsrConfigProvider>
+              <AppErrorProvider>
+                <AgentProvider>
               <Routes>
                 <Route path="/" element={<Layout />}>
                   <Route index element={<Home />} />
@@ -66,8 +68,9 @@ function App() {
                   <Route path="settings" element={<Settings />} />
                 </Route>
               </Routes>
-            </AgentProvider>
-          </AppErrorProvider>
+                </AgentProvider>
+              </AppErrorProvider>
+            </AsrConfigProvider>
           </KbCompilationProvider>
         </ProjectProvider>
       </ToastProvider>
