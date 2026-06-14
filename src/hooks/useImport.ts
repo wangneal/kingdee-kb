@@ -12,8 +12,8 @@ import {
   ingestDirectory,
   ingestFile,
   ingestText,
-} from "../lib/tauri-commands"
-import { useKbCompilation } from "../contexts/KbCompilationContext"
+} from "@/lib/tauri-commands"
+import { useKbCompilation } from "@/contexts/KbCompilationContext"
 
 export function useImport() {
   // 知识编译开关由全局 Context 管理（Import.tsx 与 Settings.tsx 共享同步）
