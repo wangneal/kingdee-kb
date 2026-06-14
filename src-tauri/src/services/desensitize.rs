@@ -1,4 +1,4 @@
-//! 本地安全脱敏管道 — 发送给 LLM 前过滤敏感信息，返回后还原
+﻿//! 本地安全脱敏管道 — 发送给 LLM 前过滤敏感信息，返回后还原
 //!
 //! 流程: 扫描文本 → 替换敏感信息为带类型标签的占位符 → 发给 LLM → 还原原文
 //! 支持: 财务金额、身份证号、手机号、邮箱、自定义敏感词（可配置类型）
@@ -186,25 +186,6 @@ impl Desensitizer {
         let mut mapping = HashMap::new();
         let mut counter = 0usize;
 
-        // 1. 自定义敏感词（按文本长度降序，避免短词部分匹配长词）
-        if let Ok(keywords) = self.custom_keywords.lock() {
-            let mut sorted = keywords.clone();
-            sorted.sort_by(|a, b| b.text.len().cmp(&a.text.len()));
-            for kw in &sorted {
-                if kw.text.chars().count() < 2 {
-                    continue;
-                }
-                let tag = kw.kind.tag();
-                let placeholder = format!("[$_{}_{}]", tag, counter);
-                let count = safe_text.matches(&kw.text).count();
-                if count > 0 {
-                    safe_text = safe_text.replace(&kw.text, &placeholder);
-                    mapping.insert(placeholder.clone(), kw.text.clone());
-                    counter += 1;
-                }
-            }
-        }
-
         // 2. 身份证号
         let mut new_text = String::new();
         let mut last_end = 0;
@@ -272,6 +253,26 @@ impl Desensitizer {
         }
         new_text.push_str(&safe_text[last_end..]);
         safe_text = new_text;
+
+
+        // 6. 自定义敏感词（最后处理：正则已跑完，文本只剩占位符和普通文字）
+        if let Ok(keywords) = self.custom_keywords.lock() {
+            let mut sorted = keywords.clone();
+            sorted.sort_by(|a, b| b.text.len().cmp(&a.text.len()));
+            for kw in &sorted {
+                if kw.text.chars().count() < 2 {
+                    continue;
+                }
+                let tag = kw.kind.tag();
+                let placeholder = format!("[$$_{}_{}]", tag, counter);
+                let count = safe_text.matches(&kw.text).count();
+                if count > 0 {
+                    safe_text = safe_text.replace(&kw.text, &placeholder);
+                    mapping.insert(placeholder.clone(), kw.text.clone());
+                    counter += 1;
+                }
+            }
+        }
 
         DesensitizeResult { safe_text, mapping }
     }
@@ -573,27 +574,27 @@ mod tests {
         // 不同类型的自定义敏感词应生成对应的类型标签占位符
         let d = Desensitizer::new();
         d.add_typed_keyword("王明", SensitiveKind::Name);
-        d.add_typed_keyword("苍穹V4", SensitiveKind::Term);
-        d.add_typed_keyword("HT20260614", SensitiveKind::Code);
-        let result = d.desensitize("王明负责苍穹V4项目，合同号HT20260614。");
+        d.add_typed_keyword("苍穹平台", SensitiveKind::Term);
+        d.add_typed_keyword("合同甲字第一号", SensitiveKind::Code);
+        let result = d.desensitize("王明负责苍穹平台项目，合同号合同甲字第一号。");
         assert!(
-            result.safe_text.contains("[$_NAME_"),
+            result.safe_text.contains("[$$_NAME_"),
             "人名应为 NAME 标签: {}",
             result.safe_text
         );
         assert!(
-            result.safe_text.contains("[$_TERM_"),
+            result.safe_text.contains("[$$_TERM_"),
             "术语应为 TERM 标签: {}",
             result.safe_text
         );
         assert!(
-            result.safe_text.contains("[$_CODE_"),
+            result.safe_text.contains("[$$_CODE_"),
             "编号应为 CODE 标签: {}",
             result.safe_text
         );
         assert!(!result.safe_text.contains("王明"));
-        assert!(!result.safe_text.contains("苍穹V4"));
-        assert!(!result.safe_text.contains("HT20260614"));
+        assert!(!result.safe_text.contains("苍穹平台"));
+        assert!(!result.safe_text.contains("合同甲字第一号"));
     }
 
     #[test]
@@ -605,7 +606,7 @@ mod tests {
         // 模拟 LLM 改写：占位符加空格 + 小写
         let llm_output = result
             .safe_text
-            .replace("[$_NAME_0]", "[ $_name_0 ]");
+            .replace("[$$_NAME_0]", "[ $$_name_0 ]");
         let restored = d.restore(&llm_output, &result.mapping);
         assert!(
             restored.contains("王明") && !restored.contains("[$_"),
