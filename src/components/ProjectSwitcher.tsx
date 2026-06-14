@@ -9,6 +9,7 @@ import {
   Trash2,
 } from "lucide-react"
 import { useMemo, useState } from "react"
+import { DestructiveConfirmDialog } from "@/components/DestructiveConfirmDialog"
 import { useProject } from "@/contexts/ProjectContext"
 import {
   archiveProject,
@@ -31,9 +32,8 @@ export default function ProjectSwitcher() {
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState("")
   const [actionError, setActionError] = useState<string | null>(null)
-  // 硬删除二次确认：null = 不在删除流程；string = 正在删除该项目名
+  // 硬删除二次确认：null = 不在删除流程；{id, name} = 正在确认删除该项目
   const [deletingProject, setDeletingProject] = useState<{ id: number; name: string } | null>(null)
-  const [deleteConfirmInput, setDeleteConfirmInput] = useState("")
 
   const activeProjects = useMemo(
     () => projects.filter((project) => project.status === "active"),
@@ -87,12 +87,10 @@ export default function ProjectSwitcher() {
 
   async function handleConfirmDelete() {
     if (!deletingProject) return
-    if (deleteConfirmInput !== deletingProject.name) return
     const { id } = deletingProject
     const wasCurrent = id === currentProjectId
     setActionError(null)
     setDeletingProject(null)
-    setDeleteConfirmInput("")
     try {
       await deleteProject(id)
       await refreshProjects()
@@ -182,7 +180,6 @@ export default function ProjectSwitcher() {
                     onClick={() => {
                       setActionError(null)
                       setDeletingProject({ id: project.id, name: project.name })
-                      setDeleteConfirmInput("")
                     }}
                     className="ml-1 rounded p-1 text-neutral-400 hover:bg-red-50 hover:text-red-600"
                     title={`硬删除项目“${project.name}”（不可恢复）`}
@@ -194,47 +191,18 @@ export default function ProjectSwitcher() {
             </>
           )}
 
-          {/* 硬删除二次确认 dialog：必须输入项目名才能确认 */}
-          {deletingProject && (
-            <div className="mt-2 rounded-md border border-red-200 bg-red-50 p-2 text-xs">
-              <p className="font-medium text-red-700">
-                硬删除项目“{deletingProject.name}”
-              </p>
-              <p className="mt-1 text-red-600">
-                此操作不可撤销，将永久删除该项目的所有文档、Wiki 候选、向量索引、BM25 索引和物理文件。
-              </p>
-              <p className="mt-1 text-neutral-600">
-                请输入项目名 <code className="font-mono">{deletingProject.name}</code> 以确认：
-              </p>
-              <input
-                value={deleteConfirmInput}
-                onChange={(event) => setDeleteConfirmInput(event.target.value)}
-                className="mt-1 w-full rounded border border-red-200 px-2 py-1 text-xs outline-none focus:border-red-400"
-                placeholder={deletingProject.name}
-                autoFocus
-              />
-              <div className="mt-2 flex justify-end gap-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDeletingProject(null)
-                    setDeleteConfirmInput("")
-                  }}
-                  className="rounded px-2 py-1 text-neutral-600 hover:bg-neutral-100"
-                >
-                  取消
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleConfirmDelete()}
-                  disabled={deleteConfirmInput !== deletingProject.name}
-                  className="rounded bg-red-600 px-2 py-1 text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  永久删除
-                </button>
-              </div>
-            </div>
-          )}
+          <DestructiveConfirmDialog
+            open={deletingProject}
+            title={deletingProject ? `硬删除项目“${deletingProject.name}”` : ""}
+            message="此操作不可撤销，将永久删除该项目的所有文档、Wiki 候选、向量索引、BM25 索引和物理文件。"
+            hint={
+              deletingProject
+                ? `请输入项目名 \`${deletingProject.name}\` 以确认：`
+                : undefined
+            }
+            onConfirm={() => void handleConfirmDelete()}
+            onCancel={() => setDeletingProject(null)}
+          />
 
           <div className="my-1 border-t border-neutral-100" />
 
