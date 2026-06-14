@@ -5,6 +5,7 @@ import { ToastProvider } from "./components/Toast"
 import { AgentProvider } from "./contexts/AgentContext"
 import { AppErrorProvider } from "./contexts/AppErrorContext"
 import { AudioProvider } from "./contexts/AudioContext"
+import { KbCompilationProvider } from "./contexts/KbCompilationContext"
 import { OutlineProvider } from "./contexts/OutlineContext"
 import { ProjectProvider } from "./contexts/ProjectContext"
 import Browse from "./pages/Browse"
@@ -26,8 +27,9 @@ function App() {
     <ErrorBoundary>
       <ToastProvider>
         <ProjectProvider>
-          <AppErrorProvider>
-            <AgentProvider>
+          <KbCompilationProvider>
+            <AppErrorProvider>
+              <AgentProvider>
               <Routes>
                 <Route path="/" element={<Layout />}>
                   <Route index element={<Home />} />
@@ -66,6 +68,7 @@ function App() {
               </Routes>
             </AgentProvider>
           </AppErrorProvider>
+          </KbCompilationProvider>
         </ProjectProvider>
       </ToastProvider>
     </ErrorBoundary>

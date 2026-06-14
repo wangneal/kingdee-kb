@@ -55,6 +55,7 @@ import type {
   OcrProviderConfig,
   ProviderPolicyConfig,
 } from "../lib/skill-types"
+import { useKbCompilation } from "../contexts/KbCompilationContext"
 import {
   type AgentToolAuditRecord,
   type AgentToolAuditSummary,
@@ -72,7 +73,6 @@ import {
   getAsrConfigStatus,
   getDownloadProgress,
   getEmbeddingModelConfig,
-  getKbCompilationEnabled,
   getModelStatus,
   getStats,
   getTencentMeetingConfigStatus,
@@ -95,7 +95,6 @@ import {
   saveTencentMeetingToken,
   setAgentToolConfig,
   setEmbeddingModelConfig,
-  setKbCompilationEnabled,
   type TencentMeetingConfigStatus,
 } from "../lib/tauri-commands"
 
@@ -3409,43 +3408,21 @@ function ProviderFormDialog({
 }
 
 function KnowledgeCompilationCard() {
-  const [enabled, setEnabled] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
+  // 知识编译开关由全局 KbCompilationContext 管理：Import.tsx 与 Settings.tsx 共享，
+  // 任一页面切换后另一页面立即同步，消除原先的跨页不同步。
+  const { enabled, loading, saving, setEnabled } = useKbCompilation()
   const [message, setMessage] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    getKbCompilationEnabled()
-      .then((value) => {
-        if (!cancelled) setEnabled(value)
-      })
-      .catch(() => {
-        if (!cancelled) setEnabled(false)
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
   const handleToggle = useCallback(async (next: boolean) => {
-    setEnabled(next)
-    setSaving(true)
     setMessage(null)
     try {
-      await setKbCompilationEnabled(next)
+      await setEnabled(next)
       setMessage(next ? "已开启知识编译" : "已关闭知识编译")
       setTimeout(() => setMessage(null), TOAST_AUTO_DISMISS_MS)
     } catch (error) {
-      setEnabled(!next)
       setMessage(`保存失败：${error instanceof Error ? error.message : String(error)}`)
-    } finally {
-      setSaving(false)
     }
-  }, [])
+  }, [setEnabled])
 
   return (
     <section className="rounded-xl border border-neutral-200 bg-white">

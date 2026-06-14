@@ -16,11 +16,11 @@ import {
   X,
 } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
+import { useKbCompilation } from "../contexts/KbCompilationContext"
 import { useProject } from "../contexts/ProjectContext"
 import { getImportDialogDefaultPath } from "../lib/dialog-options"
 import {
   checkFfmpegStatus,
-  getKbCompilationEnabled,
   getWhisperStatus,
   type IngestionResult,
   ingestDirectory,
@@ -28,7 +28,6 @@ import {
   ingestText,
   listenVideoProgress,
   loadWhisperModel,
-  setKbCompilationEnabled,
   transcribeAndIngestVideo,
   type FfmpegStatus,
   type VideoPipelineResult,
@@ -57,6 +56,9 @@ function formatImportSuccess(result: IngestionResult): string {
 
 export default function Import() {
   const { currentProjectId } = useProject()
+  // 知识编译开关：由全局 KbCompilationContext 管理，跨页面（Settings/Import）共享同步
+  const { enabled: kbCompilationEnabled, saving: kbCompilationSaving, setEnabled } =
+    useKbCompilation()
   // 文本导入状态
   const [textTitle, setTextTitle] = useState("")
   const [textContent, setTextContent] = useState("")
@@ -77,8 +79,6 @@ export default function Import() {
   const [videoProgress, setVideoProgress] = useState<VideoProgressEvent | null>(null)
   const [copyOk, setCopyOk] = useState<string | null>(null) // 转写稿或会议纪要
   const progressRef = useRef<VideoProgressEvent | null>(null)
-  const [kbCompilationEnabled, setKbCompilationEnabledState] = useState(false)
-  const [kbCompilationSaving, setKbCompilationSaving] = useState(false)
 
   // 初始化 Whisper 和知识编译状态
   useEffect(() => {
@@ -95,10 +95,6 @@ export default function Import() {
     checkFfmpegStatus()
       .then(setFfmpegStatus)
       .catch(() => setFfmpegStatus(null))
-
-    getKbCompilationEnabled()
-      .then(setKbCompilationEnabledState)
-      .catch(() => setKbCompilationEnabledState(false))
   }, [])
 
   // 监听视频处理进度
@@ -128,18 +124,6 @@ export default function Import() {
       setWhisperError(String(err))
     } finally {
       setWhisperLoading(false)
-    }
-  }, [])
-
-  const handleKbCompilationToggle = useCallback(async (enabled: boolean) => {
-    setKbCompilationEnabledState(enabled)
-    setKbCompilationSaving(true)
-    try {
-      await setKbCompilationEnabled(enabled)
-    } catch {
-      setKbCompilationEnabledState(!enabled)
-    } finally {
-      setKbCompilationSaving(false)
     }
   }, [])
 
@@ -455,7 +439,7 @@ export default function Import() {
             type="checkbox"
             checked={kbCompilationEnabled}
             disabled={kbCompilationSaving}
-            onChange={(e) => handleKbCompilationToggle(e.target.checked)}
+            onChange={(e) => void setEnabled(e.target.checked)}
             className="h-4 w-4 rounded border-neutral-300 text-[#1A6BD8] focus:ring-[#1A6BD8]"
           />
         </label>
