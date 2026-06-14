@@ -77,9 +77,25 @@ pub struct VideoPipelineResult {
 
 // ─── Audio Extraction (streaming to temp file) ───────────────────────────
 
-/// 检查 FFmpeg 是否可用（已下载）。首次调用会自动下载。
+/// 确保 FFmpeg 可用：若二进制不存在则自动下载并解压（ffmpeg-sidecar 内置）。
 ///
-/// 返回 (available, path_or_error_message)
+/// 首次调用会联网下载（约 80MB，耗时取决于网络），后续从缓存目录直接复用。
+/// 返回 ffmpeg 可执行文件路径。
+pub fn ensure_ffmpeg() -> Result<std::path::PathBuf, String> {
+    let ffmpeg_path = ffmpeg_sidecar::paths::ffmpeg_path();
+    if ffmpeg_path.exists() {
+        return Ok(ffmpeg_path);
+    }
+    tracing::info!("[VideoTranscriber] FFmpeg 未安装，开始自动下载...");
+    ffmpeg_sidecar::download::auto_download()
+        .map_err(|e| format!("FFmpeg 自动下载失败: {}", e))?;
+    tracing::info!("[VideoTranscriber] FFmpeg 下载完成: {}", ffmpeg_path.display());
+    Ok(ffmpeg_path)
+}
+
+/// 检查 FFmpeg 是否可用（不触发下载）。供前端展示状态用。
+///
+/// 返回 (available, path_or_message)
 pub fn check_ffmpeg_available() -> (bool, String) {
     let ffmpeg_path = ffmpeg_sidecar::paths::ffmpeg_path();
     if ffmpeg_path.exists() {
@@ -87,7 +103,7 @@ pub fn check_ffmpeg_available() -> (bool, String) {
     } else {
         (
             false,
-            "FFmpeg 二进制尚未下载，首次使用时将自动下载".to_string(),
+            "FFmpeg 尚未下载，首次视频转写时将自动下载（约 80MB）".to_string(),
         )
     }
 }
@@ -102,7 +118,8 @@ pub fn extract_audio_to_file(
 ) -> Result<(std::path::PathBuf, f32), String> {
     let video_str = video_path.to_str().ok_or("视频文件路径包含非法字符")?;
 
-    let ffmpeg_path = ffmpeg_sidecar::paths::ffmpeg_path();
+    // 确保 FFmpeg 已下载（首次使用时自动下载）
+    let ffmpeg_path = ensure_ffmpeg()?;
 
     tracing::info!(
         "[VideoTranscriber] 正在使用 ffmpeg: {}",

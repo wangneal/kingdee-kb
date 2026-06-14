@@ -1283,6 +1283,17 @@ export async function getAsrConfigStatus(): Promise<AsrConfigStatus> {
   return invoke("get_asr_config_status")
 }
 
+/** FFmpeg 状态（视频转写依赖，未就绪时首次转写会自动下载） */
+export interface FfmpegStatus {
+  available: boolean
+  path_or_message: string
+}
+
+/** 检查 FFmpeg 是否已就绪（不触发下载） */
+export async function checkFfmpegStatus(): Promise<FfmpegStatus> {
+  return invoke("check_ffmpeg_status")
+}
+
 // ─── 腾讯会议 MCP ───
 
 export interface TencentMeetingConfigStatus {

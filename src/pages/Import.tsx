@@ -19,6 +19,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useProject } from "../contexts/ProjectContext"
 import { getImportDialogDefaultPath } from "../lib/dialog-options"
 import {
+  checkFfmpegStatus,
   getKbCompilationEnabled,
   getWhisperStatus,
   type IngestionResult,
@@ -29,6 +30,7 @@ import {
   loadWhisperModel,
   setKbCompilationEnabled,
   transcribeAndIngestVideo,
+  type FfmpegStatus,
   type VideoPipelineResult,
   type VideoProgressEvent,
 } from "../lib/tauri-commands"
@@ -71,6 +73,7 @@ export default function Import() {
   const [whisperReady, setWhisperReady] = useState(false)
   const [whisperLoading, setWhisperLoading] = useState(false)
   const [whisperError, setWhisperError] = useState<string | null>(null)
+  const [ffmpegStatus, setFfmpegStatus] = useState<FfmpegStatus | null>(null)
   const [videoProgress, setVideoProgress] = useState<VideoProgressEvent | null>(null)
   const [copyOk, setCopyOk] = useState<string | null>(null) // 转写稿或会议纪要
   const progressRef = useRef<VideoProgressEvent | null>(null)
@@ -88,6 +91,10 @@ export default function Import() {
         setWhisperReady(false)
         setWhisperError(String(err))
       })
+
+    checkFfmpegStatus()
+      .then(setFfmpegStatus)
+      .catch(() => setFfmpegStatus(null))
 
     getKbCompilationEnabled()
       .then(setKbCompilationEnabledState)
@@ -682,6 +689,14 @@ export default function Import() {
           )}
         </div>
 
+        {/* FFmpeg 状态 */}
+        <div className="mb-3">
+          <span className="block text-xs text-neutral-500 mb-1">音频提取引擎</span>
+          <span className="inline-block rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 bg-neutral-50">
+            FFmpeg {ffmpegStatus?.available ? "✓ 已就绪" : "○ 首次转写时自动下载（约 80MB）"}
+          </span>
+        </div>
+
         {/* 生成会议纪要开关 */}
         <label className="flex items-center gap-2 mb-3 text-sm text-neutral-700">
           <input
@@ -832,6 +847,12 @@ export default function Import() {
               rows={10}
               className="w-full rounded-md bg-neutral-50 p-3 text-xs text-neutral-600 border border-neutral-200 outline-none resize-y focus:border-purple-300"
             />
+            {meetingMinutes.file_path && (
+              <p className="text-[10px] text-neutral-400 truncate mt-1" title={meetingMinutes.file_path}>
+                <FileText className="inline h-3 w-3 mr-0.5" />
+                已保存：{meetingMinutes.file_path}
+              </p>
+            )}
           </div>
         )}
       </section>

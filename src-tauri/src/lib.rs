@@ -290,6 +290,7 @@ pub fn run() {
             commands::media::transcribe_video_file,
             commands::media::transcribe_and_ingest_video,
             commands::media::generate_meeting_minutes_from_transcript,
+            commands::media::check_ffmpeg_status,
             // Tencent Meeting MCP
             commands::tencent_meeting::save_tencent_meeting_token,
             commands::tencent_meeting::get_tencent_meeting_config_status,

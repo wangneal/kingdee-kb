@@ -683,3 +683,17 @@ pub fn get_asr_config_status(state: State<'_, AppState>) -> Result<serde_json::V
     let config = state.asr_config.read().map_err(|e| e.to_string())?;
     Ok(config.get_status())
 }
+
+/// 检查 FFmpeg 是否已就绪（不触发下载）。
+///
+/// 返回 `{ available: bool, path_or_message: string }`。
+/// 供前端 Import 页面展示 FFmpeg 状态；实际转写时若未就绪会自动下载。
+#[tauri::command]
+pub fn check_ffmpeg_status() -> Result<serde_json::Value, String> {
+    let (available, path_or_message) =
+        crate::services::video_transcriber::check_ffmpeg_available();
+    Ok(serde_json::json!({
+        "available": available,
+        "path_or_message": path_or_message,
+    }))
+}
