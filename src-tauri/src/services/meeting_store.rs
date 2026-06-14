@@ -830,7 +830,7 @@ fn row_to_meeting(row: &rusqlite::Row) -> rusqlite::Result<Meeting> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
+    // tempdir 由 test_support 管理，这里不再直接使用
 
     /// 构造测试用 TencentMeetingUpsert
     fn make_upsert(meeting_id: &str, status: &str) -> TencentMeetingUpsert {
@@ -848,55 +848,37 @@ mod tests {
         }
     }
 
-    /// 建临时库 + 会议三表 + projects 依赖表，返回 (store, project_id)
-    fn setup() -> (MeetingStore, i64) {
-        let dir = tempdir().expect("创建临时目录失败");
-        let db_path = dir.path().join("test.db");
+    /// 建临时库 + 会议三表 + projects 依赖表，返回 (TempDir, store, project_id)。
+    /// TempDir 必须由调用方持有，否则临时文件被删除。
+    fn setup() -> (tempfile::TempDir, MeetingStore, i64) {
+        use crate::services::test_support;
+
+        let (dir, db_path, project_id) = test_support::setup_db_with_project();
         let store = MeetingStore::new(&db_path).expect("创建会议存储失败");
         store.ensure_table().expect("创建会议表失败");
 
-        // 建 projects 依赖表（link_project 查 projects.status）
+        // raw_sources/products 是会议三表的外键依赖，MeetingStore 不建它们。
+        // 这里建简化版（只需外键可解析，测试不关心它们的完整 schema）。
         store
             .db
             .execute_batch(
-                "CREATE TABLE projects (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL UNIQUE,
-                    client_name TEXT NOT NULL DEFAULT '',
-                    description TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT 'active',
-                    current_phase TEXT NOT NULL DEFAULT 'survey',
-                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    CHECK (status IN ('active', 'archived'))
-                );
-                -- 会议三表的外键依赖（SQLite 建表时解析 REFERENCES 即要求表存在）
-                CREATE TABLE raw_sources (
+                "CREATE TABLE IF NOT EXISTS raw_sources (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     project_id INTEGER
                 );
-                CREATE TABLE products (
+                CREATE TABLE IF NOT EXISTS products (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     project_id INTEGER
                 );",
             )
             .expect("创建依赖表失败");
 
-        let project_id: i64 = store
-            .db
-            .query_row(
-                "INSERT INTO projects (name) VALUES ('测试项目') RETURNING id",
-                [],
-                |r| r.get(0),
-            )
-            .expect("插入项目失败");
-
-        (store, project_id)
+        (dir, store, project_id)
     }
 
     #[test]
     fn upsert_inserts_and_updates() {
-        let (store, _) = setup();
+        let (_dir, store, _) = setup();
 
         // 首次插入
         let id1 = store
@@ -917,7 +899,7 @@ mod tests {
 
     #[test]
     fn upsert_preserves_ignored_link_status() {
-        let (store, _) = setup();
+        let (_dir, store, _) = setup();
 
         let id = store
             .upsert_from_tencent(&make_upsert("mtg-2", "scheduled"), None)
@@ -940,7 +922,7 @@ mod tests {
 
     #[test]
     fn link_project_rejects_archived_project() {
-        let (store, project_id) = setup();
+        let (_dir, store, project_id) = setup();
 
         let meeting_id = store
             .upsert_from_tencent(&make_upsert("mtg-3", "scheduled"), None)
@@ -965,7 +947,7 @@ mod tests {
 
     #[test]
     fn unlink_project_blocked_when_minutes_exist() {
-        let (store, project_id) = setup();
+        let (_dir, store, project_id) = setup();
 
         let meeting_id = store
             .upsert_from_tencent(&make_upsert("mtg-4", "ended"), Some(project_id))
@@ -1011,7 +993,7 @@ mod tests {
 
     #[test]
     fn save_transcript_protects_ignored_status() {
-        let (store, project_id) = setup();
+        let (_dir, store, project_id) = setup();
 
         let meeting_id = store
             .upsert_from_tencent(&make_upsert("mtg-5", "ended"), None)
@@ -1039,7 +1021,7 @@ mod tests {
 
     #[test]
     fn save_transcript_rejects_project_mismatch() {
-        let (store, project_id) = setup();
+        let (_dir, store, project_id) = setup();
 
         let meeting_id = store
             .upsert_from_tencent(&make_upsert("mtg-6", "ended"), Some(project_id))
@@ -1064,7 +1046,7 @@ mod tests {
 
     #[test]
     fn save_minutes_and_get_with_assets() {
-        let (store, project_id) = setup();
+        let (_dir, store, project_id) = setup();
 
         let meeting_id = store
             .upsert_from_tencent(&make_upsert("mtg-7", "ended"), Some(project_id))
@@ -1108,7 +1090,7 @@ mod tests {
         assert!(assets.minutes.is_some(), "纪要应存在");
         assert_eq!(
             assets.project_name,
-            Some("测试项目".to_string()),
+            Some("默认项目".to_string()),
             "项目名应正确关联"
         );
         assert_eq!(

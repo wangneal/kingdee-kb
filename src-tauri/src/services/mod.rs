@@ -70,5 +70,8 @@ pub mod video_transcriber;
 pub mod whisper_service;
 pub mod wiki_page;
 pub mod wikilink_parser;
+
+#[cfg(test)]
+pub mod test_support;
 pub mod xlsx_filler;
 
