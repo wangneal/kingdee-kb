@@ -9,6 +9,7 @@ use crate::services::tencent_meeting_mcp::{
 
 const KEYRING_SERVICE: &str = "com.neal.kingdee.kb";
 const TOKEN_ACCOUNT: &str = "tencent_meeting_token";
+const KDCLUB_TOKEN_ACCOUNT: &str = "kdclub_pat_token";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TencentMeetingConfigStatus {
@@ -54,6 +55,42 @@ pub fn get_tencent_meeting_config_status() -> Result<TencentMeetingConfigStatus,
     Ok(TencentMeetingConfigStatus {
         configured: read_token()?.is_some(),
     })
+}
+
+// ─── 金蝶云社区 PAT Token（C-1：敏感凭据改存系统钥匙串，不再走 localStorage） ───
+
+fn read_kdclub_token() -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KDCLUB_TOKEN_ACCOUNT)
+        .map_err(|error| format!("无法访问系统凭据存储: {}", error))?;
+    match entry.get_password() {
+        Ok(token) => Ok(Some(token)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!("读取金蝶云社区 PAT 失败: {}", error)),
+    }
+}
+
+/// 保存金蝶云社区 PAT（Personal Access Token）。空 token 等同于删除。
+#[tauri::command]
+pub fn save_kdclub_token(token: Option<String>) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KDCLUB_TOKEN_ACCOUNT)
+        .map_err(|error| format!("无法访问系统凭据存储: {}", error))?;
+    let token = token.unwrap_or_default();
+    let token = token.trim();
+    if token.is_empty() {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => return Ok(()),
+            Err(error) => return Err(format!("删除金蝶云社区 PAT 失败: {}", error)),
+        }
+    }
+    entry
+        .set_password(token)
+        .map_err(|error| format!("保存金蝶云社区 PAT 失败: {}", error))
+}
+
+/// 获取金蝶云社区 PAT。
+#[tauri::command]
+pub fn get_kdclub_token() -> Result<Option<String>, String> {
+    read_kdclub_token()
 }
 
 /// 查询腾讯会议 MCP 工具清单。

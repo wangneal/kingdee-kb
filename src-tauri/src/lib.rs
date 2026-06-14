@@ -292,6 +292,8 @@ pub fn run() {
             // Tencent Meeting MCP
             commands::tencent_meeting::save_tencent_meeting_token,
             commands::tencent_meeting::get_tencent_meeting_config_status,
+            commands::tencent_meeting::save_kdclub_token,
+            commands::tencent_meeting::get_kdclub_token,
             commands::tencent_meeting::list_tencent_meeting_tools,
             commands::tencent_meeting::call_tencent_meeting_tool,
             commands::tencent_meeting::fetch_tencent_meeting_transcript,

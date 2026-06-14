@@ -3,6 +3,10 @@
  * 基于金蝶云社区 COSMIC API 实现
  *
  * 原始实现：kdclub-ai-product-qa/scripts/cosmic_qa.py
+ *
+ * Token 存储：v2 起从 localStorage 迁到后端系统钥匙串（kdclub-commands.ts），
+ * localStorage 中残留的旧值（`kingdee_kb_pat_token`）在首次启动时被一次性读出
+ * 并删除，避免明文遗留。
  */
 
 // ─── 类型定义 ──────────────────────────────────────────────
@@ -60,47 +64,69 @@ export const KINGDEE_PRODUCTS: KingdeeProduct[] = [
   { productId: 38, name: "账无忧" },
 ]
 
-// ─── Token 管理 ──────────────────────────────────────────────
+// ─── Token 管理（v2：存后端 keyring，不再走 localStorage） ───
 
-const TOKEN_STORAGE_KEY = "kingdee_kb_pat_token"
+import { getKdclubToken as getKdclubTokenFromBackend, saveKdclubToken as saveKdclubTokenToBackend } from "./kdclub-commands"
 
-export function saveToken(token: string): void {
-  const data = {
-    token: token.trim(),
-    domain: "vip.kingdee.com",
-    lastUpdated: new Date().toISOString(),
+const LEGACY_LOCAL_STORAGE_KEY = "kingdee_kb_pat_token"
+const LEGACY_SETTINGS_KEY = "kdclub_pat_token"
+
+/** 一次性从 localStorage 迁移到 keyring（仅在 loadToken() 首次发现 token 时执行） */
+async function migrateLegacyToken(): Promise<string | null> {
+  const raw1 = localStorage.getItem(LEGACY_LOCAL_STORAGE_KEY)
+  const raw2 = localStorage.getItem(LEGACY_SETTINGS_KEY)
+  let candidate: string | null = null
+  if (raw1) {
+    try {
+      const data = JSON.parse(raw1) as { token?: string }
+      candidate = data.token?.trim() || null
+    } catch {
+      candidate = null
+    }
+    localStorage.removeItem(LEGACY_LOCAL_STORAGE_KEY)
   }
-  localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(data))
+  if (!candidate && raw2) {
+    candidate = raw2.trim() || null
+  }
+  // 两条都清，避免明文残留
+  localStorage.removeItem(LEGACY_SETTINGS_KEY)
+  if (candidate) {
+    await saveKdclubTokenToBackend(candidate)
+  }
+  return candidate
 }
 
-export function loadToken(): string | null {
-  // 1. 从本地存储加载
-  const raw = localStorage.getItem(TOKEN_STORAGE_KEY)
-  if (raw) {
-    try {
-      const data = JSON.parse(raw)
-      if (data.token) {
-        return data.token.trim()
-      }
-    } catch {
-      // ignore
-    }
+export async function saveToken(token: string): Promise<void> {
+  await saveKdclubTokenToBackend(token)
+}
+
+export async function loadToken(): Promise<string | null> {
+  let token = await getKdclubTokenFromBackend()
+  if (!token) {
+    token = await migrateLegacyToken()
   }
-  return null
+  return token
 }
 
 export function getTokenStatus(): TokenStatus {
-  const token = loadToken()
+  // 同步版只读 legacy 状态（用于 UI 展示"未配置"）。
+  // 真实状态在 async 路径用 await loadToken() 获取。
+  return {
+    valid: false,
+    error: "请使用 async getTokenStatusAsync() 检查",
+  }
+}
+
+export async function getTokenStatusAsync(): Promise<TokenStatus> {
+  const token = await loadToken()
   if (!token) {
     return {
       valid: false,
       error: "未找到有效的 PAT Token。请在设置中配置。",
     }
   }
-
   const preview =
     token.length > 12 ? `${token.substring(0, 8)}...${token.substring(token.length - 4)}` : "***"
-
   return {
     valid: true,
     tokenPreview: preview,
@@ -306,7 +332,7 @@ export async function askKingdeeQuestion(
     signal?: AbortSignal
   },
 ): Promise<{ answer: string; sessionId?: string; sources?: QASource[] }> {
-  const token = loadToken()
+  const token = await loadToken()
   if (!token) {
     throw new Error("未配置 PAT Token，请在设置中配置。")
   }
