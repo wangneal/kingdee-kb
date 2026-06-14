@@ -14,7 +14,7 @@ import {
   useRef,
   useState,
 } from "react"
-import { getKbCompilationEnabled, setKbCompilationEnabled } from "../lib/tauri-commands"
+import { getKbCompilationEnabled, setKbCompilationEnabled } from "@/lib/tauri-commands"
 
 interface KbCompilationContextValue {
   /** 知识编译开关是否启用 */

@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react"
-import { ensureDefaultProject, listProjects, type ProjectSummary } from "../lib/project-commands"
+import { ensureDefaultProject, listProjects, type ProjectSummary } from "@/lib/project-commands"
 
 const STORAGE_KEY = "kingdee_kb_active_project"
 

@@ -5,7 +5,7 @@
  * 仅在研究助手页面（research 路由）内使用。
  */
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from "react"
-import { getWhisperStatus, loadWhisperModel, startRecording, stopRecording } from "../lib/audio"
+import { getWhisperStatus, loadWhisperModel, startRecording, stopRecording } from "@/lib/audio"
 
 // ── 类型定义 ──────────────────────────────────────────────────────────────
 

@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react"
-import { formatAppError, parseAppError } from "../lib/app-error"
+import { formatAppError, parseAppError } from "@/lib/app-error"
 import {
   type AttachmentInfo,
   agentChat,
@@ -19,7 +19,7 @@ import {
   type PlanStep,
   rejectQuestion,
   runVerification,
-} from "../lib/tauri-commands"
+} from "@/lib/tauri-commands"
 import { useAppError } from "./AppErrorContext"
 
 // ── 导出类型 ──────────────────────────────────────────────────────────

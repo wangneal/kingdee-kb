@@ -22,7 +22,7 @@ import {
   moveOutlineNode,
   type OutlineNode,
   updateOutlineNode,
-} from "../lib/outline-commands"
+} from "@/lib/outline-commands"
 
 // ── 导出类型 ──────────────────────────────────────────────────────────────
 

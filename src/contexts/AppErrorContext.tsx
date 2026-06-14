@@ -10,7 +10,7 @@ import {
   useState,
 } from "react"
 import { useNavigate } from "react-router-dom"
-import type { AppErrorPayload } from "../lib/app-error"
+import type { AppErrorPayload } from "@/lib/app-error"
 
 interface AppErrorContextValue {
   showLlmKeyError: (payload: AppErrorPayload) => void
