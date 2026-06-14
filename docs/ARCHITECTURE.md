@@ -593,10 +593,13 @@ Agent 决定调用 use-skill 工具
 | API Key | 系统钥匙串 | DPAPI/Keychain/Secret Service |
 | 提示词模板 | `resources/prompts/` | 文本文件 |
 
-应用数据根目录：
-- Windows：`%APPDATA%/kingdee-kb/`
-- macOS：`~/Library/Application Support/kingdee-kb/`
-- Linux：`~/.config/kingdee-kb/`（遵循 XDG）
+应用数据根目录：使用 `dirs::home_dir()` + `.kingdee-kb` 后缀，跨平台统一。
+- Windows：`%USERPROFILE%\.kingdee-kb\`（即 `~\.kingdee-kb\`）
+- macOS / Linux：`~/.kingdee-kb/`
+
+> 历史：本节曾误写为 `%APPDATA%/kingdee-kb/`（Windows）和 XDG 路径，与实际代码
+> 不符。代码侧使用 `dirs::home_dir().join(".kingdee-kb")`（见
+> `src-tauri/src/commands/core.rs:78-82`）。
 
 ---
 
