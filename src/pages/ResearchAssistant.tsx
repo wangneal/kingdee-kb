@@ -42,10 +42,8 @@ import {
   exportSessionCsv,
   exportSessionMarkdown,
   fetchInvestigationRecipe,
-  fetchTencentMeetingTranscript,
   getAsrConfigStatus,
   getResearchSession,
-  getTencentMeetingConfigStatus,
   getWhisperStatus,
   isLLMConfigured,
   listAsrProviders,
@@ -452,11 +450,6 @@ function SessionDetailView({
   const [llmReviewEnabled, setLlmReviewEnabled] = useState(true)
   const [autoPromptEnabled, setAutoPromptEnabled] = useState(true)
   const [reviewingTranscript, setReviewingTranscript] = useState(false)
-  const [tencentMeetingConfigured, setTencentMeetingConfigured] = useState(false)
-  const [tencentMeetingCode, setTencentMeetingCode] = useState("")
-  const [tencentMeetingRecordFileId, setTencentMeetingRecordFileId] = useState("")
-  const [tencentMeetingSyncing, setTencentMeetingSyncing] = useState(false)
-  const [tencentMeetingLoading, setTencentMeetingLoading] = useState(false)
   const [_asrConfigStatus, setAsrConfigStatus] = useState<AsrConfigStatus | null>(null)
   const [newQuestion, setNewQuestion] = useState("")
   const [newAnswer, setNewAnswer] = useState("")
@@ -531,9 +524,6 @@ function SessionDetailView({
         setLlmReviewEnabled(false)
         setAutoPromptEnabled(false)
       })
-    getTencentMeetingConfigStatus()
-      .then((status) => setTencentMeetingConfigured(status.configured))
-      .catch(() => setTencentMeetingConfigured(false))
     getAsrConfigStatus().then(setAsrConfigStatus).catch(console.error)
   }, [])
 
@@ -588,8 +578,7 @@ function SessionDetailView({
   }
 
   useEffect(() => {
-    const transcriptStreaming = recording || tencentMeetingSyncing
-    if (!transcriptStreaming || activeTab !== "outline" || !autoPromptEnabled || !llmConfigured) {
+    if (!recording || activeTab !== "outline" || !autoPromptEnabled || !llmConfigured) {
       return
     }
 
@@ -660,7 +649,6 @@ function SessionDetailView({
     session.edition,
     session.module_code,
     session.title,
-    tencentMeetingSyncing,
     agent.clearSlot,
     agent.sendMessage,
   ])
@@ -768,64 +756,6 @@ function SessionDetailView({
     }
   }
 
-  const syncTencentMeetingTranscript = useCallback(async () => {
-    const meetingCode = tencentMeetingCode.trim()
-    const recordFileId = tencentMeetingRecordFileId.trim()
-    if (!meetingCode && !recordFileId) {
-      toast.warning("请填写腾讯会议号或录制文件 ID")
-      return ""
-    }
-
-    setTencentMeetingLoading(true)
-    try {
-      const result = await fetchTencentMeetingTranscript({
-        meetingCode: meetingCode || undefined,
-        recordFileId: recordFileId || undefined,
-        includeMinutes: false,
-      })
-      if (result.record_file_id && !recordFileId) {
-        setTencentMeetingRecordFileId(result.record_file_id)
-      }
-      const transcript = result.transcript.trim()
-      if (transcript) {
-        setLiveTranscript(transcript)
-      }
-      return transcript
-    } catch (err) {
-      toast.error(`腾讯会议转写同步失败: ${String(err)}`)
-      return ""
-    } finally {
-      setTencentMeetingLoading(false)
-    }
-  }, [tencentMeetingCode, tencentMeetingRecordFileId, toast])
-
-  useEffect(() => {
-    if (!tencentMeetingSyncing) return
-    const timer = window.setInterval(() => {
-      void syncTencentMeetingTranscript()
-    }, 6000)
-    return () => window.clearInterval(timer)
-  }, [tencentMeetingSyncing, syncTencentMeetingTranscript])
-
-  const handleStartTencentMeetingSync = async () => {
-    if (!tencentMeetingConfigured) {
-      toast.warning("请先在设置中配置腾讯会议 MCP Token")
-      return
-    }
-    setCopilotTab("transcript")
-    setLiveTranscript("")
-    lastAutoPromptTranscriptRef.current = ""
-    const transcript = await syncTencentMeetingTranscript()
-    if (transcript) {
-      setTencentMeetingSyncing(true)
-    }
-  }
-
-  const handleStopTencentMeetingSync = async () => {
-    setTencentMeetingSyncing(false)
-    const transcript = (await syncTencentMeetingTranscript()) || liveTranscript
-    await commitTranscriptText(transcript)
-  }
 
   // 渲染 AI Copilot 工具箱侧边栏
   const renderCopilotPanel = () => {
@@ -858,7 +788,7 @@ function SessionDetailView({
           >
             <Mic className="h-3.5 w-3.5" />
             语音转写
-            {(recording || tencentMeetingSyncing) && (
+            {recording && (
               <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
             )}
           </button>
@@ -996,72 +926,20 @@ function SessionDetailView({
               </div>
             )}
             <div className="mt-3 border-t border-neutral-100 pt-3">
-              <div className="mb-2 flex items-center justify-between">
-                <span className="text-[10px] font-semibold text-neutral-500">腾讯会议线上转写</span>
-                {tencentMeetingSyncing && (
-                  <span className="text-[10px] text-green-600">同步中</span>
-                )}
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-semibold text-neutral-500">腾讯会议</span>
               </div>
-              <div className="space-y-2">
-                <input
-                  value={tencentMeetingCode}
-                  onChange={(event) => setTencentMeetingCode(event.target.value)}
-                  disabled={tencentMeetingSyncing}
-                  placeholder="会议号"
-                  className="w-full rounded border border-neutral-200 px-2 py-1 text-[10px] text-neutral-600 outline-none focus:border-[#1A6BD8] disabled:opacity-60"
-                />
-                <input
-                  value={tencentMeetingRecordFileId}
-                  onChange={(event) => setTencentMeetingRecordFileId(event.target.value)}
-                  disabled={tencentMeetingSyncing}
-                  placeholder="录制文件 ID"
-                  className="w-full rounded border border-neutral-200 px-2 py-1 text-[10px] text-neutral-600 outline-none focus:border-[#1A6BD8] disabled:opacity-60"
-                />
-                {tencentMeetingSyncing ? (
-                  <button
-                    type="button"
-                    onClick={() => void handleStopTencentMeetingSync()}
-                    disabled={tencentMeetingLoading || reviewingTranscript}
-                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-red-500 px-3 py-2 text-xs font-medium text-white hover:bg-red-600 disabled:opacity-50 transition-colors"
-                  >
-                    {tencentMeetingLoading || reviewingTranscript ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Square className="h-3.5 w-3.5" />
-                    )}
-                    停止线上同步
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => void handleStartTencentMeetingSync()}
-                    disabled={recording || tencentMeetingLoading || !tencentMeetingConfigured}
-                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-emerald-600 px-3 py-2 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 transition-colors"
-                  >
-                    {tencentMeetingLoading ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Network className="h-3.5 w-3.5" />
-                    )}
-                    开始线上同步
-                  </button>
-                )}
-                {!tencentMeetingConfigured && (
-                  <p className="text-[10px] text-amber-600">请先在设置中配置腾讯会议 MCP Token。</p>
-                )}
-              </div>
+              <p className="mt-1.5 text-[10px] text-neutral-400">
+                会议同步与纪要生成已迁移至会议管理页面。
+              </p>
+              <a
+                href="/meetings"
+                className="mt-1.5 flex items-center gap-1 rounded border border-neutral-200 px-2 py-1.5 text-[10px] font-medium text-[#1A6BD8] hover:bg-blue-50 transition-colors"
+              >
+                <Network className="h-3 w-3" />
+                前往会议管理
+              </a>
             </div>
-            {tencentMeetingSyncing && (
-              <div className="mt-2 rounded border border-neutral-100 bg-neutral-50 p-2">
-                <div className="mb-1 flex items-center justify-between text-[10px] text-neutral-400">
-                  <span>线上转写草稿</span>
-                  {tencentMeetingLoading && <span>同步中...</span>}
-                </div>
-                <p className="max-h-24 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed text-neutral-600">
-                  {liveTranscript || "等待腾讯会议转写生成"}
-                </p>
-              </div>
-            )}
             {activeTab === "outline" && (
               <p className="text-[10px] text-neutral-400 mt-1.5 text-center">
                 录音结束将自动插入中栏编辑器光标位置

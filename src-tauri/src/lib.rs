@@ -180,6 +180,9 @@ pub fn run() {
                 }
             });
 
+            // 启动腾讯会议定时同步（每 30 分钟）
+            crate::services::meeting_sync::start_sync_loop(app.handle().clone());
+
             // 注册全局快捷键：Alt+Space → 切换 spotlight 覆盖层
             #[cfg(desktop)]
             {
@@ -303,6 +306,18 @@ pub fn run() {
             commands::tencent_meeting::list_tencent_user_ended_meetings,
             commands::tencent_meeting::list_tencent_meeting_records,
             commands::tencent_meeting::submit_tencent_meeting_feedback,
+            // Meeting management (local store + sync)
+            commands::meeting::sync_tencent_meetings,
+            commands::meeting::list_meetings,
+            commands::meeting::get_meeting_with_assets,
+            commands::meeting::link_meeting_to_project,
+            commands::meeting::unlink_meeting_from_project,
+            commands::meeting::ignore_unlinked_meeting,
+            commands::meeting::fetch_meeting_transcript,
+            commands::meeting::generate_meeting_minutes,
+            commands::meeting::regenerate_meeting_minutes,
+            commands::meeting::list_recent_meeting_minutes,
+            commands::meeting::read_project_activity_log,
             // Phase 13: Research Session Management
             commands::research::create_research_session,
             commands::research::list_research_sessions,
@@ -448,3 +463,4 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+

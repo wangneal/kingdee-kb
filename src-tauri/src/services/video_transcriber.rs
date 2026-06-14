@@ -56,7 +56,14 @@ pub struct TranscriptionSegment {
 /// 会议纪要生成结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeetingMinutesResult {
+    /// 纪要正文（markdown）
     pub minutes: String,
+    /// 纪要落盘的绝对路径
+    pub file_path: String,
+    /// 登记到 products 表的产物 ID（若登记失败则为 None）
+    pub product_id: Option<i64>,
+    /// 登记到 meeting_minutes 表的纪要 ID（未关联会议时为 None）
+    pub minutes_id: Option<i64>,
     pub generation_time_ms: u64,
 }
 
@@ -287,70 +294,7 @@ pub struct TranscriptionResult {
     pub processing_time_ms: u64,
 }
 
-// ─── Meeting Minutes Generation ──────────────────────────────────────────
-
-const MEETING_MINUTES_PROMPT: &str = "\
-你是一位专业的会议纪要撰写助手。请根据以下会议/访谈的语音转写文本，生成结构化的会议纪要。
-
-【输出格式要求】
-## 会议纪要
-
-### 基本信息
-- **会议主题**：（从内容推断）
-- **会议类型**：（需求调研/项目评审/方案讨论/其他）
-- **关键参与者**：（从上下文推断）
-
-### 核心议题
-（列出 3-7 个主要讨论议题）
-
-### 关键决策
-（列出会议中做出的明确决定，用编号列表）
-
-### 待办事项
-（列出后续行动项，包含负责人和截止时间如果提及）
-
-### 风险与关注点
-（列出识别到的风险或需要关注的问题）
-
-### 详细讨论记录
-（按时间顺序整理关键对话要点）
-
----
-【注意事项】
-1. 语音转写可能有错误，请根据上下文合理推断正确内容
-2. 不要编造转写文本中没有的信息
-3. 保持客观中立，准确反映讨论内容
-4. 使用中文输出";
-
-pub fn generate_meeting_minutes(
-    transcript: &str,
-    llm_service: &crate::services::llm_service::LLMService,
-) -> Result<MeetingMinutesResult, String> {
-    let start = std::time::Instant::now();
-
-    // 如果转写文本超长（>30000字），截断以避免 token 超限
-    let truncated = if transcript.len() > 30000 {
-        tracing::warn!(
-            "[VideoTranscriber] 转写文本过长（{} 字符），截断到 30000",
-            transcript.len()
-        );
-        &transcript[..30000]
-    } else {
-        transcript
-    };
-
-    let user_prompt = format!(
-        "以下是会议/访谈的语音转写文本：\n\n---\n{}\n---\n\n请生成结构化的会议纪要。",
-        truncated
-    );
-
-    let minutes = llm_service.generate_text_sync(MEETING_MINUTES_PROMPT, &user_prompt)?;
-
-    Ok(MeetingMinutesResult {
-        minutes,
-        generation_time_ms: start.elapsed().as_millis() as u64,
-    })
-}
+// ─── Meeting Minutes 已迁移到 meeting_minutes_service.rs ──────────────────
 
 /// 清理临时 PCM 文件
 pub fn cleanup_temp_file(path: &Path) {

@@ -25,30 +25,15 @@ import {
 import {
   getStats,
   type KnowledgeStats,
-  getTencentMeetingConfigStatus,
+  listMeetings,
   listProducts,
-  listTencentUserMeetings,
+  listRecentMeetingMinutes,
+  type LocalMeeting,
+  type LocalMeetingMinutes,
   type ProductMeta,
 } from "../lib/tauri-commands"
 
-interface UpcomingMeeting {
-  meeting_id?: string
-  meeting_code?: string
-  subject?: string
-  start_time?: string
-  end_time?: string
-  [key: string]: unknown
-}
 
-function pickMeetings(payload: unknown): UpcomingMeeting[] {
-  if (!payload) return []
-  const root = (payload as Record<string, unknown>)?.result ?? payload
-  const container = (root as Record<string, unknown>)?.meeting_info_list
-  if (Array.isArray(container)) {
-    return container.filter((item): item is UpcomingMeeting => !!item)
-  }
-  return []
-}
 
 export default function Home() {
   const { currentProjectId, currentProject } = useProject()
@@ -60,9 +45,10 @@ export default function Home() {
   const [loading, setLoading] = useState(true)
   const [dashboardError, setDashboardError] = useState<string | null>(null)
   const [phaseError, setPhaseError] = useState<string | null>(null)
-  const [meetings, setMeetings] = useState<UpcomingMeeting[]>([])
-  const [meetingsConfigured, setMeetingsConfigured] = useState(false)
-
+  const [meetings, setMeetings] = useState<LocalMeeting[]>([])
+  const [unlinkedMeetings, setUnlinkedMeetings] = useState<LocalMeeting[]>([])
+  const [recentMinutes, setRecentMinutes] = useState<LocalMeetingMinutes[]>([])
+  
   useEffect(() => {
     ;(async () => {
       setLoading(true)
@@ -105,30 +91,25 @@ export default function Home() {
     let cancelled = false
     ;(async () => {
       try {
-        const status = await getTencentMeetingConfigStatus()
+        const [linked, unlinked, minutes] = await Promise.all([
+          listMeetings({ projectId: currentProjectId ?? undefined, status: undefined, linkStatus: "linked", query: undefined, limit: 10 }),
+          listMeetings({ projectId: undefined, status: undefined, linkStatus: "unlinked", query: undefined, limit: 10 }),
+          listRecentMeetingMinutes(currentProjectId ?? undefined, 5),
+        ])
         if (cancelled) return
-        setMeetingsConfigured(status.configured)
-        if (!status.configured) {
-          setMeetings([])
-          return
-        }
-        const list = await listTencentUserMeetings({})
-        if (cancelled) return
-        const items = pickMeetings(list)
-          .sort(
-            (a, b) =>
-              (Date.parse(a.start_time ?? "") || 0) - (Date.parse(b.start_time ?? "") || 0),
-          )
-          .slice(0, 5)
-        setMeetings(items)
+        setMeetings(linked)
+        setUnlinkedMeetings(unlinked)
+        setRecentMinutes(minutes)
       } catch {
-        if (!cancelled) setMeetings([])
+        if (!cancelled) {
+          setMeetings([])
+          setUnlinkedMeetings([])
+          setRecentMinutes([])
+        }
       }
     })()
-    return () => {
-      cancelled = true
-    }
-  }, [])
+    return () => { cancelled = true }
+  }, [currentProjectId])
 
   const recentProducts = [...products]
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
@@ -292,10 +273,10 @@ export default function Home() {
             </div>
             <div>
               <p className="text-2xl font-semibold text-neutral-800">
-                {meetingsConfigured ? meetings.length : "—"}
+                {meetings.length}
               </p>
               <p className="text-xs text-neutral-500">
-                {meetingsConfigured ? "未开始 / 进行中" : "腾讯会议未配置"}
+                "本地会议"
               </p>
             </div>
           </div>
@@ -303,12 +284,12 @@ export default function Home() {
       </div>
 
       {/* 今日会议 */}
-      {meetingsConfigured && meetings.length > 0 && (
+      {meetings.length > 0 && (
         <div className="mb-8 rounded-lg border border-neutral-200 bg-white p-5">
           <div className="mb-4 flex items-center justify-between">
             <div>
-              <h2 className="text-sm font-semibold text-neutral-700">即将开始的会议</h2>
-              <p className="mt-1 text-xs text-neutral-400">同步自腾讯会议 MCP</p>
+              <h2 className="text-sm font-semibold text-neutral-700">项目会议</h2>
+              <p className="mt-1 text-xs text-neutral-400">来自本地会议管理</p>
             </div>
             <button
               type="button"
@@ -350,6 +331,77 @@ export default function Home() {
                       </p>
                     </div>
                   </div>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+
+      {/* 待关联会议 */}
+      {unlinkedMeetings.length > 0 && (
+        <div className="mb-8 rounded-lg border border-amber-200 bg-amber-50 p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-amber-700">待关联会议</h2>
+              <p className="mt-1 text-xs text-amber-500">{unlinkedMeetings.length} 场会议尚未关联项目</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate("/meetings")}
+              className="inline-flex items-center gap-1 text-xs text-amber-700 hover:underline"
+            >
+              去关联
+              <ArrowRight className="h-3 w-3" />
+            </button>
+          </div>
+          <ul className="divide-y divide-amber-100">
+            {unlinkedMeetings.slice(0, 3).map((m) => (
+              <li key={m.id} className="flex items-center justify-between gap-3 py-2">
+                <div className="min-w-0">
+                  <p className="truncate text-sm text-neutral-800">{m.subject}</p>
+                  <p className="text-xs text-neutral-500">{m.start_time}</p>
+                </div>
+                <span className="shrink-0 rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-700">未关联</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* 最近纪要 */}
+      {recentMinutes.length > 0 && (
+        <div className="mb-8 rounded-lg border border-neutral-200 bg-white p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-neutral-700">最近生成纪要</h2>
+              <p className="mt-1 text-xs text-neutral-400">最近 5 条会议纪要</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate("/meetings")}
+              className="inline-flex items-center gap-1 text-xs text-[#1A6BD8] hover:underline"
+            >
+              查看全部
+              <ArrowRight className="h-3 w-3" />
+            </button>
+          </div>
+          <ul className="divide-y divide-neutral-100">
+            {recentMinutes.map((m) => {
+              const name = m.file_path.split(/[\\/]/).pop() ?? m.file_path
+              return (
+                <li key={m.id}>
+                  <button
+                    type="button"
+                    onClick={() => navigate("/meetings")}
+                    className="flex w-full items-center justify-between gap-2 py-2 text-left hover:bg-neutral-50"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm text-neutral-800">{name}</p>
+                      <p className="text-xs text-neutral-500">{m.generated_at}</p>
+                    </div>
+                    <ArrowRight className="h-3 w-3 shrink-0 text-neutral-400" />
+                  </button>
                 </li>
               )
             })}
@@ -517,3 +569,9 @@ export default function Home() {
     </div>
   )
 }
+
+
+
+
+
+

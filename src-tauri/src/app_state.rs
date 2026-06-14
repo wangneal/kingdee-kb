@@ -17,6 +17,7 @@ use crate::services::ingestion_queue::IngestionQueue;
 use crate::services::knowledge_graph::GraphStore;
 use crate::services::llm_providers::LLMProviderManager;
 use crate::services::llm_service::LLMService;
+use crate::services::meeting_store::MeetingStore;
 use crate::services::metadata::MetadataStore;
 use crate::services::outline::OutlineStore;
 use crate::services::product_store::ProductStore;
@@ -146,6 +147,8 @@ pub struct AppState {
     pub cancel_flags: Arc<RwLock<HashMap<String, Arc<AtomicBool>>>>,
     /// Cross-Encoder Reranker（精排服务，延迟懒加载）
     pub reranker: RwLock<Option<Arc<RerankerService>>>,
+    /// 会议存储服务（meetings / meeting_transcripts / meeting_minutes）
+    pub meeting_store: Arc<Mutex<MeetingStore>>,
 }
 
 impl AppState {
@@ -320,6 +323,13 @@ impl AppState {
         // 初始化持久化摄入队列
         let ingest_queue = Mutex::new(IngestionQueue::new(data_dir));
 
+        // 初始化 MeetingStore（共享 metadata.db）
+        let meeting_store = {
+            let store = MeetingStore::new(&db_path)?;
+            store.ensure_table()?;
+            Arc::new(Mutex::new(store))
+        };
+
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
             model_manager: Arc::new(RwLock::new(model_manager)),
@@ -354,6 +364,7 @@ impl AppState {
             kb_recompile_status: Arc::new(Mutex::new(KbRecompileStatus::default())),
             cancel_flags: Arc::new(RwLock::new(HashMap::new())),
             reranker: RwLock::new(None),
+            meeting_store,
         })
     }
 
@@ -517,6 +528,9 @@ impl AppState {
             kb_recompile_status: Arc::new(Mutex::new(KbRecompileStatus::default())),
             cancel_flags: Arc::new(RwLock::new(HashMap::new())),
             reranker: RwLock::new(None),
+            meeting_store: Arc::new(Mutex::new(
+                MeetingStore::new(&db_path).expect("Fatal: cannot init MeetingStore"),
+            )),
         }
     }
 }

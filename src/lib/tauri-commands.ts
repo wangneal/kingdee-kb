@@ -1052,7 +1052,14 @@ export interface VideoTranscriptionResult {
 }
 
 export interface MeetingMinutesResult {
+  /** 纪要正文（markdown） */
   minutes: string
+  /** 纪要落盘的绝对路径 */
+  file_path: string
+  /** 登记到 products 表的产物 ID（若登记失败则为 null） */
+  product_id: number | null
+  /** 登记到 meeting_minutes 表的纪要 ID（未关联会议时为 null） */
+  minutes_id: number | null
   generation_time_ms: number
 }
 
@@ -1083,8 +1090,10 @@ export async function transcribeAndIngestVideo(
 /** 根据已有转写稿生成会议纪要。 */
 export async function generateMeetingMinutesFromTranscript(
   transcript: string,
+  projectId: number,
+  title?: string,
 ): Promise<MeetingMinutesResult> {
-  return invoke("generate_meeting_minutes_from_transcript", { transcript })
+  return invoke("generate_meeting_minutes_from_transcript", { transcript, projectId, title })
 }
 
 /** 视频处理进度事件载荷 */
@@ -1352,9 +1361,7 @@ export async function cancelTencentMeeting(
   return invoke("cancel_tencent_meeting", { arguments: argumentsValue })
 }
 
-export async function getTencentMeeting(
-  argumentsValue: Record<string, unknown>,
-): Promise<unknown> {
+export async function getTencentMeeting(argumentsValue: Record<string, unknown>): Promise<unknown> {
   return invoke("get_tencent_meeting", { arguments: argumentsValue })
 }
 
@@ -1578,4 +1585,151 @@ export async function getGraphNeighbors(projectId: number, slug: string): Promis
 /** 构建/重建知识图谱（返回插入边数） */
 export async function buildKnowledgeGraph(projectId: number): Promise<number> {
   return invoke("build_knowledge_graph", { projectId })
+}
+
+
+// ── 会议管理 ──────────────────────────────────────────────────────────────
+
+/** 本地会议 */
+export interface LocalMeeting {
+  id: number
+  project_id: number | null
+  meeting_id: string
+  meeting_code: string | null
+  subject: string
+  host_user_id: string | null
+  invitees_json: string
+  start_time: string
+  end_time: string | null
+  duration_minutes: number | null
+  status: "scheduled" | "ongoing" | "ended" | "cancelled"
+  link_status: "linked" | "unlinked" | "ignored"
+  source: string
+  raw_payload_json: string
+  created_at: string
+  updated_at: string
+}
+
+/** 会议转写 */
+export interface LocalMeetingTranscript {
+  id: number
+  meeting_id: number
+  project_id: number
+  record_file_id: string | null
+  transcript_text: string
+  transcript_raw: string
+  raw_source_id: number | null
+  fetched_at: string
+}
+
+/** 会议纪要 */
+export interface LocalMeetingMinutes {
+  id: number
+  meeting_id: number
+  project_id: number
+  transcript_id: number | null
+  content_md: string
+  official_minutes: string | null
+  decisions_json: string
+  todos_json: string
+  file_path: string
+  product_id: number | null
+  generator: string
+  model_used: string | null
+  generated_at: string
+}
+
+/** 会议 + 转写 + 纪要 复合视图 */
+export interface MeetingWithAssets {
+  meeting: LocalMeeting
+  transcript: LocalMeetingTranscript | null
+  minutes: LocalMeetingMinutes | null
+  project_name: string | null
+}
+
+/** 从腾讯会议 MCP 同步会议到本地（始终 unlinked，需显式关联） */
+export async function syncTencentMeetings(
+  days?: number,
+): Promise<number> {
+  return invoke("sync_tencent_meetings", {
+    days: days ?? null,
+  })
+}
+
+/** 按条件查询本地会议列表 */
+export async function listMeetings(params: {
+  projectId?: number
+  status?: string
+  linkStatus?: string
+  query?: string
+  limit?: number
+  offset?: number
+}): Promise<LocalMeeting[]> {
+  return invoke("list_meetings", {
+    projectId: params.projectId ?? null,
+    status: params.status ?? null,
+    linkStatus: params.linkStatus ?? null,
+    query: params.query ?? null,
+    limit: params.limit ?? null,
+    offset: params.offset ?? null,
+  })
+}
+
+/** 获取会议及其转写、纪要、项目归属 */
+export async function getMeetingWithAssets(id: number): Promise<MeetingWithAssets | null> {
+  return invoke("get_meeting_with_assets", { id })
+}
+
+/** 将会议关联到项目 */
+export async function linkMeetingToProject(meetingId: number, projectId: number): Promise<void> {
+  return invoke("link_meeting_to_project", { meetingId, projectId })
+}
+
+/** 取消会议的项目关联 */
+export async function unlinkMeetingFromProject(meetingId: number): Promise<void> {
+  return invoke("unlink_meeting_from_project", { meetingId })
+}
+
+/** 标记未归属会议为忽略 */
+export async function ignoreUnlinkedMeeting(meetingId: number): Promise<void> {
+  return invoke("ignore_unlinked_meeting", { meetingId })
+}
+
+/** 拉取会议转写并保存到本地 */
+export async function fetchMeetingTranscript(
+  meetingId: number,
+  projectId?: number,
+): Promise<number> {
+  return invoke("fetch_meeting_transcript", {
+    meetingId,
+    projectId: projectId ?? null,
+  })
+}
+
+/** 生成会议纪要 */
+export async function generateMeetingMinutes(
+  meetingId: number,
+): Promise<Record<string, unknown>> {
+  return invoke("generate_meeting_minutes", { meetingId })
+}
+
+/** 重新生成会议纪要 */
+export async function regenerateMeetingMinutes(meetingId: number): Promise<Record<string, unknown>> {
+  return invoke("regenerate_meeting_minutes", { meetingId })
+}
+
+/** 查询最近生成的会议纪要 */
+export async function listRecentMeetingMinutes(
+  projectId?: number,
+  limit?: number,
+): Promise<LocalMeetingMinutes[]> {
+  return invoke("list_recent_meeting_minutes", {
+    projectId: projectId ?? null,
+    limit: limit ?? null,
+  })
+}
+
+/** 读取项目活动日志内容（00_项目管理/活动日志.md）。文件不存在时返回空字符串。 */
+export async function readProjectActivityLog(projectId: number): Promise<string> {
+  return invoke("read_project_activity_log", { projectId })
 }

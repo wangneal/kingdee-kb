@@ -1,3 +1,11 @@
+//! Agent 工具定义模块（待拆分：6,389 行）
+//!
+//! 建议拆分方案（P2 级）：
+//! - rig_tool/search.rs: search-knowledge, search-memories, search-files 等检索工具
+//! - rig_tool/deliverable.rs: generate-deliverable, use-skill, run-skill-script 等交付物工具
+//! - rig_tool/meeting.rs: create-meeting, query-meeting, generate-minutes 等会议工具
+//! - rig_tool/core.rs: 共享类型 (ToolEffect, ToolOutputLimits, ToolRateLimiter) 和注册函数
+
 use regex::Regex;
 use rig_core::tool::ToolDyn;
 use rig_core::wasm_compat::WasmBoxedFuture;
@@ -12,6 +20,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 
 use crate::services::agent_timeout::{retry_delay, MAX_RETRIES};
+use crate::services::meeting_minutes_service::{
+    GenerateMeetingMinutesInput, MeetingMinutesService, MeetingMinutesSource,
+};
+use crate::services::meeting_store::{MeetingFilter, MeetingStore, SaveTranscript};
+use crate::services::raw_source::RawSourceStore;
+use crate::services::tencent_meeting_mcp::TencentMeetingMcpClient;
 use crate::services::wiki_page::WikiPageStore;
 
 /// 用户回答澄清问题的超时时间（秒）
@@ -203,6 +217,62 @@ const RUN_SKILL_SCRIPT_PROFILE: RigToolProfile = RigToolProfile {
     disable_allowed: true,
 };
 
+// ── 腾讯会议 Agent 工具 Profile ────────────────────────────────────────────
+
+const TENCENT_SCHEDULE_MEETING_PROFILE: RigToolProfile = RigToolProfile {
+    id: "tencent-schedule-meeting",
+    effect: ToolEffect::UserInteraction,
+    retry: ToolRetryPolicy::None,
+    schema_guard: true,
+    audit: true,
+    disable_allowed: true,
+};
+
+const TENCENT_LIST_MEETINGS_PROFILE: RigToolProfile = RigToolProfile {
+    id: "tencent-list-meetings",
+    effect: ToolEffect::ReadOnly,
+    retry: ToolRetryPolicy::Exponential,
+    schema_guard: true,
+    audit: true,
+    disable_allowed: true,
+};
+
+const TENCENT_CANCEL_MEETING_PROFILE: RigToolProfile = RigToolProfile {
+    id: "tencent-cancel-meeting",
+    effect: ToolEffect::UserInteraction,
+    retry: ToolRetryPolicy::None,
+    schema_guard: true,
+    audit: true,
+    disable_allowed: true,
+};
+
+const TENCENT_GET_MEETING_PROFILE: RigToolProfile = RigToolProfile {
+    id: "tencent-get-meeting",
+    effect: ToolEffect::ReadOnly,
+    retry: ToolRetryPolicy::Exponential,
+    schema_guard: true,
+    audit: true,
+    disable_allowed: true,
+};
+
+const TENCENT_FETCH_TRANSCRIPT_PROFILE: RigToolProfile = RigToolProfile {
+    id: "tencent-fetch-transcript",
+    effect: ToolEffect::SkillExecution,
+    retry: ToolRetryPolicy::Exponential,
+    schema_guard: true,
+    audit: true,
+    disable_allowed: true,
+};
+
+const GENERATE_MEETING_MINUTES_PROFILE: RigToolProfile = RigToolProfile {
+    id: "generate-meeting-minutes",
+    effect: ToolEffect::SkillExecution,
+    retry: ToolRetryPolicy::Exponential,
+    schema_guard: true,
+    audit: true,
+    disable_allowed: true,
+};
+
 pub fn rig_tool_profiles() -> Vec<RigToolProfileInfo> {
     all_tool_profiles()
         .iter()
@@ -224,6 +294,12 @@ fn all_tool_profiles() -> &'static [RigToolProfile] {
         QUESTION_PROFILE,
         SETUP_SKILL_ENV_PROFILE,
         RUN_SKILL_SCRIPT_PROFILE,
+        TENCENT_SCHEDULE_MEETING_PROFILE,
+        TENCENT_LIST_MEETINGS_PROFILE,
+        TENCENT_CANCEL_MEETING_PROFILE,
+        TENCENT_GET_MEETING_PROFILE,
+        TENCENT_FETCH_TRANSCRIPT_PROFILE,
+        GENERATE_MEETING_MINUTES_PROFILE,
     ]
 }
 
@@ -1901,6 +1977,7 @@ impl Tool for SearchKnowledgeTool {
                                             .project_id
                                             .map(|id| id.to_string())
                                             .unwrap_or_default(),
+                                        parent_chunk_id: None,
                                     });
                                 }
                                 crate::services::verification::append_session_rag_results(
@@ -4392,6 +4469,497 @@ fn is_registerable_output_file(path: &Path) -> bool {
     )
 }
 
+// ── 腾讯会议 Agent 工具辅助函数 ──────────────────────────────────────
+
+const MEETING_KEYRING_SERVICE: &str = "com.neal.kingdee.kb";
+const MEETING_TOKEN_ACCOUNT: &str = "tencent_meeting_token";
+
+fn read_meeting_token() -> Result<String, String> {
+    let entry = keyring::Entry::new(MEETING_KEYRING_SERVICE, MEETING_TOKEN_ACCOUNT)
+        .map_err(|e| format!("无法访问系统凭据存储: {}", e))?;
+    entry
+        .get_password()
+        .map_err(|_| "腾讯会议 Token 未配置，请在设置中配置后再使用会议工具".to_string())
+}
+
+fn build_mcp_client() -> Result<TencentMeetingMcpClient, String> {
+    let token = read_meeting_token()?;
+    Ok(TencentMeetingMcpClient::new(token))
+}
+
+// ── 10. TencentScheduleMeetingTool ──────────────────────────────────
+
+pub struct TencentScheduleMeetingTool {
+    pub project_id: Option<i64>,
+    pub meeting_store: Arc<Mutex<MeetingStore>>,
+}
+
+#[derive(Deserialize)]
+pub struct ScheduleMeetingArgs {
+    pub subject: String,
+    pub start_time: String,
+    pub end_time: String,
+    #[serde(default)]
+    pub invitees: Vec<String>,
+}
+
+impl Tool for TencentScheduleMeetingTool {
+    const NAME: &'static str = "tencent-schedule-meeting";
+    type Error = ToolError;
+    type Args = ScheduleMeetingArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "预约腾讯会议。需要提供会议主题、开始时间和结束时间。".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "subject": { "type": "string", "description": "会议主题" },
+                    "start_time": { "type": "string", "description": "开始时间，格式: YYYY-MM-DD HH:MM" },
+                    "end_time": { "type": "string", "description": "结束时间，格式: YYYY-MM-DD HH:MM" },
+                    "invitees": { "type": "array", "items": { "type": "string" }, "description": "邀请人列表（可选）" }
+                },
+                "required": ["subject", "start_time", "end_time"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let client = build_mcp_client().map_err(ToolError::msg)?;
+        let mut params = json!({
+            "subject": args.subject,
+            "start_time": args.start_time,
+            "end_time": args.end_time,
+        });
+        if !args.invitees.is_empty() {
+            params["invitees"] = json!(args.invitees);
+        }
+        let result = client
+            .schedule_meeting(params)
+            .await
+            .map_err(ToolError::msg)?;
+
+        // 尝试将预约的会议保存到本地并关联项目
+        if let Some(project_id) = self.project_id {
+            // 从 JSON-RPC 信封中提取 MCP content text
+            let content_text = result
+                .pointer("/result/content")
+                .and_then(|c| c.as_array())
+                .map(|items| {
+                    items.iter()
+                        .filter_map(|item| {
+                            if item.get("type").and_then(|v| v.as_str()) == Some("text") {
+                                item.get("text").and_then(|v| v.as_str())
+                            } else { None }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+
+            // 尝试从 content text 中解析 meeting_id（可能是 JSON 或纯文本）
+            let meeting_id_opt = serde_json::from_str::<Value>(&content_text).ok()
+                .and_then(|v| v.get("meeting_id").and_then(|id| id.as_str()).map(String::from))
+                .or_else(|| {
+                    // 尝试从文本中匹配会议 ID（如 "会议ID: 123456"）
+                    content_text.find("会议ID").or(content_text.find("meeting_id"))
+                        .and_then(|_| {
+                            let re = regex::Regex::new(r"(?:会议ID|meeting_id)[:：\s=]*(\w+)").ok()?;
+                            re.captures(&content_text).and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+                        })
+                });
+
+            if let Some(meeting_id_str) = meeting_id_opt {
+                let upsert = crate::services::meeting_store::TencentMeetingUpsert {
+                    meeting_id: meeting_id_str,
+                    meeting_code: None,
+                    subject: args.subject.clone(),
+                    host_user_id: None,
+                    invitees_json: serde_json::to_string(&args.invitees).unwrap_or_default(),
+                    start_time: args.start_time.clone(),
+                    end_time: Some(args.end_time.clone()),
+                    duration_minutes: None,
+                    status: "scheduled".to_string(),
+                    raw_payload_json: serde_json::to_string(&result).unwrap_or_default(),
+                };
+                if let Ok(store) = self.meeting_store.lock() {
+                    if let Err(e) = store.upsert_from_tencent(&upsert, Some(project_id)) {
+                        tracing::warn!("[TencentScheduleMeeting] 本地保存会议失败: {}", e);
+                    }
+                }
+            }
+        }
+
+        Ok(format!("会议预约成功: {}", result))
+    }
+}
+
+// ── 11. TencentListMeetingsTool ──────────────────────────────────────
+
+pub struct TencentListMeetingsTool {
+    pub project_id: Option<i64>,
+    pub meeting_store: Arc<Mutex<MeetingStore>>,
+}
+
+#[derive(Deserialize)]
+pub struct ListMeetingsArgs {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+impl Tool for TencentListMeetingsTool {
+    const NAME: &'static str = "tencent-list-meetings";
+    type Error = ToolError;
+    type Args = ListMeetingsArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "查询本地已同步的腾讯会议列表，默认按当前项目过滤。可指定状态（scheduled/ended/cancelled）和关键词搜索。".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "status": { "type": "string", "description": "会议状态: scheduled、ongoing、ended 或 cancelled（可选）" },
+                    "query": { "type": "string", "description": "搜索关键词（可选）" },
+                    "limit": { "type": "integer", "description": "返回数量限制（可选，默认 20）" }
+                }
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let store = self.meeting_store.lock().map_err(|e| ToolError::msg(e.to_string()))?;
+        let filter = MeetingFilter {
+            project_id: self.project_id,
+            status: args.status,
+            link_status: None,
+            query: args.query,
+            limit: Some(args.limit.unwrap_or(20)),
+            offset: None,
+        };
+        let meetings = store.list(&filter).map_err(ToolError::msg)?;
+        if meetings.is_empty() {
+            return Ok("未找到匹配的会议记录。".to_string());
+        }
+        let mut output = format!("找到 {} 场会议：\n\n", meetings.len());
+        for m in &meetings {
+            output.push_str(&format!(
+                "- [{}] {} | 时间: {} ~ {} | 状态: {} | 项目ID: {:?}\n",
+                m.id,
+                m.subject,
+                m.start_time,
+                m.end_time.as_deref().unwrap_or("-"),
+                m.status,
+                m.project_id,
+            ));
+        }
+        Ok(output)
+    }
+}
+
+// ── 12. TencentCancelMeetingTool ──────────────────────────────────────
+
+pub struct TencentCancelMeetingTool {
+    pub meeting_store: Arc<Mutex<MeetingStore>>,
+}
+
+#[derive(Deserialize)]
+pub struct CancelMeetingArgs {
+    pub meeting_id: i64,
+    pub reason: Option<String>,
+}
+
+impl Tool for TencentCancelMeetingTool {
+    const NAME: &'static str = "tencent-cancel-meeting";
+    type Error = ToolError;
+    type Args = CancelMeetingArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "取消腾讯会议。需要提供本地会议 ID。取消前请确认用户已明确同意。".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "meeting_id": { "type": "integer", "description": "本地会议 ID" },
+                    "reason": { "type": "string", "description": "取消原因（可选）" }
+                },
+                "required": ["meeting_id"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let tencent_meeting_id = {
+            let store = self.meeting_store.lock().map_err(|e| ToolError::msg(e.to_string()))?;
+            let meeting = store
+                .get(args.meeting_id)
+                .map_err(ToolError::msg)?
+                .ok_or_else(|| ToolError::msg(format!("会议 id={} 不存在", args.meeting_id)))?;
+            if meeting.meeting_id.is_empty() { return Err(ToolError::msg("该会议没有腾讯会议 ID，无法取消")); }
+            meeting.meeting_id.clone()
+        };
+
+        let client = build_mcp_client().map_err(ToolError::msg)?;
+        let mut params = json!({ "meeting_id": tencent_meeting_id });
+        if let Some(reason) = args.reason {
+            params["reason"] = json!(reason);
+        }
+        let result = client.cancel_meeting(params).await.map_err(ToolError::msg)?;
+        Ok(format!("会议已取消: {}", result))
+    }
+}
+
+// ── 13. TencentGetMeetingTool ─────────────────────────────────────────
+
+pub struct TencentGetMeetingTool {
+    pub meeting_store: Arc<Mutex<MeetingStore>>,
+}
+
+#[derive(Deserialize)]
+pub struct GetMeetingArgs {
+    pub meeting_id: i64,
+}
+
+impl Tool for TencentGetMeetingTool {
+    const NAME: &'static str = "tencent-get-meeting";
+    type Error = ToolError;
+    type Args = GetMeetingArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "获取本地会议的详细信息，包括转写和纪要状态。".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "meeting_id": { "type": "integer", "description": "本地会议 ID" }
+                },
+                "required": ["meeting_id"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let store = self.meeting_store.lock().map_err(|e| ToolError::msg(e.to_string()))?;
+        let assets = store
+            .get_with_assets(args.meeting_id)
+            .map_err(ToolError::msg)?
+            .ok_or_else(|| ToolError::msg(format!("会议 id={} 不存在", args.meeting_id)))?;
+
+        let m = &assets.meeting;
+        let mut output = format!(
+            "会议: {}\nID: {}\n腾讯会议ID: {:?}\n会议号: {:?}\n时间: {} ~ {}\n状态: {}\n项目ID: {:?}\n关联状态: {}\n",
+            m.subject,
+            m.id,
+            m.meeting_id,
+            m.meeting_code,
+            m.start_time,
+            m.end_time.as_deref().unwrap_or("-"),
+            m.status,
+            m.project_id,
+            m.link_status,
+        );
+        output.push_str(&format!(
+            "\n转写: {}\n纪要: {}\n",
+            if assets.transcript.is_some() { "已有" } else { "无" },
+            if assets.minutes.is_some() { "已有" } else { "无" },
+        ));
+        if let Some(minutes) = &assets.minutes {
+            output.push_str(&format!("纪要文件: {}\n", minutes.file_path));
+        }
+        Ok(output)
+    }
+}
+
+// ── 14. TencentFetchTranscriptTool ────────────────────────────────────
+
+pub struct TencentFetchTranscriptTool {
+    pub meeting_store: Arc<Mutex<MeetingStore>>,
+}
+
+#[derive(Deserialize)]
+pub struct FetchTranscriptArgs {
+    pub meeting_id: i64,
+}
+
+impl Tool for TencentFetchTranscriptTool {
+    const NAME: &'static str = "tencent-fetch-transcript";
+    type Error = ToolError;
+    type Args = FetchTranscriptArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "从腾讯会议拉取转写文本并保存到本地。需要会议已关联项目。".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "meeting_id": { "type": "integer", "description": "本地会议 ID" }
+                },
+                "required": ["meeting_id"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let (meeting, project_id) = {
+            let store = self.meeting_store.lock().map_err(|e| ToolError::msg(e.to_string()))?;
+            let meeting = store
+                .get(args.meeting_id)
+                .map_err(ToolError::msg)?
+                .ok_or_else(|| ToolError::msg(format!("会议 id={} 不存在", args.meeting_id)))?;
+            let pid = meeting.project_id.ok_or_else(|| {
+                ToolError::msg("会议未关联项目，请先关联项目后再拉取转写")
+            })?;
+            (meeting, pid)
+        };
+
+        if meeting.meeting_id.is_empty() { return Err(ToolError::msg("该会议没有腾讯会议 ID")); }
+        let tencent_id = &meeting.meeting_id;
+
+        let client = build_mcp_client().map_err(ToolError::msg)?;
+        let result = client
+            .fetch_transcript(
+                Some(tencent_id.to_string()),
+                meeting.meeting_code.clone(),
+                None,
+                true,
+            )
+            .await
+            .map_err(ToolError::msg)?;
+
+        let transcript_text = result
+            .transcript;
+        if transcript_text.is_empty() {
+            return Ok("腾讯会议未返回转写文本，可能尚未生成或已过期。".to_string());
+        }
+
+        let input = SaveTranscript {
+            meeting_id: args.meeting_id,
+            project_id,
+            record_file_id: Some(result.record_file_id),
+            transcript_text: transcript_text.clone(),
+            // 官方纪要存入 transcript_raw，供后续 generate_meeting_minutes 读取
+            transcript_raw: crate::services::meeting_store::build_transcript_raw(
+                result.minutes.as_deref(),
+            ),
+            raw_source_id: None,
+        };
+
+        let store = self.meeting_store.lock().map_err(|e| ToolError::msg(e.to_string()))?;
+        let tid = store.save_transcript(&input).map_err(ToolError::msg)?;
+
+        Ok(format!(
+            "转写已保存（ID: {}），共 {} 字。",
+            tid,
+            transcript_text.len()
+        ))
+    }
+}
+
+// ── 15. GenerateMeetingMinutesTool ────────────────────────────────────
+
+pub struct GenerateMeetingMinutesTool {
+    pub project_id: Option<i64>,
+    pub meeting_store: Arc<Mutex<MeetingStore>>,
+    pub project_store: Arc<Mutex<ProjectStore>>,
+    pub raw_sources: Arc<Mutex<RawSourceStore>>,
+    pub products: Arc<Mutex<ProductStore>>,
+    pub llm: LLMService,
+    pub data_dir: PathBuf,
+}
+
+#[derive(Deserialize)]
+pub struct GenerateMeetingMinutesArgs {
+    pub meeting_id: i64,
+    #[serde(default)]
+    pub project_id: Option<i64>,
+}
+
+impl Tool for GenerateMeetingMinutesTool {
+    const NAME: &'static str = "generate-meeting-minutes";
+    type Error = ToolError;
+    type Args = GenerateMeetingMinutesArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "根据会议转写生成结构化项目纪要。需要会议已有转写文本且已关联项目。".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "meeting_id": { "type": "integer", "description": "本地会议 ID" },
+                    "project_id": { "type": "integer", "description": "项目 ID（可选，默认使用会议关联的项目）" }
+                },
+                "required": ["meeting_id"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let (meeting, transcript_text, official_minutes) = {
+            let store = self.meeting_store.lock().map_err(|e| ToolError::msg(e.to_string()))?;
+            let meeting = store
+                .get(args.meeting_id)
+                .map_err(ToolError::msg)?
+                .ok_or_else(|| ToolError::msg(format!("会议 id={} 不存在", args.meeting_id)))?;
+            let t = store
+                .get_transcript(args.meeting_id)
+                .map_err(ToolError::msg)?
+                .ok_or_else(|| ToolError::msg("会议尚无转写文本，请先拉取转写"))?;
+            // 从 transcript_raw 读出官方纪要（拉取转写时存入）
+            let official = crate::services::meeting_store::parse_official_minutes(&t.transcript_raw);
+            (meeting, t.transcript_text, official)
+        };
+
+        let project_id = meeting
+            .project_id
+            .ok_or_else(|| ToolError::msg("该会议尚未关联项目，请先将会议关联到项目再生成纪要"))?;
+
+        let input = GenerateMeetingMinutesInput {
+            project_id,
+            meeting_id: Some(args.meeting_id),
+            title: meeting.subject.clone(),
+            start_time: Some(meeting.start_time.clone()),
+            end_time: meeting.end_time.clone(),
+            meeting_code: meeting.meeting_code.clone(),
+            transcript: transcript_text,
+            official_minutes,
+            source: MeetingMinutesSource::TencentMeeting,
+        };
+
+        let output = MeetingMinutesService::generate(
+            &input,
+            &self.data_dir,
+            &self.project_store,
+            &self.meeting_store,
+            &self.raw_sources,
+            &self.products,
+            &self.llm,
+        )
+        .map_err(ToolError::msg)?;
+
+        Ok(format!(
+            "纪要已生成并保存到: {}\n决策项: {}\n待办项: {}",
+            output.file_path,
+            output.decisions_json,
+            output.todos_json,
+        ))
+    }
+}
+
 /// 创建所有 rig 工具实例。
 ///
 /// 所有工具都连接到真正的后端服务，返回真实结果。
@@ -4412,12 +4980,14 @@ pub fn all_rig_tools(
     extra_search_project_ids: Vec<String>,
     wiki_pages: Option<Arc<Mutex<WikiPageStore>>>,
     session_id: Option<String>, // 新增：会话ID，用于缓存 RAG 检索结果
+    meeting_store: Option<Arc<Mutex<MeetingStore>>>,
+    raw_sources: Option<Arc<Mutex<RawSourceStore>>>,
 ) -> Vec<Box<dyn rig_core::tool::ToolDyn>> {
     let audit_context = ToolAuditContext {
         session_id: session_id.clone(),
         assistant_message_id: None,
     };
-    vec![
+    let mut tools = vec![
         profiled_tool_with_context(
             &data_dir,
             output_limits,
@@ -4430,7 +5000,7 @@ pub fn all_rig_tools(
                 bm25.clone(),
                 metadata.clone(),
                 wiki_pages.clone(),
-                session_id, // 传递会话ID
+                session_id.clone(), // 传递会话ID
             ),
             audit_context.clone(),
         ),
@@ -4473,7 +5043,7 @@ pub fn all_rig_tools(
             &data_dir,
             output_limits,
             RECOMMEND_QUESTIONS_PROFILE,
-            RecommendQuestionsTool::new(llm),
+            RecommendQuestionsTool::new(llm.clone()),
             audit_context.clone(),
         ),
         profiled_tool_with_context(
@@ -4483,7 +5053,94 @@ pub fn all_rig_tools(
             UseSkillTool { skill_manager },
             audit_context,
         ),
-    ]
+    ];
+
+    // ── 腾讯会议工具（仅在 meeting_store 可用时注册）──────────────
+    if let Some(ms) = meeting_store {
+        tools.push(profiled_tool_with_context(
+            &data_dir,
+            output_limits,
+            TENCENT_SCHEDULE_MEETING_PROFILE,
+            TencentScheduleMeetingTool { project_id, meeting_store: ms.clone() },
+            ToolAuditContext {
+                session_id: session_id.clone(),
+                assistant_message_id: None,
+            },
+        ));
+        tools.push(profiled_tool_with_context(
+            &data_dir,
+            output_limits,
+            TENCENT_LIST_MEETINGS_PROFILE,
+            TencentListMeetingsTool {
+                project_id,
+                meeting_store: ms.clone(),
+            },
+            ToolAuditContext {
+                session_id: session_id.clone(),
+                assistant_message_id: None,
+            },
+        ));
+        tools.push(profiled_tool_with_context(
+            &data_dir,
+            output_limits,
+            TENCENT_CANCEL_MEETING_PROFILE,
+            TencentCancelMeetingTool {
+                meeting_store: ms.clone(),
+            },
+            ToolAuditContext {
+                session_id: session_id.clone(),
+                assistant_message_id: None,
+            },
+        ));
+        tools.push(profiled_tool_with_context(
+            &data_dir,
+            output_limits,
+            TENCENT_GET_MEETING_PROFILE,
+            TencentGetMeetingTool {
+                meeting_store: ms.clone(),
+            },
+            ToolAuditContext {
+                session_id: session_id.clone(),
+                assistant_message_id: None,
+            },
+        ));
+        tools.push(profiled_tool_with_context(
+            &data_dir,
+            output_limits,
+            TENCENT_FETCH_TRANSCRIPT_PROFILE,
+            TencentFetchTranscriptTool {
+                meeting_store: ms.clone(),
+            },
+            ToolAuditContext {
+                session_id: session_id.clone(),
+                assistant_message_id: None,
+            },
+        ));
+
+        // generate-meeting-minutes 需要额外的 stores
+        if let Some(rs) = raw_sources {
+            tools.push(profiled_tool_with_context(
+                &data_dir,
+                output_limits,
+                GENERATE_MEETING_MINUTES_PROFILE,
+                GenerateMeetingMinutesTool {
+                    project_id,
+                    meeting_store: ms.clone(),
+                    project_store: _project_store.clone(),
+                    raw_sources: rs,
+                    products: _products.clone(),
+                    llm: llm.clone(),
+                    data_dir: data_dir.clone(),
+                },
+                ToolAuditContext {
+                    session_id,
+                    assistant_message_id: None,
+                },
+            ));
+        }
+    }
+
+    tools
 }
 
 pub fn runtime_rig_tools(
@@ -5740,3 +6397,6 @@ mod tests {
         );
     }
 }
+
+
+

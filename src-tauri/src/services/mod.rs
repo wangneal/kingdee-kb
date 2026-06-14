@@ -21,6 +21,9 @@ pub mod ingestion_queue;
 pub mod knowledge_graph;
 pub mod llm_providers;
 pub mod llm_service;
+pub mod meeting_minutes_service;
+pub mod meeting_store;
+pub mod meeting_sync;
 pub mod memory;
 pub mod metadata;
 pub mod missing_detection;
@@ -68,3 +71,4 @@ pub mod whisper_service;
 pub mod wiki_page;
 pub mod wikilink_parser;
 pub mod xlsx_filler;
+

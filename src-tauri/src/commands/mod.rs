@@ -8,6 +8,7 @@ pub mod kb_compilation;
 pub mod knowledge_graph;
 pub mod llm_provider;
 pub mod media;
+pub mod meeting;
 pub mod outline;
 pub mod product;
 pub mod project;

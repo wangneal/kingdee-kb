@@ -7,6 +7,9 @@ use crate::services::audio_capture::AudioCapture;
 use crate::services::llm_service::ChatMessage;
 use crate::services::model_downloader;
 use crate::services::token::truncate_to_tokens;
+use crate::services::meeting_minutes_service::{
+    GenerateMeetingMinutesInput, MeetingMinutesService, MeetingMinutesSource,
+};
 use crate::services::video_transcriber::{
     MeetingMinutesResult, VideoPipelineResult, VideoTranscriptionResult,
 };
@@ -543,12 +546,39 @@ pub async fn transcribe_and_ingest_video(
             0.0,
             "正在生成会议纪要...",
         );
-        Some(
-            crate::services::video_transcriber::generate_meeting_minutes(
-                &transcription.text,
-                &state.llm,
-            )?,
-        )
+
+        // 使用统一纪要服务
+        let input = GenerateMeetingMinutesInput {
+            project_id,
+            meeting_id: None,
+            title: title.clone(),
+            start_time: None,
+            end_time: None,
+            meeting_code: None,
+            transcript: transcription.text.clone(),
+            official_minutes: None,
+            source: MeetingMinutesSource::VideoImport,
+        };
+
+        let start = std::time::Instant::now();
+        let output = MeetingMinutesService::generate(
+            &input,
+            &state.data_dir,
+            &state.project_store,
+            &state.meeting_store,
+            &state.raw_sources,
+            &state.products,
+            &state.llm,
+        )?;
+
+        // transcribe_and_ingest_video 中的纪要生成路径
+        Some(MeetingMinutesResult {
+            minutes: output.content_md,
+            file_path: output.file_path,
+            product_id: output.product_id,
+            minutes_id: output.minutes_id,
+            generation_time_ms: start.elapsed().as_millis() as u64,
+        })
     } else {
         None
     };
@@ -567,11 +597,45 @@ pub async fn transcribe_and_ingest_video(
 pub async fn generate_meeting_minutes_from_transcript(
     state: State<'_, AppState>,
     transcript: String,
+    project_id: i64,
+    title: Option<String>,
 ) -> Result<MeetingMinutesResult, String> {
     if transcript.is_empty() {
         return Err("转写文本为空".to_string());
     }
-    crate::services::video_transcriber::generate_meeting_minutes(&transcript, &state.llm)
+
+    let title = title.unwrap_or_else(|| "手动转写纪要".to_string());
+
+    let input = GenerateMeetingMinutesInput {
+        project_id,
+        meeting_id: None,
+        title,
+        start_time: None,
+        end_time: None,
+        meeting_code: None,
+        transcript,
+        official_minutes: None,
+        source: MeetingMinutesSource::Manual,
+    };
+
+    let start = std::time::Instant::now();
+    let output = MeetingMinutesService::generate(
+        &input,
+        &state.data_dir,
+        &state.project_store,
+        &state.meeting_store,
+        &state.raw_sources,
+        &state.products,
+        &state.llm,
+    )?;
+
+    Ok(MeetingMinutesResult {
+        minutes: output.content_md,
+        file_path: output.file_path,
+        product_id: output.product_id,
+        minutes_id: output.minutes_id,
+        generation_time_ms: start.elapsed().as_millis() as u64,
+    })
 }
 
 // ─── ASR Provider 管理命令 ────────────────────────────────

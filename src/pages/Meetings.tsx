@@ -2,121 +2,92 @@ import {
   AlertCircle,
   Calendar,
   CalendarPlus,
+  CheckCircle2,
   ChevronRight,
   Clock,
   ExternalLink,
   FileText,
+  Link2,
   Loader2,
   Mic,
   RefreshCw,
+  ScrollText,
   Search,
   Sparkles,
+  Unlink,
   X,
 } from "lucide-react"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useToast } from "../components/Toast"
 import { useProject } from "../contexts/ProjectContext"
-import { PRODUCT_NAME } from "../lib/constants"
 import { formatAppError } from "../lib/app-error"
+import { PRODUCT_NAME } from "../lib/constants"
 import {
   cancelTencentMeeting,
   convertTencentMeetingTimestamp,
-  fetchTencentMeetingTranscript,
-  getTencentMeeting,
-  getTencentMeetingConfigStatus,
-  listTencentUserEndedMeetings,
-  listTencentUserMeetings,
+  fetchMeetingTranscript,
+  generateMeetingMinutes,
+  getMeetingWithAssets,
+  ignoreUnlinkedMeeting,
+  linkMeetingToProject,
+  listMeetings,
+  readProjectActivityLog,
   scheduleTencentMeeting,
+  syncTencentMeetings,
+  type LocalMeeting,
+  type MeetingWithAssets,
 } from "../lib/tauri-commands"
 
-interface MeetingItem {
-  meeting_id?: string
-  meeting_code?: string
-  subject?: string
-  start_time?: string
-  end_time?: string
-  status?: string
-  host?: { nick_name?: string; user_id?: string }
-  [key: string]: unknown
-}
+type Tab = "linked" | "unlinked" | "all"
 
-type Tab = "upcoming" | "history"
-
-function extractMeetings(payload: unknown): MeetingItem[] {
-  if (!payload) return []
-  const visit = (value: unknown, depth: number): MeetingItem | null => {
-    if (depth > 5 || !value || typeof value !== "object") return null
-    const obj = value as Record<string, unknown>
-    if (
-      (typeof obj.meeting_id === "string" || typeof obj.meeting_code === "string") &&
-      (typeof obj.subject === "string" || typeof obj.start_time === "string")
-    ) {
-      return obj as MeetingItem
-    }
-    if (Array.isArray(obj.meeting_info_list)) {
-      for (const child of obj.meeting_info_list) {
-        const found = visit(child, depth + 1)
-        if (found) return found
-      }
-    }
-    if (Array.isArray(obj.meeting_list)) {
-      for (const child of obj.meeting_list) {
-        const found = visit(child, depth + 1)
-        if (found) return found
-      }
-    }
-    if (Array.isArray(obj)) {
-      for (const child of obj) {
-        const found = visit(child, depth + 1)
-        if (found) return found
-      }
-    }
-    if (Array.isArray(obj.meetings)) {
-      for (const child of obj.meetings) {
-        const found = visit(child, depth + 1)
-        if (found) return found
-      }
-    }
-    return null
-  }
-  const root = (payload as Record<string, unknown>)?.result ?? payload
-  const container = (root as Record<string, unknown>)?.meeting_info_list
-  if (Array.isArray(container)) {
-    return container.filter((item): item is MeetingItem => !!item)
-  }
-  const list = (root as Record<string, unknown>)?.meeting_list
-  if (Array.isArray(list)) {
-    return list.filter((item): item is MeetingItem => !!item)
-  }
-  return []
-}
-
-function formatDateTime(iso?: string): string {
+function formatDateTime(iso?: string | null): string {
   if (!iso) return "—"
-  const cleaned = iso.replace("T", " ").replace(/[+-]\d{2}:\d{2}$/, "").replace(/\.\d+$/, "")
+  const cleaned = iso
+    .replace("T", " ")
+    .replace(/[+-]\d{2}:\d{2}$/, "")
+    .replace(/\.\d+$/, "")
   return cleaned
 }
 
-function sortByStart(items: MeetingItem[], dir: "asc" | "desc"): MeetingItem[] {
-  return [...items].sort((a, b) => {
-    const ta = Date.parse(a.start_time ?? "") || 0
-    const tb = Date.parse(b.start_time ?? "") || 0
-    return dir === "asc" ? ta - tb : tb - ta
-  })
+function statusLabel(status: string): string {
+  switch (status) {
+    case "scheduled": return "未开始"
+    case "ongoing": return "进行中"
+    case "ended": return "已结束"
+    case "cancelled": return "已取消"
+    default: return status
+  }
+}
+
+function statusColor(status: string): string {
+  switch (status) {
+    case "scheduled": return "bg-blue-50 text-blue-700"
+    case "ongoing": return "bg-green-50 text-green-700"
+    case "ended": return "bg-neutral-100 text-neutral-600"
+    case "cancelled": return "bg-red-50 text-red-600"
+    default: return "bg-neutral-100 text-neutral-600"
+  }
 }
 
 export default function Meetings() {
   const { currentProjectId } = useProject()
   const toast = useToast()
-  void currentProjectId
 
-  const [configured, setConfigured] = useState<boolean | null>(null)
-  const [tab, setTab] = useState<Tab>("upcoming")
-  const [upcoming, setUpcoming] = useState<MeetingItem[]>([])
-  const [history, setHistory] = useState<MeetingItem[]>([])
+  const [tab, setTab] = useState<Tab>("linked")
+  const [meetings, setMeetings] = useState<LocalMeeting[]>([])
   const [loading, setLoading] = useState(false)
+  const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState("")
 
+  // 详情面板
+  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [detail, setDetail] = useState<MeetingWithAssets | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [transcriptBusy, setTranscriptBusy] = useState(false)
+  const [minutesBusy, setMinutesBusy] = useState(false)
+
+  // 预约会议
   const [showCreate, setShowCreate] = useState(false)
   const [createSubject, setCreateSubject] = useState("")
   const [createStart, setCreateStart] = useState("")
@@ -124,48 +95,128 @@ export default function Meetings() {
   const [createBusy, setCreateBusy] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
 
-  const [activeMeeting, setActiveMeeting] = useState<MeetingItem | null>(null)
-  const [activeDetail, setActiveDetail] = useState<unknown>(null)
-  const [transcriptBusy, setTranscriptBusy] = useState(false)
-  const [transcriptResult, setTranscriptResult] = useState<{
-    transcript: string
-    minutes?: string | null
-  } | null>(null)
-
-  const refreshConfig = useCallback(async () => {
-    try {
-      const status = await getTencentMeetingConfigStatus()
-      setConfigured(status.configured)
-    } catch (err) {
-      setConfigured(false)
-      setError(formatAppError(err))
-    }
-  }, [])
+  // 活动日志
+  const [activityLog, setActivityLog] = useState<string | null>(null)
+  const [activityLoading, setActivityLoading] = useState(false)
 
   const refreshList = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const [up, ended] = await Promise.all([
-        listTencentUserMeetings({}),
-        listTencentUserEndedMeetings({}),
-      ])
-      setUpcoming(sortByStart(extractMeetings(up), "asc"))
-      setHistory(sortByStart(extractMeetings(ended), "desc"))
+      const params: Parameters<typeof listMeetings>[0] = { limit: 200 }
+      if (tab === "linked") {
+        params.projectId = currentProjectId ?? undefined
+        params.linkStatus = "linked"
+      } else if (tab === "unlinked") {
+        params.linkStatus = "unlinked"
+      }
+      if (query.trim()) {
+        params.query = query.trim()
+      }
+      const result = await listMeetings(params)
+      setMeetings(result)
     } catch (err) {
       setError(formatAppError(err))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [tab, currentProjectId, query])
 
   useEffect(() => {
-    refreshConfig()
-  }, [refreshConfig])
+    void refreshList()
+  }, [refreshList])
 
-  useEffect(() => {
-    if (configured) refreshList()
-  }, [configured, refreshList])
+  async function handleSync() {
+    setSyncing(true)
+    try {
+      const count = await syncTencentMeetings(30)
+      toast.success(`已同步 ${count} 场会议`)
+      void refreshList()
+    } catch (err) {
+      toast.error(`同步失败：${formatAppError(err)}`)
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  async function handleOpenDetail(id: number) {
+    setSelectedId(id)
+    setDetailLoading(true)
+    setDetail(null)
+    try {
+      const result = await getMeetingWithAssets(id)
+      setDetail(result)
+    } catch (err) {
+      toast.error(formatAppError(err))
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+
+  async function handleLinkToProject(meetingId: number) {
+    if (!currentProjectId) {
+      toast.error("请先选择一个项目")
+      return
+    }
+    try {
+      await linkMeetingToProject(meetingId, currentProjectId)
+      toast.success("已关联到当前项目")
+      void refreshList()
+      if (selectedId === meetingId) void handleOpenDetail(meetingId)
+    } catch (err) {
+      toast.error(formatAppError(err))
+    }
+  }
+
+  async function handleIgnore(meetingId: number) {
+    try {
+      await ignoreUnlinkedMeeting(meetingId)
+      toast.success("已标记为忽略")
+      void refreshList()
+    } catch (err) {
+      toast.error(formatAppError(err))
+    }
+  }
+
+  async function handleFetchTranscript(meetingId: number) {
+    setTranscriptBusy(true)
+    try {
+      await fetchMeetingTranscript(meetingId, currentProjectId ?? undefined)
+      toast.success("转写已获取")
+      void handleOpenDetail(meetingId)
+    } catch (err) {
+      toast.error(`转写获取失败：${formatAppError(err)}`)
+    } finally {
+      setTranscriptBusy(false)
+    }
+  }
+
+  async function handleGenerateMinutes(meetingId: number) {
+    setMinutesBusy(true)
+    try {
+      const result = await generateMeetingMinutes(meetingId)
+      const filePath = typeof result.file_path === "string" ? result.file_path : ""
+      toast.success(`纪要已生成${filePath ? `：${filePath}` : ""}`)
+      void handleOpenDetail(meetingId)
+    } catch (err) {
+      toast.error(`纪要生成失败：${formatAppError(err)}`)
+    } finally {
+      setMinutesBusy(false)
+    }
+  }
+
+  async function handleCancel(meeting: LocalMeeting) {
+    if (!window.confirm(`确认取消会议「${meeting.subject}」？`)) return
+    try {
+      await cancelTencentMeeting({ meeting_id: meeting.meeting_id })
+      toast.success("已取消会议")
+      setSelectedId(null)
+      setDetail(null)
+      void refreshList()
+    } catch (err) {
+      toast.error(`取消失败：${formatAppError(err)}`)
+    }
+  }
 
   async function handleCreate() {
     if (!createSubject.trim() || !createStart.trim() || !createEnd.trim()) {
@@ -178,31 +229,23 @@ export default function Meetings() {
       const startIso = new Date(createStart).toISOString()
       const endIso = new Date(createEnd).toISOString()
       let normalizedStart = startIso
-      let normalizedEnd = endIso
       try {
         const converted = await convertTencentMeetingTimestamp({ start_time: startIso })
         const result = (converted as { result?: { parsed_time_iso?: string } })?.result
         if (result?.parsed_time_iso) normalizedStart = result.parsed_time_iso
-      } catch {
-        // 转换失败时退回原始 ISO
-      }
-      const result = await scheduleTencentMeeting({
+      } catch { /* ignore */ }
+      await scheduleTencentMeeting({
         subject: createSubject.trim(),
         start_time: normalizedStart,
-        end_time: normalizedEnd,
+        end_time: endIso,
       })
-      const meetingInfo = (result as { result?: { meeting_info?: { meeting_id?: string; meeting_code?: string } } })?.result
-        ?.meeting_info
-      toast.success(
-        meetingInfo?.meeting_code
-          ? `已创建会议：${createSubject}（${meetingInfo.meeting_code}）`
-          : `已创建会议：${createSubject}`,
-      )
+      toast.success(`已创建会议：${createSubject}`)
       setShowCreate(false)
       setCreateSubject("")
       setCreateStart("")
       setCreateEnd("")
-      void refreshList()
+      // 同步新会议到本地
+      void handleSync()
     } catch (err) {
       setCreateError(formatAppError(err))
     } finally {
@@ -210,57 +253,45 @@ export default function Meetings() {
     }
   }
 
-  async function handleOpenDetail(meeting: MeetingItem) {
-    setActiveMeeting(meeting)
-    setActiveDetail(null)
-    setTranscriptResult(null)
-    if (meeting.meeting_id) {
-      try {
-        const detail = await getTencentMeeting({ meeting_id: meeting.meeting_id })
-        setActiveDetail(detail)
-      } catch (err) {
-        setActiveDetail({ error: formatAppError(err) })
-      }
+  async function handleOpenActivityLog() {
+    if (!currentProjectId) {
+      toast.error("请先选择一个项目")
+      return
     }
-  }
-
-  async function handleFetchTranscript() {
-    if (!activeMeeting) return
-    setTranscriptBusy(true)
+    setActivityLoading(true)
+    setActivityLog(null)
     try {
-      const result = await fetchTencentMeetingTranscript({
-        meetingId: activeMeeting.meeting_id,
-        meetingCode: activeMeeting.meeting_code,
-        includeMinutes: true,
-      })
-      setTranscriptResult({
-        transcript: result.transcript,
-        minutes: result.minutes ?? null,
-      })
-      toast.success("转写已获取，可在 AI 对话中继续生成会议纪要")
+      const content = await readProjectActivityLog(currentProjectId)
+      setActivityLog(content)
     } catch (err) {
-      toast.error(`转写获取失败：${formatAppError(err)}`)
+      toast.error(`读取活动日志失败：${formatAppError(err)}`)
     } finally {
-      setTranscriptBusy(false)
+      setActivityLoading(false)
     }
   }
 
-  async function handleCancel(meeting: MeetingItem) {
-    if (!meeting.meeting_id) return
-    if (!window.confirm(`确认取消会议「${meeting.subject ?? meeting.meeting_id}」？`)) return
+  // 解析决策/待办 JSON（容错：解析失败返回空数组）
+  const decisions = useMemo(() => {
     try {
-      await cancelTencentMeeting({ meeting_id: meeting.meeting_id })
-      toast.success("已取消会议")
-      setActiveMeeting(null)
-      void refreshList()
-    } catch (err) {
-      toast.error(`取消失败：${formatAppError(err)}`)
+      const arr = JSON.parse(detail?.minutes?.decisions_json ?? "[]")
+      return Array.isArray(arr) ? (arr as string[]).filter(Boolean) : []
+    } catch {
+      return []
     }
-  }
+  }, [detail?.minutes?.decisions_json])
 
-  const list = tab === "upcoming" ? upcoming : history
+  const todos = useMemo(() => {
+    try {
+      const arr = JSON.parse(detail?.minutes?.todos_json ?? "[]")
+      return Array.isArray(arr) ? (arr as string[]).filter(Boolean) : []
+    } catch {
+      return []
+    }
+  }, [detail?.minutes?.todos_json])
 
-  const isConfigured = configured === true
+  const isLinked = detail?.meeting.link_status === "linked"
+  const hasTranscript = !!detail?.transcript
+  const hasMinutes = !!detail?.minutes
 
   return (
     <div className="flex h-full flex-col gap-4 p-6">
@@ -268,24 +299,49 @@ export default function Meetings() {
         <div>
           <h1 className="text-2xl font-semibold text-neutral-900">会议管理</h1>
           <p className="mt-1 text-sm text-neutral-500">
-            预约 / 查询 / 取消腾讯会议，同步转写与智能纪要。
+            同步腾讯会议，管理转写与项目纪要。
           </p>
         </div>
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => void refreshList()}
-            disabled={!isConfigured || loading}
+            onClick={() => void handleOpenActivityLog()}
+            disabled={!currentProjectId}
             className="inline-flex items-center gap-1.5 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
           >
-            {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            <ScrollText className="h-3.5 w-3.5" />
+            活动日志
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleSync()}
+            disabled={syncing}
+            className="inline-flex items-center gap-1.5 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+          >
+            {syncing ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5" />
+            )}
+            同步腾讯会议
+          </button>
+          <button
+            type="button"
+            onClick={() => void refreshList()}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+          >
+            {loading ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5" />
+            )}
             刷新
           </button>
           <button
             type="button"
             onClick={() => setShowCreate(true)}
-            disabled={!isConfigured}
-            className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
           >
             <CalendarPlus className="h-3.5 w-3.5" />
             预约会议
@@ -293,134 +349,142 @@ export default function Meetings() {
         </div>
       </header>
 
-      {configured === false && (
-        <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
-          <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
-          <div className="flex-1 text-sm text-amber-900">
-            <p className="font-medium">尚未配置腾讯会议 Token</p>
-            <p className="mt-1 text-amber-800">
-              前往「设置 → 腾讯会议 MCP」填入
-              <a
-                className="mx-1 underline"
-                href="https://meeting.tencent.com/ai-skill"
-                target="_blank"
-                rel="noreferrer"
-              >
-                meeting.tencent.com/ai-skill
-              </a>
-              获取的 Token。配置后即可预约/查询/转写会议。
-            </p>
-          </div>
-        </div>
-      )}
-
       {error && (
         <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="flex-1">{error}</div>
-          <button
-            type="button"
-            onClick={() => void refreshList()}
-            className="text-xs underline"
-          >
+          <button type="button" onClick={() => void refreshList()} className="text-xs underline">
             重试
           </button>
         </div>
       )}
 
-      <div className="flex gap-1 rounded-md border border-neutral-200 bg-white p-1 text-sm w-fit">
-        {(["upcoming", "history"] as const).map((key) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => setTab(key)}
-            className={`rounded px-3 py-1 ${
-              tab === key
-                ? "bg-blue-50 text-blue-700"
-                : "text-neutral-600 hover:bg-neutral-50"
-            }`}
-          >
-            {key === "upcoming" ? `未开始 / 进行中（${upcoming.length}）` : `已结束（${history.length}）`}
-          </button>
-        ))}
+      <div className="flex items-center gap-3">
+        <div className="flex gap-1 rounded-md border border-neutral-200 bg-white p-1 text-sm w-fit">
+          {([
+            { key: "linked" as const, label: "当前项目" },
+            { key: "unlinked" as const, label: "未关联" },
+            { key: "all" as const, label: "全部" },
+          ]).map(({ key, label }) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setTab(key)}
+              className={`rounded px-3 py-1 ${
+                tab === key ? "bg-blue-50 text-blue-700" : "text-neutral-600 hover:bg-neutral-50"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="relative flex-1 max-w-xs">
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-400" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索会议主题或会议号…"
+            className="w-full rounded border border-neutral-200 bg-white py-1.5 pl-8 pr-3 text-sm focus:border-blue-500 focus:outline-none"
+          />
+        </div>
       </div>
 
       <div className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-[1fr_1.2fr]">
         <section className="overflow-y-auto rounded-lg border border-neutral-200 bg-white">
-          {loading && list.length === 0 ? (
+          {loading && meetings.length === 0 ? (
             <div className="flex h-40 items-center justify-center text-sm text-neutral-500">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               正在加载…
             </div>
-          ) : list.length === 0 ? (
+          ) : meetings.length === 0 ? (
             <div className="flex h-40 flex-col items-center justify-center text-sm text-neutral-500">
               <Calendar className="mb-2 h-6 w-6 text-neutral-400" />
-              {tab === "upcoming" ? "近期暂无未开始的会议" : "暂无历史会议记录"}
+              {tab === "linked" ? "当前项目暂无会议" : tab === "unlinked" ? "暂无未关联会议" : '暂无会议，点击“同步腾讯会议”拉取'}
             </div>
           ) : (
             <ul className="divide-y divide-neutral-100">
-              {list.map((meeting, idx) => {
-                const key = meeting.meeting_id ?? meeting.meeting_code ?? `m-${idx}`
-                const isActive = activeMeeting?.meeting_id === meeting.meeting_id
-                return (
-                  <li key={key}>
-                    <button
-                      type="button"
-                      onClick={() => void handleOpenDetail(meeting)}
-                      className={`flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-neutral-50 ${
-                        isActive ? "bg-blue-50/50" : ""
-                      }`}
-                    >
-                      <div className="min-w-0 flex-1">
+              {meetings.map((m) => (
+                <li key={m.id}>
+                  <button
+                    type="button"
+                    onClick={() => void handleOpenDetail(m.id)}
+                    className={`flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-neutral-50 ${
+                      selectedId === m.id ? "bg-blue-50/50" : ""
+                    }`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
                         <p className="truncate text-sm font-medium text-neutral-900">
-                          {meeting.subject ?? "(未命名会议)"}
+                          {m.subject || "(未命名会议)"}
                         </p>
-                        <div className="mt-0.5 flex items-center gap-2 text-xs text-neutral-500">
-                          <Clock className="h-3 w-3 shrink-0" />
-                          <span>{formatDateTime(meeting.start_time)}</span>
-                          {meeting.meeting_code && (
-                            <span className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono">
-                              {meeting.meeting_code}
-                            </span>
-                          )}
-                        </div>
+                        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${statusColor(m.status)}`}>
+                          {statusLabel(m.status)}
+                        </span>
                       </div>
-                      <ChevronRight className="h-4 w-4 shrink-0 text-neutral-400" />
-                    </button>
-                  </li>
-                )
-              })}
+                      <div className="mt-0.5 flex items-center gap-2 text-xs text-neutral-500">
+                        <Clock className="h-3 w-3 shrink-0" />
+                        <span>{formatDateTime(m.start_time)}</span>
+                        {m.meeting_code && (
+                          <span className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono">
+                            {m.meeting_code}
+                          </span>
+                        )}
+                        {m.link_status === "unlinked" && (
+                          <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700">未关联</span>
+                        )}
+                      </div>
+                    </div>
+                    <ChevronRight className="h-4 w-4 shrink-0 text-neutral-400" />
+                  </button>
+                </li>
+              ))}
             </ul>
           )}
         </section>
 
         <section className="overflow-y-auto rounded-lg border border-neutral-200 bg-white p-4">
-          {!activeMeeting ? (
+          {!detail && !detailLoading ? (
             <div className="flex h-full flex-col items-center justify-center text-sm text-neutral-500">
               <Calendar className="mb-2 h-6 w-6 text-neutral-400" />
               选择左侧会议查看详情
             </div>
-          ) : (
+          ) : detailLoading ? (
+            <div className="flex h-40 items-center justify-center text-sm text-neutral-500">
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              加载中…
+            </div>
+          ) : detail ? (
             <div className="space-y-3">
               <div className="flex items-start justify-between">
                 <div>
                   <h2 className="text-lg font-semibold text-neutral-900">
-                    {activeMeeting.subject ?? "(未命名会议)"}
+                    {detail.meeting.subject || "(未命名会议)"}
                   </h2>
                   <p className="mt-1 text-xs text-neutral-500">
-                    {formatDateTime(activeMeeting.start_time)} ~ {formatDateTime(activeMeeting.end_time)}
+                    {formatDateTime(detail.meeting.start_time)} ~ {formatDateTime(detail.meeting.end_time)}
                   </p>
+                  {detail.project_name && (
+                    <p className="mt-1 flex items-center gap-1 text-xs text-blue-700">
+                      <Link2 className="h-3 w-3" />
+                      项目：{detail.project_name}
+                    </p>
+                  )}
                 </div>
-                {activeMeeting.meeting_code && (
-                  <span className="rounded bg-blue-50 px-2 py-1 text-xs font-mono text-blue-700">
-                    会议号 {activeMeeting.meeting_code}
+                <div className="flex flex-col items-end gap-1">
+                  <span className={`rounded px-2 py-0.5 text-[10px] font-medium ${statusColor(detail.meeting.status)}`}>
+                    {statusLabel(detail.meeting.status)}
                   </span>
-                )}
+                  {detail.meeting.meeting_code && (
+                    <span className="rounded bg-blue-50 px-2 py-1 text-xs font-mono text-blue-700">
+                      会议号 {detail.meeting.meeting_code}
+                    </span>
+                  )}
+                </div>
               </div>
 
-              {activeMeeting.meeting_id && (
+              {detail.meeting.meeting_id && (
                 <a
-                  href={`https://meeting.tencent.com/p/${activeMeeting.meeting_id}`}
+                  href={`https://meeting.tencent.com/p/${detail.meeting.meeting_id}`}
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100"
@@ -430,24 +494,65 @@ export default function Meetings() {
                 </a>
               )}
 
-              <div className="flex gap-2 border-t border-neutral-100 pt-3">
-                <button
-                  type="button"
-                  onClick={() => void handleFetchTranscript()}
-                  disabled={transcriptBusy || !activeMeeting.meeting_id}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
-                >
-                  {transcriptBusy ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Mic className="h-3.5 w-3.5" />
-                  )}
-                  同步转写 + 智能纪要
-                </button>
-                {tab === "upcoming" && activeMeeting.meeting_id && (
+              {/* 操作按钮 */}
+              <div className="flex flex-wrap gap-2 border-t border-neutral-100 pt-3">
+                {!isLinked && currentProjectId && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void handleLinkToProject(detail.meeting.id)}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                    >
+                      <Link2 className="h-3.5 w-3.5" />
+                      关联到当前项目
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleIgnore(detail.meeting.id)}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50"
+                    >
+                      <Unlink className="h-3.5 w-3.5" />
+                      忽略
+                    </button>
+                  </>
+                )}
+
+                {isLinked && detail.meeting.status === "ended" && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void handleFetchTranscript(detail.meeting.id)}
+                      disabled={transcriptBusy}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
+                    >
+                      {transcriptBusy ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Mic className="h-3.5 w-3.5" />
+                      )}
+                      {hasTranscript ? "重新同步转写" : "同步转写"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleGenerateMinutes(detail.meeting.id)}
+                      disabled={minutesBusy || !hasTranscript}
+                      title={!hasTranscript ? "请先同步转写" : "生成项目纪要"}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+                    >
+                      {minutesBusy ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="h-3.5 w-3.5" />
+                      )}
+                      {hasMinutes ? "重新生成纪要" : "生成项目纪要"}
+                    </button>
+                  </>
+                )}
+
+                {isLinked && (detail.meeting.status === "scheduled" || detail.meeting.status === "ongoing") && detail.meeting.meeting_id && (
                   <button
                     type="button"
-                    onClick={() => void handleCancel(activeMeeting)}
+                    onClick={() => void handleCancel(detail.meeting)}
                     className="inline-flex items-center gap-1.5 rounded-md border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -456,44 +561,83 @@ export default function Meetings() {
                 )}
               </div>
 
-              {transcriptResult && (
-                <div className="space-y-2 border-t border-neutral-100 pt-3">
-                  {transcriptResult.minutes && (
-                    <details open className="rounded border border-amber-200 bg-amber-50/40 p-3">
-                      <summary className="flex cursor-pointer items-center gap-1.5 text-xs font-medium text-amber-800">
-                        <Sparkles className="h-3.5 w-3.5" />
-                        腾讯会议 AI 智能纪要
-                      </summary>
-                      <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-neutral-800">
-                        {transcriptResult.minutes}
-                      </pre>
-                    </details>
-                  )}
-                  <details className="rounded border border-neutral-200 bg-neutral-50/40 p-3">
-                    <summary className="flex cursor-pointer items-center gap-1.5 text-xs font-medium text-neutral-700">
-                      <FileText className="h-3.5 w-3.5" />
-                      完整转写文本
-                    </summary>
-                    <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-neutral-800">
-                      {transcriptResult.transcript || "(暂无转写)"}
-                    </pre>
-                  </details>
-                </div>
-              )}
-
-              {activeDetail != null && (
-                <details className="rounded border border-neutral-200 bg-white p-3 text-xs">
-                  <summary className="flex cursor-pointer items-center gap-1.5 text-neutral-600">
-                    <Search className="h-3.5 w-3.5" />
-                    原始响应（MCP 调试）
+              {/* 转写内容 */}
+              {detail.transcript && (
+                <details className="rounded border border-neutral-200 bg-neutral-50/40 p-3">
+                  <summary className="flex cursor-pointer items-center gap-1.5 text-xs font-medium text-neutral-700">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+                    转写文本（{detail.transcript.transcript_text.length} 字）
                   </summary>
-                  <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-neutral-600">
-                    {JSON.stringify(activeDetail, null, 2)}
+                  <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-neutral-800">
+                    {detail.transcript.transcript_text}
                   </pre>
                 </details>
               )}
+
+              {/* 纪要内容 */}
+              {detail.minutes && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 text-xs text-green-700">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    纪要已生成
+                  </div>
+
+                  {/* 关键决策（结构化展示） */}
+                  {decisions.length > 0 && (
+                    <div className="rounded border border-blue-200 bg-blue-50/40 p-3">
+                      <div className="flex items-center gap-1.5 text-xs font-medium text-blue-800">
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        关键决策（{decisions.length}）
+                      </div>
+                      <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs leading-relaxed text-neutral-800">
+                        {decisions.map((d, i) => (
+                          <li key={i}>{d}</li>
+                        ))}
+                      </ol>
+                    </div>
+                  )}
+
+                  {/* 待办事项（结构化展示） */}
+                  {todos.length > 0 && (
+                    <div className="rounded border border-amber-200 bg-amber-50/40 p-3">
+                      <div className="flex items-center gap-1.5 text-xs font-medium text-amber-800">
+                        <Clock className="h-3.5 w-3.5" />
+                        待办事项（{todos.length}）
+                      </div>
+                      <ul className="mt-2 space-y-1 text-xs leading-relaxed text-neutral-800">
+                        {todos.map((t, i) => (
+                          <li key={i} className="flex items-start gap-1.5">
+                            <span className="mt-0.5 inline-block h-3 w-3 shrink-0 rounded-sm border border-neutral-400" />
+                            <span>{t}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <details className="rounded border border-amber-200 bg-amber-50/40 p-3">
+                    <summary className="flex cursor-pointer items-center gap-1.5 text-xs font-medium text-amber-800">
+                      <Sparkles className="h-3.5 w-3.5" />
+                      完整纪要正文
+                    </summary>
+                    <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-neutral-800">
+                      {detail.minutes.content_md}
+                    </pre>
+                  </details>
+                  <div className="text-xs text-neutral-500">
+                    <FileText className="mr-1 inline h-3 w-3" />
+                    文件：{detail.minutes.file_path}
+                  </div>
+                </div>
+              )}
+
+              {!isLinked && !currentProjectId && (
+                <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                  请先选择一个项目，才能关联和生成纪要。
+                </div>
+              )}
             </div>
-          )}
+          ) : null}
         </section>
       </div>
 
@@ -508,7 +652,7 @@ export default function Meetings() {
           >
             <h2 className="text-lg font-semibold text-neutral-900">预约腾讯会议</h2>
             <p className="mt-1 text-xs text-neutral-500">
-              时间支持 ISO 8601（{`2026-06-14T15:00`}）或本地时间，AI 将自动转换为上海时区。
+              时间支持 ISO 8601（{`2026-06-14T15:00`}）或本地时间。
             </p>
             <div className="mt-4 space-y-3">
               <div>
@@ -567,9 +711,51 @@ export default function Meetings() {
         </div>
       )}
 
-      <footer className="text-xs text-neutral-400">
-        由腾讯会议 MCP 提供数据 · {PRODUCT_NAME}
-      </footer>
+      {/* 活动日志弹窗 */}
+      {activityLog !== null && (
+        <div
+          className="fixed inset-0 z-30 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setActivityLog(null)}
+        >
+          <div
+            className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-lg bg-white shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-neutral-100 p-4">
+              <div className="flex items-center gap-1.5">
+                <ScrollText className="h-4 w-4 text-neutral-600" />
+                <h2 className="text-sm font-semibold text-neutral-900">项目活动日志</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActivityLog(null)}
+                className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-4">
+              {activityLoading ? (
+                <div className="flex h-20 items-center justify-center text-sm text-neutral-500">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  加载中…
+                </div>
+              ) : activityLog.trim() ? (
+                <pre className="whitespace-pre-wrap text-xs leading-relaxed text-neutral-800">
+                  {activityLog}
+                </pre>
+              ) : (
+                <div className="flex h-20 flex-col items-center justify-center text-sm text-neutral-400">
+                  <FileText className="mb-1 h-5 w-5" />
+                  暂无活动日志记录
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <footer className="text-xs text-neutral-400">本地会议存储 + 腾讯会议 MCP · {PRODUCT_NAME}</footer>
     </div>
   )
 }
