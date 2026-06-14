@@ -89,11 +89,6 @@ static RE_ABBREVIATION: LazyLock<Regex> = LazyLock::new(|| {
         .expect("编译正则失败: RE_ABBREVIATION")
 });
 
-/// 匹配 JSON 代码块 ```json ... ```
-static RE_JSON_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?s)```(?:json)?\s*\n?(.*?)```").expect("编译正则失败: RE_JSON_BLOCK")
-});
-
 use crate::services::analysis_cache::{AnalysisCacheStore, CreateAnalysisCache};
 use crate::services::llm_providers::LLMProviderManager;
 
@@ -102,8 +97,14 @@ use crate::services::llm_providers::LLMProviderManager;
 /// LLM 分析超时时间（180 秒）
 const LLM_ANALYSIS_TIMEOUT_SECS: u64 = 180;
 
-/// LLM 分析最多发送的正文字符数
+/// LLM 分析 Stuff 模式最多发送的正文字符数（超出则启用 Map-Reduce）
 const LLM_ANALYSIS_MAX_PROMPT_CHARS: usize = 60_000;
+
+/// Map-Reduce 模式下每个分块的字符数（约 8K-12K tokens）
+const MAP_CHUNK_CHARS: usize = 16_000;
+
+/// Map-Reduce 模式分块重叠字符数（10% 重叠，避免边界上下文丢失）
+const MAP_CHUNK_OVERLAP_CHARS: usize = 1_600;
 
 /// 分析器版本号，缓存失效用
 const ANALYZER_VERSION: &str = "1";
@@ -286,29 +287,7 @@ fn is_usable_title(title: &str) -> bool {
         && !title.chars().any(|c| c.is_control())
 }
 
-fn bounded_analysis_text(text: &str) -> String {
-    let total_chars = text.chars().count();
-    if total_chars <= LLM_ANALYSIS_MAX_PROMPT_CHARS {
-        return text.to_string();
-    }
 
-    let head_chars = LLM_ANALYSIS_MAX_PROMPT_CHARS / 2;
-    let tail_chars = LLM_ANALYSIS_MAX_PROMPT_CHARS - head_chars;
-    let head: String = text.chars().take(head_chars).collect();
-    let tail: String = text
-        .chars()
-        .rev()
-        .take(tail_chars)
-        .collect::<Vec<char>>()
-        .into_iter()
-        .rev()
-        .collect();
-
-    format!(
-        "{}\n\n[中间内容已省略：原文共 {} 字符，LLM 分析仅使用前后 {} 字符]\n\n{}",
-        head, total_chars, LLM_ANALYSIS_MAX_PROMPT_CHARS, tail
-    )
-}
 
 /// Rust 本地分析引擎（纯词法/正则分析，不依赖 LLM）
 pub struct RustAnalysisEngine;
@@ -644,9 +623,8 @@ impl RustAnalysisEngine {
 pub struct LlmAnalysisEngine;
 
 impl LlmAnalysisEngine {
-    /// 组装 LLM 分析提示词
+    /// 组装 LLM 分析提示词（Stuff 模式 — 全文分析）
     pub fn build_prompt(text: &str, source_identity: &str) -> String {
-        let analysis_text = bounded_analysis_text(text);
         format!(
             r#"你是一个文档分析专家。请分析以下文档内容，以 JSON 格式输出分析结果。
 
@@ -691,8 +669,175 @@ source_identity: {source_identity}
 {text}
 ---"#,
             source_identity = source_identity,
-            text = analysis_text,
+            text = text,
         )
+    }
+
+    /// 组装 Map 步骤的提示词（单个分块的语义分析）
+    pub fn build_map_prompt(
+        chunk_text: &str,
+        chunk_index: usize,
+        total_chunks: usize,
+        source_identity: &str,
+    ) -> String {
+        format!(
+            r#"你是一个文档分析专家。请分析以下文档片段（这是完整文档的第 {chunk_index}/{total_chunks} 部分），以 JSON 格式输出该片段的语义分析结果。
+
+## 输出格式
+必须严格按以下 JSON 结构输出（不包含任何额外文本或 markdown 代码块标记）：
+
+```json
+{{
+    "entities": ["实体1", "实体2"],
+    "key_concepts": ["概念1", "概念2"],
+    "cross_references": [
+        {{"target": "引用目标", "context": "上下文", "ref_type": "mention"}}
+    ],
+    "contradictions": ["矛盾描述"]
+}}
+```
+
+只输出在该片段中出现的实体、概念、引用和矛盾。不要编造片段中没有的信息。
+
+## 文档片段
+source_identity: {source_identity}
+
+---
+{chunk_text}
+---"#,
+            chunk_index = chunk_index,
+            total_chunks = total_chunks,
+            source_identity = source_identity,
+            chunk_text = chunk_text,
+        )
+    }
+
+    /// 组装 Reduce 步骤的提示词（合并多个片段的分析结果）
+    pub fn build_reduce_prompt(
+        partial_analyses_json: &str,
+        source_identity: &str,
+    ) -> String {
+        format!(
+            r#"你是一个文档分析专家。以下是同一文档的多个片段的分析结果。请将它们合并去重为一份完整的分析，以 JSON 格式输出。
+
+## 输出格式
+必须严格按以下 JSON 结构输出（不包含任何额外文本或 markdown 代码块标记）：
+
+```json
+{{
+    "title": "文档标题",
+    "headings": [
+        {{"level": 1, "text": "标题文本", "children": []}}
+    ],
+    "keywords": [
+        {{"keyword": "关键词", "score": 0.95}}
+    ],
+    "word_count": 0,
+    "char_count": 0,
+    "language": "zh",
+    "entities": ["实体1", "实体2"],
+    "key_concepts": ["概念1", "概念2"],
+    "cross_references": [
+        {{"target": "引用目标", "context": "上下文", "ref_type": "mention"}}
+    ],
+    "contradictions": ["矛盾描述"]
+}}
+
+source_identity: {source_identity}
+
+## 片段分析结果
+{partial_analyses_json}
+
+请基于以上片段分析结果，合并去重后输出完整分析。"#,
+            source_identity = source_identity,
+            partial_analyses_json = partial_analyses_json,
+        )
+    }
+
+    /// 编程式合并多个片段的 LLM 分析结果（作为 Reduce LLM 调用失败时的降级方案）
+    ///
+    /// 合并策略：
+    /// - entities/key_concepts/contradictions：去重合并
+    /// - cross_references：去重合并（按 target+context 去重）
+    /// - title/headings/keywords/word_count/char_count/language：保留非空值
+    pub fn merge_partial_analyses(
+        partial_json_strings: &[String],
+        source_identity: &str,
+        sha256: &str,
+    ) -> Result<DocumentAnalysis, String> {
+        let mut merged_entities: Vec<String> = Vec::new();
+        let mut merged_concepts: Vec<String> = Vec::new();
+        let mut merged_refs: Vec<CrossRef> = Vec::new();
+        let mut merged_contradictions: Vec<String> = Vec::new();
+        let mut seen_entities = std::collections::HashSet::new();
+        let mut seen_concepts = std::collections::HashSet::new();
+        let mut seen_refs = std::collections::HashSet::new();
+        let mut seen_contradictions = std::collections::HashSet::new();
+
+        for json_str in partial_json_strings {
+            let cleaned = Self::extract_json(json_str);
+            if let Ok(partial) = serde_json::from_str::<serde_json::Value>(&cleaned) {
+                // 合并 entities
+                if let Some(arr) = partial["entities"].as_array() {
+                    for v in arr {
+                        if let Some(s) = v.as_str() {
+                            let s = s.trim().to_string();
+                            if !s.is_empty() && seen_entities.insert(s.clone()) {
+                                merged_entities.push(s);
+                            }
+                        }
+                    }
+                }
+                // 合并 key_concepts
+                if let Some(arr) = partial["key_concepts"].as_array() {
+                    for v in arr {
+                        if let Some(s) = v.as_str() {
+                            let s = s.trim().to_string();
+                            if !s.is_empty() && seen_concepts.insert(s.clone()) {
+                                merged_concepts.push(s);
+                            }
+                        }
+                    }
+                }
+                // 合并 cross_references
+                if let Some(arr) = partial["cross_references"].as_array() {
+                    for v in arr {
+                        if let Ok(cr) = serde_json::from_value::<CrossRef>(v.clone()) {
+                            let key = format!("{}\x00{}", cr.target, cr.context);
+                            if seen_refs.insert(key) {
+                                merged_refs.push(cr);
+                            }
+                        }
+                    }
+                }
+                // 合并 contradictions
+                if let Some(arr) = partial["contradictions"].as_array() {
+                    for v in arr {
+                        if let Some(s) = v.as_str() {
+                            let s = s.trim().to_string();
+                            if !s.is_empty() && seen_contradictions.insert(s.clone()) {
+                                merged_contradictions.push(s);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(DocumentAnalysis {
+            source_identity: source_identity.to_string(),
+            sha256: sha256.to_string(),
+            title: source_identity.to_string(),
+            headings: Vec::new(),
+            keywords: Vec::new(),
+            word_count: 0,
+            char_count: 0,
+            language: "zh".to_string(),
+            entities: merged_entities,
+            key_concepts: merged_concepts,
+            cross_references: merged_refs,
+            contradictions: merged_contradictions,
+        })
     }
 
     /// 从 LLM 响应 JSON 中提取 DocumentAnalysis
@@ -719,23 +864,11 @@ source_identity: {source_identity}
         Ok(analysis)
     }
 
-    /// 从 LLM 响应文本中提取 JSON 部分（去除 markdown 代码块等包裹）
+    /// 从 LLM 响应文本中提取 JSON 部分（去除 markdown 代码块等包裹）。
+    ///
+    /// 委托给共享的 `services::extract_json_text`，避免多处复制清洗逻辑。
     fn extract_json(text: &str) -> String {
-        let text = text.trim();
-
-        // 尝试提取 ```json ... ``` 块中的内容
-        if let Some(cap) = RE_JSON_BLOCK.captures(text) {
-            return cap[1].trim().to_string();
-        }
-
-        // 尝试直接解析为 JSON 对象（从第一个 { 到最后一个 }）
-        if let Some(start) = text.find('{') {
-            if let Some(end) = text.rfind('}') {
-                return text[start..=end].to_string();
-            }
-        }
-
-        text.to_string()
+        crate::services::extract_json_text(text)
     }
 }
 
@@ -840,88 +973,121 @@ impl AnalysisOrchestrator {
                     return self.fallback_rust(text, source_identity, sha256);
                 }
             };
-            let prompt = LlmAnalysisEngine::build_prompt(text, source_identity);
+            // 判断文档长度，选择 Stuff 或 Map-Reduce 模式
+            let total_chars = text.chars().count();
 
-            // 按协议构建 URL
-            let chat_url = match protocol {
-                LLMProtocol::Anthropic => anthropic_messages_url(&base_url),
-                _ => format!("{}/chat/completions", base_url.trim_end_matches('/')),
-            };
+            if total_chars <= LLM_ANALYSIS_MAX_PROMPT_CHARS {
+                // Stuff 模式：全文分析（单次 LLM 调用）
+                let prompt = LlmAnalysisEngine::build_prompt(text, source_identity);
 
-            // 构建请求体（支持可变 max_tokens 用于重试）
-            let mut max_tokens = match protocol {
-                LLMProtocol::Anthropic => ANTHROPIC_MAX_TOKENS,
-                _ => 4096u64,
-            };
-            // 仅模型明确支持时开启 extended thinking
-            // 重试时会切换为 Disabled，把全部 max_tokens 配额给 text 块
-            let mut thinking_mode =
-                if matches!(protocol, LLMProtocol::Anthropic) && supports_thinking {
-                    ThinkingMode::Enabled
-                } else {
-                    ThinkingMode::Disabled
+                // 按协议构建 URL
+                let chat_url = match &protocol {
+                    LLMProtocol::Anthropic => anthropic_messages_url(&base_url),
+                    _ => format!("{}/chat/completions", base_url.trim_end_matches('/')),
                 };
 
-            // LLM 调用 + token 耗尽重试循环
-            let mut retry_count: u32 = 0;
-            loop {
-                let body = Self::build_request_body(
-                    &model_name,
-                    &prompt,
-                    &protocol,
-                    max_tokens,
-                    thinking_mode,
+                // 构建请求体（支持可变 max_tokens 用于重试）
+                let mut max_tokens = match protocol {
+                    LLMProtocol::Anthropic => ANTHROPIC_MAX_TOKENS,
+                    _ => 4096u64,
+                };
+                let mut thinking_mode =
+                    if matches!(protocol, LLMProtocol::Anthropic) && supports_thinking {
+                        ThinkingMode::Enabled
+                    } else {
+                        ThinkingMode::Disabled
+                    };
+
+                // LLM 调用 + token 耗尽重试循环
+                let mut retry_count: u32 = 0;
+                loop {
+                    let body = Self::build_request_body(
+                        &model_name,
+                        &prompt,
+                        &protocol,
+                        max_tokens,
+                        thinking_mode,
+                    );
+
+                    let result = tokio::time::timeout(
+                        Duration::from_secs(LLM_ANALYSIS_TIMEOUT_SECS),
+                        Self::call_llm_inner(
+                            &client,
+                            &chat_url,
+                            &api_key,
+                            &body,
+                            &protocol,
+                            source_identity,
+                            sha256,
+                        ),
+                    )
+                    .await;
+
+                    match result {
+                        Ok(Ok(analysis)) => {
+                            info!("LLM 分析成功: source={}", source_identity);
+                            self.write_cache(project_id, source_identity, sha256, &analysis);
+                            return AnalysisResult {
+                                analysis,
+                                engine: EngineType::Llm,
+                            };
+                        }
+                        Ok(Err(err)) => {
+                            let should_retry = matches!(err, LlmCallError::AnthropicTokenExhausted)
+                                && retry_count < LLM_ANALYSIS_MAX_RETRIES;
+                            if should_retry {
+                                retry_count += 1;
+                                max_tokens = ANTHROPIC_MAX_TOKENS_RETRY;
+                                thinking_mode = ThinkingMode::Disabled;
+                                info!(
+                                    "Anthropic token 耗尽，关闭 thinking 并增大 max_tokens 到 {} 重试 (第{}次)",
+                                    max_tokens, retry_count
+                                );
+                                continue;
+                            }
+                            warn!("LLM 分析失败: {}，降级到 Rust 引擎", err);
+                        }
+                        Err(_) => {
+                            warn!(
+                                "LLM 分析超时 ({}s)，降级到 Rust 引擎",
+                                LLM_ANALYSIS_TIMEOUT_SECS
+                            );
+                        }
+                    }
+                    break;
+                }
+            } else {
+                // Map-Reduce 模式：文档超出上下文窗口，分段分析后合并
+                info!(
+                    "文档过长（{} 字符），启用 Map-Reduce 模式: source={}",
+                    total_chars, source_identity
                 );
 
-                let result = tokio::time::timeout(
-                    Duration::from_secs(LLM_ANALYSIS_TIMEOUT_SECS),
-                    Self::call_llm_inner(
-                        &client,
-                        &chat_url,
-                        &api_key,
-                        &body,
-                        &protocol,
-                        source_identity,
-                        sha256,
-                    ),
+                match Self::analyze_map_reduce(
+                    text,
+                    source_identity,
+                    sha256,
+                    &client,
+                    &base_url,
+                    &api_key,
+                    &model_name,
+                    &protocol,
+                    supports_thinking,
                 )
-                .await;
-
-                match result {
-                    Ok(Ok(analysis)) => {
-                        info!("LLM 分析成功: source={}", source_identity);
+                .await
+                {
+                    Ok(analysis) => {
+                        info!("Map-Reduce 分析成功: source={}", source_identity);
                         self.write_cache(project_id, source_identity, sha256, &analysis);
                         return AnalysisResult {
                             analysis,
                             engine: EngineType::Llm,
                         };
                     }
-                    Ok(Err(err)) => {
-                        // 仅 AnthropicTokenExhausted 是可重试错误（结构化匹配）
-                        let should_retry = matches!(err, LlmCallError::AnthropicTokenExhausted)
-                            && retry_count < LLM_ANALYSIS_MAX_RETRIES;
-                        if should_retry {
-                            retry_count += 1;
-                            max_tokens = ANTHROPIC_MAX_TOKENS_RETRY;
-                            // 切换为 Disabled：把全部 max_tokens 配额给 text 块，
-                            // 避免重试时 thinking 再次耗尽 token
-                            thinking_mode = ThinkingMode::Disabled;
-                            info!(
-                                "Anthropic token 耗尽，关闭 thinking 并增大 max_tokens 到 {} 重试 (第{}次)",
-                                max_tokens, retry_count
-                            );
-                            continue;
-                        }
-                        warn!("LLM 分析失败: {}，降级到 Rust 引擎", err);
-                    }
-                    Err(_) => {
-                        warn!(
-                            "LLM 分析超时 ({}s)，降级到 Rust 引擎",
-                            LLM_ANALYSIS_TIMEOUT_SECS
-                        );
+                    Err(err) => {
+                        warn!("Map-Reduce 分析失败: {}，降级到 Rust 引擎", err);
                     }
                 }
-                break;
             }
         }
 
@@ -1189,6 +1355,172 @@ impl AnalysisOrchestrator {
             warn!("写入 analysis_cache 失败: {}", e);
         }
     }
+
+    /// Map-Reduce 文档分析：分段提取语义特征 → 合并为完整分析
+    ///
+    /// Map 步骤：将文档按字符数分块（带 10% 重叠），每个块独立调用 LLM 提取
+    ///           entities、key_concepts、cross_references、contradictions
+    /// Reduce 步骤：将多个片段的 JSON 结果合并去重，通过 LLM 汇总为完整分析；
+    ///             若 Reduce LLM 调用失败，降级为编程式合并
+    async fn analyze_map_reduce(
+        text: &str,
+        source_identity: &str,
+        sha256: &str,
+        client: &reqwest::Client,
+        base_url: &str,
+        api_key: &str,
+        model_name: &str,
+        protocol: &LLMProtocol,
+        supports_thinking: bool,
+    ) -> Result<DocumentAnalysis, String> {
+        // ── Map 步骤：分块 ──
+        let chunks: Vec<String> = {
+            let chars: Vec<char> = text.chars().collect();
+            let mut chunks = Vec::new();
+            let mut start = 0usize;
+
+            while start < chars.len() {
+                let end = (start + MAP_CHUNK_CHARS).min(chars.len());
+                let chunk: String = chars[start..end].iter().collect();
+                chunks.push(chunk);
+
+                if end >= chars.len() {
+                    break;
+                }
+                start = end.saturating_sub(MAP_CHUNK_OVERLAP_CHARS);
+            }
+            chunks
+        };
+
+        info!(
+            "[DocAnalysis] Map-Reduce: {} 个分块，每块约 {} 字符",
+            chunks.len(),
+            MAP_CHUNK_CHARS
+        );
+
+        // ── Map 步骤：每块独立分析 ──
+        let chat_url = match protocol {
+            LLMProtocol::Anthropic => anthropic_messages_url(base_url),
+            _ => format!("{}/chat/completions", base_url.trim_end_matches('/')),
+        };
+
+        let mut partial_results: Vec<String> = Vec::with_capacity(chunks.len());
+        for (i, chunk) in chunks.iter().enumerate() {
+            let map_prompt =
+                LlmAnalysisEngine::build_map_prompt(chunk, i + 1, chunks.len(), source_identity);
+
+            let body = Self::build_request_body(
+                model_name,
+                &map_prompt,
+                protocol,
+                4096u64,
+                ThinkingMode::Disabled,
+            );
+
+            let result = tokio::time::timeout(
+                Duration::from_secs(LLM_ANALYSIS_TIMEOUT_SECS),
+                Self::call_llm_inner(
+                    client,
+                    &chat_url,
+                    api_key,
+                    &body,
+                    protocol,
+                    source_identity,
+                    sha256,
+                ),
+            )
+            .await;
+
+            match result {
+                Ok(Ok(analysis)) => {
+                    if let Ok(json) = serde_json::to_string(&analysis) {
+                        partial_results.push(json);
+                    }
+                }
+                Ok(Err(e)) => {
+                    warn!(
+                        "[DocAnalysis] Map 步骤片段 {}/{} 失败: {}，已跳过",
+                        i + 1,
+                        chunks.len(),
+                        e
+                    );
+                }
+                Err(_) => {
+                    warn!(
+                        "[DocAnalysis] Map 步骤片段 {}/{} 超时，已跳过",
+                        i + 1,
+                        chunks.len()
+                    );
+                }
+            }
+        }
+
+        if partial_results.is_empty() {
+            return Err("Map-Reduce: 所有分块的分析均失败".to_string());
+        }
+
+        // ── Reduce 步骤：合并为完整分析 ──
+        let partial_json = format!(
+            "[\n{}\n]",
+            partial_results.join(",\n")
+        );
+
+        let reduce_prompt =
+            LlmAnalysisEngine::build_reduce_prompt(&partial_json, source_identity);
+
+        let body = Self::build_request_body(
+            model_name,
+            &reduce_prompt,
+            protocol,
+            if matches!(protocol, LLMProtocol::Anthropic) {
+                ANTHROPIC_MAX_TOKENS
+            } else {
+                8192u64
+            },
+            if supports_thinking {
+                ThinkingMode::Enabled
+            } else {
+                ThinkingMode::Disabled
+            },
+        );
+
+        let reduce_result = tokio::time::timeout(
+            Duration::from_secs(LLM_ANALYSIS_TIMEOUT_SECS),
+            Self::call_llm_inner(
+                client,
+                &chat_url,
+                api_key,
+                &body,
+                protocol,
+                source_identity,
+                sha256,
+            ),
+        )
+        .await;
+
+        match reduce_result {
+            Ok(Ok(analysis)) => Ok(analysis),
+            Ok(Err(e)) => {
+                warn!(
+                    "[DocAnalysis] Reduce LLM 调用失败: {}，降级为编程式合并",
+                    e
+                );
+                LlmAnalysisEngine::merge_partial_analyses(
+                    &partial_results,
+                    source_identity,
+                    sha256,
+                )
+            }
+            Err(_) => {
+                warn!("[DocAnalysis] Reduce 步骤超时，降级为编程式合并");
+                LlmAnalysisEngine::merge_partial_analyses(
+                    &partial_results,
+                    source_identity,
+                    sha256,
+                )
+            }
+        }
+    }
 }
 
 // ─── 辅助函数 ───
@@ -1213,14 +1545,6 @@ mod tests {
         let text = "���乱码标题\n\n普通内容";
         let analysis = RustAnalysisEngine::analyze(text, "源文件.doc", "000");
         assert_eq!(analysis.title, "源文件.doc");
-    }
-
-    #[test]
-    fn test_bounded_analysis_text_truncates_long_input() {
-        let text = "甲".repeat(LLM_ANALYSIS_MAX_PROMPT_CHARS + 100);
-        let bounded = bounded_analysis_text(&text);
-        assert!(bounded.chars().count() < text.chars().count());
-        assert!(bounded.contains("中间内容已省略"));
     }
 
     #[test]

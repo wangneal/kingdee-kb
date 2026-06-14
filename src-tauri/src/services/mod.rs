@@ -75,3 +75,42 @@ pub mod wikilink_parser;
 pub mod test_support;
 pub mod xlsx_filler;
 
+/// 从 LLM 响应文本中提取 JSON：剥 markdown 代码块（```json ... ```），
+/// 退化为首个 `{` 到末个 `}`（或 `[` 到 `]`）截取。
+///
+/// LLM 即使被要求"只输出 JSON"也常套一层代码块围栏，
+/// 直接 serde_json::from_str 会因首字符是反引号而失败。
+/// 所有解析 LLM JSON 响应的地方都应先调此函数清洗。
+pub fn extract_json_text(text: &str) -> String {
+    let text = text.trim();
+
+    // 剥 ```json ... ``` 或 ``` ... ``` 代码块
+    if text.starts_with("```") {
+        let after_first_line = text.split_once('\n').map(|(_, rest)| rest).unwrap_or("");
+        let without_fence = after_first_line
+            .rsplit_once("```")
+            .map(|(body, _)| body)
+            .unwrap_or(after_first_line);
+        let cleaned = without_fence.trim();
+        if !cleaned.is_empty() {
+            return cleaned.to_string();
+        }
+    }
+
+    // 退化为首个 { 到末个 }（JSON 对象）截取
+    if let Some(start) = text.find('{') {
+        if let Some(end) = text.rfind('}') {
+            return text[start..=end].to_string();
+        }
+    }
+
+    // 退化为首个 [ 到末个 ]（JSON 数组）截取
+    if let Some(start) = text.find('[') {
+        if let Some(end) = text.rfind(']') {
+            return text[start..=end].to_string();
+        }
+    }
+
+    text.to_string()
+}
+

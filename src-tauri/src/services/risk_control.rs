@@ -510,7 +510,7 @@ impl RiskControlStore {
             .await?;
 
         // 解析JSON响应（LLM 可能用 markdown 代码块包裹）
-        let json_text = Self::extract_json_text(&response);
+        let json_text = crate::services::extract_json_text(&response);
         serde_json::from_str(&json_text)
             .map_err(|e| format!("LLM返回格式错误: {} — 原始响应: {}", e, response))
     }
@@ -685,7 +685,7 @@ impl RiskControlStore {
             .verified_chat_completion(&messages, &config, ScenarioType::RiskReport)
             .await?;
 
-        let json_text = Self::extract_json_text(&response);
+        let json_text = crate::services::extract_json_text(&response);
         serde_json::from_str(&json_text)
             .map_err(|e| format!("LLM返回格式错误: {} — 原始响应: {}", e, response))
     }
@@ -912,36 +912,6 @@ impl RiskControlStore {
                 ),
             },
         ]
-    }
-
-    /// 从 LLM 响应中提取 JSON 文本（剥 markdown 代码块 + 截取首尾大括号）。
-    ///
-    /// LLM 常把 JSON 包裹在 ```json ... ``` 里，直接 serde_json::from_str 会失败。
-    /// 策略：先剥代码块，再退化为首个 `{` 到末个 `}` 截取。
-    fn extract_json_text(response: &str) -> String {
-        let text = response.trim();
-
-        // 剥 ```json ... ``` 或 ``` ... ``` 代码块
-        if text.starts_with("```") {
-            let after_first_line = text.split_once('\n').map(|(_, rest)| rest).unwrap_or("");
-            let without_fence = after_first_line
-                .rsplit_once("```")
-                .map(|(body, _)| body)
-                .unwrap_or(after_first_line);
-            let cleaned = without_fence.trim();
-            if !cleaned.is_empty() {
-                return cleaned.to_string();
-            }
-        }
-
-        // 退化为首个 { 到末个 } 截取
-        if let Some(start) = text.find('{') {
-            if let Some(end) = text.rfind('}') {
-                return text[start..=end].to_string();
-            }
-        }
-
-        text.to_string()
     }
 
     fn response_preview(response: &str) -> String {

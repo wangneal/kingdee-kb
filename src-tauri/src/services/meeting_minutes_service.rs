@@ -419,7 +419,7 @@ impl MeetingMinutesService {
             }
         };
 
-        let cleaned = extract_json_from_text(&raw);
+        let cleaned = crate::services::extract_json_text(&raw);
         match serde_json::from_str::<MinutesExtras>(&cleaned) {
             Ok(extras) => extras,
             Err(e) => {
@@ -573,34 +573,4 @@ impl MeetingMinutesService {
     }
 }
 
-/// 从 LLM 响应文本中提取 JSON 部分。
-///
-/// 复用 document_analysis 的清洗策略：先剥 markdown 代码块包裹，
-/// 再退化为"首个 `{` 到末个 `}`"截取。保证 LLM 输出即便夹带说明文字也能解析。
-fn extract_json_from_text(text: &str) -> String {
-    let text = text.trim();
-
-    // 尝试提取 ```json ... ``` 或 ``` ... ``` 代码块内容
-    if text.starts_with("```") {
-        // 去掉首行（可能是 ```json 或 ```）
-        let after_first_line = text.split_once('\n').map(|(_, rest)| rest).unwrap_or("");
-        // 去掉结尾的 ```
-        let without_fence = after_first_line
-            .rsplit_once("```")
-            .map(|(body, _)| body)
-            .unwrap_or(after_first_line);
-        let cleaned = without_fence.trim();
-        if !cleaned.is_empty() {
-            return cleaned.to_string();
-        }
-    }
-
-    // 退化为从首个 `{` 到末个 `}` 截取
-    if let Some(start) = text.find('{') {
-        if let Some(end) = text.rfind('}') {
-            return text[start..=end].to_string();
-        }
-    }
-
-    text.to_string()
-}
+// extract_json_from_text 已统一到 services::extract_json_text（见 services/mod.rs）

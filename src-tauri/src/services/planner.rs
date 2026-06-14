@@ -121,6 +121,8 @@ impl Planner {
 
     /// 解析 LLM 返回的计划（支持 JSON 数组和 NDJSON）
     pub fn parse_plan(response: &str) -> Result<ExecutionPlan, String> {
+        // 先剥 markdown 代码块（LLM 可能用 ```json 包裹）
+        let response = crate::services::extract_json_text(response);
         let trimmed = response.trim();
 
         // 尝试 JSON 数组格式
