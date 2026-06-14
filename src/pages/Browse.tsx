@@ -248,13 +248,19 @@ export default function Browse() {
 
   const handleApproveAutoCandidates = useCallback(async () => {
     if (currentProjectId == null || autoApproving) return
+    // 二次确认：自动批准会覆盖人工审核的"草稿/拒绝"标记，操作不可逆
+    const confirmed = window.confirm(
+      "确定要自动批准当前项目的所有 Wiki 候选页面吗？\n" +
+        "该操作会一次性覆盖人工审核状态，已被人工拒绝的页面也会被改判，谨慎操作。",
+    )
+    if (!confirmed) return
     setAutoApproving(true)
     try {
       const result = await approveAutoWikiPages(currentProjectId)
       setFeedbackMessage(
         result.failed.length > 0
-          ? `自动批准完成：成功 ${result.approved} 项，失败 ${result.failed.length} 项`
-          : `自动批准完成：成功 ${result.approved} 项`,
+          ? `自动批准完成：成功 ${result.approved} 项，跳过 ${result.skipped} 项，失败 ${result.failed.length} 项`
+          : `自动批准完成：成功 ${result.approved} 项，跳过 ${result.skipped} 项`,
       )
       await refreshWikiPages()
       if (selectedWiki) {
