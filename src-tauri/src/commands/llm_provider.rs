@@ -229,69 +229,6 @@ pub async fn set_default_llm_provider(
     Ok(())
 }
 
-// ─── API Key 管理命令 ───
-
-/// 添加 API Key 到供应商
-#[tauri::command]
-pub async fn add_api_key(
-    state: State<'_, AppState>,
-    provider_id: String,
-    id: String,
-    name: String,
-    key: String,
-) -> Result<(), String> {
-    let api_key = ApiKeyConfig {
-        id,
-        name,
-        key,
-        is_default: false,
-    };
-
-    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
-    manager.add_api_key(&provider_id, api_key)?;
-    // 添加第一个 Key 时会被自动设为默认 → 同步 ImageProcessor
-    sync_image_processor(&state, &manager);
-    Ok(())
-}
-
-/// 更新 API Key
-#[tauri::command]
-pub async fn update_api_key(
-    state: State<'_, AppState>,
-    provider_id: String,
-    id: String,
-    name: String,
-    key: String,
-    is_default: bool,
-) -> Result<(), String> {
-    let api_key = ApiKeyConfig {
-        id,
-        name,
-        key,
-        is_default,
-    };
-
-    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
-    manager.update_api_key(&provider_id, api_key)?;
-    // is_default 改变会切换默认 Key → 同步 ImageProcessor
-    sync_image_processor(&state, &manager);
-    Ok(())
-}
-
-/// 删除 API Key
-#[tauri::command]
-pub async fn delete_provider_api_key(
-    state: State<'_, AppState>,
-    provider_id: String,
-    key_id: String,
-) -> Result<(), String> {
-    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
-    manager.delete_api_key(&provider_id, &key_id)?;
-    // 删除默认 Key 后会 fallback 到第一个 → 同步 ImageProcessor
-    sync_image_processor(&state, &manager);
-    Ok(())
-}
-
 /// 设置默认 API Key
 #[tauri::command]
 pub async fn set_default_api_key(
@@ -306,84 +243,7 @@ pub async fn set_default_api_key(
     Ok(())
 }
 
-// ─── 模型管理命令 ───
-
-/// 添加模型到供应商
-#[tauri::command]
-pub async fn add_model(
-    state: State<'_, AppState>,
-    provider_id: String,
-    id: String,
-    name: String,
-) -> Result<(), String> {
-    let model = ModelConfig {
-        id,
-        name,
-        is_default: false,
-        is_multimodal: None,
-        last_probe_at: None,
-        context_window: None,
-        max_output_tokens: None,
-        supports_thinking: None,
-    };
-
-    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
-    manager.add_model(&provider_id, model)?;
-    // 添加第一个 Model 时会被自动设为默认 → 同步 ImageProcessor
-    sync_image_processor(&state, &manager);
-    Ok(())
-}
-
-/// 更新模型
-#[tauri::command]
-pub async fn update_model(
-    state: State<'_, AppState>,
-    provider_id: String,
-    id: String,
-    name: String,
-    is_default: bool,
-) -> Result<(), String> {
-    // 保留原有的探测状态
-    let (is_multimodal, last_probe_at) = {
-        let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
-        manager
-            .get_provider(&provider_id)
-            .and_then(|p| p.models.iter().find(|m| m.id == id))
-            .map(|m| (m.is_multimodal, m.last_probe_at.clone()))
-            .unwrap_or((None, None))
-    };
-
-    let model = ModelConfig {
-        id,
-        name,
-        is_default,
-        is_multimodal,
-        last_probe_at,
-        context_window: None,
-        max_output_tokens: None,
-        supports_thinking: None,
-    };
-
-    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
-    manager.update_model(&provider_id, model)?;
-    // is_default 改变会切换默认 Model → 同步 ImageProcessor
-    sync_image_processor(&state, &manager);
-    Ok(())
-}
-
-/// 删除模型
-#[tauri::command]
-pub async fn delete_model(
-    state: State<'_, AppState>,
-    provider_id: String,
-    model_id: String,
-) -> Result<(), String> {
-    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
-    manager.delete_model(&provider_id, &model_id)?;
-    // 删除默认 Model 后会 fallback 到第一个 → 同步 ImageProcessor
-    sync_image_processor(&state, &manager);
-    Ok(())
-}
+// ─── 多模态探测命令 ───
 
 /// 设置默认模型
 #[tauri::command]
@@ -445,26 +305,6 @@ pub async fn probe_model_multimodal(
     }
 
     Ok(is_multimodal)
-}
-
-/// 探测单个供应商的多模态能力（使用默认模型）
-#[tauri::command]
-pub async fn probe_provider_multimodal(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<bool, String> {
-    // 克隆供应商数据，避免在 await 时持有 MutexGuard
-    let provider = {
-        let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
-        manager
-            .get_provider(&id)
-            .ok_or_else(|| format!("供应商 '{}' 不存在", id))?
-            .clone()
-    };
-
-    // 创建临时管理器进行探测
-    let temp_manager = crate::services::llm_providers::LLMProviderManager::new(&state.data_dir);
-    Ok(temp_manager.probe_multimodal(&provider).await)
 }
 
 /// 批量探测所有供应商所有模型的多模态能力
@@ -549,80 +389,47 @@ pub async fn save_ocr_config(
     let config = OcrProviderConfig {
         id,
         name,
-        provider: provider_type,
-        api_key,
-        secret_key,
+        provider: provider_type.clone(),
+        api_key: api_key.clone(),
+        secret_key: secret_key.clone(),
         is_default: true,
     };
 
-    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
-    manager.set_ocr_config(config)
+    // 写持久化存储（LLMProviderManager）
+    {
+        let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
+        manager.set_ocr_config(config)?;
+    }
+
+    // 同步到运行时消费者（ImageProcessor）：业务侧 rig_agent/process_image
+    // 读的是 ImageProcessor.ocr_config，不同步则 Settings 配的 OCR 凭证永不生效。
+    let ocr_provider = match provider_type {
+        OcrProviderType::Baidu => crate::services::image_processor::OcrProvider::Baidu,
+        OcrProviderType::Tencent => crate::services::image_processor::OcrProvider::Tencent,
+    };
+    if let Ok(mut processor) = state.image_processor.write() {
+        processor.set_ocr_config(crate::services::image_processor::OcrConfig {
+            provider: ocr_provider,
+            api_key,
+            secret_key,
+        });
+    }
+    Ok(())
 }
 
 /// 清除 OCR 配置
 #[tauri::command]
 pub async fn clear_ocr_config(state: State<'_, AppState>) -> Result<(), String> {
-    let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
-    manager.clear_ocr_config()
-}
-
-// ─── 自动路由和模型列表 ───
-
-/// 自动路由：根据输入内容选择最佳模型
-#[tauri::command]
-pub async fn auto_route_model(
-    state: State<'_, AppState>,
-    has_images: bool,
-) -> Result<Option<AutoRouteResult>, String> {
-    let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
-
-    match manager.auto_route(has_images) {
-        Some((_api_key, base_url, model_name, provider_id, model_id)) => {
-            Ok(Some(AutoRouteResult {
-                provider_id,
-                model_id,
-                model_name,
-                base_url,
-                // 不返回 api_key 到前端（安全考虑）
-            }))
-        }
-        None => Ok(None),
+    // 清持久化存储
+    {
+        let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
+        manager.clear_ocr_config()?;
     }
-}
-
-/// 获取所有可用模型列表
-#[tauri::command]
-pub async fn list_available_models(
-    state: State<'_, AppState>,
-) -> Result<Vec<AvailableModelResult>, String> {
-    let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
-    let models = manager.list_all_models();
-
-    Ok(models
-        .into_iter()
-        .map(|m| AvailableModelResult {
-            provider_id: m.provider_id,
-            provider_name: m.provider_name,
-            model_id: m.model_id,
-            model_name: m.model_name,
-            is_default: m.is_default,
-            is_multimodal: m.is_multimodal,
-        })
-        .collect())
-}
-
-/// 获取下一个可用的 API Key（故障切换）
-#[tauri::command]
-pub async fn get_next_api_key(
-    state: State<'_, AppState>,
-    provider_id: String,
-    failed_key_id: String,
-) -> Result<Option<NextApiKeyResult>, String> {
-    let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
-    match manager.get_next_api_key(&provider_id, &failed_key_id) {
-        Some((key_id, key_value)) => Ok(Some(NextApiKeyResult { key_id, key_value })),
-        None => Ok(None),
+    // 同步清除运行时消费者
+    if let Ok(mut processor) = state.image_processor.write() {
+        processor.clear_ocr_config();
     }
+    Ok(())
 }
 
 // ─── 辅助函数 ───
@@ -649,30 +456,6 @@ pub struct ModelProbeResult {
     pub provider_id: String,
     pub model_id: String,
     pub is_multimodal: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AutoRouteResult {
-    pub provider_id: String,
-    pub model_id: String,
-    pub model_name: String,
-    pub base_url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AvailableModelResult {
-    pub provider_id: String,
-    pub provider_name: String,
-    pub model_id: String,
-    pub model_name: String,
-    pub is_default: bool,
-    pub is_multimodal: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NextApiKeyResult {
-    pub key_id: String,
-    pub key_value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

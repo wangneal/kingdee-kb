@@ -30,7 +30,6 @@ use crate::services::rig_agent::RigAgent;
 use crate::services::risk_control::RiskControlStore;
 use crate::services::signal_writer::SignalWriter;
 use crate::services::skill_manager::SkillManager;
-use crate::services::template_manager::TemplateManager;
 use crate::services::vector_index::VectorIndex;
 use crate::services::whisper_service::WhisperService;
 use crate::services::wiki_page::WikiPageStore;
@@ -135,8 +134,6 @@ pub struct AppState {
     pub skill_manager: Arc<tokio::sync::Mutex<SkillManager>>,
     /// 信号写入器（技能系统事件记录）
     pub signal_writer: Arc<RwLock<SignalWriter>>,
-    /// 模板管理器（Gitee 模板下载和缓存）
-    pub template_manager: Arc<Mutex<TemplateManager>>,
     /// 图像处理器（OCR + 多模态 LLM）
     pub image_processor: Arc<RwLock<ImageProcessor>>,
     /// LLM 供应商管理器
@@ -276,10 +273,6 @@ impl AppState {
         let signal_writer = SignalWriter::new(signals_path)
             .map_err(|e| format!("Failed to create SignalWriter: {}", e))?;
 
-        // 初始化 TemplateManager（模板下载和缓存）
-        let template_cache_dir = data_dir.join("templates");
-        let template_manager = TemplateManager::new(template_cache_dir, String::new());
-
         // 初始化 LLM 供应商管理器
         let llm_providers = Arc::new(RwLock::new(LLMProviderManager::new(
             &data_dir.to_path_buf(),
@@ -302,6 +295,25 @@ impl AppState {
                             provider.base_url.clone(),
                             provider.get_default_model_name(),
                         );
+                    }
+                }
+                // 同步回填 OCR 配置：Settings 持久化在 LLMProviderManager，
+                // 业务侧读 ImageProcessor.ocr_config，首启必须回填否则永久 None。
+                if let Some(ocr) = mgr.get_ocr_config() {
+                    let ocr_provider = match ocr.provider {
+                        crate::services::llm_providers::OcrProviderType::Baidu => {
+                            crate::services::image_processor::OcrProvider::Baidu
+                        }
+                        crate::services::llm_providers::OcrProviderType::Tencent => {
+                            crate::services::image_processor::OcrProvider::Tencent
+                        }
+                    };
+                    if let Ok(mut proc) = image_processor.write() {
+                        proc.set_ocr_config(crate::services::image_processor::OcrConfig {
+                            provider: ocr_provider,
+                            api_key: ocr.api_key.clone(),
+                            secret_key: ocr.secret_key.clone(),
+                        });
                     }
                 }
             }
@@ -328,6 +340,24 @@ impl AppState {
                                 provider.base_url.clone(),
                                 provider.get_default_model_name(),
                             );
+                        }
+                    }
+                    // 同步回填 OCR 配置（与上面已配置用户路径保持一致）
+                    if let Some(ocr) = mgr.get_ocr_config() {
+                        let ocr_provider = match ocr.provider {
+                            crate::services::llm_providers::OcrProviderType::Baidu => {
+                                crate::services::image_processor::OcrProvider::Baidu
+                            }
+                            crate::services::llm_providers::OcrProviderType::Tencent => {
+                                crate::services::image_processor::OcrProvider::Tencent
+                            }
+                        };
+                        if let Ok(mut proc) = img_arc.write() {
+                            proc.set_ocr_config(crate::services::image_processor::OcrConfig {
+                                provider: ocr_provider,
+                                api_key: ocr.api_key.clone(),
+                                secret_key: ocr.secret_key.clone(),
+                            });
                         }
                     }
                 }
@@ -375,7 +405,6 @@ impl AppState {
             pending_questions,
             skill_manager: Arc::new(tokio::sync::Mutex::new(skill_manager)),
             signal_writer: Arc::new(RwLock::new(signal_writer)),
-            template_manager: Arc::new(Mutex::new(template_manager)),
             image_processor,
             llm_providers,
             ingest_queue,
@@ -552,10 +581,6 @@ impl AppState {
                     SignalWriter::new(temp).expect("Failed to create fallback SignalWriter")
                 }),
             )),
-            template_manager: Arc::new(Mutex::new(TemplateManager::new(
-                data_dir.join("templates"),
-                String::new(),
-            ))),
             image_processor: Arc::new(RwLock::new(ImageProcessor::new(
                 String::new(),
                 String::new(),

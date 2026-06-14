@@ -72,6 +72,11 @@ impl ImageProcessor {
         self.ocr_config = Some(config);
     }
 
+    /// 清除 OCR 配置（与 Settings 页"清除 OCR 配置"操作同步）
+    pub fn clear_ocr_config(&mut self) {
+        self.ocr_config = None;
+    }
+
     pub fn set_protocol(&mut self, protocol: crate::services::llm_providers::LLMProtocol) {
         self.protocol = Some(protocol);
     }
