@@ -47,6 +47,9 @@ playwright-report/
 # OpenCode framework skills
 .opencode/
 
+# GSD planning framework
+.planning/
+
 # AI assistant configs (per-developer, not shared)
 CLAUDE.md
 AGENTS.md
