@@ -24,12 +24,14 @@ jobs:
           - platform: macos-latest
             target: x86_64-apple-darwin
             label: macOS x64
-          - platform: ubuntu-22.04
+          - platform: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             label: Linux x64
 
     runs-on: ${{ matrix.platform }}
     name: Build (${{ matrix.label }})
+    env:
+      MACOSX_DEPLOYMENT_TARGET: 10.15
 
     steps:
       - name: Checkout repository
@@ -52,7 +54,7 @@ jobs:
           workspaces: src-tauri -> target
 
       - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -194,7 +196,7 @@ jobs:
 
   # 烟雾测试：每个 push 跑一次（不打 release）
   check:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     name: Lint & Type Check
 
     steps:
