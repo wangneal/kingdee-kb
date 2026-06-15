@@ -110,6 +110,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires ort backend (ort::set_api) which is only initialized in main.rs"]
     fn test_reranker_creation() {
         // 仅测试创建不报错（模型文件存在时）
         let result = RerankerService::try_new(10);
