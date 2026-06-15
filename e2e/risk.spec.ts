@@ -15,7 +15,7 @@ test.describe("Risk Control page", () => {
     await page.goto("/risk");
     await expect(page.getByText("需求蔓延警报")).toBeVisible();
     await expect(page.getByText("项目健康度")).toBeVisible();
-    await expect(page.getByText("防身话术库")).toBeVisible();
+    await expect(page.getByText("话术生成器")).toBeVisible();
     await expect(page.getByText("AI 深度分析")).toBeVisible();
   });
 
@@ -43,8 +43,8 @@ test.describe("Risk Control page", () => {
 
   test("should switch to scripts tab", async ({ page }) => {
     await page.goto("/risk");
-    await page.getByText("防身话术库").click();
-    await expect(page.getByText("生成防身话术")).toBeVisible();
+    await page.getByText("话术生成器").click();
+    await expect(page.getByText("生成沟通话术")).toBeVisible();
     await expect(page.getByPlaceholder("如：客户要求在合同范围外增加一个全新的报表模块")).toBeVisible();
   });
 

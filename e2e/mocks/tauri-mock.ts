@@ -28,6 +28,23 @@ const MOCK_RESPONSES: Record<string, unknown> = {
   get_kb_compilation_enabled: false,
   recompile_failed_kb_sources: { retried: 0, succeeded: 0, failed: [] },
   "plugin:path|resolve_directory": "C:\\Users\\Test\\Documents",
+  get_backlinks: [],
+  get_graph_stats: { total_edges: 0, total_nodes: 0, signal_breakdown: {}, avg_degree: 0 },
+  build_knowledge_graph: 0,
+  run_verification: { report: { level: "Confirmed", overall_confidence: 1.0, checks: [], suggested_labels: [] } },
+
+  // Meetings & Minutes
+  list_meetings: [],
+  get_meeting_with_assets: null,
+  link_meeting_to_project: null,
+  unlink_meeting_from_project: null,
+  ignore_unlinked_meeting: null,
+  fetch_meeting_transcript: 0,
+  generate_meeting_minutes: {},
+  regenerate_meeting_minutes: {},
+  list_recent_meeting_minutes: [],
+  read_project_activity_log: "",
+  sync_tencent_meetings: 0,
 
   // Projects
   ensure_default_project: 1,

@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
 test.describe("Navigation", () => {
   test("should display sidebar with logo", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByText("实施顾问AI助手", { exact: true })).toBeVisible();
+    await expect(page.getByText("顾问工作台", { exact: true })).toBeVisible();
   });
 
   test("should have all navigation links", async ({ page }) => {
@@ -31,7 +31,7 @@ test.describe("Navigation", () => {
     await page.goto("/");
     await page.locator("aside").getByRole("link", { name: "知识库" }).click();
     await expect(page).toHaveURL("/browse");
-    await expect(page.getByRole("heading", { name: "知识页面" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "知识页面", exact: true })).toBeVisible();
   });
 
   test("should navigate to search page", async ({ page }) => {

@@ -5,7 +5,7 @@ test.describe("Browse page", () => {
   test("should display the wiki page list heading", async ({ page }) => {
     await mockTauriApis(page)
     await page.goto("/browse")
-    await expect(page.getByRole("heading", { name: "知识页面" })).toBeVisible()
+    await expect(page.getByRole("button", { name: "知识页面", exact: true })).toBeVisible()
   })
 
   test("should show empty state when no wiki pages", async ({ page }) => {
