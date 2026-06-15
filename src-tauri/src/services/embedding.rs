@@ -1264,6 +1264,7 @@ mod tests {
     /// This bypasses hf-hub entirely 鈥?the model is loaded directly from downloaded bytes.
     /// Verifies the complete download-and-load pipeline works.
     #[test]
+    #[ignore = "requires ort backend (ort::set_api) which is only initialized in main.rs"]
     fn test_full_download_and_load() {
         let tmp = std::env::temp_dir().join(format!("hf_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
