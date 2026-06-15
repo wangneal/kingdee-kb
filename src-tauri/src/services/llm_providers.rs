@@ -162,6 +162,33 @@ impl LLMProviderConfig {
             .map(|model_config| model_config.name.clone())
             .unwrap_or_default()
     }
+
+    /// 获取默认模型配置的最大输出 token 数。
+    /// 优先使用模型的 `max_output_tokens`，回退到 `max_tokens`，最终回退到 4096。
+    pub fn effective_max_output_tokens(&self) -> u32 {
+        if let Some(model) = self.get_default_model() {
+            if let Some(mot) = model.max_output_tokens {
+                if mot > 0 {
+                    return mot;
+                }
+            }
+        }
+        // 回退：若模型未配置 max_output_tokens，使用 max_tokens（硬编码 4096）并 clamp 到安全范围
+        self.max_tokens.clamp(4096, 32768)
+    }
+
+    /// 获取默认模型配置的上下文窗口大小。
+    /// 优先使用模型的 `context_window`，回退到 `max_tokens`，最终回退到 4096。
+    pub fn effective_context_window(&self) -> u32 {
+        if let Some(model) = self.get_default_model() {
+            if let Some(cw) = model.context_window {
+                if cw > 0 {
+                    return cw;
+                }
+            }
+        }
+        self.max_tokens.max(4096)
+    }
 }
 
 /// LLM 协议类型

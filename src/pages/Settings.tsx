@@ -461,40 +461,18 @@ export default function Settings() {
     else if (section === "data" || section === "kb") setActiveTab("data")
   }, [searchParams])
 
-  // 上下文工程覆盖状态
-  const [overrideModelId, setOverrideModelId] = useState("")
-  const [overrideContextWindow, setOverrideContextWindow] = useState("")
-  const [overrideMaxOutput, setOverrideMaxOutput] = useState("")
-  const [overrideSaveMsg, setOverrideSaveMsg] = useState<string | null>(null)
-  const [overrideKey, setOverrideKey] = useState(0)
-
-  // 计算是否有覆盖的模型规格
-  const hasOverride = useMemo(() => {
-    void overrideKey
+  // 一次性清理已废弃的 localStorage 模型规格覆盖（已迁移到 ModelConfig 字段）
+  useEffect(() => {
     try {
-      const overrides = JSON.parse(localStorage.getItem("model_spec_overrides") || "{}")
-      return new Set(Object.keys(overrides))
-    } catch {
-      return new Set<string>()
-    }
-  }, [overrideKey])
-
-  // 恢复默认规格
-  const handleRemoveOverride = useCallback(
-    (modelId: string) => {
-      try {
-        const overrides = JSON.parse(localStorage.getItem("model_spec_overrides") || "{}")
-        delete overrides[modelId]
-        localStorage.setItem("model_spec_overrides", JSON.stringify(overrides))
-        setOverrideKey((k) => k + 1)
-        toast.success(`已恢复模型 ${modelId} 的默认规格`)
-      } catch (err) {
-        console.error("删除模型规格覆盖失败:", err)
-        toast.error(`恢复默认规格失败: ${String(err)}`)
+      const raw = localStorage.getItem("model_spec_overrides")
+      if (raw && JSON.parse(raw) && Object.keys(JSON.parse(raw)).length > 0) {
+        toast.info("模型规格配置已迁移：请在供应商编辑中为每个模型设置上下文窗口")
+        localStorage.removeItem("model_spec_overrides")
       }
-    },
-    [toast.success, toast.error],
-  )
+    } catch {
+      localStorage.removeItem("model_spec_overrides")
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // 自动保存 kdclub token：走系统钥匙串，不留 localStorage 明文
   const handleSaveKdclubToken = useCallback(
@@ -565,29 +543,6 @@ export default function Settings() {
     },
     [tencentSecretId, tencentSecretKey],
   )
-
-  // 合并内置规格和 localStorage 覆盖
-  const mergedModelSpecs = useMemo(() => {
-    void overrideKey
-    const overrides: Record<string, { context_window?: number; max_output?: number }> = JSON.parse(
-      localStorage.getItem("model_spec_overrides") || "{}",
-    )
-    const specs = [...MODEL_SPECS]
-    for (const [id, val] of Object.entries(overrides)) {
-      const existing = specs.findIndex((s) => s.id === id)
-      if (existing >= 0) {
-        specs[existing] = { ...specs[existing], ...val }
-      } else {
-        specs.push({
-          id,
-          context_window: val.context_window ?? 128000,
-          max_output: val.max_output ?? 8192,
-          thinking: false,
-        })
-      }
-    }
-    return specs
-  }, [overrideKey])
 
   // 加载配置和统计信息，并轮询模型状态（自动加载可能仍在异步执行）
   useEffect(() => {
@@ -820,25 +775,6 @@ export default function Settings() {
     },
     [handleSaveEmbeddingProviderConfig],
   )
-
-  const handleSaveOverride = useCallback(() => {
-    if (!overrideModelId.trim()) return
-    try {
-      const overrides = JSON.parse(localStorage.getItem("model_spec_overrides") || "{}")
-      overrides[overrideModelId.trim()] = {
-        context_window: Number(overrideContextWindow) || 128000,
-        max_output: Number(overrideMaxOutput) || 8192,
-      }
-      localStorage.setItem("model_spec_overrides", JSON.stringify(overrides))
-      setOverrideKey((k) => k + 1)
-      setOverrideSaveMsg("已保存")
-      setTimeout(() => setOverrideSaveMsg(null), TOAST_AUTO_DISMISS_MS)
-    } catch (err) {
-      console.error("保存模型规格覆盖失败:", err)
-      toast.error(`保存模型规格覆盖失败: ${String(err)}`)
-      setOverrideSaveMsg("保存失败")
-    }
-  }, [overrideModelId, overrideContextWindow, overrideMaxOutput, toast.error])
 
   if (loading) {
     return (
@@ -1164,104 +1100,6 @@ export default function Settings() {
             </div>
           </section>
 
-          {/* 上下文工程配置区 */}
-          <section className="rounded-xl border border-neutral-200 bg-white">
-            <div className="border-b border-neutral-100 px-5 py-3">
-              <div className="flex items-center gap-2">
-                <Cpu className="h-4 w-4 text-[#1A6BD8]" />
-                <div>
-                  <h2 className="text-sm font-semibold text-neutral-700">上下文工程</h2>
-                  <p className="mt-0.5 text-xs text-neutral-400">模型上下文窗口规格与预算配置</p>
-                </div>
-              </div>
-            </div>
-            <div className="p-5">
-              {/* 模型规格表 */}
-              <div className="mb-4 overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-neutral-100 text-left text-xs text-neutral-500">
-                      <th className="pb-2 pr-3 font-medium">模型</th>
-                      <th className="pb-2 pr-3 font-medium">上下文窗口</th>
-                      <th className="pb-2 pr-3 font-medium">最大输出</th>
-                      <th className="pb-2 pr-3 font-medium">思维链</th>
-                      <th className="pb-2 font-medium">操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {mergedModelSpecs.map((spec) => (
-                      <tr key={spec.id} className="border-b border-neutral-50">
-                        <td className="py-1.5 pr-3 font-mono text-xs">{spec.id}</td>
-                        <td className="py-1.5 pr-3 text-xs">
-                          {(spec.context_window / 1000).toFixed(0)}K
-                        </td>
-                        <td className="py-1.5 pr-3 text-xs">
-                          {(spec.max_output / 1000).toFixed(0)}K
-                        </td>
-                        <td className="py-1.5 pr-3 text-xs">{spec.thinking ? "✓" : "—"}</td>
-                        <td className="py-1.5 text-xs">
-                          {hasOverride.has(spec.id) ? (
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveOverride(spec.id)}
-                              className="text-red-500 hover:text-red-700 transition-colors"
-                            >
-                              恢复默认
-                            </button>
-                          ) : (
-                            <span className="text-neutral-300">—</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* 手动覆盖表单 */}
-              <div className="rounded-lg border border-neutral-100 bg-neutral-50 p-3">
-                <h3 className="mb-2 text-xs font-semibold text-neutral-600">手动覆盖</h3>
-                <p className="mb-2 text-[10px] text-neutral-400">
-                  为未收录的模型指定上下文窗口参数。保存后覆盖内置规格。
-                </p>
-                <div className="grid grid-cols-3 gap-2">
-                  <input
-                    type="text"
-                    placeholder="模型 ID"
-                    value={overrideModelId}
-                    onChange={(e) => setOverrideModelId(e.target.value)}
-                    className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
-                  />
-                  <input
-                    type="number"
-                    placeholder="上下文窗口"
-                    value={overrideContextWindow}
-                    onChange={(e) => setOverrideContextWindow(e.target.value)}
-                    className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
-                  />
-                  <input
-                    type="number"
-                    placeholder="最大输出"
-                    value={overrideMaxOutput}
-                    onChange={(e) => setOverrideMaxOutput(e.target.value)}
-                    className="rounded border border-neutral-200 px-2 py-1.5 text-xs outline-none focus:border-[#1A6BD8]"
-                  />
-                </div>
-                <div className="mt-2 flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleSaveOverride}
-                    className="rounded bg-[#1A6BD8] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#1558B0]"
-                  >
-                    保存覆盖
-                  </button>
-                  {overrideSaveMsg && (
-                    <span className="text-xs text-neutral-500">{overrideSaveMsg}</span>
-                  )}
-                </div>
-              </div>
-            </div>
-          </section>
         </div>
       )}
 
@@ -2932,7 +2770,12 @@ function ProviderCard({
             </span>
           </div>
           <div className="mt-2 grid gap-1 text-xs text-neutral-500 md:grid-cols-2">
-            <span className="truncate">默认模型：{defaultModel?.name || "未设置"}</span>
+            <span className="truncate">
+              默认模型：{defaultModel?.name || "未设置"}
+              {defaultModel?.context_window
+                ? ` (${(defaultModel.context_window / 1000).toFixed(0)}K ctx)`
+                : ""}
+            </span>
             <span className="truncate">默认 Key：{defaultKey?.name || "未设置"}</span>
             <span className="truncate md:col-span-2">
               Base URL：{provider.base_url || "未设置"}
@@ -3038,12 +2881,46 @@ function ProviderFormDialog({
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
 
+  // ── 模型规格配置（context_window / max_output_tokens）──
+  type ModelSpecEntry = { context_window: number; max_output_tokens: number }
+  const getModelSpecDefault = (modelName: string): ModelSpecEntry => {
+    // 1. 已有配置优先
+    const existing = provider?.models.find((m) => m.name === modelName)
+    if (existing?.context_window && existing?.max_output_tokens) {
+      return { context_window: existing.context_window, max_output_tokens: existing.max_output_tokens }
+    }
+    // 2. 内置规格
+    const builtin = MODEL_SPECS.find((s) => s.id === modelName)
+    if (builtin) return { context_window: builtin.context_window, max_output_tokens: builtin.max_output }
+    // 3. 默认值
+    return { context_window: 128000, max_output_tokens: 8192 }
+  }
+  const [modelSpecs, setModelSpecs] = useState<Record<string, ModelSpecEntry>>(() => {
+    const initial: Record<string, ModelSpecEntry> = {}
+    const names = initialModelsText.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+    for (const n of names) initial[n] = getModelSpecDefault(n)
+    return initial
+  })
+
+  // textarea 变化时同步 modelSpecs
+  const handleModelsTextChange = (text: string) => {
+    setModelsText(text)
+    const names = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+    setModelSpecs((prev) => {
+      const next: Record<string, ModelSpecEntry> = {}
+      for (const n of names) {
+        next[n] = prev[n] ?? getModelSpecDefault(n)
+      }
+      return next
+    })
+  }
+
   const handleProtocolChange = (nextProtocol: LLMProtocol) => {
     setProtocol(nextProtocol)
     if (!provider) {
       setSelectedPresetId(`custom-${nextProtocol}`)
       setBaseUrl(PROVIDER_DEFAULTS[nextProtocol].base_url)
-      setModelsText(PROVIDER_DEFAULTS[nextProtocol].model)
+      handleModelsTextChange(PROVIDER_DEFAULTS[nextProtocol].model)
     }
   }
 
@@ -3053,7 +2930,7 @@ function ProviderFormDialog({
       setName(provider.name)
       setProtocol(provider.protocol)
       setBaseUrl(provider.base_url)
-      setModelsText(provider.models.map((model) => model.name).join("\n"))
+      handleModelsTextChange(provider.models.map((model) => model.name).join("\n"))
       setEndpointModels([])
       setMessage(null)
       return
@@ -3063,7 +2940,7 @@ function ProviderFormDialog({
     setName(preset.label)
     setProtocol(preset.protocol)
     setBaseUrl(preset.base_url)
-    setModelsText(providerModelsText(preset))
+    handleModelsTextChange(providerModelsText(preset))
     setEndpointModels([])
     setMessage(preset.note ?? null)
   }
@@ -3114,13 +2991,13 @@ function ProviderFormDialog({
 
   const handleUseEndpointModel = (modelName: string) => {
     const next = [modelName, ...modelNamesFromText().filter((name) => name !== modelName)]
-    setModelsText(next.join("\n"))
+    handleModelsTextChange(next.join("\n"))
   }
 
   const handleUseAllEndpointModels = () => {
     const existing = modelNamesFromText()
     const next = [...existing, ...endpointModels.filter((name) => !existing.includes(name))]
-    setModelsText(next.join("\n"))
+    handleModelsTextChange(next.join("\n"))
   }
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -3177,12 +3054,16 @@ function ProviderFormDialog({
 
     const models: ModelConfig[] = modelNames.map((modelName, index) => {
       const existing = provider?.models.find((model) => model.name === modelName)
+      const spec = modelSpecs[modelName]
       return {
         id: existing?.id ?? crypto.randomUUID(),
         name: modelName,
         is_default: index === 0,
         is_multimodal: existing?.is_multimodal ?? null,
         last_probe_at: existing?.last_probe_at ?? null,
+        context_window: spec?.context_window ?? null,
+        max_output_tokens: spec?.max_output_tokens ?? null,
+        supports_thinking: existing?.supports_thinking ?? null,
       }
     })
 
@@ -3313,11 +3194,61 @@ function ProviderFormDialog({
             </span>
             <textarea
               value={modelsText}
-              onChange={(event) => setModelsText(event.target.value)}
+              onChange={(event) => handleModelsTextChange(event.target.value)}
               rows={5}
               className="w-full rounded-lg border border-neutral-200 px-3 py-2 font-mono text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
             />
           </label>
+
+          {/* 模型规格配置 */}
+          {Object.keys(modelSpecs).length > 0 && (
+            <div className="rounded-lg border border-neutral-100 bg-neutral-50 p-3">
+              <h3 className="mb-2 text-xs font-semibold text-neutral-600">模型规格</h3>
+              <p className="mb-2 text-[10px] text-neutral-400">
+                设置每个模型的上下文窗口和最大输出 token 数。留空则使用后端自动探测或默认值。
+              </p>
+              <div className="max-h-40 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-neutral-200 text-left text-neutral-500">
+                      <th className="pb-1.5 pr-2 font-medium">模型</th>
+                      <th className="pb-1.5 pr-2 font-medium" style={{ width: "100px" }}>上下文窗口</th>
+                      <th className="pb-1.5 font-medium" style={{ width: "100px" }}>最大输出</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(modelSpecs).map(([modelName, spec]) => (
+                      <tr key={modelName} className="border-b border-neutral-100">
+                        <td className="py-1 pr-2 font-mono text-neutral-700">{modelName}</td>
+                        <td className="py-1 pr-2">
+                          <input
+                            type="number"
+                            value={spec.context_window}
+                            onChange={(e) => {
+                              const val = Number(e.target.value) || 128000
+                              setModelSpecs((prev) => ({ ...prev, [modelName]: { ...prev[modelName], context_window: val } }))
+                            }}
+                            className="w-full rounded border border-neutral-200 px-1.5 py-0.5 text-xs outline-none focus:border-[#1A6BD8]"
+                          />
+                        </td>
+                        <td className="py-1">
+                          <input
+                            type="number"
+                            value={spec.max_output_tokens}
+                            onChange={(e) => {
+                              const val = Number(e.target.value) || 8192
+                              setModelSpecs((prev) => ({ ...prev, [modelName]: { ...prev[modelName], max_output_tokens: val } }))
+                            }}
+                            className="w-full rounded border border-neutral-200 px-1.5 py-0.5 text-xs outline-none focus:border-[#1A6BD8]"
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {endpointModels.length > 0 && (
             <div className="rounded-lg border border-neutral-100 bg-neutral-50 p-3">

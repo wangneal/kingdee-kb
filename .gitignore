@@ -80,3 +80,9 @@ task-summary-*.md
 
 # Cargo review logs
 cargo-*-review.log
+
+# AI session debug artifacts (local-only, not for VCS)
+review_diff.txt
+subsequent_agent.txt
+subsequent_ingestion.txt
+subsequent_meta.txt

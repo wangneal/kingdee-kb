@@ -163,6 +163,9 @@ export interface ModelConfig {
   is_default: boolean
   is_multimodal: boolean | null
   last_probe_at: string | null
+  context_window: number | null
+  max_output_tokens: number | null
+  supports_thinking: boolean | null
 }
 
 /** LLM 供应商配置 */

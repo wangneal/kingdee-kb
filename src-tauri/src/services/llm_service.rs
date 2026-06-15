@@ -1429,7 +1429,7 @@ impl LLMService {
             let auth_header = format!("Bearer {}", config.get_default_key_value());
             let model = config.get_default_model_name().clone();
             let temperature = config.temperature;
-            let max_tokens = config.max_tokens;
+            let max_tokens = config.effective_max_output_tokens();
 
             let system_prompt_ref = &final_system;
             let user_message_ref = &final_user;
@@ -1614,7 +1614,7 @@ impl LLMService {
         // Step 5: Assemble context with sentence window (neighbor chunks)
         let system_tokens = token::count_tokens_with_fallback(SYSTEM_PROMPT);
         let budget = config
-            .max_tokens
+            .effective_context_window()
             .saturating_sub(system_tokens + RESPONSE_TOKENS + 200);
         // 获取邻居 chunk 用于句子窗口上下文扩展
         let chunk_ids: Vec<i64> = search_results.iter().map(|r| r.chunk_id).collect();
@@ -2326,7 +2326,7 @@ impl LLMService {
         // Step 4: Assemble context with sentence window (neighbor chunks)
         let system_tokens = token::count_tokens_with_fallback(SYSTEM_PROMPT);
         let budget = config
-            .max_tokens
+            .effective_context_window()
             .saturating_sub(system_tokens + RESPONSE_TOKENS + 200);
         // 获取邻居 chunk 用于句子窗口上下文扩展
         let chunk_ids: Vec<i64> = search_results.iter().map(|r| r.chunk_id).collect();

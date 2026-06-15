@@ -593,13 +593,13 @@ impl RigAgent {
 
         let model = config.get_default_model_name();
         let temperature = config.temperature as f64;
-        let max_tokens = agent_output_tokens(config.max_tokens);
+        let max_tokens = agent_output_tokens(config.effective_max_output_tokens());
         let prompt = build_prompt_with_history(history, user_message);
         info!(
             session = %sid,
             provider = ?config.protocol,
             model = %model,
-            configured_max_tokens = config.max_tokens,
+            configured_max_tokens = config.effective_max_output_tokens(),
             agent_output_tokens = max_tokens,
             temperature = temperature,
             history_messages = history.len(),
@@ -1298,7 +1298,7 @@ impl RigAgent {
             .get_config_for_provider_model(provider_id, model_id)
             .map_err(|e| format!("获取配置失败: {}", e))?;
 
-        let plan_budget = config.max_tokens / 4; // Plan gets 25% of context budget
+        let plan_budget = config.effective_context_window() / 4; // Plan 获得 25% 的上下文窗口预算
         let plan = tokio::time::timeout(
             std::time::Duration::from_secs(PLANNER_TIMEOUT_SECS),
             planner::Planner::plan(

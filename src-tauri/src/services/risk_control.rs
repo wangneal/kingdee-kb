@@ -702,7 +702,7 @@ impl RiskControlStore {
         doc_id: i64,
     ) -> Result<Vec<CandidateScopeItem>, String> {
         let config = llm.get_active_config()?;
-        let batch_token_budget = Self::scope_extraction_batch_token_budget(config.max_tokens);
+        let batch_token_budget = Self::scope_extraction_batch_token_budget(config.effective_context_window());
         let contexts = Self::build_scope_extraction_batches(chunks, batch_token_budget);
         if contexts.is_empty() {
             return Err("文档内容为空，无法提取合同范围".to_string());
