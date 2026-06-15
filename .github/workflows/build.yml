@@ -10,7 +10,59 @@ permissions:
   contents: write
 
 jobs:
+  # ── 烟雾测试：每次 tag push 跑一次 ──────────────────
+  check:
+    runs-on: ubuntu-24.04
+    name: Lint & Type Check
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libasound2-dev
+
+      - run: npm ci
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Rust check
+        run: cargo check
+        working-directory: src-tauri
+
+      - name: Rust tests
+        run: cargo test --lib
+        working-directory: src-tauri
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: E2E tests
+        run: npx playwright test --reporter=list
+
+  # ── 构建产物（不创建 release）────────────────────
   build:
+    needs: [check]
     strategy:
       fail-fast: false
       matrix:
@@ -34,22 +86,18 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: 10.15
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: npm
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
 
@@ -66,13 +114,9 @@ jobs:
             libayatana-appindicator3-dev \
             libasound2-dev
 
-      - name: Install frontend dependencies
-        run: npm ci
+      - run: npm ci
 
-      # ── Windows 专用：构建"绿色版" zip ───────────────────────────
-      # 思路：跳过 NSIS/MSI 打包，只产出原始 .exe + 运行时 DLL，
-      #       再用 PowerShell 打成 zip 作为便携版（绿色版）。
-      # 时机：在 tauri-action 之前跑，让 tauri-action 复用编译缓存。
+      # ── Windows 专用：构建"绿色版" zip ─────────────────
       - name: Build Windows portable (no bundle, then zip)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
@@ -99,13 +143,11 @@ jobs:
           # 3) 复制主可执行文件
           Copy-Item "$binDir/kingdee-kb.exe" $stage
 
-          # 4) 复制运行时 DLL（vcrt、WebView2Loader 等）
+          # 4) 复制运行时 DLL
           Get-ChildItem "$binDir/*.dll" -ErrorAction SilentlyContinue |
             Copy-Item -Destination $stage
 
-          # 5) 复制 resources 目录（embedding 模型 + skills）
-          #    tauri build --no-bundle 不会自动复制 bundle.resources，
-          #    这里从源码目录拷贝到与 .exe 同级，让 PathResolver 能找到。
+          # 5) 复制 resources
           $srcResources = "src-tauri/resources"
           if (Test-Path $srcResources) {
             Copy-Item $srcResources "$stage/resources" -Recurse -Force
@@ -144,7 +186,7 @@ jobs:
           Write-Host "=== 绿色版构建完成 ==="
           Get-ChildItem $zip | Select-Object Name, @{N='Size(MB)';E={[math]::Round($_.Length/1MB,2)}}
 
-      # ── 标准安装包构建（NSIS / MSI / DMG / AppImage / deb）──
+      # ── 标准安装包构建（仅编译，不创建 release）──
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -152,91 +194,82 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "KingdeeKB ${{ github.ref_name }}"
-          releaseBody: |
-            ## KingdeeKB ${{ github.ref_name }}
-
-            金蝶 ERP 实施知识库桌面应用 — AI 驱动的调研助手、风险把控、文档生成。
-
-            ### 下载说明
-
-            **Windows**
-            - `.msi` / `.exe`：标准安装包（推荐，含卸载程序、开始菜单快捷方式）
-            - `-portable.zip`：绿色版（无需安装，解压即用，适合便携场景）
-
-            **macOS**
-            - `.dmg`（ARM 用于 Apple Silicon，x64 用于 Intel）
-
-            **Linux**
-            - `.AppImage`：免安装，`chmod +x` 后直接运行
-            - `.deb`：Debian / Ubuntu 安装包
-
-            ### 首次使用
-            1. 启动应用
-            2. 进入「设置」配置 LLM API Key
-            3. 在「知识库」中导入文档
-            4. 在「AI 助手」中开始提问
-          releaseDraft: true
-          prerelease: false
+          # 不传 tagName/releaseName/releaseId = 只构建不上传
           args: --target ${{ matrix.target }}
 
-      # ── Windows: 上传绿色版到 release ─────────────────────
-      - name: Upload portable to release
-        if: matrix.platform == 'windows-latest' && startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
+      # ── 上传构建产物供 release job 使用 ─────────
+      - name: Upload bundles
+        uses: actions/upload-artifact@v7
+        with:
+          name: bundles-${{ matrix.label }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/**
+            build/*.zip
+          if-no-files-found: ignore
+
+  # ── 统一创建 release，等所有构建完成 ─────────
+  release:
+    needs: [build]
+    runs-on: ubuntu-24.04
+    name: Create Release
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: downloaded-artifacts
+
+      - name: Create GitHub Release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $zip = Get-ChildItem build/KingdeeKB-*-windows-x64-portable.zip | Select-Object -First 1
-          if (-not $zip) { throw "找不到绿色版 zip" }
-          gh release upload "${{ github.ref_name }}" $zip.FullName --clobber
-          Write-Host "已上传 $($zip.Name) 到 release ${{ github.ref_name }}"
+          version="${{ github.ref_name }}"
 
-  # 烟雾测试：每个 push 跑一次（不打 release）
-  check:
-    runs-on: ubuntu-24.04
-    name: Lint & Type Check
+          # 创建 draft release
+          gh release create "$version" \
+            --title "KingdeeKB $version" \
+            --notes "## KingdeeKB ${{ github.ref_name }}
 
-    steps:
-      - uses: actions/checkout@v4
+          金蝶 ERP 实施知识库桌面应用 — AI 驱动的调研助手、风险把控、文档生成。
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
+          ### 下载说明
 
-      - uses: dtolnay/rust-toolchain@stable
+          **Windows**
+          - \`.msi\` / \`.exe\`：标准安装包（推荐，含卸载程序、开始菜单快捷方式）
+          - \`-portable.zip\`：绿色版（无需安装，解压即用，适合便携场景）
 
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
+          **macOS**
+          - \`.dmg\`（ARM 用于 Apple Silicon，x64 用于 Intel）
 
-      - name: Install Linux dependencies
+          **Linux**
+          - \`.AppImage\`：免安装，\`chmod +x\` 后直接运行
+          - \`.deb\`：Debian / Ubuntu 安装包
+
+          ### 首次使用
+          1. 启动应用
+          2. 进入「设置」配置 LLM API Key
+          3. 在「知识库」中导入文档
+          4. 在「AI 助手」中开始提问" \
+            --draft
+
+      - name: Upload artifacts to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libssl-dev \
-            libgtk-3-dev \
-            libasound2-dev
+          # 上传所有构建产物到 release（--clobber 覆盖同名文件）
+          find downloaded-artifacts -type f -exec \
+            gh release upload "${{ github.ref_name }}" {} --clobber \;
+          echo "=== 所有构建产物已上传 ==="
 
-      - run: npm ci
-
-      - name: TypeScript check
-        run: npx tsc --noEmit
-
-      - name: Rust check
-        run: cargo check
-        working-directory: src-tauri
-
-      - name: Rust tests
-        run: cargo test --lib
-        working-directory: src-tauri
-
-      - name: E2E tests
-        run: npx playwright test --reporter=list
+      - name: Verify release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Release draft created at:"
+          echo "https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
