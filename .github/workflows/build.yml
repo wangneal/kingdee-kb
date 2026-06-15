@@ -263,13 +263,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 排除 GitHub artifacts sentinel 文件，其余全传
-          # 这样 Tauri 新增/改名 installer 格式也不会遗漏
-          find downloaded-artifacts -type f \
-            ! -name "__init__.py" \
-            ! -name "empty" \
-            ! -name ".gitkeep" \
-            ! -name ".keep" \
+          # 只传非空文件（跳过 __init__.py / empty 等 0 字节 sentinel）
+          # 不限制文件后缀，Tauri 新增/改名 installer 格式也不会遗漏
+          find downloaded-artifacts -type f -size +0 \
             -exec gh release upload "${{ github.ref_name }}" {} --clobber \;
           echo "=== 所有构建产物已上传 ==="
 
