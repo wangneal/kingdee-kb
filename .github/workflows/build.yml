@@ -62,7 +62,6 @@ jobs:
 
   # ── 构建产物（不创建 release）────────────────────
   build:
-    needs: [check]
     strategy:
       fail-fast: false
       matrix:
