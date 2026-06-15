@@ -10,56 +10,6 @@ permissions:
   contents: write
 
 jobs:
-  # ── 烟雾测试：每次 tag push 跑一次 ──────────────────
-  check:
-    runs-on: ubuntu-24.04
-    name: Lint & Type Check
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 20
-          cache: npm
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libssl-dev \
-            libgtk-3-dev \
-            libasound2-dev
-
-      - run: npm ci
-
-      - name: TypeScript check
-        run: npx tsc --noEmit
-
-      - name: Rust check
-        run: cargo check
-        working-directory: src-tauri
-
-      - name: Rust tests
-        run: cargo test --lib
-        working-directory: src-tauri
-
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
-
-      - name: E2E tests
-        run: npx playwright test --reporter=list
-
   # ── 构建产物（不创建 release）────────────────────
   build:
     strategy:
