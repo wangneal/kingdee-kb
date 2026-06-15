@@ -1,6 +1,6 @@
 [package]
 name = "kingdee-kb"
-version = "0.1.0"
+version = "0.1.8"
 description = "AI-assisted Kingdee ERP implementation knowledge base"
 authors = ["KingdeeKB Team"]
 edition = "2021"
@@ -34,7 +34,17 @@ tauri-plugin-keyring-store = "0.2"
 keyring = "3"
 
 # Phase 2: Embedding & Vector Store
-fastembed = { version = "5", features = ["ort-download-binaries-native-tls"] }
+fastembed = "5"
+[dependencies.ort]
+version = "=2.0.0-rc.12"
+default-features = false
+features = [
+  "std",
+  "ndarray",
+  "alternative-backend"
+]
+
+ort-tract = "0.3.0+0.22"
 usearch = { version = "2", default-features = false }
 rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
