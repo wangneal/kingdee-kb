@@ -34,8 +34,8 @@ tauri-plugin-keyring-store = "0.2"
 keyring = "3"
 
 # Phase 2: Embedding & Vector Store
-fastembed = "5"
-ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "alternative-backend"] }
+fastembed = { version = "5", default-features = false, features = ["hf-hub-native-tls", "image-models"] }
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "api-24", "alternative-backend"] }
 ort-tract = "0.3.0+0.22"
 usearch = { version = "2", default-features = false }
 rusqlite = { version = "0.32", features = ["bundled"] }
