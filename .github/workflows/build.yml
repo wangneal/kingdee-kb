@@ -263,18 +263,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 上传安装包/压缩包到 release（过滤 __init__.py/empty 等非产物文件）
-          find downloaded-artifacts -type f \( \
-            -name "*.AppImage" -o \
-            -name "*.deb" -o \
-            -name "*.dmg" -o \
-            -name "*.msi" -o \
-            -name "*.exe" -o \
-            -name "*.tar.gz" -o \
-            -name "*.tar.xz" -o \
-            -name "*.zip" -o \
-            -name "*.rpm" \
-          \) -exec gh release upload "${{ github.ref_name }}" {} --clobber \;
+          # 排除 GitHub artifacts sentinel 文件，其余全传
+          # 这样 Tauri 新增/改名 installer 格式也不会遗漏
+          find downloaded-artifacts -type f \
+            ! -name "__init__.py" \
+            ! -name "empty" \
+            ! -name ".gitkeep" \
+            ! -name ".keep" \
+            -exec gh release upload "${{ github.ref_name }}" {} --clobber \;
           echo "=== 所有构建产物已上传 ==="
 
       - name: Verify release
