@@ -1249,6 +1249,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "bundled model files are no longer tracked"]
     fn test_load_bundled_bge_user_defined() {
         let dir = ModelManager::bundled_bge_model_dir()
             .expect("bundled BGE model resource directory should exist");

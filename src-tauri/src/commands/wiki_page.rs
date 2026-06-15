@@ -16,7 +16,8 @@ pub struct ApproveAutoWikiPagesResult {
 /// 从文件路径中提取文件名（如 "C:/.../需求.docx" → "需求.docx"）
 /// raw_source_identity 缺失时，用 source_path 兜底
 fn extract_filename(path: &str) -> Option<String> {
-    Path::new(path)
+    let normalized = path.replace('\\', "/");
+    Path::new(&normalized)
         .file_name()
         .and_then(|n| n.to_str())
         .map(|s| s.to_string())

@@ -56,7 +56,7 @@ impl IngestionQueue {
     ///
     /// 返回生成的唯一任务 ID。
     pub fn enqueue(&mut self, project_id: i64, source_identity: &str) -> String {
-        let id = format!("{}", chrono::Utc::now().timestamp_millis());
+        let id = uuid::Uuid::new_v4().to_string();
         let item = QueueItem {
             id: id.clone(),
             project_id,

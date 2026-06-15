@@ -258,7 +258,7 @@ const TENCENT_GET_MEETING_PROFILE: RigToolProfile = RigToolProfile {
 const TENCENT_FETCH_TRANSCRIPT_PROFILE: RigToolProfile = RigToolProfile {
     id: "tencent-fetch-transcript",
     effect: ToolEffect::SkillExecution,
-    retry: ToolRetryPolicy::Exponential,
+    retry: ToolRetryPolicy::None,
     schema_guard: true,
     audit: true,
     disable_allowed: true,
@@ -267,7 +267,7 @@ const TENCENT_FETCH_TRANSCRIPT_PROFILE: RigToolProfile = RigToolProfile {
 const GENERATE_MEETING_MINUTES_PROFILE: RigToolProfile = RigToolProfile {
     id: "generate-meeting-minutes",
     effect: ToolEffect::SkillExecution,
-    retry: ToolRetryPolicy::Exponential,
+    retry: ToolRetryPolicy::None,
     schema_guard: true,
     audit: true,
     disable_allowed: true,
@@ -4215,9 +4215,13 @@ fn validate_skill_script_args(args: &[String], allowed_roots: &[&Path]) -> Resul
 
 fn is_safe_relative_path(value: &str) -> bool {
     let path = Path::new(value);
+    let has_win_drive = value.len() >= 2
+        && value.as_bytes()[0].is_ascii_alphabetic()
+        && value.as_bytes()[1] == b':';
     !value.is_empty()
         && !value.contains('\0')
         && !path.is_absolute()
+        && !has_win_drive
         && path.components().all(|component| {
             matches!(
                 component,
