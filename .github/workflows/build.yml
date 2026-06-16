@@ -143,8 +143,6 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           # 不传 tagName/releaseName/releaseId = 只构建不上传
           args: --target ${{ matrix.target }}
@@ -174,6 +172,25 @@ jobs:
         with:
           path: downloaded-artifacts
 
+      - name: List downloaded artifacts (debug)
+        shell: bash
+        run: |
+          echo "=== 下载的产物目录结构 ==="
+          find downloaded-artifacts -type f -size +0 | head -80
+          echo ""
+          echo "=== 按扩展名分类 ==="
+          find downloaded-artifacts -type f -size +0 | sed 's/.*\.//' | sort | uniq -c | sort -rn
+          echo ""
+          echo "=== 匹配发布规则的文件 ==="
+          find downloaded-artifacts -type f -size +0 \( \
+              -iname '*.msi' -o \
+              -iname '*-setup.exe' -o \
+              -iname '*-portable.zip' -o \
+              -iname '*.dmg' -o \
+              -iname '*.AppImage' -o \
+              -iname '*.deb' \
+            \) || echo "(无匹配)"
+
       - name: Create GitHub Release
         shell: bash
         env:
@@ -186,31 +203,31 @@ jobs:
           if gh release view "$version" >/dev/null 2>&1; then
             echo "Release $version 已存在，复用现有草稿"
           else
-          gh release create "$version" \
-            --title "KingdeeKB $version" \
-            --notes "## KingdeeKB ${{ github.ref_name }}
+            gh release create "$version" \
+              --title "KingdeeKB $version" \
+              --notes "## KingdeeKB ${version}
 
-          金蝶 ERP 实施知识库桌面应用 — AI 驱动的调研助手、风险把控、文档生成。
+            金蝶 ERP 实施知识库桌面应用 — AI 驱动的调研助手、风险把控、文档生成。
 
-          ### 下载说明
+            ### 下载说明
 
-          **Windows**
-          - \`.msi\` / \`.exe\`：标准安装包（推荐，含卸载程序、开始菜单快捷方式）
-          - \`-portable.zip\`：绿色版（无需安装，解压即用，适合便携场景）
+            **Windows**
+            - \`.msi\` / \`.exe\`：标准安装包（推荐，含卸载程序、开始菜单快捷方式）
+            - \`-portable.zip\`：绿色版（无需安装，解压即用，适合便携场景）
 
-          **macOS**
-          - \`.dmg\`（ARM 用于 Apple Silicon，x64 用于 Intel）
+            **macOS**
+            - \`.dmg\`（ARM 用于 Apple Silicon，x64 用于 Intel）
 
-          **Linux**
-          - \`.AppImage\`：免安装，\`chmod +x\` 后直接运行
-          - \`.deb\`：Debian / Ubuntu 安装包
+            **Linux**
+            - \`.AppImage\`：免安装，\`chmod +x\` 后直接运行
+            - \`.deb\`：Debian / Ubuntu 安装包
 
-          ### 首次使用
-          1. 启动应用
-          2. 进入「设置」配置 LLM API Key
-          3. 在「知识库」中导入文档
-          4. 在「AI 助手」中开始提问" \
-            --draft
+            ### 首次使用
+            1. 启动应用
+            2. 进入「设置」配置 LLM API Key
+            3. 在「知识库」中导入文档
+            4. 在「AI 助手」中开始提问" \
+              --draft
           fi
 
       - name: Upload artifacts to release
@@ -218,27 +235,41 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 只上传面向用户的发布产物：安装包 + 绿色版 zip
-          # 白名单过滤，剔除 updater 中间产物（*.sig / *.tar.gz / *.nsis.zip / *.msi.zip 等）
-          #   Windows: .msi (WiX) / .exe (NSIS 安装器) / *-portable.zip (绿色版)
-          #   macOS:   .dmg
-          #   Linux:   .AppImage / .deb
-          find downloaded-artifacts -type f -size +0 \( \
+          version="${{ github.ref_name }}"
+
+          # 上传面向用户的发布产物（安装包 + 绿色版）
+          #   安装包：.msi (WiX) / *-setup.exe (NSIS) / .dmg / .deb
+          #   绿色版：*-portable.zip
+          mapfile -t files < <(find downloaded-artifacts -type f -size +0 \( \
               -iname '*.msi' -o \
-              -iname '*.exe' -o \
+              -iname '*-setup.exe' -o \
               -iname '*-portable.zip' -o \
               -iname '*.dmg' -o \
               -iname '*.AppImage' -o \
               -iname '*.deb' \
-            \) -exec gh release upload "${{ github.ref_name }}" {} --clobber \;
-          echo "=== 发布产物已上传 ==="
+            \) | sort)
+
+          # 零匹配则中止：避免后续 Publish 步骤发布一个没有任何安装包的空 release
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::未匹配到任何发布产物，中止发布（不创建空 release）"
+            echo "::notice::请检查上方 debug 步骤输出的目录结构，确认文件名是否匹配 find 模式"
+            exit 1
+          fi
+
+          echo "将上传 ${#files[@]} 个发布产物："
+          printf '  - %s\n' "${files[@]}"
+
+          # 一次性上传：任一文件失败即整体失败，不掩盖部分上传失败
+          gh release upload "$version" "${files[@]}" --clobber
+          echo "=== 发布产物已上传（共 ${#files[@]} 个）==="
 
       - name: Publish release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          version="${{ github.ref_name }}"
           # 产物上传齐全后，将草稿转为正式发布（避免公开"产物未传完"的中间态）
-          gh release edit "${{ github.ref_name }}" --draft=false
+          gh release edit "$version" --draft=false
           echo "Release 已发布:"
-          echo "https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
+          echo "https://github.com/${{ github.repository }}/releases/tag/$version"
