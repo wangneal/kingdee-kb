@@ -2,7 +2,7 @@
 //!
 //! 使用 rig 的流式 API 和原生 function calling。
 //! 中间事件（Thinking、ToolCall、ToolResult、TextDelta）
-//! 通过 ReActEvent 实时推送到前端。
+//! 通过 AgentEvent 实时推送到前端。
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,7 +32,7 @@ use crate::services::planner::{self, PlanState, PlanStateMachine};
 use crate::services::product_store::ProductStore;
 use crate::services::project_store::ProjectStore;
 use crate::services::question_tool::PendingQuestions;
-use crate::services::react_agent::{is_llm_auth_error, ReActEvent};
+use crate::services::agent_event::{is_llm_auth_error, AgentEvent};
 use crate::services::rig_provider::{
     build_anthropic_client, build_ollama_client, build_openai_client,
 };
@@ -173,17 +173,17 @@ impl RigAgent {
     /// 运行基于 rig 的 agent 流式循环。
     ///
     /// 使用 `stream_prompt()` 接收中间事件：
-    /// - `Text` → `ReActEvent::TextDelta`
-    /// - `ToolCall` → `ReActEvent::ToolCall`
-    /// - `StreamedUserContent::ToolResult` → `ReActEvent::ToolResult`
-    /// - `Reasoning` → `ReActEvent::Thinking`
-    /// - `FinalResponse` → `ReActEvent::Done`
+    /// - `Text` → `AgentEvent::TextDelta`
+    /// - `ToolCall` → `AgentEvent::ToolCall`
+    /// - `StreamedUserContent::ToolResult` → `AgentEvent::ToolResult`
+    /// - `Reasoning` → `AgentEvent::Thinking`
+    /// - `FinalResponse` → `AgentEvent::Done`
     pub async fn run(
         llm: &LLMService,
         user_message: &str,
         system_extra: &str,
         history: &[ChatMessage],
-        sender: mpsc::UnboundedSender<ReActEvent>,
+        sender: mpsc::UnboundedSender<AgentEvent>,
         session_id: &str,
         pending: PendingQuestions,
         project_id: Option<i64>,
@@ -215,7 +215,7 @@ impl RigAgent {
                 Ok(store) => match store.ensure_default_project() {
                     Ok(pid) => pid,
                     Err(e) => {
-                        let _ = sender.send(ReActEvent::error(
+                        let _ = sender.send(AgentEvent::error(
                             sid.clone(),
                             format!("获取默认项目失败: {}", e),
                         ));
@@ -223,7 +223,7 @@ impl RigAgent {
                     }
                 },
                 Err(e) => {
-                    let _ = sender.send(ReActEvent::error(
+                    let _ = sender.send(AgentEvent::error(
                         sid.clone(),
                         format!("获取项目锁失败: {}", e),
                     ));
@@ -462,7 +462,7 @@ impl RigAgent {
                 Ok(()) => return, // Plan-Execute completed
                 Err(e) => {
                     tracing::warn!("Plan-Execute 失败，降级到 ReAct: {}", e);
-                    let _ = sender.send(ReActEvent::PlannerTimeout {
+                    let _ = sender.send(AgentEvent::PlannerTimeout {
                         session_id: session_id.to_string(),
                         message: format!("规划失败，已降级到快速模式: {}", e),
                     });
@@ -477,7 +477,7 @@ impl RigAgent {
             Err(e) => {
                 // 配置阶段还没有 provider_id（错误来自 active runtime provider），
                 // 用占位 id 让前端知道是 LLM 相关错误；用户进设置页查看具体供应商
-                let _ = sender.send(ReActEvent::llm_error(sid, e, "default"));
+                let _ = sender.send(AgentEvent::llm_error(sid, e, "default"));
                 return;
             }
         };
@@ -520,7 +520,7 @@ impl RigAgent {
         let tool_config = match load_rig_tool_config(&data_dir) {
             Ok(config) => config,
             Err(e) => {
-                let _ = sender.send(ReActEvent::error(sid, e));
+                let _ = sender.send(AgentEvent::error(sid, e));
                 return;
             }
         };
@@ -618,7 +618,7 @@ impl RigAgent {
                     let client = match build_openai_client(&config) {
                         Ok(c) => c,
                         Err(e) => {
-                            let _ = sender.send(ReActEvent::llm_error(sid, e, &config.id));
+                            let _ = sender.send(AgentEvent::llm_error(sid, e, &config.id));
                             return;
                         }
                     };
@@ -701,7 +701,7 @@ impl RigAgent {
                     let client = match build_ollama_client(&config) {
                         Ok(c) => c,
                         Err(e) => {
-                            let _ = sender.send(ReActEvent::llm_error(sid, e, &config.id));
+                            let _ = sender.send(AgentEvent::llm_error(sid, e, &config.id));
                             return;
                         }
                     };
@@ -780,7 +780,7 @@ impl RigAgent {
                     let client = match build_anthropic_client(&config) {
                         Ok(c) => c,
                         Err(e) => {
-                            let _ = sender.send(ReActEvent::llm_error(sid, e, &config.id));
+                            let _ = sender.send(AgentEvent::llm_error(sid, e, &config.id));
                             return;
                         }
                     };
@@ -860,22 +860,22 @@ impl RigAgent {
         .await;
 
         if result.is_err() {
-            let _ = timeout_sender.send(ReActEvent::error(
+            let _ = timeout_sender.send(AgentEvent::error(
                 timeout_sid.clone(),
                 "会话超时（超过10分钟），请重新开始对话",
             ));
-            let _ = timeout_sender.send(ReActEvent::Done {
+            let _ = timeout_sender.send(AgentEvent::Done {
                 session_id: timeout_sid,
                 verification_report: None,
             });
         }
     }
 
-    /// 消费 rig 流式响应，将每个 item 映射为 ReActEvent。
+    /// 消费 rig 流式响应，将每个 item 映射为 AgentEvent。
     /// 同时跟踪最近的工具调用以检测死循环。
     async fn drain_stream<R>(
         stream: &mut rig_core::agent::StreamingResult<R>,
-        sender: &mpsc::UnboundedSender<ReActEvent>,
+        sender: &mpsc::UnboundedSender<AgentEvent>,
         sid: &str,
         started_at: Instant,
         rate_limiter: &mut ToolRateLimiter,
@@ -904,11 +904,11 @@ impl RigAgent {
 
         loop {
             if is_cancelled(&cancel_flag) {
-                let _ = sender.send(ReActEvent::error(
+                let _ = sender.send(AgentEvent::error(
                     sid.to_string(),
                     "用户已取消操作",
                 ));
-                let _ = sender.send(ReActEvent::Done {
+                let _ = sender.send(AgentEvent::Done {
                     session_id: sid.to_string(),
                     verification_report: None,
                 });
@@ -931,7 +931,7 @@ impl RigAgent {
                     match content {
                         StreamedAssistantContent::Text(text) => {
                             full_response.push_str(&text.text);
-                            let _ = sender.send(ReActEvent::TextDelta {
+                            let _ = sender.send(AgentEvent::TextDelta {
                                 session_id: sid.to_string(),
                                 content: text.text,
                             });
@@ -950,14 +950,14 @@ impl RigAgent {
 
                             // 速率限制检查
                             if !rate_limiter.check_and_record() {
-                                let _ = sender.send(ReActEvent::error(
+                                let _ = sender.send(AgentEvent::error(
                                     sid.to_string(),
                                     "工具调用过于频繁（每分钟上限30次），请稍后重试",
                                 ));
                                 return;
                             }
 
-                            let _ = sender.send(ReActEvent::ToolCall {
+                            let _ = sender.send(AgentEvent::ToolCall {
                                 session_id: sid.to_string(),
                                 name: name.clone(),
                                 args: args.clone(),
@@ -973,7 +973,7 @@ impl RigAgent {
                                     .front()
                                     .map_or(false, |first| recent_calls.iter().all(|c| c == first))
                             {
-                                let _ = sender.send(ReActEvent::error(
+                                let _ = sender.send(AgentEvent::error(
                                     sid.to_string(),
                                     format!(
                                         "检测到死循环：连续 {} 次相同的工具调用，已中断。",
@@ -987,7 +987,7 @@ impl RigAgent {
                             if let Some(violation) =
                                 constraint_checker.check_call(&current_step_id, &name, &args)
                             {
-                                let _ = sender.send(ReActEvent::error(
+                                let _ = sender.send(AgentEvent::error(
                                     sid.to_string(),
                                     format!("工具约束违规: {}", violation),
                                 ));
@@ -997,7 +997,7 @@ impl RigAgent {
                         StreamedAssistantContent::Reasoning(reasoning) => {
                             let text = reasoning.display_text();
                             if !text.is_empty() {
-                                let _ = sender.send(ReActEvent::Thinking {
+                                let _ = sender.send(AgentEvent::Thinking {
                                     session_id: sid.to_string(),
                                     content: text.to_string(),
                                 });
@@ -1012,7 +1012,7 @@ impl RigAgent {
                                     elapsed_ms = started_at.elapsed().as_millis(),
                                     "tool call delta started"
                                 );
-                                let _ = sender.send(ReActEvent::Thinking {
+                                let _ = sender.send(AgentEvent::Thinking {
                                     session_id: sid.to_string(),
                                     content: "正在生成工具参数，请稍候...".to_string(),
                                 });
@@ -1044,7 +1044,7 @@ impl RigAgent {
                         );
 
                         let result_text_for_verify = result_text.clone();
-                        let _ = sender.send(ReActEvent::ToolResult {
+                        let _ = sender.send(AgentEvent::ToolResult {
                             session_id: sid.to_string(),
                             name: String::new(),
                             result: result_text,
@@ -1081,7 +1081,7 @@ impl RigAgent {
                             VerificationStatus::Exhausted(reason) => {
                                 warn!(session = %sid, reason = %reason, "result verifier exhausted");
                                 agents_log.record_failure("exhausted", &reason, &sid);
-                                let _ = sender.send(ReActEvent::error(
+                                let _ = sender.send(AgentEvent::error(
                                     sid.to_string(),
                                     format!("连续验证失败: {}", reason),
                                 ));
@@ -1128,7 +1128,7 @@ impl RigAgent {
                         None
                     };
 
-                    let _ = sender.send(ReActEvent::Done {
+                    let _ = sender.send(AgentEvent::Done {
                         session_id: sid.to_string(),
                         verification_report,
                     });
@@ -1153,9 +1153,9 @@ impl RigAgent {
                     };
                     // P0-5：流式 401 时附带 error_code，前端弹"配置 API Key"对话框
                     let _ = sender.send(if is_auth {
-                        ReActEvent::llm_error(sid.to_string(), message, provider_id)
+                        AgentEvent::llm_error(sid.to_string(), message, provider_id)
                     } else {
-                        ReActEvent::error(sid.to_string(), message)
+                        AgentEvent::error(sid.to_string(), message)
                     });
                     return;
                 }
@@ -1169,7 +1169,7 @@ impl RigAgent {
         plan: &planner::ExecutionPlan,
         step_index: usize,
         step_context: &planner::StepContext,
-        sender: &mpsc::UnboundedSender<ReActEvent>,
+        sender: &mpsc::UnboundedSender<AgentEvent>,
         session_id: &str,
         cancel_flag: &Option<Arc<AtomicBool>>,
     ) -> Result<PlanStepExecution, String> {
@@ -1188,7 +1188,7 @@ impl RigAgent {
             }
 
             if attempt > 1 {
-                let _ = sender.send(ReActEvent::Thinking {
+                let _ = sender.send(AgentEvent::Thinking {
                     session_id: session_id.to_string(),
                     content: format!(
                         "步骤结果未通过验证，正在第 {}/{} 次修正: {}",
@@ -1269,7 +1269,7 @@ impl RigAgent {
         user_message: &str,
         system_extra: &str,
         _history: &[ChatMessage],
-        sender: &mpsc::UnboundedSender<ReActEvent>,
+        sender: &mpsc::UnboundedSender<AgentEvent>,
         session_id: &str,
         _pending: PendingQuestions,
         project_name: &str,
@@ -1316,7 +1316,7 @@ impl RigAgent {
 
         // Step 2: Emit plan event
         let total_steps = plan.steps.len();
-        let _ = sender.send(ReActEvent::PlanGenerated {
+        let _ = sender.send(AgentEvent::PlanGenerated {
             session_id: sid.clone(),
             steps: plan.steps.clone(),
         });
@@ -1334,7 +1334,7 @@ impl RigAgent {
                 PlanState::Ready => {
                     if let Some(step) = state_machine.current_step().cloned() {
                         let idx = state_machine.current_step_index();
-                        let _ = sender.send(ReActEvent::StepStart {
+                        let _ = sender.send(AgentEvent::StepStart {
                             session_id: sid.clone(),
                             step_index: idx,
                             total_steps,
@@ -1357,7 +1357,7 @@ impl RigAgent {
                         )
                         .await?;
 
-                        let _ = sender.send(ReActEvent::StepResult {
+                        let _ = sender.send(AgentEvent::StepResult {
                             session_id: sid.clone(),
                             step_index: idx,
                             result: execution.result.clone(),
@@ -1389,7 +1389,7 @@ impl RigAgent {
                                         send_cancelled(sender, &sid);
                                         return Ok(());
                                     }
-                                    let _ = sender.send(ReActEvent::Replan {
+                                    let _ = sender.send(AgentEvent::Replan {
                                         session_id: sid.clone(),
                                         reason,
                                     });
@@ -1410,7 +1410,7 @@ impl RigAgent {
             }
         }
 
-        let _ = sender.send(ReActEvent::Done {
+        let _ = sender.send(AgentEvent::Done {
             session_id: sid,
             verification_report: None,
         });
@@ -1468,12 +1468,12 @@ fn preview_text(text: &str, max_chars: usize) -> String {
     preview
 }
 
-fn send_cancelled(sender: &mpsc::UnboundedSender<ReActEvent>, session_id: &str) {
-    let _ = sender.send(ReActEvent::error(
+fn send_cancelled(sender: &mpsc::UnboundedSender<AgentEvent>, session_id: &str) {
+    let _ = sender.send(AgentEvent::error(
         session_id.to_string(),
         "用户已取消操作",
     ));
-    let _ = sender.send(ReActEvent::Done {
+    let _ = sender.send(AgentEvent::Done {
         session_id: session_id.to_string(),
         verification_report: None,
     });

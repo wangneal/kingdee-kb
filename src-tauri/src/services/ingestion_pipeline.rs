@@ -194,6 +194,7 @@ pub async fn process_with_kb_compilation(
         tracing::info!("LLM 编译未完成，跳过 ingest_cache 更新，下次导入将重试");
     }
 
+
     Ok(KbCompilationResult {
         analysis: analysis_result.analysis,
         engine: engine_label.to_string(),
@@ -203,7 +204,62 @@ pub async fn process_with_kb_compilation(
     })
 }
 
+/// 执行 KB 编译并返回 (engine, error) 元组。
+///
+/// 封装完整的两步编译流程：读取配置、自动提取参数、调用底层分析与编译、缓存更新与软错误处理。
+/// 供主路径导入与后台队列导入复用，消除编排重复。
+pub async fn run_kb_compilation_flow(
+    state: &crate::app_state::AppState,
+    text: &str,
+    source_identity: &str,
+    sha256: &str,
+    project_id: i64,
+    title: &str,
+    document_id: i64,
+    enable_kb_compilation: Option<bool>,
+    force_recompile: bool,
+) -> (Option<String>, Option<String>) {
+    let kb_enabled = if let Some(v) = enable_kb_compilation {
+        v
+    } else {
+        state
+            .metadata
+            .lock()
+            .ok()
+            .and_then(|m| m.get_kb_compilation_enabled().ok())
+            .unwrap_or(false)
+    };
+
+    if !kb_enabled {
+        return (None, None);
+    }
+
+    match process_with_kb_compilation(
+        text,
+        source_identity,
+        sha256,
+        project_id,
+        title,
+        true,
+        state.analysis_cache.clone(),
+        state.llm_providers.clone(),
+        state.wiki_pages.clone(),
+        state.ingest_cache_store.clone(),
+        Some(document_id),
+        force_recompile,
+    )
+    .await
+    {
+        Ok(compilation) => (Some(compilation.engine), None),
+        Err(e) => {
+            tracing::warn!("KB 编译失败（{}）: {}", title, e);
+            (None, Some(format!("{}", e)))
+        }
+    }
+}
+
 // ─── Step 2: LLM 知识库编译 ───
+
 
 /// 根据文档分析结果，通过 LLM 生成 wiki 页面内容并写入 content_candidate
 async fn run_llm_compilation(

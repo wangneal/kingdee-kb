@@ -37,7 +37,7 @@ pub mod prompt_assembler;
 pub mod prompts;
 pub mod question_tool;
 pub mod raw_source;
-pub mod react_agent;
+pub mod agent_event;
 pub mod rerank;
 pub mod research_outline;
 pub mod research_session;

@@ -1876,7 +1876,7 @@ use crate::services::question_tool::{
     ClarificationPayload, ClarificationQuestion, PendingQuestionReply, PendingQuestions,
     QuestionOption,
 };
-use crate::services::react_agent::ReActEvent;
+use crate::services::agent_event::AgentEvent;
 use crate::services::risk_control::RiskControlStore;
 use crate::services::vector_index::VectorIndex;
 
@@ -2572,14 +2572,14 @@ impl Tool for RecommendQuestionsTool {
 /// The `Clarification` event is sent to the frontend for UI rendering.
 pub struct RigQuestionTool {
     pending: PendingQuestions,
-    sender: mpsc::UnboundedSender<ReActEvent>,
+    sender: mpsc::UnboundedSender<AgentEvent>,
     session_id: String,
 }
 
 impl RigQuestionTool {
     pub fn new(
         pending: PendingQuestions,
-        sender: mpsc::UnboundedSender<ReActEvent>,
+        sender: mpsc::UnboundedSender<AgentEvent>,
         session_id: String,
     ) -> Self {
         Self {
@@ -2715,7 +2715,7 @@ impl Tool for RigQuestionTool {
             custom: safe_questions[0].custom.unwrap_or(true),
             questions,
         };
-        let _ = self.sender.send(ReActEvent::Clarification {
+        let _ = self.sender.send(AgentEvent::Clarification {
             session_id: self.session_id.clone(),
             payload,
         });
@@ -2997,7 +2997,7 @@ pub struct RunSkillScriptTool {
     pub products: Arc<Mutex<ProductStore>>,
     pub project_id: i64,
     pub pending: PendingQuestions,
-    pub sender: mpsc::UnboundedSender<ReActEvent>,
+    pub sender: mpsc::UnboundedSender<AgentEvent>,
     pub session_id: String,
 }
 
@@ -3556,7 +3556,7 @@ fn normalize_skill_permission_answer(answer: &str) -> SkillPermissionAnswer {
 
 async fn ask_skill_script_approval(
     pending: PendingQuestions,
-    sender: mpsc::UnboundedSender<ReActEvent>,
+    sender: mpsc::UnboundedSender<AgentEvent>,
     session_id: String,
     plan: &SkillExecutionPlan,
 ) -> Result<String, ToolError> {
@@ -3608,7 +3608,7 @@ async fn ask_skill_script_approval(
             custom: false,
         }],
     };
-    let _ = sender.send(ReActEvent::Clarification {
+    let _ = sender.send(AgentEvent::Clarification {
         session_id,
         payload,
     });
@@ -3631,7 +3631,7 @@ async fn ask_skill_script_approval(
 pub struct SetupSkillEnvTool {
     pub skill_manager: Arc<tokio::sync::Mutex<crate::services::skill_manager::SkillManager>>,
     pub pending: PendingQuestions,
-    pub sender: mpsc::UnboundedSender<ReActEvent>,
+    pub sender: mpsc::UnboundedSender<AgentEvent>,
     pub session_id: String,
 }
 
@@ -3799,7 +3799,7 @@ fn skill_install_plan(skill_name: &str, _skill_dir: &Path) -> Option<SkillInstal
 
 async fn ask_skill_install_approval(
     pending: PendingQuestions,
-    sender: mpsc::UnboundedSender<ReActEvent>,
+    sender: mpsc::UnboundedSender<AgentEvent>,
     session_id: String,
     skill_name: &str,
     skill_dir: &Path,
@@ -3846,7 +3846,7 @@ async fn ask_skill_install_approval(
             custom: false,
         }],
     };
-    let _ = sender.send(ReActEvent::Clarification {
+    let _ = sender.send(AgentEvent::Clarification {
         session_id,
         payload,
     });
@@ -5152,7 +5152,7 @@ pub fn all_rig_tools(
 
 pub fn runtime_rig_tools(
     pending: PendingQuestions,
-    sender: mpsc::UnboundedSender<ReActEvent>,
+    sender: mpsc::UnboundedSender<AgentEvent>,
     session_id: String,
     skill_manager: Arc<tokio::sync::Mutex<crate::services::skill_manager::SkillManager>>,
     data_dir: PathBuf,

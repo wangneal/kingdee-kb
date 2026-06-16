@@ -21,7 +21,7 @@ import {
   getModelStatus,
   getStats,
   isLLMConfigured,
-  listenReActEvents,
+  listenAgentEvents,
 } from "@/lib/tauri-commands"
 import ProjectSwitcher from "./ProjectSwitcher"
 import Spotlight from "./Spotlight"
@@ -158,7 +158,7 @@ export default function Layout() {
     let cancelled = false
     let unsub: (() => void) | null = null
 
-    listenReActEvents((event) => {
+    listenAgentEvents((event) => {
       // 同时支持 snake_case 和 camelCase（Tauri v2 可能转换）
       const eventSessionId = event.session_id || event.sessionId
       if (eventSessionId !== sideSessionRef.current) return

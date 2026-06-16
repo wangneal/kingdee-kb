@@ -6,7 +6,7 @@ use crate::app_state::AppState;
 use crate::error::AppError;
 use crate::services::hybrid_search;
 use crate::services::question_tool;
-use crate::services::react_agent::ReActEvent;
+use crate::services::agent_event::AgentEvent;
 use crate::services::risk_control::{
     CandidateScopeItem, ContractScopeItem, DefenseScriptRequest, DefenseScriptResult,
     ImportDbResult, ProjectHealthScore, ScopeCreepResult,
@@ -740,7 +740,7 @@ pub async fn agent_chat(
         .try_state::<AppState>()
         .ok_or("后端尚未初始化完成，请稍后重试")?;
 
-    let (tx, mut rx) = mpsc::unbounded_channel::<ReActEvent>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
 
     let sid = session_id;
     let ledger_project_id = match project_id {
@@ -848,7 +848,7 @@ pub async fn agent_chat(
                 break;
             }
             match &event {
-                ReActEvent::Done { .. } | ReActEvent::Error { .. } => break,
+                AgentEvent::Done { .. } | AgentEvent::Error { .. } => break,
                 _ => {}
             }
         }
@@ -998,7 +998,7 @@ fn persist_agent_event(
 fn update_agent_ledger_from_event(
     metadata: &std::sync::Arc<std::sync::Mutex<crate::services::metadata::MetadataStore>>,
     session_id: &str,
-    event: &ReActEvent,
+    event: &AgentEvent,
     assistant_message_id: &mut Option<String>,
     assistant_content: &mut String,
     active_tool_call_id: &mut Option<String>,
@@ -1007,7 +1007,7 @@ fn update_agent_ledger_from_event(
         return;
     };
     match event {
-        ReActEvent::TextDelta { content, .. } => {
+        AgentEvent::TextDelta { content, .. } => {
             let message_id = ensure_assistant_message(
                 &metadata,
                 session_id,
@@ -1017,7 +1017,7 @@ fn update_agent_ledger_from_event(
             assistant_content.push_str(content);
             let _ = metadata.update_agent_message(&message_id, assistant_content, "streaming");
         }
-        ReActEvent::ToolCall { name, args, .. } => {
+        AgentEvent::ToolCall { name, args, .. } => {
             let message_id = ensure_assistant_message(
                 &metadata,
                 session_id,
@@ -1036,7 +1036,7 @@ fn update_agent_ledger_from_event(
             );
             *active_tool_call_id = Some(tool_call_id);
         }
-        ReActEvent::ToolResult { name, result, .. } => {
+        AgentEvent::ToolResult { name, result, .. } => {
             if let Some(tool_call_id) = active_tool_call_id.as_deref() {
                 let preview = truncate_agent_ledger_text(result, 2000);
                 let result_json = serde_json::json!({ "tool": name, "result": result }).to_string();
@@ -1051,7 +1051,7 @@ fn update_agent_ledger_from_event(
                 let _ = metadata.finish_agent_tool_call(tool_call_id, "ok");
             }
         }
-        ReActEvent::Clarification { payload, .. } => {
+        AgentEvent::Clarification { payload, .. } => {
             let message_id = ensure_assistant_message(
                 &metadata,
                 session_id,
@@ -1064,13 +1064,13 @@ fn update_agent_ledger_from_event(
             *assistant_message_id = None;
             assistant_content.clear();
         }
-        ReActEvent::Done { .. } => {
+        AgentEvent::Done { .. } => {
             if let Some(message_id) = assistant_message_id.as_deref() {
                 let _ = metadata.update_agent_message(message_id, assistant_content, "complete");
             }
             let _ = metadata.update_agent_session_status(session_id, "complete", true);
         }
-        ReActEvent::Error { message, .. } => {
+        AgentEvent::Error { message, .. } => {
             let message_id = ensure_assistant_message(
                 &metadata,
                 session_id,
@@ -1088,12 +1088,12 @@ fn update_agent_ledger_from_event(
             };
             let _ = metadata.update_agent_session_status(session_id, status, true);
         }
-        ReActEvent::Thinking { .. }
-        | ReActEvent::PlanGenerated { .. }
-        | ReActEvent::StepStart { .. }
-        | ReActEvent::StepResult { .. }
-        | ReActEvent::Replan { .. }
-        | ReActEvent::PlannerTimeout { .. } => {}
+        AgentEvent::Thinking { .. }
+        | AgentEvent::PlanGenerated { .. }
+        | AgentEvent::StepStart { .. }
+        | AgentEvent::StepResult { .. }
+        | AgentEvent::Replan { .. }
+        | AgentEvent::PlannerTimeout { .. } => {}
     }
 }
 
@@ -1119,20 +1119,20 @@ fn ensure_assistant_message(
     id
 }
 
-fn event_type_name(event: &ReActEvent) -> &'static str {
+fn event_type_name(event: &AgentEvent) -> &'static str {
     match event {
-        ReActEvent::Thinking { .. } => "thinking",
-        ReActEvent::ToolCall { .. } => "tool_call",
-        ReActEvent::ToolResult { .. } => "tool_result",
-        ReActEvent::TextDelta { .. } => "text_delta",
-        ReActEvent::Error { .. } => "error",
-        ReActEvent::Done { .. } => "done",
-        ReActEvent::Clarification { .. } => "clarification",
-        ReActEvent::PlanGenerated { .. } => "plan_generated",
-        ReActEvent::StepStart { .. } => "step_start",
-        ReActEvent::StepResult { .. } => "step_result",
-        ReActEvent::Replan { .. } => "replan",
-        ReActEvent::PlannerTimeout { .. } => "planner_timeout",
+        AgentEvent::Thinking { .. } => "thinking",
+        AgentEvent::ToolCall { .. } => "tool_call",
+        AgentEvent::ToolResult { .. } => "tool_result",
+        AgentEvent::TextDelta { .. } => "text_delta",
+        AgentEvent::Error { .. } => "error",
+        AgentEvent::Done { .. } => "done",
+        AgentEvent::Clarification { .. } => "clarification",
+        AgentEvent::PlanGenerated { .. } => "plan_generated",
+        AgentEvent::StepStart { .. } => "step_start",
+        AgentEvent::StepResult { .. } => "step_result",
+        AgentEvent::Replan { .. } => "replan",
+        AgentEvent::PlannerTimeout { .. } => "planner_timeout",
     }
 }
 

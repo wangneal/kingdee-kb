@@ -1,6 +1,6 @@
-//! ReAct 事件定义
+//! Agent 事件定义
 //!
-//! ReActEvent 枚举用于前端 SSE 事件格式，
+//! AgentEvent 枚举用于前端 SSE 事件格式，
 //! 被 rig_agent、question_tool 等模块使用。
 
 use serde::{Deserialize, Serialize};
@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 use crate::services::question_tool::ClarificationPayload;
 use crate::services::verification::types::VerificationReport;
 
-/// ReAct 事件 — 通过 SSE 流式发送给前端
+/// Agent 事件 — 通过 SSE 流式发送给前端
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
-pub enum ReActEvent {
+pub enum AgentEvent {
     #[serde(rename = "thinking")]
     Thinking { session_id: String, content: String },
     #[serde(rename = "tool_call")]
@@ -83,10 +83,10 @@ pub enum ReActEvent {
     PlannerTimeout { session_id: String, message: String },
 }
 
-impl ReActEvent {
+impl AgentEvent {
     /// 构造普通 Error 事件（不带 error_code，前端走默认 toast 提示）
     pub fn error(session_id: impl Into<String>, message: impl Into<String>) -> Self {
-        ReActEvent::Error {
+        AgentEvent::Error {
             session_id: session_id.into(),
             message: message.into(),
             error_code: None,
@@ -106,7 +106,7 @@ impl ReActEvent {
     ) -> Self {
         let msg = message.into();
         let is_auth = is_llm_auth_error(&msg);
-        ReActEvent::Error {
+        AgentEvent::Error {
             session_id: session_id.into(),
             message: msg,
             error_code: if is_auth {
@@ -123,7 +123,7 @@ impl ReActEvent {
 /// 但直接返回 bool，避免 LLM 调用点要构造一个完整 AppError 又丢弃。
 ///
 /// 单一来源原则：检测字符串与 `error.rs` 保持一致；
-/// 若未来扩展新关键字，只改这里和 `error.rs` 即可。
+/// 若未来扩展新关键字，只改这里 and `error.rs` 即可。
 pub(crate) fn is_llm_auth_error(err: &str) -> bool {
     let lower = err.to_ascii_lowercase();
     lower.contains("401")
@@ -161,9 +161,9 @@ mod tests {
 
     #[test]
     fn llm_error_event_carries_code_for_401() {
-        let evt = ReActEvent::llm_error("sid-1", "401 Unauthorized", "openai");
+        let evt = AgentEvent::llm_error("sid-1", "401 Unauthorized", "openai");
         match evt {
-            ReActEvent::Error {
+            AgentEvent::Error {
                 error_code,
                 provider_id,
                 ..
@@ -177,9 +177,9 @@ mod tests {
 
     #[test]
     fn llm_error_event_omits_code_for_other_errors() {
-        let evt = ReActEvent::llm_error("sid-1", "LLM 调用超时", "openai");
+        let evt = AgentEvent::llm_error("sid-1", "LLM 调用超时", "openai");
         match evt {
-            ReActEvent::Error {
+            AgentEvent::Error {
                 error_code,
                 provider_id,
                 ..

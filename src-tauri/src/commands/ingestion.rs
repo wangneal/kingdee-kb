@@ -1,20 +1,14 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
 use anyhow::{Context as _, anyhow};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::app_state::AppState;
 use crate::error::{AppError, AppResult};
-use crate::services::analysis_cache::AnalysisCacheStore;
-use crate::services::ingest_cache::IngestCacheStore;
 use crate::services::ingestion::{
     ingest_directory as ingest_directory_fn, ingest_text as ingest_text_fn,
     DirectoryIngestionResult, IngestionResult,
 };
 use crate::services::ingestion_helpers::extract_title_from_filename;
-use crate::services::ingestion_pipeline::process_with_kb_compilation;
-use crate::services::llm_providers::LLMProviderManager;
-use crate::services::wiki_page::WikiPageStore;
 
 /// 从全局状态克隆 ImageProcessor 配置（不持锁，避免 Send 问题）
 fn clone_image_processor(
@@ -192,58 +186,7 @@ pub struct ExtractedFileText {
     pub char_count: usize,
 }
 
-/// 读取 KB 编译开关：优先使用调用参数，否则读取持久化配置
-fn resolve_kb_compilation(state: &State<'_, AppState>, param: Option<bool>) -> bool {
-    if let Some(v) = param {
-        return v;
-    }
-    // 从持久化配置读取
-    state
-        .metadata
-        .lock()
-        .ok()
-        .and_then(|m| m.get_kb_compilation_enabled().ok())
-        .unwrap_or(false)
-}
 
-/// 执行 KB 编译并返回 (engine, error) 元组
-///
-/// 抽取公共逻辑消除四处重复的 process_with_kb_compilation 调用模式。
-async fn run_kb_compilation(
-    text: &str,
-    source_identity: &str,
-    sha256: &str,
-    project_id: i64,
-    title: &str,
-    document_id: i64,
-    analysis_cache: Arc<Mutex<AnalysisCacheStore>>,
-    llm_providers: Arc<RwLock<LLMProviderManager>>,
-    wiki_pages: Arc<Mutex<WikiPageStore>>,
-    ingest_cache_store: Arc<Mutex<IngestCacheStore>>,
-) -> (Option<String>, Option<String>) {
-    match process_with_kb_compilation(
-        text,
-        source_identity,
-        sha256,
-        project_id,
-        title,
-        true,
-        analysis_cache,
-        llm_providers,
-        wiki_pages,
-        ingest_cache_store,
-        Some(document_id),
-        false,
-    )
-    .await
-    {
-        Ok(compilation) => (Some(compilation.engine), None),
-        Err(e) => {
-            tracing::warn!("KB 编译失败（{}）: {}", title, e);
-            (None, Some(format!("{}", e)))
-        }
-    }
-}
 
 /// 摄入纯文本（来自粘贴或文本框）
 ///
@@ -279,23 +222,20 @@ pub async fn ingest_text(
     )?;
 
     // 知识编译
-    if resolve_kb_compilation(&state, enable_kb_compilation) {
-        let (engine, error) = run_kb_compilation(
-            &text,
-            &source_identity,
-            &result.sha256,
-            project_id,
-            &title,
-            result.document_id,
-            state.analysis_cache.clone(),
-            state.llm_providers.clone(),
-            state.wiki_pages.clone(),
-            state.ingest_cache_store.clone(),
-        )
-        .await;
-        result.kb_analysis_engine = engine;
-        result.kb_compilation_error = error;
-    }
+    let (engine, error) = crate::services::ingestion_pipeline::run_kb_compilation_flow(
+        &state,
+        &text,
+        &source_identity,
+        &result.sha256,
+        project_id,
+        &title,
+        result.document_id,
+        enable_kb_compilation,
+        false,
+    )
+    .await;
+    result.kb_analysis_engine = engine;
+    result.kb_compilation_error = error;
 
     // 主路径自动 enqueue：让 ProjectManagement 队列 tab 看到这次活动
     auto_enqueue_main_path(&state, project_id, &source_identity);
@@ -365,29 +305,26 @@ pub async fn ingest_file(
         result.title = title.clone();
 
         // KB 编译
-        if resolve_kb_compilation(&state, enable_kb_compilation) {
-            let source_identity = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
+        let source_identity = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
 
-        let (engine, error) = run_kb_compilation(
+        let (engine, error) = crate::services::ingestion_pipeline::run_kb_compilation_flow(
+            &state,
             &image_text,
             &source_identity,
             &result.sha256,
             project_id,
             &title,
             result.document_id,
-            state.analysis_cache.clone(),
-            state.llm_providers.clone(),
-            state.wiki_pages.clone(),
-            state.ingest_cache_store.clone(),
+            enable_kb_compilation,
+            false,
         )
         .await;
         result.kb_analysis_engine = engine;
         result.kb_compilation_error = error;
-    }
 
     return Ok(result);
 }
@@ -400,30 +337,27 @@ pub async fn ingest_file(
         .map_err(|e: AppError| e.to_string())?;
 
     // 知识编译
-    if resolve_kb_compilation(&state, enable_kb_compilation) {
-        let title = result.title.clone();
-        let source_identity = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+    let title = result.title.clone();
+    let source_identity = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string();
 
-        let (engine, error) = run_kb_compilation(
-            &text,
-            &source_identity,
-            &result.sha256,
-            project_id,
-            &title,
-            result.document_id,
-            state.analysis_cache.clone(),
-            state.llm_providers.clone(),
-            state.wiki_pages.clone(),
-            state.ingest_cache_store.clone(),
-        )
-        .await;
-        result.kb_analysis_engine = engine;
-        result.kb_compilation_error = error;
-    }
+    let (engine, error) = crate::services::ingestion_pipeline::run_kb_compilation_flow(
+        &state,
+        &text,
+        &source_identity,
+        &result.sha256,
+        project_id,
+        &title,
+        result.document_id,
+        enable_kb_compilation,
+        false,
+    )
+    .await;
+    result.kb_analysis_engine = engine;
+    result.kb_compilation_error = error;
 
     // 通知前端文档已导入（RiskControl 页可据此提示检查范围蔓延）
     let _ = app.emit("document-imported", serde_json::json!({ "project_id": project_id }));
@@ -614,7 +548,16 @@ pub async fn ingest_directory(
     }
 
     // ─── 知识编译（对每个成功导入的文件，包括图片） ───
-    if resolve_kb_compilation(&state, enable_kb_compilation) {
+    let kb_enabled = enable_kb_compilation.unwrap_or_else(|| {
+        state
+            .metadata
+            .lock()
+            .ok()
+            .and_then(|m| m.get_kb_compilation_enabled().ok())
+            .unwrap_or(false)
+    });
+
+    if kb_enabled {
         for imported in &mut result.imported {
             if let Some(ref sp) = imported.source_path {
                 let path_buf = PathBuf::from(sp);
@@ -659,17 +602,16 @@ pub async fn ingest_directory(
                     .unwrap_or("unknown")
                     .to_string();
 
-                let (engine, error) = run_kb_compilation(
+                let (engine, error) = crate::services::ingestion_pipeline::run_kb_compilation_flow(
+                    &state,
                     &text,
                     &source_identity,
                     &sha256,
                     project_id,
                     &title,
                     imported.document_id,
-                    state.analysis_cache.clone(),
-                    state.llm_providers.clone(),
-                    state.wiki_pages.clone(),
-                    state.ingest_cache_store.clone(),
+                    Some(true),
+                    false,
                 )
                 .await;
                 imported.kb_analysis_engine = engine;

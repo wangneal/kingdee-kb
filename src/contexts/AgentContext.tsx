@@ -15,7 +15,7 @@ import {
   type ChatMessage,
   type ClarificationPayload,
   cancelAgentStream,
-  listenReActEvents,
+  listenAgentEvents,
   type PlanStep,
   rejectQuestion,
   runVerification,
@@ -331,7 +331,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   const latestSlots = useRef(slots)
   latestSlots.current = slots
   // 错误事件 → LLM API Key 对话框的桥接
-  // 用 ref 持有最新回调，避免在 dialog 开/关时重订阅 listenReActEvents
+  // 用 ref 持有最新回调，避免在 dialog 开/关时重订阅 listenAgentEvents
   const { showLlmKeyError } = useAppError()
   const showLlmKeyErrorRef = useRef(showLlmKeyError)
   showLlmKeyErrorRef.current = showLlmKeyError
@@ -416,7 +416,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    listenReActEvents((event) => {
+    listenAgentEvents((event) => {
       const eventSessionId = event.session_id || event.sessionId
       if (!eventSessionId) return
       const slotId = sessionToSlot.current.get(eventSessionId)

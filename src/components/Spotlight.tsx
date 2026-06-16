@@ -1,7 +1,7 @@
 import { Loader2, Search, Send, X } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useProject } from "@/contexts/ProjectContext"
-import { agentChat, listenReActEvents } from "@/lib/tauri-commands"
+import { agentChat, listenAgentEvents } from "@/lib/tauri-commands"
 
 export default function Spotlight() {
   const { currentProjectId } = useProject()
@@ -53,7 +53,7 @@ export default function Spotlight() {
   useEffect(() => {
     let cancelled = false
     const unlistenRef: { current: (() => void) | null } = { current: null }
-    listenReActEvents((event) => {
+    listenAgentEvents((event) => {
       // 同时支持 snake_case 和 camelCase（Tauri v2 可能转换）
       const eventSessionId = event.session_id || event.sessionId
       if (eventSessionId !== spotSessionRef.current) return

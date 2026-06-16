@@ -737,7 +737,7 @@ export interface PlanStep {
   depends_on: number[]
 }
 
-export type ReActEvent =
+export type AgentEvent =
   | { type: "thinking"; session_id: string; sessionId?: string; content: string }
   | { type: "tool_call"; session_id: string; sessionId?: string; name: string; args: string }
   | { type: "tool_result"; session_id: string; sessionId?: string; name: string; result: string }
@@ -905,7 +905,7 @@ const MAX_RETRIES = 2
 
 /**
  * Agent 对话入口：发送消息给 rig agent，通过 SSE 事件流返回结果。
- * 前端应先调用 listenReActEvents() 监听事件，再调用此函数。
+ * 前端应先调用 listenAgentEvents() 监听事件，再调用此函数。
  *
  * 包含 3 分钟超时和最多 2 次指数退避重试（仅对超时错误重试）。
  */
@@ -998,12 +998,12 @@ export async function cancelAgentStream(sessionId: string): Promise<void> {
  * Listen for ReAct agent events, optionally filtered by session_id.
  * Returns an unsubscribe function.
  */
-export async function listenReActEvents(
-  handler: (event: ReActEvent) => void,
+export async function listenAgentEvents(
+  handler: (event: AgentEvent) => void,
   sessionId?: string,
 ): Promise<() => void> {
   const { listen } = await import("@tauri-apps/api/event")
-  const unlisten = await listen<ReActEvent>("react-event", (event) => {
+  const unlisten = await listen<AgentEvent>("agent-event", (event) => {
     // 同时检查 snake_case 和 camelCase 的 session_id（Tauri v2 可能转换）
     const eventSessionId = event.payload.session_id || event.payload.sessionId
     if (sessionId && eventSessionId !== sessionId) return
