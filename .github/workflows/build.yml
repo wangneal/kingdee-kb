@@ -181,7 +181,11 @@ jobs:
         run: |
           version="${{ github.ref_name }}"
 
-          # 创建 draft release
+          # 幂等：release 已存在则复用现有草稿（重跑安全）
+          # 先建草稿，待产物上传齐全后由 Publish 步骤转为正式发布
+          if gh release view "$version" >/dev/null 2>&1; then
+            echo "Release $version 已存在，复用现有草稿"
+          else
           gh release create "$version" \
             --title "KingdeeKB $version" \
             --notes "## KingdeeKB ${{ github.ref_name }}
@@ -207,22 +211,34 @@ jobs:
           3. 在「知识库」中导入文档
           4. 在「AI 助手」中开始提问" \
             --draft
+          fi
 
       - name: Upload artifacts to release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 只传非空文件（跳过 __init__.py / empty 等 0 字节 sentinel）
-          # 不限制文件后缀，Tauri 新增/改名 installer 格式也不会遗漏
-          find downloaded-artifacts -type f -size +0 \
-            -exec gh release upload "${{ github.ref_name }}" {} --clobber \;
-          echo "=== 所有构建产物已上传 ==="
+          # 只上传面向用户的发布产物：安装包 + 绿色版 zip
+          # 白名单过滤，剔除 updater 中间产物（*.sig / *.tar.gz / *.nsis.zip / *.msi.zip 等）
+          #   Windows: .msi (WiX) / .exe (NSIS 安装器) / *-portable.zip (绿色版)
+          #   macOS:   .dmg
+          #   Linux:   .AppImage / .deb
+          find downloaded-artifacts -type f -size +0 \( \
+              -iname '*.msi' -o \
+              -iname '*.exe' -o \
+              -iname '*-portable.zip' -o \
+              -iname '*.dmg' -o \
+              -iname '*.AppImage' -o \
+              -iname '*.deb' \
+            \) -exec gh release upload "${{ github.ref_name }}" {} --clobber \;
+          echo "=== 发布产物已上传 ==="
 
-      - name: Verify release
+      - name: Publish release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Release draft created at:"
+          # 产物上传齐全后，将草稿转为正式发布（避免公开"产物未传完"的中间态）
+          gh release edit "${{ github.ref_name }}" --draft=false
+          echo "Release 已发布:"
           echo "https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
