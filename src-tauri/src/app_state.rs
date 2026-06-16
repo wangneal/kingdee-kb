@@ -37,7 +37,7 @@ use crate::AsrConfigStore;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -108,8 +108,6 @@ pub struct AppState {
     pub analysis_cache: Arc<Mutex<AnalysisCacheStore>>,
     /// 摄入缓存管理（ingest_cache 表）
     pub ingest_cache_store: Arc<Mutex<IngestCacheStore>>,
-    /// 嵌入模型的下载进度（0–100）。由后台线程更新。
-    pub download_progress: Arc<AtomicU32>,
     /// 研究会话存储
     pub research_session_store: ResearchSessionStore,
     /// 研究大纲节点存储
@@ -392,7 +390,6 @@ impl AppState {
             graph_store,
             analysis_cache,
             ingest_cache_store,
-            download_progress: Arc::new(AtomicU32::new(0)),
             research_session_store,
             outline_store,
             risk_control_store,
@@ -560,7 +557,6 @@ impl AppState {
                     .expect("Fatal: cannot init ingest_cache table");
                 store
             })),
-            download_progress: Arc::new(AtomicU32::new(0)),
             research_session_store,
             outline_store,
             risk_control_store,
@@ -669,8 +665,10 @@ impl AppState {
         }
     }
 
-    /// 确保 embedding 模型已加载（懒加载）。
-    /// 合并自 ingestion.rs 和 search_llm.rs 的重复实现。
+    /// 确保 embedding 已配置（远程 API 模式下无需加载模型）。
+    ///
+    /// 远程模式下，EmbeddingService 在配置设定时即就绪，无需懒加载。
+    /// 保留此方法以保持调用兼容性。
     pub fn ensure_embedding_ready(&self) {
         let emb = match self.embedding.read() {
             Ok(g) => g,
@@ -682,64 +680,12 @@ impl AppState {
         if emb.is_ready() {
             return;
         }
-        drop(emb);
-
-        let mut mm = match self.model_manager.write() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        if !mm.is_ready() {
-            if let Err(e) = mm.init() {
-                tracing::error!("[LazyLoad] 模型初始化失败: {}", e);
-                return;
-            }
-        }
-        if let Some(model) = mm.take_model() {
-            let mut emb = match self.embedding.write() {
-                Ok(g) => g,
-                Err(e) => {
-                    tracing::error!("[LazyLoad] Embedding 锁中毒: {}", e);
-                    return;
-                }
-            };
-            emb.set_model(model);
-        }
+        // 远程模式下未配置时不做任何操作（用户需先配置 Embedding 提供商）
+        tracing::debug!("[LazyLoad] Embedding 未配置，等待用户设置提供商");
     }
 
-    /// 检查并释放空闲超时的本地 Embedding 模型。
-    ///
-    /// 如果本地模型空闲时间超过 `timeout_secs` 秒，则释放模型内存。
-    /// 下次使用时 `ensure_embedding_ready()` 会从磁盘缓存重新加载。
-    /// 返回 true 表示已释放，false 表示未释放。
-    pub fn unload_idle_embedding(&self, timeout_secs: u64) -> bool {
-        // 检查是否有本地模型且已空闲超时
-        let should_unload = match self.embedding.read() {
-            Ok(emb) => emb.has_local_model() && emb.idle_seconds() >= timeout_secs,
-            Err(_) => return false,
-        };
-
-        if !should_unload {
-            return false;
-        }
-
-        // 释放 EmbeddingService 中的模型
-        match self.embedding.write() {
-            Ok(mut emb) => {
-                // 二次检查（避免在获取写锁期间被其他线程更新）
-                if !emb.has_local_model() || emb.idle_seconds() < timeout_secs {
-                    return false;
-                }
-                emb.unload();
-            }
-            Err(_) => return false,
-        }
-
-        // 重置 ModelManager 以便下次懒加载
-        match self.model_manager.write() {
-            Ok(mut mm) => mm.reset_for_reload(),
-            Err(_) => {}
-        }
-
-        true
+    /// 远程模式下无需释放模型内存，保留方法以保持调用兼容性。
+    pub fn unload_idle_embedding(&self, _timeout_secs: u64) -> bool {
+        false
     }
 }

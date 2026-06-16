@@ -8,7 +8,6 @@ import {
   Download,
   Eye,
   EyeOff,
-  FolderOpen,
   HardDrive,
   Hash,
   Key,
@@ -17,7 +16,6 @@ import {
   Plug,
   Plus,
   RefreshCw,
-  RotateCcw,
   Save,
   Scan,
   Server,
@@ -71,14 +69,12 @@ import {
   type EmbeddingProviderType,
   exportDatabase,
   getAgentToolConfig,
-  getDownloadProgress,
   getEmbeddingModelConfig,
   getModelStatus,
   getStats,
   getTencentMeetingConfigStatus,
   type ImportDbResult,
   importDatabase,
-  initModel,
   type KnowledgeStats,
   listAgentToolAudit,
   listAgentToolAuditSummary,
@@ -334,43 +330,54 @@ function providerModelsText(preset: ProviderPreset): string {
 /** Embedding 供应商定义：标签、默认 Base URL、推荐模型 */
 const EMBEDDING_PROVIDERS: Record<
   EmbeddingProviderType,
-  { label: string; baseUrl: string; models: string[] }
+  { label: string; baseUrl: string; models: string[]; requiresApiKey: boolean }
 > = {
-  local: { label: "本地模型", baseUrl: "", models: [] },
+  ollama: {
+    label: "Ollama (本地)",
+    baseUrl: "http://localhost:11434",
+    models: ["nomic-embed-text"],
+    requiresApiKey: false,
+  },
   siliconflow: {
     label: "硅基流动",
     baseUrl: "https://api.siliconflow.cn/v1",
     models: ["BAAI/bge-m3", "BAAI/bge-large-zh-v1.5"],
+    requiresApiKey: true,
   },
   openai: {
     label: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
     models: ["text-embedding-3-small", "text-embedding-3-large"],
+    requiresApiKey: true,
   },
   zhipu: {
     label: "智谱 AI",
     baseUrl: "https://open.bigmodel.cn/api/paas/v4",
     models: ["embedding-3"],
+    requiresApiKey: true,
   },
   dashscope: {
     label: "阿里灵积",
     baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     models: ["text-embedding-v3", "text-embedding-v2"],
+    requiresApiKey: true,
   },
   cohere: {
     label: "Cohere",
     baseUrl: "https://api.cohere.com/v2",
     models: ["embed-multilingual-v3.0", "embed-english-v3.0"],
+    requiresApiKey: true,
   },
   custom: {
     label: "自定义 (OpenAI 兼容)",
     baseUrl: "",
     models: [],
+    requiresApiKey: true,
   },
 }
 
 const DEFAULT_EMBEDDING_PROVIDER_CONFIG: EmbeddingProviderConfig = {
-  provider: "local",
+  provider: "ollama",
   api_key: "",
   base_url: "",
   model_name: "",
@@ -413,14 +420,6 @@ export default function Settings() {
   const [stats, setStats] = useState<KnowledgeStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [modelReady, setModelReady] = useState(false)
-  const [initializing, setInitializing] = useState(false)
-  const [downloadProgress, setDownloadProgress] = useState(0)
-  const [initResult, setInitResult] = useState<{
-    ok: boolean
-    msg: string
-  } | null>(null)
-  const [embeddingConfig, setEmbeddingConfig] = useState<EmbeddingModelConfig>({})
-  const [embeddingConfigSaving, setEmbeddingConfigSaving] = useState(false)
   const [embeddingProviderConfig, setEmbeddingProviderConfig] = useState<EmbeddingProviderConfig>(
     DEFAULT_EMBEDDING_PROVIDER_CONFIG,
   )
@@ -549,21 +548,38 @@ export default function Settings() {
     let cancelled = false
 
     // 立即加载配置，不等待模型
-    Promise.all([getStats().catch(() => null), getEmbeddingModelConfig().catch(() => ({}))]).then(
+    Promise.all([getStats().catch(() => null), getEmbeddingModelConfig().catch(() => ({} as EmbeddingModelConfig))]).then(
       ([s, embeddingCfg]) => {
         if (cancelled) return
         setStats(s)
-        setEmbeddingConfig(embeddingCfg)
 
-        // 从 localStorage 加载在线 Embedding 供应商配置
-        try {
-          const stored = localStorage.getItem(EMBEDDING_PROVIDER_STORAGE_KEY)
-          if (stored) {
-            const parsed = JSON.parse(stored) as EmbeddingProviderConfig
-            setEmbeddingProviderConfig({ ...DEFAULT_EMBEDDING_PROVIDER_CONFIG, ...parsed })
+        // 从后端配置或 localStorage 加载 Embedding 供应商配置
+        // 后端配置优先（确保重启后配置不丢失）
+        let loaded = false
+        if (embeddingCfg.provider) {
+          try {
+            const backendConfig: EmbeddingProviderConfig = {
+              provider: embeddingCfg.provider as EmbeddingProviderType,
+              api_key: embeddingCfg.api_key ?? "",
+              base_url: embeddingCfg.base_url ?? "",
+              model_name: embeddingCfg.model_name ?? "",
+            }
+            setEmbeddingProviderConfig({ ...DEFAULT_EMBEDDING_PROVIDER_CONFIG, ...backendConfig })
+            loaded = true
+          } catch {
+            /* 后端配置解析失败，回退到 localStorage */
           }
-        } catch {
-          /* 忽略解析错误 */
+        }
+        if (!loaded) {
+          try {
+            const stored = localStorage.getItem(EMBEDDING_PROVIDER_STORAGE_KEY)
+            if (stored) {
+              const parsed = JSON.parse(stored) as EmbeddingProviderConfig
+              setEmbeddingProviderConfig({ ...DEFAULT_EMBEDDING_PROVIDER_CONFIG, ...parsed })
+            }
+          } catch {
+            /* 忽略解析错误 */
+          }
         }
 
         // 从后端 keyring 加载 kdclub token（异步：异步回调里不能用 await）
@@ -624,110 +640,6 @@ export default function Settings() {
     }
   }, [])
 
-  const handleInitModel = useCallback(async () => {
-    setInitializing(true)
-    setDownloadProgress(0)
-    setInitResult(null)
-
-    // 每 600ms 轮询下载进度
-    const pollInterval = setInterval(async () => {
-      try {
-        const pct = await getDownloadProgress()
-        setDownloadProgress(pct)
-      } catch {
-        // 忽略轮询错误
-      }
-    }, 600)
-
-    try {
-      const ok = await initModel()
-      clearInterval(pollInterval)
-      setDownloadProgress(100)
-      setModelReady(ok)
-      setInitResult({
-        ok,
-        msg: ok ? "Embedding 模型已加载完成" : "模型初始化失败",
-      })
-      setTimeout(() => setInitResult(null), 5000)
-    } catch (err) {
-      clearInterval(pollInterval)
-      setDownloadProgress(0)
-      setInitResult({
-        ok: false,
-        msg: `初始化失败：${err instanceof Error ? err.message : String(err)}`,
-      })
-    } finally {
-      setInitializing(false)
-    }
-  }, [])
-
-  const handleSaveEmbeddingConfig = useCallback(
-    async (targetDir?: string) => {
-      const dir =
-        (targetDir !== undefined ? targetDir : (embeddingConfig.custom_model_dir ?? "")).trim() ||
-        null
-      setEmbeddingConfigSaving(true)
-      setInitResult(null)
-      try {
-        const ok = await setEmbeddingModelConfig(dir)
-        setModelReady(ok)
-        setEmbeddingConfig({ custom_model_dir: dir })
-        setInitResult({
-          ok,
-          msg: dir ? "已自动保存自定义 Embedding 模型配置" : "已切换为内置 Embedding 模型",
-        })
-        setTimeout(() => setInitResult(null), TOAST_AUTO_DISMISS_MS)
-      } catch (err) {
-        setInitResult({
-          ok: false,
-          msg: `自动保存失败：${err instanceof Error ? err.message : String(err)}`,
-        })
-      } finally {
-        setEmbeddingConfigSaving(false)
-      }
-    },
-    [embeddingConfig.custom_model_dir],
-  )
-
-  const handleChooseEmbeddingDir = useCallback(async () => {
-    try {
-      const { open } = await import("@tauri-apps/plugin-dialog")
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: "选择 Embedding 模型目录",
-      })
-      if (typeof selected === "string") {
-        setEmbeddingConfig({ custom_model_dir: selected })
-        await handleSaveEmbeddingConfig(selected)
-      }
-    } catch (err) {
-      setInitResult({
-        ok: false,
-        msg: `选择目录失败：${err instanceof Error ? err.message : String(err)}`,
-      })
-    }
-  }, [handleSaveEmbeddingConfig])
-
-  const handleResetEmbeddingConfig = useCallback(async () => {
-    setEmbeddingConfig({ custom_model_dir: null })
-    setEmbeddingConfigSaving(true)
-    setInitResult(null)
-    try {
-      const ok = await setEmbeddingModelConfig(null)
-      setModelReady(ok)
-      setInitResult({ ok, msg: "已切换为内置 Embedding 模型" })
-      setTimeout(() => setInitResult(null), TOAST_AUTO_DISMISS_MS)
-    } catch (err) {
-      setInitResult({
-        ok: false,
-        msg: `切换内置模型失败：${err instanceof Error ? err.message : String(err)}`,
-      })
-    } finally {
-      setEmbeddingConfigSaving(false)
-    }
-  }, [])
-
   const handleSaveEmbeddingProviderConfig = useCallback(
     async (targetConfig?: EmbeddingProviderConfig) => {
       const configToSave = targetConfig || embeddingProviderConfig
@@ -737,6 +649,16 @@ export default function Settings() {
         // 不将 API Key 持久化到 localStorage，避免安全风险
         const { api_key: _, ...safeConfig } = configToSave
         localStorage.setItem(EMBEDDING_PROVIDER_STORAGE_KEY, JSON.stringify(safeConfig))
+
+        // 同步配置到后端
+        await setEmbeddingModelConfig(
+          configToSave.provider,
+          configToSave.api_key,
+          configToSave.base_url,
+          configToSave.model_name,
+        )
+        setModelReady(true)
+
         setEmbeddingProviderSaveMsg("配置已自动保存")
         setTimeout(() => setEmbeddingProviderSaveMsg(null), TOAST_AUTO_DISMISS_MS)
       } catch (err) {
@@ -834,7 +756,7 @@ export default function Settings() {
                 <div>
                   <h2 className="text-sm font-semibold text-neutral-700">Embedding 模型</h2>
                   <p className="mt-0.5 text-xs text-neutral-400">
-                    向量嵌入模型，支持本地 ONNX 模型或在线 API 服务
+                    向量嵌入模型，支持 Ollama 本地部署或在线 API 服务
                   </p>
                 </div>
                 <span
@@ -847,7 +769,7 @@ export default function Settings() {
                       modelReady ? "bg-green-500" : "bg-amber-500"
                     }`}
                   />
-                  {modelReady ? "已就绪" : "未初始化"}
+                  {modelReady ? "已配置" : "未配置"}
                 </span>
               </div>
             </div>
@@ -874,114 +796,15 @@ export default function Settings() {
                 </select>
               </div>
 
-              {/* 本地模型界面 */}
-              {embeddingProviderConfig.provider === "local" && (
-                <>
-                  <p className="mb-3 text-sm text-neutral-500">
-                    {modelReady
-                      ? "模型已加载，知识库导入和语义搜索功能可用。"
-                      : initializing
-                        ? `正在下载模型（${downloadProgress}%）... 首次下载约 90MB，请耐心等待`
-                        : "模型尚未初始化。首次初始化需要从 HuggingFace 下载模型文件（约 90MB）。"}
-                  </p>
-
-                  {/* 下载进度条 */}
-                  {initializing && (
-                    <div className="mb-3">
-                      <div className="h-2 w-full overflow-hidden rounded-full bg-neutral-100">
-                        <div
-                          className="h-full rounded-full bg-[#1A6BD8] transition-all duration-300 ease-out"
-                          style={{ width: `${Math.max(downloadProgress, 2)}%` }}
-                        />
-                      </div>
-                      <p className="mt-1 text-xs text-neutral-400">
-                        {downloadProgress < 100 ? `${downloadProgress}%` : "加载中..."}
-                      </p>
-                    </div>
-                  )}
-
-                  <div className="mb-3 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        value={embeddingConfig.custom_model_dir ?? ""}
-                        onChange={(e) => setEmbeddingConfig({ custom_model_dir: e.target.value })}
-                        onBlur={() => handleSaveEmbeddingConfig()}
-                        placeholder="默认使用内置 BGE 模型；可选择本地 ONNX 模型目录"
-                        className="flex-1 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleChooseEmbeddingDir}
-                        className="rounded-lg border border-neutral-200 p-2 text-neutral-500 hover:bg-neutral-50"
-                        title="选择目录"
-                      >
-                        <FolderOpen className="h-4 w-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleResetEmbeddingConfig}
-                        disabled={embeddingConfigSaving}
-                        className="rounded-lg border border-neutral-200 p-2 text-neutral-500 hover:bg-neutral-50 disabled:opacity-50"
-                        title="使用内置模型"
-                      >
-                        <RotateCcw className="h-4 w-4" />
-                      </button>
-                    </div>
-                    <p className="text-xs text-neutral-400">
-                      目录需包含
-                      model.onnx、tokenizer.json；config.json、tokenizer_config.json、special_tokens_map.json
-                      可选。
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={handleInitModel}
-                      disabled={initializing || modelReady}
-                      className="flex items-center gap-1.5 rounded-lg bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white hover:bg-[#1558B0] disabled:opacity-50 transition-colors"
-                    >
-                      {initializing ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <RefreshCw className="h-4 w-4" />
-                      )}
-                      {initializing ? "下载模型中..." : modelReady ? "已初始化" : "初始化模型"}
-                    </button>
-
-                    {embeddingConfigSaving && (
-                      <span className="flex items-center gap-1 text-xs text-neutral-400">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        自动保存中...
-                      </span>
-                    )}
-
-                    {initResult && (
-                      <span
-                        className={`text-xs ${initResult.ok ? "text-green-600" : "text-red-600"}`}
-                      >
-                        {initResult.msg}
-                      </span>
-                    )}
-                  </div>
-
-                  {!modelReady && !initializing && (
-                    <div className="mt-3 flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                      <AlertTriangle className="h-3.5 w-3.5" />
-                      未初始化时，AI 对话将无法使用知识库语义搜索，仅使用关键词匹配和 LLM 自身能力
-                    </div>
-                  )}
-                </>
-              )}
-
-              {/* 在线供应商界面 */}
-              {embeddingProviderConfig.provider !== "local" && (
-                <>
-                  <p className="mb-3 text-sm text-neutral-500">
-                    使用 {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].label} 在线
-                    Embedding 服务。 请填写 API Key 和模型配置后保存。
-                  </p>
+              {/* 供应商配置界面 */}
+              <>
+                <p className="mb-3 text-sm text-neutral-500">
+                  使用 {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].label}
+                  Embedding 服务。
+                  {embeddingProviderConfig.provider === "ollama"
+                    ? " 请确保 Ollama 已启动并拉取 embedding 模型。"
+                    : " 请填写 API Key 和模型配置后保存。"}
+                </p>
 
                   <div className="space-y-3">
                     {/* Base URL 配置 */}
@@ -1002,7 +825,8 @@ export default function Settings() {
                       />
                     </div>
 
-                    {/* API Key 配置 */}
+                    {/* API Key 配置（仅需要 API Key 的供应商显示） */}
+                    {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].requiresApiKey && (
                     <div>
                       <div className="mb-1.5 flex items-center gap-2">
                         <Key className="h-4 w-4 text-neutral-400" />
@@ -1034,6 +858,7 @@ export default function Settings() {
                         </button>
                       </div>
                     </div>
+                    )}
 
                     {/* 模型名称 */}
                     <div>
@@ -1096,7 +921,6 @@ export default function Settings() {
                     ) : null}
                   </div>
                 </>
-              )}
             </div>
           </section>
 

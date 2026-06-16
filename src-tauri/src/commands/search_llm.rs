@@ -46,6 +46,7 @@ pub async fn hybrid_search(
         state.get_or_init_reranker().as_deref(),
         Some(&state.wiki_pages),
     )
+    .await
 }
 
 /// 保存聊天记忆：归档对话 + LLM 提取 → 摄入知识库。

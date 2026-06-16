@@ -107,12 +107,12 @@ fn rrf_fuse(vector_results: &[ResolvedChunk], bm25_results: &[ResolvedChunk]) ->
 /// Perform hybrid search: vector + BM25 → RRFR fusion → project filter → top-K.
 ///
 /// Locking strategy (sequential, no nesting to avoid deadlocks):
-/// 1. Lock embedding → embed query → **drop lock**
+/// 1. Lock embedding → get config + client → **drop lock** → async embed query
 /// 2. Lock vector_index → search → **drop lock**
 /// 3. Lock metadata → resolve vector chunks → **drop lock**
 /// 4. Lock bm25 → search → **drop lock** (BM25 already returns enriched results)
 /// 5. RRFR fusion + project filter (no locks needed)
-pub fn hybrid_search(
+pub async fn hybrid_search(
     query: &str,
     project_id: Option<&str>,
     extra_project_ids: &[String],
@@ -144,62 +144,76 @@ pub fn hybrid_search(
     };
 
     // ── Step 1: Embed query (graceful degradation if model not initialized) ──
-    let vector_resolved: Vec<ResolvedChunk> = {
+    // 1a: 获取远程配置和客户端（在独立作用域中释放 RwLock）
+    let embed_params: Option<(crate::services::embedding::RemoteEmbeddingConfig, reqwest::Client)> = {
         let emb = embedding.read().map_err(|e| e.to_string())?;
-        if emb.is_ready() {
-            // Embedding available → full hybrid search
-            drop(emb); // release lock before mutable borrow
-            let query_vec = {
-                let mut emb_mut = embedding.write().map_err(|e| e.to_string())?;
-                emb_mut.embed_text(query)?
-            }; // drop emb_mut lock
-
-            // Vector search
-            let vector_raw = {
-                let index = vector_index.read().map_err(|e| e.to_string())?;
-                index.search(&query_vec, TOP_N)?
-            }; // drop index lock
-
-            // Resolve vector results to full metadata
-            let meta = metadata.lock().map_err(|e| e.to_string())?;
-            let vector_keys: Vec<i64> = vector_raw.iter().map(|r| r.key as i64).collect();
-            let chunks = meta.get_chunks_by_vector_keys(&vector_keys)?;
-
-            // fetch all documents (eliminates N+1 query)
-            let doc_ids: Vec<i64> = chunks.iter().map(|c| c.document_id).collect();
-            let doc_map = meta.get_documents_by_ids(&doc_ids)?;
-
-            chunks
-                .into_iter()
-                .filter_map(|c| {
-                    // 前置过滤：排除聊天附件 chunk
-                    if exclude_chunk_ids.contains(&c.id) {
-                        return None;
-                    }
-                    let (title, project) = doc_map
-                        .get(&c.document_id)
-                        .map(|d| (d.title.clone(), d.project_id.to_string()))
-                        .unwrap_or_else(|| (String::new(), "default".to_string()));
-
-                    if !project_allowed(&project, project_id, extra_project_ids) {
-                        return None;
-                    }
-
-                    Some(ResolvedChunk {
-                        chunk_id: c.id,
-                        title,
-                        content: c.content,
-                        document_id: c.document_id,
-                        section_path: c.section_path,
-                        project,
-                        parent_chunk_id: c.parent_chunk_id,
-                    })
-                })
-                .collect()
+        if !emb.is_ready() {
+            None
         } else {
-            // Embedding not initialized → skip vector search, BM25 only
-            Vec::new()
+            match emb.remote_config() {
+                Some(c) => Some((c.clone(), emb.http_client().clone())),
+                None => None,
+            }
         }
+    }; // drop embedding lock
+
+    // 1b: 异步调用远程 embedding（不持有任何锁）
+    let query_vec: Option<Vec<f32>> = if let Some((config, client)) = &embed_params {
+        match crate::services::embedding::remote_embed(client, config, query).await {
+            Ok(v) => Some(v),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
+    // 1c: 向量搜索 + 元数据解析
+    let vector_resolved: Vec<ResolvedChunk> = if let Some(qv) = query_vec {
+        // Vector search
+        let vector_raw = {
+            let index = vector_index.read().map_err(|e| e.to_string())?;
+            index.search(&qv, TOP_N)?
+        }; // drop index lock
+
+        // Resolve vector results to full metadata
+        let meta = metadata.lock().map_err(|e| e.to_string())?;
+        let vector_keys: Vec<i64> = vector_raw.iter().map(|r| r.key as i64).collect();
+        let chunks = meta.get_chunks_by_vector_keys(&vector_keys)?;
+
+        // fetch all documents (eliminates N+1 query)
+        let doc_ids: Vec<i64> = chunks.iter().map(|c| c.document_id).collect();
+        let doc_map = meta.get_documents_by_ids(&doc_ids)?;
+
+        chunks
+            .into_iter()
+            .filter_map(|c| {
+                // 前置过滤：排除聊天附件 chunk
+                if exclude_chunk_ids.contains(&c.id) {
+                    return None;
+                }
+                let (title, project) = doc_map
+                    .get(&c.document_id)
+                    .map(|d| (d.title.clone(), d.project_id.to_string()))
+                    .unwrap_or_else(|| (String::new(), "default".to_string()));
+
+                if !project_allowed(&project, project_id, extra_project_ids) {
+                    return None;
+                }
+
+                Some(ResolvedChunk {
+                    chunk_id: c.id,
+                    title,
+                    content: c.content,
+                    document_id: c.document_id,
+                    section_path: c.section_path,
+                    project,
+                    parent_chunk_id: c.parent_chunk_id,
+                })
+            })
+            .collect()
+    } else {
+        // Embedding not configured or failed → skip vector search, BM25 only
+        Vec::new()
     }; // drop all locks
 
     // ── Step 4: BM25 search（前置过滤已排除聊天附件 chunk）──

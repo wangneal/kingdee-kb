@@ -5,7 +5,7 @@
 //! 2. 计算 SHA256 用于去重检测
 //! 3. 递归分块（H2 → 段落 → 句子）
 //! 4. 从文件名 + 章节路径提取标签
-//! 5. 通过 fastembed 批量嵌入分块
+//! 5. 通过远程 Embedding API 或 Ollama 批量嵌入分块
 //! 6. 在 usearch HNSW 索引中存储向量
 //! 7. 在 SQLite 中存储元数据（分块↔向量映射）
 //! 8. 向前端发出进度事件
@@ -300,8 +300,8 @@ pub fn ingest_text(
 
         // 批量嵌入父块，不与元数据、BM25、向量索引锁同时持有
         let (parent_embeddings, child_embeddings) = {
-            let mut emb = embedding
-                .write()
+            let emb = embedding
+                .read()
                 .map_err(|e| format!("Lock error: {}", e))?;
             let parent_embs = emb.embed_batch(&text_refs)?;
             let child_embs = if child_texts.is_empty() {

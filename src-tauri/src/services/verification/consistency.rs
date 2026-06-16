@@ -46,16 +46,22 @@ impl FactualConsistencyChecker {
             None => return (true, 1.0, Vec::new()), // 无嵌入服务，跳过
         };
 
-        // 嵌入句子
-        let sentence_emb = {
-            let mut service = emb.write().map_err(|e| format!("Lock: {}", e)).ok();
-            match service.as_mut() {
-                Some(s) if s.is_ready() => match s.embed_text(sentence) {
-                    Ok(v) => v,
-                    Err(_) => return (true, 1.0, vec!["嵌入句子失败".to_string()]),
-                },
-                _ => return (true, 1.0, Vec::new()),
+        // 获取远程配置和客户端（在独立作用域中释放锁）
+        let (config, client) = {
+            let service = match emb.read() {
+                Ok(s) => s,
+                Err(_) => return (true, 1.0, Vec::new()),
+            };
+            match service.remote_config() {
+                Some(c) => (c.clone(), service.http_client().clone()),
+                None => return (true, 1.0, Vec::new()), // 未配置远程提供商，跳过
             }
+        };
+
+        // 嵌入句子
+        let sentence_emb = match crate::services::embedding::remote_embed(&client, &config, sentence).await {
+            Ok(v) => v,
+            Err(_) => return (true, 1.0, vec!["嵌入句子失败".to_string()]),
         };
 
         // 嵌入所有 chunk 并计算最大相似度
@@ -63,15 +69,9 @@ impl FactualConsistencyChecker {
         let mut best_match = String::new();
 
         for chunk in chunks {
-            let chunk_emb = {
-                let mut service = emb.write().map_err(|e| format!("Lock: {}", e)).ok();
-                match service.as_mut() {
-                    Some(s) if s.is_ready() => match s.embed_text(chunk) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    },
-                    _ => continue,
-                }
+            let chunk_emb = match crate::services::embedding::remote_embed(&client, &config, chunk).await {
+                Ok(v) => v,
+                Err(_) => continue,
             };
             let sim = Self::cosine_similarity(&sentence_emb, &chunk_emb);
             if sim > max_similarity {

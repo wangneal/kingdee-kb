@@ -221,8 +221,6 @@ pub fn run() {
             commands::core::export_report,
             // Phase 2: Embedding & Vector Store
             commands::embedding::get_model_status,
-            commands::embedding::init_model,
-            commands::embedding::get_download_progress,
             commands::embedding::get_embedding_model_config,
             commands::embedding::set_embedding_model_config,
             // Phase 3: Ingestion Pipeline

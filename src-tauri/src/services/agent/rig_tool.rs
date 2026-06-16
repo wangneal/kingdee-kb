@@ -2021,6 +2021,7 @@ impl Tool for SearchKnowledgeTool {
             None,
             None,
         )
+        .await
         .map_err(ToolError::msg)?;
 
         // 缓存检索到的 chunks 用于后续的防幻觉验证

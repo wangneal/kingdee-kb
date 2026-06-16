@@ -115,7 +115,7 @@ pub async fn save_chat_memory(
         vector_index,
         metadata,
         project_id,
-    ) {
+    ).await {
         info!(target: "memory", title = %title, "[Memory] Skipping — similar memory already exists");
         return;
     }
@@ -227,7 +227,7 @@ async fn is_substantive_conversation(conversation: &[ChatMessage], llm: &LLMServ
 /// Uses vector search (nearest neighbor) against the index. Embeds the new memory,
 /// then searches the index for the closest existing vector. If the nearest hit
 /// belongs to a "记忆库" document and similarity exceeds 0.92, the memory is skipped.
-fn is_duplicate_memory(
+async fn is_duplicate_memory(
     title: &str,
     memory_text: &str,
     embedding: &Arc<RwLock<EmbeddingService>>,
@@ -235,17 +235,25 @@ fn is_duplicate_memory(
     metadata: &Arc<Mutex<MetadataStore>>,
     project_id: i64,
 ) -> bool {
-    // Compute embedding for the new memory
-    let new_vec: Vec<f32> = match embedding.write() {
-        Ok(mut emb) => match emb.embed_text(memory_text) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(target: "memory", error = %e, "[Memory] Embedding failed for dedup check");
-                // Fall back to exact title match
-                return is_duplicate_memory_by_title(title, metadata, project_id);
-            }
-        },
-        Err(_) => return is_duplicate_memory_by_title(title, metadata, project_id),
+    // 获取远程配置和客户端（在独立作用域中释放 RwLock）
+    let (config, client) = {
+        let emb = match embedding.read() {
+            Ok(s) => s,
+            Err(_) => return is_duplicate_memory_by_title(title, metadata, project_id),
+        };
+        match emb.remote_config() {
+            Some(c) => (c.clone(), emb.http_client().clone()),
+            None => return is_duplicate_memory_by_title(title, metadata, project_id),
+        }
+    };
+
+    // 异步调用远程 embedding（不持有任何锁）
+    let new_vec: Vec<f32> = match crate::services::embedding::remote_embed(&client, &config, memory_text).await {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(target: "memory", error = %e, "[Memory] Embedding failed for dedup check");
+            return is_duplicate_memory_by_title(title, metadata, project_id);
+        }
     };
 
     // Search the vector index for nearest neighbors

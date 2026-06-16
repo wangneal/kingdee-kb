@@ -1568,7 +1568,7 @@ impl LLMService {
             metadata,
             None,
             None,
-        )?;
+        ).await?;
 
         // Step 2: Memory retrieval — search "记忆库" project for relevant past memories
         if let Ok(mut memories) = hybrid_search::hybrid_search(
@@ -1582,7 +1582,7 @@ impl LLMService {
             metadata,
             None,
             None,
-        ) {
+        ).await {
             // Apply temporal decay: older memories score lower 鈫?naturally filtered
             apply_memory_temporal_decay(&mut memories, metadata);
             for mem in memories.into_iter().take(3) {
@@ -1738,7 +1738,7 @@ impl LLMService {
             metadata,
             None,
             None,
-        )?;
+        ).await?;
 
         // Small-to-Big: resolve child chunks to parent chunks
         let search_results = resolve_small_to_big(search_results, metadata);
@@ -2277,7 +2277,7 @@ impl LLMService {
                 metadata,
                 None,
                 None,
-            )?,
+            ).await?,
         };
 
         // Step 1b: Memory retrieval — search "记忆库" project for relevant past memories
@@ -2292,7 +2292,7 @@ impl LLMService {
             metadata,
             None,
             None,
-        ) {
+        ).await {
             apply_memory_temporal_decay(&mut memories, metadata);
             for mem in memories.into_iter().take(3) {
                 if !search_results.iter().any(|r| r.chunk_id == mem.chunk_id) {

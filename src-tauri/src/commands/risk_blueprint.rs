@@ -228,7 +228,7 @@ fn assess_phase_schedule_with_cascade(
     (judgement, projected)
 }
 
-fn collect_project_risk_evidence(
+async fn collect_project_risk_evidence(
     state: &AppState,
     project_id: i64,
     user_context: &str,
@@ -369,7 +369,7 @@ fn collect_project_risk_evidence(
             &state.metadata,
             None,
             Some(&state.wiki_pages),
-        ) {
+        ).await {
             Ok(results) => {
                 for result in results {
                     if seen_chunk_ids.insert(result.chunk_id) {
@@ -520,7 +520,7 @@ pub async fn generate_risk_report(
     project_id: i64,
     context: String,
 ) -> Result<String, String> {
-    let evidence_context = collect_project_risk_evidence(&state, project_id, &context)?;
+    let evidence_context = collect_project_risk_evidence(&state, project_id, &context).await?;
     state
         .risk_control_store
         .lock()
@@ -535,7 +535,7 @@ pub async fn generate_defense_script(
     project_id: i64,
     request: DefenseScriptRequest,
 ) -> Result<DefenseScriptResult, String> {
-    let evidence_context = collect_project_risk_evidence(&state, project_id, &request.context)?;
+    let evidence_context = collect_project_risk_evidence(&state, project_id, &request.context).await?;
     let request = DefenseScriptRequest {
         context: evidence_context,
         ..request
@@ -695,6 +695,7 @@ pub async fn analyze_fit_gap(
 ) -> Result<String, AppError> {
     use crate::services::llm_service::ChatMessage;
     let evidence_context = collect_project_risk_evidence(&state, project_id, &requirements)
+        .await
         .map_err(|e| AppError::Internal(e))?;
     let messages = vec![
         ChatMessage {

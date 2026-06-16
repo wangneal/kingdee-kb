@@ -255,23 +255,14 @@ export async function deleteDocumentsBatch(
 
 // ── Embedding 模型命令 ─────────────────────────────────────────────────────
 
-export async function initModel(): Promise<boolean> {
-  return invoke("init_model")
-}
-
 export async function getModelStatus(): Promise<boolean> {
   return invoke("get_model_status")
-}
-
-/** 获取 Embedding 模型下载进度（0-100） */
-export async function getDownloadProgress(): Promise<number> {
-  return invoke("get_download_progress")
 }
 
 // ── LLM / RAG 命令封装 ────────────────────────────────────────────────────
 
 export type EmbeddingProviderType =
-  | "local"
+  | "ollama"
   | "openai"
   | "siliconflow"
   | "zhipu"
@@ -280,7 +271,10 @@ export type EmbeddingProviderType =
   | "custom"
 
 export interface EmbeddingModelConfig {
-  custom_model_dir?: string | null
+  provider?: EmbeddingProviderType | null
+  api_key?: string | null
+  base_url?: string | null
+  model_name?: string | null
 }
 
 /** 在线 Embedding 供应商配置（存储在前端 localStorage） */
@@ -295,9 +289,17 @@ export async function getEmbeddingModelConfig(): Promise<EmbeddingModelConfig> {
   return invoke("get_embedding_model_config")
 }
 
-export async function setEmbeddingModelConfig(customModelDir?: string | null): Promise<boolean> {
+export async function setEmbeddingModelConfig(
+  provider?: EmbeddingProviderType | null,
+  apiKey?: string | null,
+  baseUrl?: string | null,
+  modelName?: string | null,
+): Promise<boolean> {
   return invoke("set_embedding_model_config", {
-    customModelDir: customModelDir ?? null,
+    provider: provider ?? null,
+    apiKey: apiKey ?? null,
+    baseUrl: baseUrl ?? null,
+    modelName: modelName ?? null,
   })
 }
 
