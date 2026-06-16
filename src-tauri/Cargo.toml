@@ -36,7 +36,7 @@ keyring = "3"
 # Phase 2: Embedding & Vector Store
 fastembed = { version = "5", default-features = false, features = ["hf-hub-native-tls", "image-models"] }
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "api-24", "alternative-backend"] }
-ort-tract = "0.3.0+0.22"
+ort-tract = "0.3.0"
 usearch = { version = "2", default-features = false }
 rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
@@ -100,3 +100,12 @@ futures = "0.3.32"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bitflags = "2.11.1"
+
+# ─── 编译优化：降低 debug 构建内存占用 ───
+# fastembed + ort 在 Windows debug 模式下 LLVM 代码生成易 OOM
+[profile.dev]
+opt-level = 0       # 无优化
+debug = 1           # 仅行号表（非完整调试信息），大幅减少内存
+codegen-units = 16   # 更多并行编译单元，降低单文件峰值内存
+lto = false          # 禁用链接时优化
+incremental = true   # 增量编译（默认开启）

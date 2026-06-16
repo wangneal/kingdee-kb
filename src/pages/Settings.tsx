@@ -707,7 +707,7 @@ export default function Settings() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl p-6">
+    <div className="mx-auto w-full max-w-2xl lg:max-w-4xl xl:max-w-5xl 2xl:max-w-6xl p-6">
       <div className="mb-6 flex items-center gap-2">
         <SettingsIcon className="h-5 w-5 text-[#1A6BD8]" />
         <h1 className="text-lg font-semibold text-neutral-800">设置</h1>
