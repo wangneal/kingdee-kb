@@ -172,6 +172,18 @@ jobs:
         with:
           path: downloaded-artifacts
 
+      - name: Rename stripped installer filenames
+        shell: bash
+        run: |
+          echo "=== 正在重命名被剥离中文名称的安装包文件 ==="
+          find downloaded-artifacts -type f -name "_*" | while read -r file; do
+            dir=$(dirname "$file")
+            base=$(basename "$file")
+            new_name="顾问工作台$base"
+            echo "重命名: $base -> $new_name"
+            mv "$file" "$dir/$new_name"
+          done
+
       - name: List downloaded artifacts (debug)
         shell: bash
         run: |

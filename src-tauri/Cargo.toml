@@ -1,6 +1,6 @@
 [package]
 name = "kingdee-kb"
-version = "0.1.19"
+version = "0.1.20"
 description = "AI-assisted Kingdee ERP implementation knowledge base"
 authors = ["KingdeeKB Team"]
 edition = "2021"
