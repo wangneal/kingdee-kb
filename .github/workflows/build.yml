@@ -174,17 +174,7 @@ jobs:
 
       - name: Rename stripped installer filenames
         shell: bash
-        run: |
-          python3 -c '
-          import os, shutil
-          for root, dirs, files in os.walk("downloaded-artifacts"):
-              for f in files:
-                  if f.startswith("_"):
-                      old = os.path.join(root, f)
-                      new = os.path.join(root, "顾问工作台" + f)
-                      print(f"Renaming {old} -> {new}")
-                      shutil.move(old, new)
-          '
+        run: python3 scripts/rename-installers.py
 
       - name: List downloaded artifacts (debug)
         shell: bash
