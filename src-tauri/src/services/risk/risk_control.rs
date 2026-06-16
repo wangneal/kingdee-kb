@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::Emitter;
 
-use super::llm_service::{ChatMessage, LLMService};
+use crate::services::llm_service::{ChatMessage, LLMService};
 use crate::services::verification::types::ScenarioType;
 
 const MAX_SCOPE_EXTRACTION_BATCH_TOKENS: u32 = 900;
@@ -696,7 +696,7 @@ impl RiskControlStore {
     pub async fn extract_scope_from_document(
         &self,
         llm: &LLMService,
-        chunks: &[super::metadata::ChunkMeta],
+        chunks: &[crate::services::metadata::ChunkMeta],
         app_handle: Option<&tauri::AppHandle>,
         project_id: i64,
         doc_id: i64,
@@ -938,7 +938,7 @@ impl RiskControlStore {
     }
 
     fn build_scope_extraction_batches(
-        chunks: &[super::metadata::ChunkMeta],
+        chunks: &[crate::services::metadata::ChunkMeta],
         max_context_tokens: u32,
     ) -> Vec<String> {
         let max_context_tokens = max_context_tokens.max(1);

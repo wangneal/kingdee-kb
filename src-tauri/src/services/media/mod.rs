@@ -1,0 +1,9 @@
+pub mod audio_capture;
+pub mod image_processor;
+pub mod meeting_minutes_service;
+pub mod meeting_store;
+pub mod meeting_sync;
+pub mod tencent_asr;
+pub mod tencent_meeting_mcp;
+pub mod video_transcriber;
+pub mod whisper_service;

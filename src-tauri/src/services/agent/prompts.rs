@@ -9,34 +9,34 @@
 //! 3. 在需要的模块中引用 `super::prompts::XXX`
 
 /// 主 RAG 对话系统提示词 — 金蝶ERP实施顾问知识助手
-pub const SYSTEM_PROMPT: &str = include_str!("../../resources/prompts/system_prompt.md");
+pub const SYSTEM_PROMPT: &str = include_str!("../../../resources/prompts/system_prompt.md");
 
 /// 文档生成系统提示词 — 反模糊结构约束
 pub const DOC_GEN_SYSTEM_PROMPT: &str =
-    include_str!("../../resources/prompts/doc_gen_system_prompt.md");
+    include_str!("../../../resources/prompts/doc_gen_system_prompt.md");
 
 /// 调研报告配方系统提示词
 pub const RECIPE_INVESTIGATION: &str =
-    include_str!("../../resources/prompts/recipe_investigation.md");
+    include_str!("../../../resources/prompts/recipe_investigation.md");
 
 /// 周报/月报配方系统提示词
-pub const RECIPE_WEEKLY: &str = include_str!("../../resources/prompts/recipe_weekly.md");
+pub const RECIPE_WEEKLY: &str = include_str!("../../../resources/prompts/recipe_weekly.md");
 
 /// 业务蓝图配方系统提示词
-pub const RECIPE_BLUEPRINT: &str = include_str!("../../resources/prompts/recipe_blueprint.md");
+pub const RECIPE_BLUEPRINT: &str = include_str!("../../../resources/prompts/recipe_blueprint.md");
 
 /// PCR（项目变更申请）配方系统提示词
-pub const RECIPE_PCR: &str = include_str!("../../resources/prompts/recipe_pcr.md");
+pub const RECIPE_PCR: &str = include_str!("../../../resources/prompts/recipe_pcr.md");
 
 /// 上线单配方系统提示词
-pub const RECIPE_GO_LIVE: &str = include_str!("../../resources/prompts/recipe_go_live.md");
+pub const RECIPE_GO_LIVE: &str = include_str!("../../../resources/prompts/recipe_go_live.md");
 
 /// 验收单配方系统提示词
 pub const RECIPE_ACCEPTANCE: &str =
-    include_str!("../../resources/prompts/recipe_acceptance.md");
+    include_str!("../../../resources/prompts/recipe_acceptance.md");
 
 /// 会议纪要配方系统提示词
-pub const RECIPE_MEETING: &str = include_str!("../../resources/prompts/recipe_meeting.md");
+pub const RECIPE_MEETING: &str = include_str!("../../../resources/prompts/recipe_meeting.md");
 
 #[cfg(test)]
 mod tests {

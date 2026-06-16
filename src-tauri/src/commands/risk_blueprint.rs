@@ -844,7 +844,7 @@ pub async fn agent_chat(
                 &mut assistant_content,
                 &mut active_tool_call_id,
             );
-            if event_app.emit("react-event", payload).is_err() {
+            if event_app.emit("agent-event", payload).is_err() {
                 break;
             }
             match &event {

@@ -258,7 +258,7 @@ KingdeeKB/
 │   │       ├── rig_agent.rs      # ReAct Agent 引擎
 │   │       ├── rig_tool.rs       # Agent 工具定义
 │   │       ├── rig_provider.rs   # Provider 客户端
-│   │       ├── react_agent.rs    # ReActEvent 事件枚举
+│   │       ├── agent_event.rs    # AgentEvent 事件枚举
 │   │       ├── agent_router.rs   # Agent 模式路由
 │   │       ├── planner.rs        # Plan-and-Execute
 │   │       ├── llm_service.rs    # LLM 调用封装
@@ -538,8 +538,8 @@ KingdeeKB/
       │     ├── 提示词组装（系统提示词 + skill_catalog + 上下文 + 历史）
       │     ├── build_provider（OpenAI / Anthropic / Ollama）
       │     ├── agent.stream_prompt()
-      │     └── drain_stream() 循环产出 ReActEvent
-      └── Tauri emit("react-event", ReActEvent) → 前端 SSE
+      │     └── drain_stream() 循环产出 AgentEvent
+      └── Tauri emit("agent-event", AgentEvent) → 前端 SSE
   → AgentContext 监听事件，更新 messages + currentTrace
 ```
 

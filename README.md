@@ -53,7 +53,7 @@ KingdeeKB/
 │   └── pages/              # 页面：Chat / Settings / Skills / RiskControl
 ├── src-tauri/              # 后端 (Rust)
 │   ├── src/commands/       # Tauri 命令层
-│   ├── src/services/       # 核心服务：Agent、LLM、搜索、技能
+│   ├── src/services/       # 核心服务：按领域模块化（agent, knowledge, project, risk, skill, media, security, common 等）
 │   └── resources/          # 系统提示词等资源文件
 ├── skills/                 # 用户安装的技能
 ├── docs/                   # 项目文档

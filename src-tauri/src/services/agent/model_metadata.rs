@@ -75,7 +75,7 @@ pub fn builtin_supports_vision(model_name: &str) -> Option<bool> {
 }
 
 pub(crate) fn from_builtin_db(model_name: &str) -> Option<ModelMetadata> {
-    let specs_str = include_str!("../../resources/model_specs.json");
+    let specs_str = include_str!("../../../resources/model_specs.json");
     let specs: serde_json::Value = serde_json::from_str(specs_str).ok()?;
 
     for (_provider, models) in specs.as_object()? {

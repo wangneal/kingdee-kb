@@ -13,7 +13,7 @@ use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Duration;
 use tracing::{info, warn};
 
-use super::llm_providers::{anthropic_messages_url, with_anthropic_headers, LLMProtocol};
+use crate::services::llm_providers::{anthropic_messages_url, with_anthropic_headers, LLMProtocol};
 
 /// 判断 base_url 是否需要放宽 TLS 校验（与 LLM 服务保持一致）
 fn needs_relaxed_tls(base_url: &str) -> bool {
@@ -938,7 +938,7 @@ impl AnalysisOrchestrator {
                         let supports_thinking = model
                             .and_then(|m| m.supports_thinking)
                             .or_else(|| {
-                                super::model_metadata::from_builtin_db(&model_name)
+                                crate::services::model_metadata::from_builtin_db(&model_name)
                                     .map(|m| m.supports_thinking)
                             })
                             .unwrap_or(false);

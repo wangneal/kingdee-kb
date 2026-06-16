@@ -32,7 +32,7 @@ pub fn extract_text(file_path: &Path) -> Result<String, String> {
     } else if PDF_EXTS.contains(&ext.as_str()) {
         extract_pdf_text(file_path)
     } else if DOC_EXTS.contains(&ext.as_str()) {
-        super::research_outline::parse_doc_file(file_path)
+        crate::services::research_outline::parse_doc_file(file_path)
     } else if DOCX_EXTS.contains(&ext.as_str()) {
         extract_docx_text(file_path)
     } else if XLSX_EXTS.contains(&ext.as_str()) {

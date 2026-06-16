@@ -36,7 +36,7 @@ use crate::services::verification::types::{ScenarioType, VerificationInput, Veri
 // 常量
 
 /// 系统提示词 - ERP 顾问知识助手，带有反幻觉防护。
-static SYSTEM_PROMPT: &str = include_str!("../../resources/prompts/system_prompt.md");
+static SYSTEM_PROMPT: &str = include_str!("../../../resources/prompts/system_prompt.md");
 
 /// 为助手响应保留的 token 数（知识密集型回答需 2048-4096 tokens）
 const RESPONSE_TOKENS: u32 = 4096;
