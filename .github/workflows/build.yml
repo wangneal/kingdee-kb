@@ -176,7 +176,9 @@ jobs:
         shell: bash
         run: |
           echo "=== 下载的产物目录结构 ==="
-          find downloaded-artifacts -type f -size +0 | head -80
+          set +o pipefail
+          find downloaded-artifacts -type f -size +0 | head -n 80
+          set -o pipefail
           echo ""
           echo "=== 按扩展名分类 ==="
           find downloaded-artifacts -type f -size +0 | sed 's/.*\.//' | sort | uniq -c | sort -rn
