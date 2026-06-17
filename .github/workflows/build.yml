@@ -166,6 +166,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v8
@@ -175,6 +177,10 @@ jobs:
       - name: Rename stripped installer filenames
         shell: bash
         run: python3 scripts/rename-installers.py
+
+      - name: Generate release notes
+        shell: bash
+        run: python3 scripts/generate-release-notes.py "${{ github.ref_name }}" "https://github.com/${{ github.repository }}"
 
       - name: List downloaded artifacts (debug)
         shell: bash
@@ -211,28 +217,7 @@ jobs:
           else
             gh release create "$version" \
               --title "KingdeeKB $version" \
-              --notes "## KingdeeKB ${version}
-
-            金蝶 ERP 实施知识库桌面应用 — AI 驱动的调研助手、风险把控、文档生成。
-
-            ### 下载说明
-
-            **Windows**
-            - \`.msi\` / \`.exe\`：标准安装包（推荐，含卸载程序、开始菜单快捷方式）
-            - \`-portable.zip\`：绿色版（无需安装，解压即用，适合便携场景）
-
-            **macOS**
-            - \`.dmg\`（ARM 用于 Apple Silicon，x64 用于 Intel）
-
-            **Linux**
-            - \`.AppImage\`：免安装，\`chmod +x\` 后直接运行
-            - \`.deb\`：Debian / Ubuntu 安装包
-
-            ### 首次使用
-            1. 启动应用
-            2. 进入「设置」配置 LLM API Key
-            3. 在「知识库」中导入文档
-            4. 在「AI 助手」中开始提问" \
+              --notes-file release-notes.md \
               --draft
           fi
 
