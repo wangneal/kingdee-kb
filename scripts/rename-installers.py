@@ -12,7 +12,12 @@ def rename_installers():
         for f in files:
             if f.startswith("_"):
                 old = os.path.join(root, f)
-                new = os.path.join(root, "顾问工作台" + f)
+                new = os.path.join(root, "KingdeeKB" + f)
+                print(f"Renaming: {old} -> {new}")
+                shutil.move(old, new)
+            elif f.startswith("顾问工作台"):
+                old = os.path.join(root, f)
+                new = os.path.join(root, f.replace("顾问工作台", "KingdeeKB", 1))
                 print(f"Renaming: {old} -> {new}")
                 shutil.move(old, new)
     print("=== End Renaming Stripped Installers ===")
