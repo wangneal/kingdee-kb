@@ -456,13 +456,21 @@ impl LLMProviderManager {
             .read()
             .map(|m| m.seeding_in_progress.store(true, Ordering::SeqCst));
 
-        let free_models = fetch_opencode_zen_free_models().await;
+        let mut free_models = fetch_opencode_zen_free_models().await;
+        if free_models.is_empty() {
+            tracing::info!("OpenCode Zen /models 拉取为空或网络离线，使用内置默认免费模型列表进行初始化");
+            free_models = vec![
+                "deepseek-v4-flash-free".to_string(),
+                "qwen3.6-plus-free".to_string(),
+                "minimax-m3-free".to_string(),
+                "mimo-v2.5-free".to_string(),
+            ];
+        }
         let default = seed_default_opencode_zen(free_models);
 
-        // 网络失败时 default 为空 — 不写文件、不更新内存，让用户在 Settings 手动添加
         if default.is_empty() {
             tracing::warn!(
-                "OpenCode Zen /models 拉取失败（离线或 API 变更），跳过默认供应商 seed。请在设置中手动添加供应商。"
+                "未成功生成默认供应商配置，跳过默认供应商 seed。请在设置中手动添加供应商。"
             );
             let _ = arc_self
                 .read()
