@@ -66,129 +66,7 @@ fn source_resume_key(identity: &str, sha256: &str) -> String {
     format!("{}::{}", identity, sha256)
 }
 
-fn is_docx_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|extension| extension.eq_ignore_ascii_case("docx"))
-        .unwrap_or(false)
-}
-
-fn create_docx_preview_temp_dir(file_path: &Path) -> Result<PathBuf, String> {
-    let stem = file_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("docx");
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!(
-        "kingdee-kb-recompile-docx-preview-{}-{}-{}",
-        std::process::id(),
-        nonce,
-        stem
-    ));
-    if dir.exists() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("创建 DOCX 预览图临时目录失败 {:?}: {}", dir.display(), e))?;
-    Ok(dir)
-}
-
-fn clone_image_processor(
-    image_processor: &Arc<RwLock<ImageProcessor>>,
-) -> Result<ImageProcessor, String> {
-    let guard = image_processor
-        .read()
-        .map_err(|e| format!("获取图片处理器失败: {}", e))?;
-    Ok(guard.clone_configured())
-}
-
-async fn extract_image_text_with_processor(
-    file_path: &str,
-    processor: ImageProcessor,
-) -> Result<String, String> {
-    let result = processor
-        .process_image(file_path)
-        .await
-        .map_err(|e| format!("图片处理失败: {}", e))?;
-    if result.text.trim().is_empty() {
-        return Err("图片中未识别到任何文本".to_string());
-    }
-    Ok(result.text)
-}
-
-async fn extract_docx_preview_text(
-    context: &RecompileContext,
-    file_path: &Path,
-) -> Result<String, String> {
-    let can_process = {
-        let guard = context
-            .image_processor
-            .read()
-            .map_err(|e| format!("获取图片处理器失败: {}", e))?;
-        guard.can_process_images()
-    };
-    if !can_process {
-        return Err("DOCX 内嵌 Visio 无法直接提取文字，且未配置 OCR 或多模态视觉模型".to_string());
-    }
-
-    let temp_dir = create_docx_preview_temp_dir(file_path)?;
-    let preview_paths =
-        crate::services::file_extractor::extract_docx_preview_images(file_path, &temp_dir)?;
-    let mut sections = Vec::new();
-    let mut errors = Vec::new();
-
-    for preview_path in preview_paths {
-        let preview_path_str = preview_path.to_string_lossy().to_string();
-        let processor = clone_image_processor(&context.image_processor)?;
-        match extract_image_text_with_processor(&preview_path_str, processor).await {
-            Ok(text) if !text.trim().is_empty() => {
-                sections.push(format!(
-                    "--- DOCX 内嵌 Visio 预览图：{} ---\n{}",
-                    preview_path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("preview"),
-                    text.trim()
-                ));
-            }
-            Ok(_) => errors.push(format!("{}: 未识别到文本", preview_path.display())),
-            Err(error) => errors.push(format!("{}: {}", preview_path.display(), error)),
-        }
-    }
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
-
-    if sections.is_empty() {
-        return Err(format!(
-            "DOCX 内嵌 Visio 预览图 OCR 失败：{}",
-            errors.join("；")
-        ));
-    }
-
-    Ok(sections.join("\n\n"))
-}
-
-async fn extract_text_with_docx_preview_fallback(
-    context: &RecompileContext,
-    path: &Path,
-) -> Result<String, String> {
-    match crate::services::file_extractor::extract_text(path) {
-        Ok(text) => Ok(text),
-        Err(error)
-            if is_docx_path(path)
-                && crate::services::file_extractor::is_unreadable_docx_embedded_object_error(
-                    &error,
-                ) =>
-        {
-            tracing::warn!("重编译读取 DOCX 失败，尝试内嵌 Visio 预览图 OCR: {}", error);
-            extract_docx_preview_text(context, path).await
-        }
-        Err(error) => Err(error),
-    }
-}
+use crate::services::docx_image_helpers::*;
 
 /// 获取知识编译开关状态
 #[tauri::command]
@@ -445,8 +323,9 @@ async fn execute_recompile(
         let resume_key = source_resume_key(&source.identity, &source.sha256);
         let title = source_title(&source.identity);
         let text = match extract_text_with_docx_preview_fallback(
-            &context,
+            &context.image_processor,
             Path::new(&source.storage_path),
+            "recompile",
         )
         .await
         {

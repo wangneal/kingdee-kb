@@ -143,7 +143,10 @@ export interface Template {
 // ─── Phase 4: 图像处理类型 ──────────────────────────────────
 
 /** OCR 提供商类型 */
-export type OcrProviderType = "baidu" | "tencent"
+export type OcrProviderType = "baidu" | "tencent" | "mistral"
+
+/** 图片处理四分类类型（可配置排除） */
+export type ImageCategory = "graph" | "text" | "table" | "image"
 
 /** LLM 协议类型 */
 export type LLMProtocol = "openai" | "anthropic" | "local"

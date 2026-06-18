@@ -400,6 +400,8 @@ pub fn run() {
             commands::llm_provider::get_ocr_config,
             commands::llm_provider::save_ocr_config,
             commands::llm_provider::clear_ocr_config,
+            commands::llm_provider::get_excluded_image_types,
+            commands::llm_provider::set_excluded_image_types,
             commands::llm_provider::set_default_api_key,
             commands::llm_provider::set_default_model,
             commands::llm_provider::probe_model_multimodal,

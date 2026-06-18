@@ -10,6 +10,18 @@ use crate::services::llm_providers::{
     ProviderPolicyConfig,
 };
 
+/// 解析前端传入的协议字符串 → LLMProtocol 枚举
+///
+/// 支持大小写不敏感（前端可能传 "OpenAI"/"openai"/"OPENAI"）
+fn parse_protocol_str(s: &str) -> Result<LLMProtocol, String> {
+    match s.to_lowercase().as_str() {
+        "openai" => Ok(LLMProtocol::OpenAI),
+        "anthropic" => Ok(LLMProtocol::Anthropic),
+        "local" => Ok(LLMProtocol::Local),
+        _ => Err(format!("不支持的协议: {}", s)),
+    }
+}
+
 // ─── LLM 供应商命令 ───
 
 /// 检查是否有已配置的 LLM 供应商
@@ -57,7 +69,7 @@ pub async fn set_provider_policy(
 ) -> Result<ProviderPolicyConfig, String> {
     let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.set_provider_policy(policy)?;
-    sync_image_processor(&state, &manager);
+    state.after_provider_change(&manager);
     Ok(manager.get_provider_policy())
 }
 
@@ -69,12 +81,8 @@ pub async fn fetch_llm_endpoint_models(
     base_url: String,
     api_key: Option<String>,
 ) -> Result<RemoteModelListResult, AppError> {
-    let protocol = match protocol.to_lowercase().as_str() {
-        "openai" => LLMProtocol::OpenAI,
-        "anthropic" => LLMProtocol::Anthropic,
-        "local" => LLMProtocol::Local,
-        _ => return Err(AppError::InvalidArgument(format!("不支持的协议: {}", protocol))),
-    };
+    let protocol = parse_protocol_str(&protocol)
+        .map_err(AppError::InvalidArgument)?;
     let api_key = api_key.unwrap_or_default();
 
     {
@@ -125,12 +133,7 @@ pub async fn add_llm_provider(
     api_keys: Vec<ApiKeyConfig>,
     models: Vec<ModelConfig>,
 ) -> Result<(), String> {
-    let protocol = match protocol.to_lowercase().as_str() {
-        "openai" => LLMProtocol::OpenAI,
-        "anthropic" => LLMProtocol::Anthropic,
-        "local" => LLMProtocol::Local,
-        _ => return Err(format!("不支持的协议: {}", protocol)),
-    };
+    let protocol = parse_protocol_str(&protocol)?;
 
     let provider = LLMProviderConfig {
         id,
@@ -147,8 +150,7 @@ pub async fn add_llm_provider(
     let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.add_provider(provider)?;
 
-    // 同步 ImageProcessor 的 LLM 配置
-    sync_image_processor(&state, &manager);
+    state.after_provider_change(&manager);
 
     Ok(())
 }
@@ -164,12 +166,7 @@ pub async fn update_llm_provider(
     api_keys: Vec<ApiKeyConfig>,
     models: Vec<ModelConfig>,
 ) -> Result<(), String> {
-    let protocol = match protocol.to_lowercase().as_str() {
-        "openai" => LLMProtocol::OpenAI,
-        "anthropic" => LLMProtocol::Anthropic,
-        "local" => LLMProtocol::Local,
-        _ => return Err(format!("不支持的协议: {}", protocol)),
-    };
+    let protocol = parse_protocol_str(&protocol)?;
 
     // 保留原有的 is_default 状态
     let is_default = {
@@ -195,8 +192,7 @@ pub async fn update_llm_provider(
     let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.update_provider(&id, provider)?;
 
-    // 同步 ImageProcessor 的 LLM 配置
-    sync_image_processor(&state, &manager);
+    state.after_provider_change(&manager);
 
     Ok(())
 }
@@ -207,8 +203,7 @@ pub async fn delete_llm_provider(state: State<'_, AppState>, id: String) -> Resu
     let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.delete_provider(&id)?;
 
-    // 同步 ImageProcessor 的 LLM 配置
-    sync_image_processor(&state, &manager);
+    state.after_provider_change(&manager);
 
     Ok(())
 }
@@ -223,8 +218,7 @@ pub async fn set_default_llm_provider(
     manager.assert_provider_allowed(&id, None)?;
     manager.set_default(&id)?;
 
-    // 同步 ImageProcessor 的 LLM 配置
-    sync_image_processor(&state, &manager);
+    state.after_provider_change(&manager);
 
     Ok(())
 }
@@ -238,8 +232,8 @@ pub async fn set_default_api_key(
 ) -> Result<(), String> {
     let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.set_default_api_key(&provider_id, &key_id)?;
-    // 同步 ImageProcessor 的 LLM 配置（默认 key 改了，ImageProcessor 必须跟着更新）
-    sync_image_processor(&state, &manager);
+    // 默认 key 改了，ImageProcessor 必须跟着更新
+    state.after_provider_change(&manager);
     Ok(())
 }
 
@@ -254,8 +248,8 @@ pub async fn set_default_model(
 ) -> Result<(), String> {
     let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
     manager.set_default_model(&provider_id, &model_id)?;
-    // 同步 ImageProcessor 的 LLM 配置（默认 model 改了，ImageProcessor 必须跟着更新）
-    sync_image_processor(&state, &manager);
+    // 默认 model 改了，ImageProcessor 必须跟着更新
+    state.after_provider_change(&manager);
     Ok(())
 }
 
@@ -285,11 +279,18 @@ pub async fn probe_model_multimodal(
         (provider, model.name, api_key)
     };
 
-    // 创建临时管理器进行探测
-    let temp_manager = crate::services::llm_providers::LLMProviderManager::new(&state.data_dir);
-    let is_multimodal = temp_manager
-        .probe_model_multimodal(&provider, &model_name, &api_key)
-        .await;
+    // 直接构造 HTTP 客户端进行探测（不再创建临时 Manager）
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+    let is_multimodal = crate::services::agent::llm_providers::probe::probe_model_multimodal(
+        &client,
+        &provider,
+        &model_name,
+        &api_key,
+    )
+    .await;
 
     // 持久化探测结果（成功或失败都写回，避免重复探测）
     {
@@ -318,17 +319,24 @@ pub async fn probe_all_providers(
         manager.list_providers().to_vec()
     };
 
-    // 创建临时管理器进行探测
-    let temp_manager = crate::services::llm_providers::LLMProviderManager::new(&state.data_dir);
+    // 直接构造 HTTP 客户端进行探测（不再创建临时 Manager）
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
     // 手动探测每个供应商的每个模型
     let mut results = Vec::new();
     for provider in &providers {
         let api_key = provider.get_default_key_value();
         for model in &provider.models {
-            let is_multimodal = temp_manager
-                .probe_model_multimodal(provider, &model.name, &api_key)
-                .await;
+            let is_multimodal = crate::services::agent::llm_providers::probe::probe_model_multimodal(
+                &client,
+                provider,
+                &model.name,
+                &api_key,
+            )
+            .await;
             results.push(ModelProbeResult {
                 provider_id: provider.id.clone(),
                 model_id: model.id.clone(),
@@ -383,6 +391,7 @@ pub async fn save_ocr_config(
     let provider_type = match provider.as_str() {
         "baidu" => OcrProviderType::Baidu,
         "tencent" => OcrProviderType::Tencent,
+        "mistral" => OcrProviderType::Mistral,
         _ => return Err(format!("不支持的 OCR 供应商: {}", provider)),
     };
 
@@ -403,15 +412,14 @@ pub async fn save_ocr_config(
 
     // 同步到运行时消费者（ImageProcessor）：业务侧 rig_agent/process_image
     // 读的是 ImageProcessor.ocr_config，不同步则 Settings 配的 OCR 凭证永不生效。
-    let ocr_provider = match provider_type {
-        OcrProviderType::Baidu => crate::services::image_processor::OcrProvider::Baidu,
-        OcrProviderType::Tencent => crate::services::image_processor::OcrProvider::Tencent,
-    };
+    let ocr_provider = crate::services::image_processor::OcrProvider::from_provider_type(&provider_type);
+    let base_url = ocr_provider.default_base_url();
     if let Ok(mut processor) = state.image_processor.write() {
         processor.set_ocr_config(crate::services::image_processor::OcrConfig {
             provider: ocr_provider,
             api_key,
             secret_key,
+            base_url,
         });
     }
     Ok(())
@@ -432,21 +440,39 @@ pub async fn clear_ocr_config(state: State<'_, AppState>) -> Result<(), String> 
     Ok(())
 }
 
-// ─── 辅助函数 ───
-
-/// 同步 ImageProcessor 的 LLM 配置
-fn sync_image_processor(
-    state: &AppState,
-    manager: &crate::services::llm_providers::LLMProviderManager,
-) {
-    if let Some(default) = manager.get_default_runtime_provider() {
-        let api_key = default.get_default_key_value();
-        let base_url = default.base_url.clone();
-        let model = default.get_default_model_name();
-        if let Ok(mut processor) = state.image_processor.write() {
-            processor.update_llm_config(api_key, base_url, model);
-        }
+/// 获取图片处理排除的类型（四分类 graph/text/table/image）
+#[tauri::command]
+pub async fn get_excluded_image_types(
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
+    let types = manager.get_excluded_image_types();
+    // 同步到运行时 ImageProcessor
+    if let Ok(mut processor) = state.image_processor.write() {
+        processor.set_excluded_image_types(types.clone());
     }
+    Ok(types)
+}
+
+/// 设置图片处理排除的类型
+#[tauri::command]
+pub async fn set_excluded_image_types(
+    state: State<'_, AppState>,
+    types: Vec<String>,
+) -> Result<(), String> {
+    {
+        let mut manager = state.llm_providers.write().map_err(|e| e.to_string())?;
+        manager.set_excluded_image_types(types)?;
+    }
+    // 同步到运行时 ImageProcessor
+    let types = {
+        let manager = state.llm_providers.read().map_err(|e| e.to_string())?;
+        manager.get_excluded_image_types()
+    };
+    if let Ok(mut processor) = state.image_processor.write() {
+        processor.set_excluded_image_types(types);
+    }
+    Ok(())
 }
 
 // ─── 响应类型 ───

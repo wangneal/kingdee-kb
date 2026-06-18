@@ -286,33 +286,8 @@ impl AppState {
         // 已配置用户：llm_providers.load() 已加载文件，立即从内存回填到 ImageProcessor
         {
             if let Ok(mgr) = llm_providers.read() {
-                if let Some(provider) = mgr.get_default_provider() {
-                    if let Ok(mut proc) = image_processor.write() {
-                        proc.update_llm_config(
-                            provider.get_default_key_value(),
-                            provider.base_url.clone(),
-                            provider.get_default_model_name(),
-                        );
-                    }
-                }
-                // 同步回填 OCR 配置：Settings 持久化在 LLMProviderManager，
-                // 业务侧读 ImageProcessor.ocr_config，首启必须回填否则永久 None。
-                if let Some(ocr) = mgr.get_ocr_config() {
-                    let ocr_provider = match ocr.provider {
-                        crate::services::llm_providers::OcrProviderType::Baidu => {
-                            crate::services::image_processor::OcrProvider::Baidu
-                        }
-                        crate::services::llm_providers::OcrProviderType::Tencent => {
-                            crate::services::image_processor::OcrProvider::Tencent
-                        }
-                    };
-                    if let Ok(mut proc) = image_processor.write() {
-                        proc.set_ocr_config(crate::services::image_processor::OcrConfig {
-                            provider: ocr_provider,
-                            api_key: ocr.api_key.clone(),
-                            secret_key: ocr.secret_key.clone(),
-                        });
-                    }
+                if let Ok(mut proc) = image_processor.write() {
+                    backfill_image_processor_from_manager(&mgr, &mut proc);
                 }
             }
         }
@@ -331,32 +306,8 @@ impl AppState {
                 LLMProviderManager::seed_default_async(&seed_arc).await;
                 // seed 完成后回填 ImageProcessor：解决"首启时 ImageProcessor 永远拿不到默认配置"
                 if let Ok(mgr) = seed_arc.read() {
-                    if let Some(provider) = mgr.get_default_provider() {
-                        if let Ok(mut proc) = img_arc.write() {
-                            proc.update_llm_config(
-                                provider.get_default_key_value(),
-                                provider.base_url.clone(),
-                                provider.get_default_model_name(),
-                            );
-                        }
-                    }
-                    // 同步回填 OCR 配置（与上面已配置用户路径保持一致）
-                    if let Some(ocr) = mgr.get_ocr_config() {
-                        let ocr_provider = match ocr.provider {
-                            crate::services::llm_providers::OcrProviderType::Baidu => {
-                                crate::services::image_processor::OcrProvider::Baidu
-                            }
-                            crate::services::llm_providers::OcrProviderType::Tencent => {
-                                crate::services::image_processor::OcrProvider::Tencent
-                            }
-                        };
-                        if let Ok(mut proc) = img_arc.write() {
-                            proc.set_ocr_config(crate::services::image_processor::OcrConfig {
-                                provider: ocr_provider,
-                                api_key: ocr.api_key.clone(),
-                                secret_key: ocr.secret_key.clone(),
-                            });
-                        }
+                    if let Ok(mut proc) = img_arc.write() {
+                        backfill_image_processor_from_manager(&mgr, &mut proc);
                     }
                 }
             });
@@ -594,6 +545,38 @@ impl AppState {
     }
 }
 
+/// 从 LLMProviderManager 当前状态回填到 ImageProcessor。
+///
+/// 调用时机：
+/// - 启动时 manager.load() 完成后（已配置用户路径）
+/// - 异步 seed_default_async 完成后（首启路径）
+///
+/// 抽取原因：两处回填逻辑必须保持完全一致，否则遗漏字段会导致 ImageProcessor
+/// 永久拿不到该配置（参见首启 OCR 永久 None bug 的同类问题）。
+fn backfill_image_processor_from_manager(
+    mgr: &crate::services::llm_providers::LLMProviderManager,
+    proc: &mut crate::services::image_processor::ImageProcessor,
+) {
+    if let Some(provider) = mgr.get_default_provider() {
+        proc.update_llm_config(
+            provider.get_default_key_value(),
+            provider.base_url.clone(),
+            provider.get_default_model_name(),
+        );
+    }
+    if let Some(ocr) = mgr.get_ocr_config() {
+        let ocr_provider = crate::services::image_processor::OcrProvider::from_provider_type(&ocr.provider);
+        let base_url = ocr_provider.default_base_url();
+        proc.set_ocr_config(crate::services::image_processor::OcrConfig {
+            provider: ocr_provider,
+            api_key: ocr.api_key.clone(),
+            secret_key: ocr.secret_key.clone(),
+            base_url,
+        });
+    }
+    proc.set_excluded_image_types(mgr.get_excluded_image_types());
+}
+
 impl AppState {
     /// 获取或异步懒加载 Reranker 服务
     pub fn get_or_init_reranker(&self) -> Option<Arc<RerankerService>> {
@@ -687,5 +670,37 @@ impl AppState {
     /// 远程模式下无需释放模型内存，保留方法以保持调用兼容性。
     pub fn unload_idle_embedding(&self, _timeout_secs: u64) -> bool {
         false
+    }
+
+    /// 供应商配置变更后同步到 ImageProcessor。
+    ///
+    /// 调用时机：所有 mutate LLMProviderManager 的命令函数尾部
+    ///（set_provider_policy / add_llm_provider / update_llm_provider /
+    /// delete_llm_provider / set_default_llm_provider / set_default_api_key /
+    /// set_default_model）。
+    ///
+    /// 抽取原因：原 7 处散落 `sync_image_processor` 调用极易遗漏，特别是新增
+    /// provider 操作时容易忘记同步，bug 复发风险高（参见历史"ImageProcessor
+    /// 永久拿不到默认配置" bug）。
+    ///
+    /// 当前职责：从 LLMProviderManager 当前状态更新 ImageProcessor 的 LLM 配置
+    ///（API key / base_url / model name）。
+    ///
+    /// 注：OCR 配置和 excluded_image_types 在 `save_ocr_config` /
+    /// `set_excluded_image_types` 等命令中各自直接同步，暂不统一（避免改动面
+    /// 扩散）；如未来 LLMProviderManager 变更需要同步这两类配置，可在此方法
+    /// 中扩展。
+    pub fn after_provider_change(
+        &self,
+        mgr: &crate::services::llm_providers::LLMProviderManager,
+    ) {
+        if let Some(default) = mgr.get_default_runtime_provider() {
+            let api_key = default.get_default_key_value();
+            let base_url = default.base_url.clone();
+            let model = default.get_default_model_name();
+            if let Ok(mut processor) = self.image_processor.write() {
+                processor.update_llm_config(api_key, base_url, model);
+            }
+        }
     }
 }

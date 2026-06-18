@@ -31,12 +31,14 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { useToast } from "@/components/Toast"
 import { useAsrConfig } from "@/contexts/AsrConfigContext"
+import { useKbCompilation } from "@/contexts/KbCompilationContext"
 import { TOAST_AUTO_DISMISS_MS } from "@/lib/constants"
 import { getKdclubToken, saveKdclubToken } from "@/lib/kdclub-commands"
 import {
   addLLMProvider,
   deleteLLMProvider,
   fetchLLMEndpointModels,
+  getExcludedImageTypes,
   getOcrConfig,
   getProviderPolicy,
   listLLMProviders,
@@ -44,6 +46,7 @@ import {
   probeModelMultimodal,
   saveOcrConfig,
   setDefaultLLMProvider,
+  setExcludedImageTypes,
   setProviderPolicy,
   updateLLMProvider,
 } from "@/lib/skill-commands"
@@ -55,7 +58,6 @@ import type {
   OcrProviderConfig,
   ProviderPolicyConfig,
 } from "@/lib/skill-types"
-import { useKbCompilation } from "@/contexts/KbCompilationContext"
 import {
   type AgentToolAuditRecord,
   type AgentToolAuditSummary,
@@ -84,10 +86,10 @@ import {
   readAgentToolOutput,
   removeSensitiveKeyword,
   revokeSkillPermissionRule,
+  type SensitiveKeyword,
+  type SensitiveKind,
   type SkillPermissionRuleInfo,
   saveAsrConfig,
-  type SensitiveKind,
-  type SensitiveKeyword,
   saveTencentMeetingToken,
   setAgentToolConfig,
   setEmbeddingModelConfig,
@@ -406,10 +408,14 @@ const MODEL_SPECS = [
 /** 敏感词类型的中文标签（用于列表展示） */
 function kindLabel(kind: SensitiveKind): string {
   switch (kind) {
-    case "name": return "人名"
-    case "term": return "术语"
-    case "code": return "编号"
-    case "custom": return "自定义"
+    case "name":
+      return "人名"
+    case "term":
+      return "术语"
+    case "code":
+      return "编号"
+    case "custom":
+      return "自定义"
   }
 }
 
@@ -471,7 +477,7 @@ export default function Settings() {
     } catch {
       localStorage.removeItem("model_spec_overrides")
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [toast.info])
 
   // 自动保存 kdclub token：走系统钥匙串，不留 localStorage 明文
   const handleSaveKdclubToken = useCallback(
@@ -540,7 +546,7 @@ export default function Settings() {
         setAsrSaving(false)
       }
     },
-    [tencentSecretId, tencentSecretKey],
+    [tencentSecretId, tencentSecretKey, reloadAsrConfig],
   )
 
   // 加载配置和统计信息，并轮询模型状态（自动加载可能仍在异步执行）
@@ -548,52 +554,53 @@ export default function Settings() {
     let cancelled = false
 
     // 立即加载配置，不等待模型
-    Promise.all([getStats().catch(() => null), getEmbeddingModelConfig().catch(() => ({} as EmbeddingModelConfig))]).then(
-      ([s, embeddingCfg]) => {
-        if (cancelled) return
-        setStats(s)
+    Promise.all([
+      getStats().catch(() => null),
+      getEmbeddingModelConfig().catch(() => ({}) as EmbeddingModelConfig),
+    ]).then(([s, embeddingCfg]) => {
+      if (cancelled) return
+      setStats(s)
 
-        // 从后端配置或 localStorage 加载 Embedding 供应商配置
-        // 后端配置优先（确保重启后配置不丢失）
-        let loaded = false
-        if (embeddingCfg.provider) {
-          try {
-            const backendConfig: EmbeddingProviderConfig = {
-              provider: embeddingCfg.provider as EmbeddingProviderType,
-              api_key: embeddingCfg.api_key ?? "",
-              base_url: embeddingCfg.base_url ?? "",
-              model_name: embeddingCfg.model_name ?? "",
-            }
-            setEmbeddingProviderConfig({ ...DEFAULT_EMBEDDING_PROVIDER_CONFIG, ...backendConfig })
-            loaded = true
-          } catch {
-            /* 后端配置解析失败，回退到 localStorage */
+      // 从后端配置或 localStorage 加载 Embedding 供应商配置
+      // 后端配置优先（确保重启后配置不丢失）
+      let loaded = false
+      if (embeddingCfg.provider) {
+        try {
+          const backendConfig: EmbeddingProviderConfig = {
+            provider: embeddingCfg.provider as EmbeddingProviderType,
+            api_key: embeddingCfg.api_key ?? "",
+            base_url: embeddingCfg.base_url ?? "",
+            model_name: embeddingCfg.model_name ?? "",
           }
+          setEmbeddingProviderConfig({ ...DEFAULT_EMBEDDING_PROVIDER_CONFIG, ...backendConfig })
+          loaded = true
+        } catch {
+          /* 后端配置解析失败，回退到 localStorage */
         }
-        if (!loaded) {
-          try {
-            const stored = localStorage.getItem(EMBEDDING_PROVIDER_STORAGE_KEY)
-            if (stored) {
-              const parsed = JSON.parse(stored) as EmbeddingProviderConfig
-              setEmbeddingProviderConfig({ ...DEFAULT_EMBEDDING_PROVIDER_CONFIG, ...parsed })
-            }
-          } catch {
-            /* 忽略解析错误 */
+      }
+      if (!loaded) {
+        try {
+          const stored = localStorage.getItem(EMBEDDING_PROVIDER_STORAGE_KEY)
+          if (stored) {
+            const parsed = JSON.parse(stored) as EmbeddingProviderConfig
+            setEmbeddingProviderConfig({ ...DEFAULT_EMBEDDING_PROVIDER_CONFIG, ...parsed })
           }
+        } catch {
+          /* 忽略解析错误 */
         }
+      }
 
-        // 从后端 keyring 加载 kdclub token（异步：异步回调里不能用 await）
-        getKdclubToken()
-          .then((kdclubStored) => {
-            if (kdclubStored) {
-              setKdclubToken(kdclubStored)
-            }
-          })
-          .catch(() => {
-            /* 忽略读取错误 */
-          })
-      },
-    )
+      // 从后端 keyring 加载 kdclub token（异步：异步回调里不能用 await）
+      getKdclubToken()
+        .then((kdclubStored) => {
+          if (kdclubStored) {
+            setKdclubToken(kdclubStored)
+          }
+        })
+        .catch(() => {
+          /* 忽略读取错误 */
+        })
+    })
 
     // 立即停止加载状态，不等待模型
     setLoading(false)
@@ -797,133 +804,130 @@ export default function Settings() {
               </div>
 
               {/* 供应商配置界面 */}
-              <>
-                <p className="mb-3 text-sm text-neutral-500">
-                  使用 {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].label}
-                  Embedding 服务。
-                  {embeddingProviderConfig.provider === "ollama"
-                    ? " 请确保 Ollama 已启动并拉取 embedding 模型。"
-                    : " 请填写 API Key 和模型配置后保存。"}
-                </p>
+              <p className="mb-3 text-sm text-neutral-500">
+                使用 {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].label}
+                Embedding 服务。
+                {embeddingProviderConfig.provider === "ollama"
+                  ? " 请确保 Ollama 已启动并拉取 embedding 模型。"
+                  : " 请填写 API Key 和模型配置后保存。"}
+              </p>
 
-                  <div className="space-y-3">
-                    {/* Base URL 配置 */}
-                    <div>
-                      <div className="mb-1.5 flex items-center gap-2">
-                        <Server className="h-4 w-4 text-neutral-400" />
-                        <span className="text-sm font-medium text-neutral-700">API Base URL</span>
-                      </div>
+              <div className="space-y-3">
+                {/* Base URL 配置 */}
+                <div>
+                  <div className="mb-1.5 flex items-center gap-2">
+                    <Server className="h-4 w-4 text-neutral-400" />
+                    <span className="text-sm font-medium text-neutral-700">API Base URL</span>
+                  </div>
+                  <input
+                    type="text"
+                    value={embeddingProviderConfig.base_url}
+                    onChange={(e) =>
+                      setEmbeddingProviderConfig((c) => ({ ...c, base_url: e.target.value }))
+                    }
+                    onBlur={() => handleSaveEmbeddingProviderConfig()}
+                    placeholder={EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].baseUrl}
+                    className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+                  />
+                </div>
+
+                {/* API Key 配置（仅需要 API Key 的供应商显示） */}
+                {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].requiresApiKey && (
+                  <div>
+                    <div className="mb-1.5 flex items-center gap-2">
+                      <Key className="h-4 w-4 text-neutral-400" />
+                      <span className="text-sm font-medium text-neutral-700">API Key</span>
+                    </div>
+                    <div className="relative flex items-center">
                       <input
-                        type="text"
-                        value={embeddingProviderConfig.base_url}
+                        type={showEmbeddingApiKey ? "text" : "password"}
+                        value={embeddingProviderConfig.api_key}
                         onChange={(e) =>
-                          setEmbeddingProviderConfig((c) => ({ ...c, base_url: e.target.value }))
+                          setEmbeddingProviderConfig((c) => ({ ...c, api_key: e.target.value }))
                         }
                         onBlur={() => handleSaveEmbeddingProviderConfig()}
-                        placeholder={EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].baseUrl}
-                        className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+                        placeholder="输入 API Key..."
+                        className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 pr-10 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
                       />
+                      <button
+                        type="button"
+                        onClick={() => setShowEmbeddingApiKey((v) => !v)}
+                        className="absolute right-2 text-neutral-400 hover:text-neutral-600 transition-colors"
+                        tabIndex={-1}
+                        aria-label={showEmbeddingApiKey ? "隐藏 API Key" : "显示 API Key"}
+                      >
+                        {showEmbeddingApiKey ? (
+                          <EyeOff className="h-4 w-4" />
+                        ) : (
+                          <Eye className="h-4 w-4" />
+                        )}
+                      </button>
                     </div>
-
-                    {/* API Key 配置（仅需要 API Key 的供应商显示） */}
-                    {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].requiresApiKey && (
-                    <div>
-                      <div className="mb-1.5 flex items-center gap-2">
-                        <Key className="h-4 w-4 text-neutral-400" />
-                        <span className="text-sm font-medium text-neutral-700">API Key</span>
-                      </div>
-                      <div className="relative flex items-center">
-                        <input
-                          type={showEmbeddingApiKey ? "text" : "password"}
-                          value={embeddingProviderConfig.api_key}
-                          onChange={(e) =>
-                            setEmbeddingProviderConfig((c) => ({ ...c, api_key: e.target.value }))
-                          }
-                          onBlur={() => handleSaveEmbeddingProviderConfig()}
-                          placeholder="输入 API Key..."
-                          className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 pr-10 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowEmbeddingApiKey((v) => !v)}
-                          className="absolute right-2 text-neutral-400 hover:text-neutral-600 transition-colors"
-                          tabIndex={-1}
-                          aria-label={showEmbeddingApiKey ? "隐藏 API Key" : "显示 API Key"}
-                        >
-                          {showEmbeddingApiKey ? (
-                            <EyeOff className="h-4 w-4" />
-                          ) : (
-                            <Eye className="h-4 w-4" />
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                    )}
-
-                    {/* 模型名称 */}
-                    <div>
-                      <div className="mb-1.5 flex items-center gap-2">
-                        <Cpu className="h-4 w-4 text-neutral-400" />
-                        <span className="text-sm font-medium text-neutral-700">模型名称</span>
-                      </div>
-                      <input
-                        type="text"
-                        list={`embedding-models-${embeddingProviderConfig.provider}`}
-                        value={embeddingProviderConfig.model_name}
-                        onChange={(e) =>
-                          setEmbeddingProviderConfig((c) => ({ ...c, model_name: e.target.value }))
-                        }
-                        onBlur={() => handleSaveEmbeddingProviderConfig()}
-                        placeholder="选择或输入模型名称"
-                        className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-                      />
-                      <datalist id={`embedding-models-${embeddingProviderConfig.provider}`}>
-                        {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].models.map((m) => (
-                          <option key={m} value={m} />
-                        ))}
-                      </datalist>
-                    </div>
-
-                    {/* 模型预设按钮 */}
-                    {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].models.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].models.map((m) => (
-                          <button
-                            key={m}
-                            type="button"
-                            onClick={() => {
-                              const nextConfig = { ...embeddingProviderConfig, model_name: m }
-                              setEmbeddingProviderConfig(nextConfig)
-                              handleSaveEmbeddingProviderConfig(nextConfig)
-                            }}
-                            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                              embeddingProviderConfig.model_name === m
-                                ? "bg-[#1A6BD8] text-white"
-                                : "bg-neutral-100 text-neutral-600 hover:bg-neutral-200"
-                            }`}
-                          >
-                            {m}
-                          </button>
-                        ))}
-                      </div>
-                    )}
                   </div>
+                )}
 
-                  {/* 自动保存状态提示 */}
-                  <div className="mt-4 flex items-center gap-3">
-                    {embeddingProviderSaving ? (
-                      <span className="flex items-center gap-1 text-xs text-neutral-400">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        自动保存中...
-                      </span>
-                    ) : embeddingProviderSaveMsg ? (
-                      <span className="text-xs text-green-600">{embeddingProviderSaveMsg}</span>
-                    ) : null}
+                {/* 模型名称 */}
+                <div>
+                  <div className="mb-1.5 flex items-center gap-2">
+                    <Cpu className="h-4 w-4 text-neutral-400" />
+                    <span className="text-sm font-medium text-neutral-700">模型名称</span>
                   </div>
-                </>
+                  <input
+                    type="text"
+                    list={`embedding-models-${embeddingProviderConfig.provider}`}
+                    value={embeddingProviderConfig.model_name}
+                    onChange={(e) =>
+                      setEmbeddingProviderConfig((c) => ({ ...c, model_name: e.target.value }))
+                    }
+                    onBlur={() => handleSaveEmbeddingProviderConfig()}
+                    placeholder="选择或输入模型名称"
+                    className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
+                  />
+                  <datalist id={`embedding-models-${embeddingProviderConfig.provider}`}>
+                    {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].models.map((m) => (
+                      <option key={m} value={m} />
+                    ))}
+                  </datalist>
+                </div>
+
+                {/* 模型预设按钮 */}
+                {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].models.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {EMBEDDING_PROVIDERS[embeddingProviderConfig.provider].models.map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => {
+                          const nextConfig = { ...embeddingProviderConfig, model_name: m }
+                          setEmbeddingProviderConfig(nextConfig)
+                          handleSaveEmbeddingProviderConfig(nextConfig)
+                        }}
+                        className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                          embeddingProviderConfig.model_name === m
+                            ? "bg-[#1A6BD8] text-white"
+                            : "bg-neutral-100 text-neutral-600 hover:bg-neutral-200"
+                        }`}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* 自动保存状态提示 */}
+              <div className="mt-4 flex items-center gap-3">
+                {embeddingProviderSaving ? (
+                  <span className="flex items-center gap-1 text-xs text-neutral-400">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    自动保存中...
+                  </span>
+                ) : embeddingProviderSaveMsg ? (
+                  <span className="text-xs text-green-600">{embeddingProviderSaveMsg}</span>
+                ) : null}
+              </div>
             </div>
           </section>
-
         </div>
       )}
 
@@ -2711,17 +2715,24 @@ function ProviderFormDialog({
     // 1. 已有配置优先
     const existing = provider?.models.find((m) => m.name === modelName)
     if (existing?.context_window && existing?.max_output_tokens) {
-      return { context_window: existing.context_window, max_output_tokens: existing.max_output_tokens }
+      return {
+        context_window: existing.context_window,
+        max_output_tokens: existing.max_output_tokens,
+      }
     }
     // 2. 内置规格
     const builtin = MODEL_SPECS.find((s) => s.id === modelName)
-    if (builtin) return { context_window: builtin.context_window, max_output_tokens: builtin.max_output }
+    if (builtin)
+      return { context_window: builtin.context_window, max_output_tokens: builtin.max_output }
     // 3. 默认值
     return { context_window: 128000, max_output_tokens: 8192 }
   }
   const [modelSpecs, setModelSpecs] = useState<Record<string, ModelSpecEntry>>(() => {
     const initial: Record<string, ModelSpecEntry> = {}
-    const names = initialModelsText.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+    const names = initialModelsText
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean)
     for (const n of names) initial[n] = getModelSpecDefault(n)
     return initial
   })
@@ -2729,7 +2740,10 @@ function ProviderFormDialog({
   // textarea 变化时同步 modelSpecs
   const handleModelsTextChange = (text: string) => {
     setModelsText(text)
-    const names = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+    const names = text
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean)
     setModelSpecs((prev) => {
       const next: Record<string, ModelSpecEntry> = {}
       for (const n of names) {
@@ -3036,8 +3050,12 @@ function ProviderFormDialog({
                   <thead>
                     <tr className="border-b border-neutral-200 text-left text-neutral-500">
                       <th className="pb-1.5 pr-2 font-medium">模型</th>
-                      <th className="pb-1.5 pr-2 font-medium" style={{ width: "100px" }}>上下文窗口</th>
-                      <th className="pb-1.5 font-medium" style={{ width: "100px" }}>最大输出</th>
+                      <th className="pb-1.5 pr-2 font-medium" style={{ width: "100px" }}>
+                        上下文窗口
+                      </th>
+                      <th className="pb-1.5 font-medium" style={{ width: "100px" }}>
+                        最大输出
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -3050,7 +3068,10 @@ function ProviderFormDialog({
                             value={spec.context_window}
                             onChange={(e) => {
                               const val = Number(e.target.value) || 128000
-                              setModelSpecs((prev) => ({ ...prev, [modelName]: { ...prev[modelName], context_window: val } }))
+                              setModelSpecs((prev) => ({
+                                ...prev,
+                                [modelName]: { ...prev[modelName], context_window: val },
+                              }))
                             }}
                             className="w-full rounded border border-neutral-200 px-1.5 py-0.5 text-xs outline-none focus:border-[#1A6BD8]"
                           />
@@ -3061,7 +3082,10 @@ function ProviderFormDialog({
                             value={spec.max_output_tokens}
                             onChange={(e) => {
                               const val = Number(e.target.value) || 8192
-                              setModelSpecs((prev) => ({ ...prev, [modelName]: { ...prev[modelName], max_output_tokens: val } }))
+                              setModelSpecs((prev) => ({
+                                ...prev,
+                                [modelName]: { ...prev[modelName], max_output_tokens: val },
+                              }))
                             }}
                             className="w-full rounded border border-neutral-200 px-1.5 py-0.5 text-xs outline-none focus:border-[#1A6BD8]"
                           />
@@ -3163,16 +3187,19 @@ function KnowledgeCompilationCard() {
   const { enabled, loading, saving, setEnabled } = useKbCompilation()
   const [message, setMessage] = useState<string | null>(null)
 
-  const handleToggle = useCallback(async (next: boolean) => {
-    setMessage(null)
-    try {
-      await setEnabled(next)
-      setMessage(next ? "已开启知识编译" : "已关闭知识编译")
-      setTimeout(() => setMessage(null), TOAST_AUTO_DISMISS_MS)
-    } catch (error) {
-      setMessage(`保存失败：${error instanceof Error ? error.message : String(error)}`)
-    }
-  }, [setEnabled])
+  const handleToggle = useCallback(
+    async (next: boolean) => {
+      setMessage(null)
+      try {
+        await setEnabled(next)
+        setMessage(next ? "已开启知识编译" : "已关闭知识编译")
+        setTimeout(() => setMessage(null), TOAST_AUTO_DISMISS_MS)
+      } catch (error) {
+        setMessage(`保存失败：${error instanceof Error ? error.message : String(error)}`)
+      }
+    },
+    [setEnabled],
+  )
 
   return (
     <section className="rounded-xl border border-neutral-200 bg-white">
@@ -3222,6 +3249,12 @@ function KnowledgeCompilationCard() {
   )
 }
 
+const OCR_PROVIDER_LABEL: Record<string, string> = {
+  baidu: "百度",
+  tencent: "腾讯",
+  mistral: "Mistral",
+}
+
 function OcrConfigCard() {
   const [ocrConfig, setOcrConfig] = useState<OcrProviderConfig | null>(null)
   const [loading, setLoading] = useState(true)
@@ -3268,7 +3301,7 @@ function OcrConfigCard() {
       try {
         await saveOcrConfig({
           id: ocrConfig?.id ?? crypto.randomUUID(),
-          name: n.trim() || `${p === "baidu" ? "百度" : "腾讯"} OCR`,
+          name: n.trim() || `${OCR_PROVIDER_LABEL[p] ?? p} OCR`,
           provider: p,
           apiKey: key.trim(),
           secretKey: secret.trim() || undefined,
@@ -3343,6 +3376,7 @@ function OcrConfigCard() {
             >
               <option value="baidu">百度 OCR（推荐，中文最强）</option>
               <option value="tencent">腾讯 OCR</option>
+              <option value="mistral">Mistral OCR（表格/图表/版式最强）</option>
             </select>
           </div>
 
@@ -3356,7 +3390,7 @@ function OcrConfigCard() {
               value={name}
               onChange={(e) => setName(e.target.value)}
               onBlur={() => handleSave()}
-              placeholder={provider === "baidu" ? "百度 OCR" : "腾讯 OCR"}
+              placeholder={`${OCR_PROVIDER_LABEL[provider] ?? provider} OCR`}
               className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
             />
           </div>
@@ -3408,8 +3442,70 @@ function OcrConfigCard() {
               />
             </div>
           )}
+
+          <ImageTypeExclusion />
         </div>
       </div>
     </section>
+  )
+}
+
+const IMAGE_CATEGORY_OPTIONS: { value: string; label: string; desc: string }[] = [
+  { value: "image", label: "普通图像", desc: "照片/Logo/装饰图" },
+  { value: "graph", label: "图表", desc: "流程图/架构图" },
+  { value: "table", label: "表格", desc: "表格截图" },
+  { value: "text", label: "文字截图", desc: "纯文字图片" },
+]
+
+function ImageTypeExclusion() {
+  const [excluded, setExcluded] = useState<string[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    getExcludedImageTypes()
+      .then(setExcluded)
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  const toggle = async (type: string) => {
+    const next = excluded.includes(type) ? excluded.filter((t) => t !== type) : [...excluded, type]
+    setExcluded(next)
+    try {
+      await setExcludedImageTypes(next)
+    } catch (err) {
+      setExcluded(excluded)
+      console.error("设置图片排除类型失败", err)
+    }
+  }
+
+  if (loading) return null
+
+  return (
+    <div className="rounded-lg border border-neutral-200 bg-neutral-50/50 p-3">
+      <p className="mb-2 text-xs font-medium text-neutral-600">图片处理排除类型</p>
+      <p className="mb-2.5 text-[11px] text-neutral-400">
+        勾选的类型在导入时跳过处理，减少噪声和成本（默认排除装饰图）
+      </p>
+      <div className="grid grid-cols-2 gap-2">
+        {IMAGE_CATEGORY_OPTIONS.map((opt) => (
+          <label
+            key={opt.value}
+            className="flex cursor-pointer items-start gap-2 rounded-md border border-neutral-200 bg-white px-2.5 py-1.5 hover:border-[#1A6BD8]/40"
+          >
+            <input
+              type="checkbox"
+              checked={excluded.includes(opt.value)}
+              onChange={() => toggle(opt.value)}
+              className="mt-0.5 h-3.5 w-3.5 accent-[#1A6BD8]"
+            />
+            <div className="min-w-0">
+              <div className="text-xs font-medium text-neutral-700">{opt.label}</div>
+              <div className="text-[10px] text-neutral-400">{opt.desc}</div>
+            </div>
+          </label>
+        ))}
+      </div>
+    </div>
   )
 }

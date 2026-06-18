@@ -8,6 +8,7 @@ pub mod security;
 pub mod common;
 pub mod harness;
 pub mod verification;
+pub mod docx_image_helpers;
 
 // Re-export submodules to maintain exact path compatibility (e.g. crate::services::metadata::MetadataStore)
 pub use agent::agent_event;

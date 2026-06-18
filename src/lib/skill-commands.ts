@@ -215,3 +215,13 @@ export async function saveOcrConfig(config: {
 export async function clearOcrConfig(): Promise<void> {
   return invoke("clear_ocr_config")
 }
+
+/** 获取图片处理排除的类型（四分类 graph/text/table/image） */
+export async function getExcludedImageTypes(): Promise<string[]> {
+  return invoke("get_excluded_image_types")
+}
+
+/** 设置图片处理排除的类型 */
+export async function setExcludedImageTypes(types: string[]): Promise<void> {
+  return invoke("set_excluded_image_types", { types })
+}
