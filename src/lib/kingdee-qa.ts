@@ -9,6 +9,8 @@
  * 并删除，避免明文遗留。
  */
 
+import { formatAppError } from "@/lib/app-error"
+
 // ─── 类型定义 ──────────────────────────────────────────────
 
 export interface KingdeeProduct {
@@ -313,7 +315,7 @@ export async function* streamKingdeeQA(
     }
     yield {
       type: "error",
-      error: `请求异常: ${err instanceof Error ? err.message : String(err)}`,
+      error: `请求异常: ${formatAppError(err)}`,
     }
   }
 }

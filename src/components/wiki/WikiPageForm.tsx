@@ -5,6 +5,7 @@
  * 复用现有 `createWikiPage` / `updateWikiPage` Tauri 命令。
  */
 import { useState } from "react"
+import { formatAppError } from "@/lib/app-error"
 import { Loader2, X } from "lucide-react"
 import {
   createWikiPage,
@@ -100,7 +101,7 @@ export default function WikiPageForm({
       }
       onSaved(saved)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(formatAppError(err))
     } finally {
       setSaving(false)
     }

@@ -9,6 +9,7 @@ import {
   Trash2,
 } from "lucide-react"
 import { useMemo, useState } from "react"
+import { formatAppError } from "@/lib/app-error"
 import { DestructiveConfirmDialog } from "@/components/DestructiveConfirmDialog"
 import { useProject } from "@/contexts/ProjectContext"
 import {
@@ -56,7 +57,7 @@ export default function ProjectSwitcher() {
       setName("")
       setOpen(false)
     } catch (err) {
-      setActionError(`新建项目失败：${err instanceof Error ? err.message : String(err)}`)
+      setActionError(`新建项目失败：${formatAppError(err)}`)
     } finally {
       setCreating(false)
     }
@@ -71,7 +72,7 @@ export default function ProjectSwitcher() {
       await archiveProject(projectId)
       await refreshProjects()
     } catch (err) {
-      setActionError(`归档项目失败：${err instanceof Error ? err.message : String(err)}`)
+      setActionError(`归档项目失败：${formatAppError(err)}`)
     }
   }
 
@@ -81,7 +82,7 @@ export default function ProjectSwitcher() {
       await restoreProject(projectId)
       await refreshProjects()
     } catch (err) {
-      setActionError(`恢复项目失败：${err instanceof Error ? err.message : String(err)}`)
+      setActionError(`恢复项目失败：${formatAppError(err)}`)
     }
   }
 
@@ -102,7 +103,7 @@ export default function ProjectSwitcher() {
         }
       }
     } catch (err) {
-      setActionError(`删除项目失败：${err instanceof Error ? err.message : String(err)}`)
+      setActionError(`删除项目失败：${formatAppError(err)}`)
     }
   }
 

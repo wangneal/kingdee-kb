@@ -1,14 +1,7 @@
-import {
-  createContext,
-  type ReactNode,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react"
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { formatAppError } from "@/lib/app-error"
 import { ensureDefaultProject, listProjects, type ProjectSummary } from "@/lib/project-commands"
+import { createCtxTyped } from "@/lib/create-ctx"
 
 const STORAGE_KEY = "kingdee_kb_active_project"
 
@@ -24,7 +17,8 @@ interface ProjectContextValue {
   refreshProjects: () => Promise<void>
 }
 
-const ProjectContext = createContext<ProjectContextValue | null>(null)
+// Factory creates the Context + typed hook; displayName gives clear error messages
+const [ProjectContext, useProject] = createCtxTyped<ProjectContextValue>("Project")
 
 export function ProjectProvider({ children }: { children: ReactNode }) {
   const [currentProjectId, setCurrentProjectIdState] = useState<number | null>(() => {
@@ -131,8 +125,4 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   )
 }
 
-export function useProject(): ProjectContextValue {
-  const ctx = useContext(ProjectContext)
-  if (!ctx) throw new Error("useProject must be used within ProjectProvider")
-  return ctx
-}
+export { useProject }

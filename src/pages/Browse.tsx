@@ -19,6 +19,7 @@ import WikiLinkEditor from "@/components/wiki/WikiLinkEditor"
 import WikiPageForm from "@/components/wiki/WikiPageForm"
 import { useProject } from "@/contexts/ProjectContext"
 import { TOAST_AUTO_DISMISS_MS } from "@/lib/constants"
+import { formatAppError } from "@/lib/app-error"
 import {
   approveAutoWikiPages,
   approveWikiPage,
@@ -38,10 +39,6 @@ import {
   type WikiPage,
   type WikiPageBrief,
 } from "@/lib/tauri-commands"
-
-function formatOperationError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
 
 export default function Browse() {
   const { currentProjectId } = useProject()
@@ -136,7 +133,7 @@ export default function Browse() {
       setFeedbackMessage("文档已删除")
       void refreshDocuments()
     } catch (err) {
-      setFeedbackMessage(`删除失败：${formatOperationError(err)}`)
+      setFeedbackMessage(`删除失败：${formatAppError(err)}`)
     }
   }
 
@@ -223,7 +220,7 @@ export default function Browse() {
         succeeded: 0,
         failed: [],
         completed_source_keys: [],
-        message: `重编译失败：${error instanceof Error ? error.message : String(error)}`,
+        message: `重编译失败：${formatAppError(error)}`,
       })
     }
   }, [currentProjectId])
@@ -250,7 +247,7 @@ export default function Browse() {
         succeeded: 0,
         failed: [],
         completed_source_keys: [],
-        message: `强制重编译失败：${error instanceof Error ? error.message : String(error)}`,
+        message: `强制重编译失败：${formatAppError(error)}`,
       })
     }
   }, [currentProjectId])
@@ -291,7 +288,7 @@ export default function Browse() {
         setNeighbors([])
       }
     } catch (error) {
-      setFeedbackMessage(`自动批准失败：${error instanceof Error ? error.message : String(error)}`)
+      setFeedbackMessage(`自动批准失败：${formatAppError(error)}`)
     } finally {
       setAutoApproving(false)
     }
@@ -349,7 +346,7 @@ export default function Browse() {
       await refreshWikiPages()
       setFeedbackMessage(`已删除 ${count} 个 Wiki 页面`)
     } catch (error) {
-      setFeedbackMessage(`批量删除失败：${formatOperationError(error)}`)
+      setFeedbackMessage(`批量删除失败：${formatAppError(error)}`)
     }
   }, [selectedIds, selectedWiki, refreshWikiPages])
 
@@ -363,7 +360,7 @@ export default function Browse() {
       await refreshWikiPages()
       setFeedbackMessage("候选内容已批准")
     } catch (error) {
-      setFeedbackMessage(`批准失败：${formatOperationError(error)}`)
+      setFeedbackMessage(`批准失败：${formatAppError(error)}`)
     }
   }, [selectedWiki, refreshWikiPages])
 
@@ -377,7 +374,7 @@ export default function Browse() {
       await refreshWikiPages()
       setFeedbackMessage("候选内容已拒绝")
     } catch (error) {
-      setFeedbackMessage(`拒绝失败：${formatOperationError(error)}`)
+      setFeedbackMessage(`拒绝失败：${formatAppError(error)}`)
     }
   }, [selectedWiki, refreshWikiPages])
 
@@ -397,7 +394,7 @@ export default function Browse() {
       await refreshWikiPages()
       setFeedbackMessage("Wiki 页面已删除")
     } catch (error) {
-      setFeedbackMessage(`删除失败：${formatOperationError(error)}`)
+      setFeedbackMessage(`删除失败：${formatAppError(error)}`)
     }
   }, [selectedWiki, refreshWikiPages])
 

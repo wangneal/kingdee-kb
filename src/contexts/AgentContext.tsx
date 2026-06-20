@@ -9,6 +9,12 @@ import {
 } from "react"
 import { formatAppError, parseAppError } from "@/lib/app-error"
 import {
+  copySlot,
+  createEventBuffer,
+  createEventHandlerMap,
+  resolveSlotId,
+} from "@/lib/event-buffer"
+import {
   type AttachmentInfo,
   agentChat,
   answerQuestion,
@@ -16,7 +22,6 @@ import {
   type ClarificationPayload,
   cancelAgentStream,
   listenAgentEvents,
-  type PlanStep,
   rejectQuestion,
   runVerification,
 } from "@/lib/tauri-commands"
@@ -283,6 +288,67 @@ export function useAgent(): AgentContextValue {
   return ctx
 }
 
+/**
+ * Apply buffered text/thinking entries to slot state.
+ * Called by the rAF flush when non-streaming events arrive.
+ */
+function applyBufferToSlots(
+  entries: Map<string, { text: string; thinking: string }>,
+  cancelledSlots: { current: Set<string> },
+  updateSlots: (updater: (prev: Map<string, SlotInternal>) => Map<string, SlotInternal>) => void,
+  nextId: () => string,
+) {
+  if (entries.size === 0) return
+
+  updateSlots((prev) => {
+    const next = new Map(prev)
+    for (const [sid, buf] of entries) {
+      if (cancelledSlots.current.has(sid)) continue
+      const internal = next.get(sid)
+      if (!internal) continue
+
+      const slot: AgentSlot = {
+        ...internal.slot,
+        currentTrace: { ...internal.slot.currentTrace },
+        messages: [...internal.slot.messages],
+      }
+
+      if (buf.text) {
+        const last = slot.messages[slot.messages.length - 1]
+        if (last && last.role === "assistant" && last.streaming) {
+          slot.messages[slot.messages.length - 1] = {
+            ...last,
+            content: last.content + buf.text,
+            statusText: undefined,
+          }
+        } else {
+          slot.messages = [
+            ...slot.messages,
+            { id: nextId(), role: "assistant", content: buf.text, streaming: true },
+          ]
+        }
+      }
+
+      if (buf.thinking) {
+        slot.currentTrace = {
+          ...slot.currentTrace,
+          thinking: slot.currentTrace.thinking + buf.thinking,
+        }
+        const last = slot.messages[slot.messages.length - 1]
+        if (last && last.role === "assistant" && last.streaming && !last.content) {
+          slot.messages[slot.messages.length - 1] = {
+            ...last,
+            statusText: "正在思考并组织回答...",
+          }
+        }
+      }
+
+      next.set(sid, { slot, latestToolName: internal.latestToolName })
+    }
+    return next
+  })
+}
+
 // ── 内部类型 ──────────────────────────────────────────────────────────
 
 interface SlotInternal {
@@ -353,326 +419,114 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     let unsub: (() => void) | null = null
     let cancelled = false
 
-    // 流式事件缓冲：text_delta/thinking 积累后 rAF 批量刷新，避免逐 token 触发 React 重渲染
-    const eventBuffer = new Map<string, { text: string; thinking: string }>()
-    let rafScheduled = false
-
-    const flushBuffer = () => {
-      rafScheduled = false
-      if (eventBuffer.size === 0) return
-      const snapshot = new Map(eventBuffer)
-      eventBuffer.clear()
-
-      updateSlots((prev) => {
-        const next = new Map(prev)
-        for (const [sid, buf] of snapshot) {
-          if (cancelledSlots.current.has(sid)) continue
-          const internal = next.get(sid)
-          if (!internal) continue
-          const slot: AgentSlot = {
-            ...internal.slot,
-            currentTrace: { ...internal.slot.currentTrace },
-            messages: [...internal.slot.messages],
-          }
-          if (buf.text) {
-            const last = slot.messages[slot.messages.length - 1]
-            if (last && last.role === "assistant" && last.streaming) {
-              slot.messages[slot.messages.length - 1] = {
-                ...last,
-                content: last.content + buf.text,
-                statusText: undefined,
-              }
-            } else {
-              slot.messages = [
-                ...slot.messages,
-                { id: nextId(), role: "assistant", content: buf.text, streaming: true },
-              ]
-            }
-          }
-          if (buf.thinking) {
-            slot.currentTrace = {
-              ...slot.currentTrace,
-              thinking: slot.currentTrace.thinking + buf.thinking,
-            }
-            const last = slot.messages[slot.messages.length - 1]
-            if (last && last.role === "assistant" && last.streaming && !last.content) {
-              slot.messages[slot.messages.length - 1] = {
-                ...last,
-                statusText: "正在思考并组织回答...",
-              }
-            }
-          }
-          next.set(sid, { slot, latestToolName: internal.latestToolName })
-        }
-        return next
-      })
-    }
-
-    let rafId: number | null = null
-    const scheduleFlush = () => {
-      if (!rafScheduled) {
-        rafScheduled = true
-        rafId = requestAnimationFrame(() => flushBuffer())
-      }
-    }
+    // Create the rAF-based event buffer
+    const eventBuf = createEventBuffer()
 
     listenAgentEvents((event) => {
-      const eventSessionId = event.session_id || event.sessionId
-      if (!eventSessionId) return
-      const slotId = sessionToSlot.current.get(eventSessionId)
+      // Early-return guard: resolve slot id and check cancellation
+      const slotId = resolveSlotId(event, sessionToSlot, cancelledSlots)
       if (!slotId) return
-      if (cancelledSlots.current.has(slotId)) return
 
-      // text_delta / thinking → 入缓冲，rAF 批量 flush
+      // Streaming events → accumulate in buffer, schedule rAF flush
       if (event.type === "text_delta") {
-        const buf = eventBuffer.get(slotId) ?? { text: "", thinking: "" }
+        const buf = eventBuf.buffer.get(slotId) ?? { text: "", thinking: "" }
         buf.text += event.content
-        eventBuffer.set(slotId, buf)
-        scheduleFlush()
+        eventBuf.buffer.set(slotId, buf)
+        eventBuf.schedule()
         return
       }
 
       if (event.type === "thinking") {
-        const buf = eventBuffer.get(slotId) ?? { text: "", thinking: "" }
+        const buf = eventBuf.buffer.get(slotId) ?? { text: "", thinking: "" }
         buf.thinking += event.content
-        eventBuffer.set(slotId, buf)
-        scheduleFlush()
+        eventBuf.buffer.set(slotId, buf)
+        eventBuf.schedule()
         return
       }
 
-      // 非流式事件 → 先 flush 缓冲，再立即处理
-      if (rafScheduled) {
-        rafScheduled = false
-        flushBuffer()
+      // Non-streaming → flush buffer first, then dispatch
+      if (eventBuf.rafScheduled) {
+        eventBuf.rafScheduled = false
+        eventBuf.flush((entries) => {
+          applyBufferToSlots(entries, cancelledSlots, updateSlots, nextId)
+        })
       }
+
+      // Dispatch through typed handler map
+      const handlerMap = createEventHandlerMap({
+        nextId,
+        extractSources: extractSourcesFromToolResult,
+        summarizeTool: summarizeToolResult,
+        extractFiles: extractFilesFromToolResult,
+        showLlmKeyErrorRef,
+      })
 
       updateSlots((prev) => {
         const next = new Map(prev)
         const internal = next.get(slotId)
         if (!internal) return prev
 
-        const slot: AgentSlot = {
-          ...internal.slot,
-          currentTrace: { ...internal.slot.currentTrace },
-          messages: [...internal.slot.messages],
-        }
-        let toolName = internal.latestToolName
-
-        switch (event.type) {
-          case "tool_call":
-            toolName = event.name
-            slot.currentTrace = {
-              ...slot.currentTrace,
-              toolCalls: [
-                ...slot.currentTrace.toolCalls,
-                { name: event.name, args: event.args, result: "" },
-              ],
-            }
-            {
-              const last = slot.messages[slot.messages.length - 1]
-              if (last && last.role === "assistant" && last.streaming && !last.content) {
-                slot.messages[slot.messages.length - 1] = {
-                  ...last,
-                  statusText: `正在使用工具：${event.name}`,
-                }
-              }
-            }
-            break
-
-          case "tool_result": {
-            // 更新轨迹
-            const calls = [...slot.currentTrace.toolCalls]
-            const last = calls[calls.length - 1]
-            if (last && !last.result) {
-              calls[calls.length - 1] = { ...last, result: event.result }
-            }
-            slot.currentTrace = { ...slot.currentTrace, toolCalls: calls }
-
-            // 从搜索工具结果中提取 RAG 来源
-            const newSources = extractSourcesFromToolResult(
-              event.name || toolName || "tool",
-              event.result,
-            )
-
-            // 为最后一条流式助理消息构建隐藏上下文
-            const lastMsg = slot.messages[slot.messages.length - 1]
-            if (lastMsg && lastMsg.role === "assistant" && lastMsg.streaming) {
-              const summary = summarizeToolResult(event.name || toolName || "tool", event.result)
-              const existingSources = lastMsg.sources ?? []
-              // 从工具结果中提取生成的文件
-              const newFiles = extractFilesFromToolResult(
-                event.name || toolName || "tool",
-                event.result,
-              )
-              const existingFiles = lastMsg.attachments ?? []
-              slot.messages[slot.messages.length - 1] = {
-                ...lastMsg,
-                statusText: lastMsg.content ? undefined : "正在整理结果并生成回答...",
-                hiddenContext: [lastMsg.hiddenContext, summary].filter(Boolean).join("\n\n"),
-                sources: newSources
-                  ? [...existingSources, ...newSources]
-                  : existingSources.length > 0
-                    ? existingSources
-                    : undefined,
-                attachments: [...existingFiles, ...newFiles],
-              }
-            }
-            break
-          }
-
-          case "done": {
-            slot.messages = slot.messages.map((m) =>
-              m.streaming ? { ...m, streaming: false, statusText: undefined } : m,
-            )
-            slot.loading = false
-            // 清理会话映射，避免 sessionToSlot ref 累积泄漏
-            sessionToSlot.current.delete(eventSessionId)
-            slot.currentTrace = {
-              thinking: "",
-              toolCalls: [],
-              plan: null,
-              currentStepIndex: null,
-              totalSteps: 0,
-              stepResults: {},
-              replanReason: null,
-              plannerTimeoutMessage: null,
-            }
-
-            // 验证层：对最后一条 assistant 消息执行验证，传入当前消息所属的真正会话 ID (eventSessionId) 用于拉取检索缓存
-            const lastMsg = slot.messages[slot.messages.length - 1]
-            if (lastMsg && lastMsg.role === "assistant" && lastMsg.content) {
-              runVerification(lastMsg.content, "chat", eventSessionId)
-                .then((res) => {
-                  updateSlots((prev) => {
-                    const next = new Map(prev)
-                    const internal = next.get(slotId)
-                    if (!internal) return prev
-                    next.set(slotId, {
-                      ...internal,
-                      slot: {
-                        ...internal.slot,
-                        messages: internal.slot.messages.map((m) =>
-                          m.id === lastMsg.id ? { ...m, verificationReport: res.report } : m,
-                        ),
-                      },
-                    })
-                    return next
-                  })
-                })
-                .catch(() => {})
-            }
-
-            break
-          }
-
-          case "error": {
-            // LLM API Key 失效 → 触发全局对话框，让用户去设置页更换 Key
-            if (event.error_code === "LLM_INVALID_KEY") {
-              showLlmKeyErrorRef.current({
-                code: "LLM_INVALID_KEY",
-                message: event.message,
-                provider_id: event.provider_id,
-              })
-            }
-            slot.messages = slot.messages.map((m) =>
-              m.streaming
-                ? {
-                    ...m,
-                    content: m.content || `请求失败：${event.message}`,
-                    streaming: false,
-                    statusText: undefined,
-                    error: true,
-                  }
-                : m,
-            )
-            slot.loading = false
-            slot.currentTrace = {
-              thinking: "",
-              toolCalls: [],
-              plan: null,
-              currentStepIndex: null,
-              totalSteps: 0,
-              stepResults: {},
-              replanReason: null,
-              plannerTimeoutMessage: null,
-            }
-            sessionToSlot.current.delete(eventSessionId)
-            slot.sessionId = null
-            break
-          }
-
-          case "plan_generated":
-            slot.currentTrace = {
-              ...slot.currentTrace,
-              plan: event.steps,
-              totalSteps: event.steps.length,
-              currentStepIndex: 0,
-            }
-            break
-
-          case "step_start":
-            slot.currentTrace = {
-              ...slot.currentTrace,
-              currentStepIndex: event.step_index,
-            }
-            break
-
-          case "step_result":
-            slot.currentTrace = {
-              ...slot.currentTrace,
-              stepResults: {
-                ...slot.currentTrace.stepResults,
-                [event.step_index]: { result: event.result, success: event.success },
-              },
-            }
-            break
-
-          case "replan":
-            slot.currentTrace = {
-              ...slot.currentTrace,
-              replanReason: event.reason,
-            }
-            break
-
-          case "planner_timeout":
-            slot.currentTrace = {
-              ...slot.currentTrace,
-              plannerTimeoutMessage: event.message,
-            }
-            break
-
-          case "clarification": {
-            const payload = event.payload
-            const last = slot.messages[slot.messages.length - 1]
-            const clarMsg: AgentMessage = {
-              id: nextId(),
-              role: "assistant",
-              content: payload.prompt,
-              clarification: payload,
-            }
-            if (last && last.role === "assistant" && last.streaming) {
-              slot.messages[slot.messages.length - 1] = { ...last, streaming: false, ...clarMsg }
-            } else {
-              slot.messages = [...slot.messages, clarMsg]
-            }
-            slot.loading = false
-            slot.currentTrace = {
-              thinking: "",
-              toolCalls: [],
-              plan: null,
-              currentStepIndex: null,
-              totalSteps: 0,
-              stepResults: {},
-              replanReason: null,
-              plannerTimeoutMessage: null,
-            }
-            break
-          }
-        }
-
-        next.set(slotId, { slot, latestToolName: toolName })
+        const slot = copySlot(internal.slot)
+        const result = handlerMap(slot, event, internal.latestToolName)
+        next.set(slotId, { slot: result.slot, latestToolName: result.toolName })
         return next
       })
+
+      // done → clean up session mapping + kick off verification
+      if (event.type === "done") {
+        const eid = event.session_id || event.sessionId || ""
+        sessionToSlot.current.delete(eid)
+
+        // Verification: run on the last assistant message
+        updateSlots((prev) => {
+          const int = prev.get(slotId)
+          if (!int) return prev
+          const lastMsg = int.slot.messages[int.slot.messages.length - 1]
+          if (lastMsg && lastMsg.role === "assistant" && lastMsg.content) {
+            runVerification(lastMsg.content, "chat", eid)
+              .then((res) => {
+                updateSlots((p) => {
+                  const n = new Map(p)
+                  const ii = n.get(slotId)
+                  if (!ii) return p
+                  n.set(slotId, {
+                    ...ii,
+                    slot: {
+                      ...ii.slot,
+                      messages: ii.slot.messages.map((m) =>
+                        m.id === lastMsg.id ? { ...m, verificationReport: res.report } : m,
+                      ),
+                    },
+                  })
+                  return n
+                })
+              })
+              .catch(() => {})
+          }
+          return prev
+        })
+      }
+
+      // error → clean up session mapping
+      if (event.type === "error") {
+        sessionToSlot.current.delete(event.session_id || event.sessionId || "")
+        // Also set sessionId to null on the slot
+        updateSlots((prev) => {
+          const next = new Map(prev)
+          const internal = next.get(slotId)
+          if (!internal) return prev
+          next.set(slotId, {
+            ...internal,
+            slot: { ...internal.slot, sessionId: null },
+          })
+          return next
+        })
+      }
+
+      // clarification → clean up session mapping
+      if (event.type === "clarification") {
+        sessionToSlot.current.delete(event.session_id || event.sessionId || "")
+      }
     }).then((unsubFn) => {
       if (cancelled) {
         unsubFn()
@@ -682,7 +536,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     })
     return () => {
       cancelled = true
-      if (rafId != null) cancelAnimationFrame(rafId)
+      eventBuf.dispose()
       unsub?.()
     }
   }, [updateSlots])

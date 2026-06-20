@@ -5,6 +5,7 @@
  * 选择、撤销/重做，以及 Tauri 事件自动刷新。
  */
 import { listen } from "@tauri-apps/api/event"
+import { formatAppError } from "@/lib/app-error"
 import {
   createContext,
   type ReactNode,
@@ -224,7 +225,7 @@ export function OutlineProvider({ children }: { children: ReactNode }) {
       setExpandedNodeIds(new Set(collectAllIds(fetched)))
       setError(null)
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
+      const msg = formatAppError(err)
       setError(msg)
       console.error("[OutlineContext] 刷新大纲失败:", msg)
     }
@@ -245,7 +246,7 @@ export function OutlineProvider({ children }: { children: ReactNode }) {
       setExpandedNodeIds(new Set(collectAllIds(fetched)))
       setSelectedNodeId(null)
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
+      const msg = formatAppError(err)
       setError(msg)
       console.error("[OutlineContext] 加载大纲失败:", msg)
     } finally {
@@ -298,7 +299,7 @@ export function OutlineProvider({ children }: { children: ReactNode }) {
         pushUndo({ type: "create", before: null, after: newNode })
         return newNode
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
+        const msg = formatAppError(err)
         setError(msg)
         console.error("[OutlineContext] 创建节点失败:", msg)
         return null
@@ -343,7 +344,7 @@ export function OutlineProvider({ children }: { children: ReactNode }) {
           })
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
+        const msg = formatAppError(err)
         setError(msg)
         console.error("[OutlineContext] 更新节点失败:", msg)
       }
@@ -371,7 +372,7 @@ export function OutlineProvider({ children }: { children: ReactNode }) {
           pushUndo({ type: "delete", before: node, after: null })
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
+        const msg = formatAppError(err)
         setError(msg)
         console.error("[OutlineContext] 删除节点失败:", msg)
       }
@@ -397,7 +398,7 @@ export function OutlineProvider({ children }: { children: ReactNode }) {
           newSortOrder,
         })
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
+        const msg = formatAppError(err)
         setError(msg)
         console.error("[OutlineContext] 移动节点失败:", msg)
         await refreshOutline()
@@ -415,7 +416,7 @@ export function OutlineProvider({ children }: { children: ReactNode }) {
         await importMarkdownOutline(sessionId, markdown)
         await refreshOutline()
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
+        const msg = formatAppError(err)
         setError(msg)
         console.error("[OutlineContext] 导入大纲失败:", msg)
       }

@@ -1,4 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog"
+import { formatAppError } from "@/lib/app-error"
 import {
   AlertCircle,
   Calendar,
@@ -70,7 +71,7 @@ export default function Products() {
         }
       } catch (e) {
         console.error("Failed to load products:", e)
-        setErrorMessage(`加载产物失败：${e instanceof Error ? e.message : String(e)}`)
+        setErrorMessage(`加载产物失败：${formatAppError(e)}`)
       } finally {
         setLoading(false)
       }
@@ -112,7 +113,7 @@ export default function Products() {
       if (expandedProduct === product.id) setExpandedProduct(null)
     } catch (e) {
       console.error("Delete failed:", e)
-      setErrorMessage(`删除产物失败：${e instanceof Error ? e.message : String(e)}`)
+      setErrorMessage(`删除产物失败：${formatAppError(e)}`)
     } finally {
       setDeleting(null)
     }
@@ -317,7 +318,7 @@ export default function Products() {
                     const selected = await open({ directory: true })
                     if (selected) setExportDir(selected)
                   } catch (e) {
-                    setExportResult(`选择目录失败: ${e instanceof Error ? e.message : String(e)}`)
+                    setExportResult(`选择目录失败: ${formatAppError(e)}`)
                   }
                 }}
                 className="flex items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-600 hover:bg-neutral-50 transition-colors"

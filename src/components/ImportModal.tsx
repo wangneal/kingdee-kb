@@ -5,37 +5,21 @@
  * 使用 useImport hook 获取导入函数和配置，不暴露知识编译开关和项目选择。
  */
 
-import { open } from "@tauri-apps/plugin-dialog"
-import {
-  AlertCircle,
-  CheckCircle2,
-  ClipboardPaste,
-  FileText,
-  FolderOpen,
-  Loader2,
-  Upload,
-  X,
-} from "lucide-react"
+import { FileText, FolderOpen, X } from "lucide-react"
 import { useCallback, useEffect, useState } from "react"
 import { useImport } from "@/hooks/useImport"
 import { getImportDialogDefaultPath } from "@/lib/dialog-options"
 import type { IngestionResult } from "@/lib/tauri-commands"
+import {
+  ImportActionArea,
+  ImportFeedback,
+  ImportTabs,
+  TextImportTab,
+  type Feedback,
+  type TabKey,
+} from "./import-modal"
 
-type ImportStatus = "idle" | "loading" | "success" | "error"
-
-interface Feedback {
-  status: ImportStatus
-  message: string
-}
-
-/** Tab 类型 */
-type TabKey = "text" | "file" | "folder"
-
-const TABS: { key: TabKey; label: string; icon: typeof ClipboardPaste }[] = [
-  { key: "text", label: "粘贴文本", icon: ClipboardPaste },
-  { key: "file", label: "选择文件", icon: FileText },
-  { key: "folder", label: "选择文件夹", icon: FolderOpen },
-]
+const SUPPORTED_FILE_HINT = "支持格式：md、txt、html、pdf、docx、xlsx、xls、vsdx、vsd"
 
 export default function ImportModal({
   open: isOpen,
@@ -96,6 +80,8 @@ export default function ImportModal({
       return () => clearTimeout(timer)
     }
   }, [feedback, onClose])
+
+  const isLoading = feedback?.status === "loading"
 
   // 文本导入
   const handleTextImport = useCallback(async () => {
@@ -267,127 +253,47 @@ export default function ImportModal({
         </div>
 
         {/* Tab 栏 */}
-        <div className="flex border-b border-neutral-100">
-          {TABS.map((tab) => {
-            const Icon = tab.icon
-            return (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => {
-                  setActiveTab(tab.key)
-                  setFeedback(null)
-                }}
-                className={`flex flex-1 items-center justify-center gap-1.5 px-4 py-2.5 text-xs font-medium transition-colors ${
-                  activeTab === tab.key
-                    ? "border-b-2 border-[#1A6BD8] text-[#1A6BD8]"
-                    : "text-neutral-500 hover:text-neutral-700"
-                }`}
-              >
-                <Icon className="h-3.5 w-3.5" />
-                {tab.label}
-              </button>
-            )
-          })}
-        </div>
+        <ImportTabs activeTab={activeTab} onChange={(key) => { setActiveTab(key); setFeedback(null) }} />
 
         {/* 内容区 */}
         <div className="p-5">
           {/* 粘贴文本 Tab */}
           {activeTab === "text" && (
-            <div className="space-y-3">
-              <input
-                type="text"
-                placeholder="文档标题"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="w-full rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-              />
-              <textarea
-                placeholder="粘贴文本内容..."
-                value={textContent}
-                onChange={(e) => setTextContent(e.target.value)}
-                rows={6}
-                className="w-full resize-y rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 placeholder-neutral-400 outline-none focus:border-[#1A6BD8] focus:ring-1 focus:ring-[#1A6BD8]/20"
-              />
-              <button
-                type="button"
-                onClick={handleTextImport}
-                disabled={!title.trim() || !textContent.trim() || feedback?.status === "loading"}
-                className="flex items-center gap-1.5 rounded-md bg-[#1A6BD8] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#1558B0] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {feedback?.status === "loading" ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Upload className="h-4 w-4" />
-                )}
-                导入
-              </button>
-            </div>
+            <TextImportTab
+              title={title}
+              textContent={textContent}
+              feedback={feedback}
+              onTitleChange={setTitle}
+              onContentChange={setTextContent}
+              onImport={handleTextImport}
+            />
           )}
 
           {/* 选择文件 Tab */}
           {activeTab === "file" && (
-            <div className="space-y-3">
-              <p className="text-xs text-neutral-500">
-                支持格式：md、txt、html、pdf、docx、xlsx、xls、vsdx、vsd
-              </p>
-              <button
-                type="button"
-                onClick={handleFileImport}
-                disabled={feedback?.status === "loading"}
-                className="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-neutral-200 px-4 py-8 text-sm text-neutral-500 transition-colors hover:border-[#1A6BD8] hover:text-[#1A6BD8] disabled:opacity-50"
-              >
-                {feedback?.status === "loading" ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                ) : (
-                  <FileText className="h-5 w-5" />
-                )}
-                点击选择文件
-              </button>
-            </div>
+            <ImportActionArea
+              hint={SUPPORTED_FILE_HINT}
+              icon={FileText}
+              buttonText="点击选择文件"
+              onClick={handleFileImport}
+              loading={isLoading}
+            />
           )}
 
           {/* 选择文件夹 Tab */}
           {activeTab === "folder" && (
-            <div className="space-y-3">
-              <p className="text-xs text-neutral-500">导入文件夹内所有支持格式的文档</p>
-              <button
-                type="button"
-                onClick={handleFolderImport}
-                disabled={feedback?.status === "loading"}
-                className="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-neutral-200 px-4 py-8 text-sm text-neutral-500 transition-colors hover:border-[#1A6BD8] hover:text-[#1A6BD8] disabled:opacity-50"
-              >
-                {feedback?.status === "loading" ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                ) : (
-                  <FolderOpen className="h-5 w-5" />
-                )}
-                点击选择文件夹
-              </button>
-            </div>
+            <ImportActionArea
+              hint="导入文件夹内所有支持格式的文档"
+              icon={FolderOpen}
+              buttonText="点击选择文件夹"
+              onClick={handleFolderImport}
+              loading={isLoading}
+            />
           )}
 
           {/* 反馈提示 */}
           {feedback && feedback.status !== "idle" && (
-            <div
-              className={`mt-4 flex items-center gap-2 rounded-md p-3 text-sm ${
-                feedback.status === "success"
-                  ? "bg-green-50 text-green-700"
-                  : feedback.status === "error"
-                    ? "bg-red-50 text-red-700"
-                    : "bg-blue-50 text-blue-700"
-              }`}
-            >
-              {feedback.status === "success" ? (
-                <CheckCircle2 className="h-4 w-4 shrink-0" />
-              ) : feedback.status === "error" ? (
-                <AlertCircle className="h-4 w-4 shrink-0" />
-              ) : (
-                <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
-              )}
-              <span>{feedback.message}</span>
-            </div>
+            <ImportFeedback status={feedback.status} message={feedback.message} />
           )}
         </div>
       </div>

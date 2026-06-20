@@ -6,6 +6,7 @@
  */
 
 import { AlertCircle, Download, Loader2, Network } from "lucide-react"
+import { formatAppError } from "@/lib/app-error"
 import type { IPureNode } from "markmap-common"
 import { Transformer } from "markmap-lib"
 import { Markmap } from "markmap-view"
@@ -46,7 +47,7 @@ export default function MindmapView({ sessionId }: MindmapViewProps) {
       const { root: transformedRoot } = transformer.transform(markdown)
       setRoot(transformedRoot)
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
+      const msg = formatAppError(err)
       setError(msg)
       console.error("[MindmapView] 加载大纲失败:", msg)
     } finally {

@@ -5,6 +5,7 @@
  * 仅在研究助手页面（research 路由）内使用。
  */
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from "react"
+import { formatAppError } from "@/lib/app-error"
 import { getWhisperStatus, loadWhisperModel, startRecording, stopRecording } from "@/lib/audio"
 
 // ── 类型定义 ──────────────────────────────────────────────────────────────
@@ -67,7 +68,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         await loadWhisperModel(size)
         await checkModelStatus()
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
+        const msg = formatAppError(err)
         setError(msg)
         console.error("[AudioContext] 加载模型失败:", msg)
       }
@@ -82,7 +83,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       await startRecording()
       setStatus("recording")
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
+      const msg = formatAppError(err)
       setError(msg)
       setStatus("error")
       console.error("[AudioContext] 开始录音失败:", msg)
@@ -98,7 +99,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       setStatus("idle")
       return result.text
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
+      const msg = formatAppError(err)
       setError(msg)
       setStatus("error")
       console.error("[AudioContext] 转录失败:", msg)
