@@ -1,10 +1,5 @@
 import type { ComponentPropsWithoutRef } from "react"
 
-/**
- * Shared styled input component.
- * Wraps the repeated input CSS pattern used across Settings, Search, and other pages.
- * Supports all standard <input> props via ComponentPropsWithoutRef.
- */
 export default function Input(props: ComponentPropsWithoutRef<"input">) {
   return (
     <input

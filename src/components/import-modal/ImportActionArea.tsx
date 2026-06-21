@@ -8,15 +8,10 @@ import { Loader2 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
 interface ImportActionAreaProps {
-  /** 支持的格式说明文本 */
   hint?: string
-  /** 按钮图标 */
   icon: LucideIcon
-  /** 按钮文字 */
   buttonText: string
-  /** 点击回调 */
   onClick: () => void
-  /** 是否加载中 */
   loading: boolean
 }
 
