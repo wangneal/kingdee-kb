@@ -45,7 +45,7 @@ interface BufferEntry {
  *  - `dispose()` — cancel any pending rAF and flush
  *  - `rafScheduled` — whether an rAF is pending
  */
-export function createEventBuffer() {
+export function createEventBuffer(flushApply: (entries: Map<string, BufferEntry>) => void) {
   const buffer = new Map<string, BufferEntry>()
   let rafScheduled = false
   let rafId: number | null = null
@@ -65,7 +65,7 @@ export function createEventBuffer() {
   const schedule = () => {
     if (!rafScheduled) {
       rafScheduled = true
-      rafId = requestAnimationFrame(() => flush(() => {}))
+      rafId = requestAnimationFrame(() => flush(flushApply))
     }
   }
 
@@ -76,7 +76,7 @@ export function createEventBuffer() {
     }
     if (rafScheduled) {
       rafScheduled = false
-      flush(() => {})
+      buffer.clear()
     }
   }
 
@@ -115,42 +115,8 @@ export function markLastNonStreaming(slot: AgentSlot): AgentSlot {
   return slot
 }
 
-// ── Text append helpers ─────────────────────────────────────────────────
-
-/**
- * Append text to a slot's last streaming assistant message (or create one).
- * Returns the updated slot.
- */
-export function appendText(slot: AgentSlot, text: string, nextId: () => string): AgentSlot {
-  const msgs = [...slot.messages]
-  const last = msgs[msgs.length - 1]
-  if (last && last.role === "assistant" && last.streaming) {
-    msgs[msgs.length - 1] = { ...last, content: last.content + text, statusText: undefined }
-  } else {
-    msgs.push({ id: nextId(), role: "assistant", content: text, streaming: true })
-  }
-  return { ...slot, messages: msgs }
-}
-
-/**
- * Append thinking to a slot's trace and update the last streaming message
- * with a thinking status text if it has no content yet.
- */
-export function appendThinking(
-  slot: AgentSlot,
-  thinking: string,
-  _nextId: () => string,
-): AgentSlot {
-  const trace = { ...slot.currentTrace, thinking: slot.currentTrace.thinking + thinking }
-  const msgs = [...slot.messages]
-  const last = msgs[msgs.length - 1]
-  if (last && last.role === "assistant" && last.streaming && !last.content) {
-    msgs[msgs.length - 1] = { ...last, statusText: "正在思考并组织回答..." }
-  }
-  return { ...slot, currentTrace: trace, messages: msgs }
-}
-
 // ── Typed event handler map ─────────────────────────────────────────────
+
 
 /** Result of dispatching a single event against a slot copy. */
 export interface DispatchResult {

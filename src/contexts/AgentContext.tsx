@@ -421,7 +421,10 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     let cancelled = false
 
     // Create the rAF-based event buffer and handler map (once per effect)
-    const eventBuf = createEventBuffer()
+    const flushApply = (entries: Map<string, { text: string; thinking: string }>) => {
+      applyBufferToSlots(entries, cancelledSlots, updateSlots, nextId)
+    }
+    const eventBuf = createEventBuffer(flushApply)
     const handlerMap = createEventHandlerMap({
       nextId,
       extractSources: extractSourcesFromToolResult,
@@ -666,6 +669,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         if (!internal) return prev
         next.set(slotId, {
           ...internal,
+          latestToolName: "",
           slot: {
             ...internal.slot,
             messages: trimMessages([...internal.slot.messages, answerMsg, assistantMsg]),
@@ -726,6 +730,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         }
         next.set(slotId, {
           ...internal,
+          latestToolName: "",
           slot: {
             ...internal.slot,
             messages: trimMessages([...msgs, answerMsg, assistantMsg]),
