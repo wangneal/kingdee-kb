@@ -42,6 +42,7 @@ import {
 } from "@/contexts/AgentContext"
 import { useProject } from "@/contexts/ProjectContext"
 import { extractFilesFromDropEvent, extractFilesFromPasteEvent } from "@/lib/clipboard-files"
+import { formatFileSize, isImageFile } from "@/lib/utils"
 import { listRuntimeLLMProviders } from "@/lib/skill-commands"
 import type { LLMProviderConfig } from "@/lib/skill-types"
 import type { AgentSessionSnapshot } from "@/lib/tauri-commands"
@@ -1086,19 +1087,6 @@ function getFileIcon(name: string) {
   if (["pdf"].includes(ext)) return FileText
   if (["doc", "docx", "md", "txt"].includes(ext)) return FileText
   return File
-}
-
-/** 格式化文件大小 */
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
-
-/** 判断是否为图片文件 */
-function isImageFile(name: string): boolean {
-  const ext = name.split(".").pop()?.toLowerCase() ?? ""
-  return ["png", "jpg", "jpeg", "webp", "bmp", "gif", "svg"].includes(ext)
 }
 
 function FileBubble({ attachment }: { attachment: FileAttachment }) {

@@ -54,8 +54,11 @@ playwright-report/
 CLAUDE.md
 AGENTS.md
 
-# OpenSpec
-OpenSpec/
+# OpenSpec (keep coding standards and rust guidelines)
+OpenSpec/*
+!OpenSpec/coding-standards.md
+!OpenSpec/rust-guidelines/
+!OpenSpec/rust-guidelines/**
 
 # Embedding model cache (运行时自动下载)
 .fastembed_cache/

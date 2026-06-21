@@ -6,6 +6,7 @@ pub mod services;
 use anyhow::anyhow;
 use std::sync::Mutex;
 use tauri::Manager;
+use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
 use crate::app_state::AppState;
@@ -26,7 +27,7 @@ const ASR_SECRET_ID_ACCOUNT: &str = "tencent_asr_secret_id";
 const ASR_SECRET_KEY_ACCOUNT: &str = "tencent_asr_secret_key";
 
 impl AsrConfigStore {
-    pub fn new(_db_path: &std::path::Path) -> Self {
+    pub fn new() -> Self {
         let mut store = Self {
             tencent_secret_id: None,
             tencent_secret_key: None,
@@ -43,11 +44,19 @@ impl AsrConfigStore {
     fn read_credential(account: &str) -> Option<String> {
         let entry = match keyring::Entry::new(KEYRING_SERVICE, account) {
             Ok(e) => e,
-            Err(_) => return None,
+            Err(e) => {
+                warn!(account, "无法访问系统凭据存储: {e}");
+                return None;
+            }
         };
         match entry.get_password() {
             Ok(val) if !val.is_empty() => Some(val),
-            _ => None,
+            Ok(_) => None,
+            Err(keyring::Error::NoEntry) => None,
+            Err(e) => {
+                warn!(account, "读取凭据失败: {e}");
+                None
+            }
         }
     }
 
@@ -68,11 +77,19 @@ impl AsrConfigStore {
         }
     }
 
+    /// 保存腾讯云 ASR 凭据到系统钥匙串，并更新内存状态。
+    ///
+    /// # Errors
+    ///
+    /// 当钥匙串写入或删除失败时返回错误。如果 `secret_key` 写入失败，
+    /// 会尝试将 `secret_id` 回滚到旧值后再返回错误。
     pub fn save_tencent(
         &mut self,
         secret_id: Option<String>,
         secret_key: Option<String>,
     ) -> Result<(), String> {
+        // 写入钥匙串时保证原子性：secret_key 失败则回滚 secret_id
+        let old_id = self.tencent_secret_id.clone();
         match secret_id {
             Some(ref id) if !id.trim().is_empty() => {
                 Self::write_credential(ASR_SECRET_ID_ACCOUNT, id.trim())?;
@@ -81,20 +98,30 @@ impl AsrConfigStore {
                 Self::delete_credential(ASR_SECRET_ID_ACCOUNT)?;
             }
         }
-        match secret_key {
-            Some(ref key) if !key.trim().is_empty() => {
-                Self::write_credential(ASR_SECRET_KEY_ACCOUNT, key.trim())?;
+        if let Err(e) = (|| -> Result<(), String> {
+            match secret_key {
+                Some(ref key) if !key.trim().is_empty() => {
+                    Self::write_credential(ASR_SECRET_KEY_ACCOUNT, key.trim())
+                }
+                _ => Self::delete_credential(ASR_SECRET_KEY_ACCOUNT),
             }
-            _ => {
-                Self::delete_credential(ASR_SECRET_KEY_ACCOUNT)?;
+        })() {
+            // secret_key 写入失败，回滚 secret_id 到旧值
+            if let Some(ref prev_id) = old_id {
+                let _ = Self::write_credential(ASR_SECRET_ID_ACCOUNT, prev_id);
+            } else {
+                let _ = Self::delete_credential(ASR_SECRET_ID_ACCOUNT);
             }
+            return Err(e);
         }
+        // 钥匙串写入全部成功，更新内存状态
         self.tencent_secret_id = secret_id;
         self.tencent_secret_key = secret_key;
         Ok(())
     }
 
-    pub fn get_status(&self) -> serde_json::Value {
+    /// 返回 ASR 配置状态
+    pub fn status(&self) -> serde_json::Value {
         serde_json::json!({
             "tencent_configured": self.tencent_secret_id.is_some(),
         })

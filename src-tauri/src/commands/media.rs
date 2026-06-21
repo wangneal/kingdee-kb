@@ -681,7 +681,7 @@ pub fn save_asr_config(
 #[tauri::command]
 pub fn get_asr_config_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let config = state.asr_config.read().map_err(|e| e.to_string())?;
-    Ok(config.get_status())
+    Ok(config.status())
 }
 
 /// 检查 FFmpeg 是否已就绪（不触发下载）。

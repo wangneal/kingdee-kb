@@ -262,7 +262,7 @@ impl AppState {
 
         let whisper_service = WhisperService::new();
         let audio_capture = AudioCapture::new(data_dir);
-        let asr_config = AsrConfigStore::new(&db_path);
+        let asr_config = AsrConfigStore::new();
 
         // 初始化 SignalWriter（技能系统事件记录）
         let signals_path = data_dir.join("signals.jsonl");
@@ -515,7 +515,7 @@ impl AppState {
             pending_questions,
             whisper_service: Arc::new(RwLock::new(whisper_service)),
             audio_capture: Arc::new(RwLock::new(audio_capture)),
-            asr_config: Arc::new(RwLock::new(AsrConfigStore::new(&db_path))),
+            asr_config: Arc::new(RwLock::new(AsrConfigStore::new())),
             skill_manager: Arc::new(tokio::sync::Mutex::new(SkillManager::new(
                 data_dir.join("skills"),
             ))),
