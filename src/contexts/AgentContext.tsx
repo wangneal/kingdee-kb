@@ -20,6 +20,7 @@ import {
   answerQuestion,
   type ChatMessage,
   type ClarificationPayload,
+  type PlanStep,
   cancelAgentStream,
   listenAgentEvents,
   rejectQuestion,
@@ -419,8 +420,15 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     let unsub: (() => void) | null = null
     let cancelled = false
 
-    // Create the rAF-based event buffer
+    // Create the rAF-based event buffer and handler map (once per effect)
     const eventBuf = createEventBuffer()
+    const handlerMap = createEventHandlerMap({
+      nextId,
+      extractSources: extractSourcesFromToolResult,
+      summarizeTool: summarizeToolResult,
+      extractFiles: extractFilesFromToolResult,
+      showLlmKeyErrorRef,
+    })
 
     listenAgentEvents((event) => {
       // Early-return guard: resolve slot id and check cancellation
@@ -446,20 +454,12 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 
       // Non-streaming → flush buffer first, then dispatch
       if (eventBuf.rafScheduled) {
-        eventBuf.rafScheduled = false
         eventBuf.flush((entries) => {
           applyBufferToSlots(entries, cancelledSlots, updateSlots, nextId)
         })
       }
 
       // Dispatch through typed handler map
-      const handlerMap = createEventHandlerMap({
-        nextId,
-        extractSources: extractSourcesFromToolResult,
-        summarizeTool: summarizeToolResult,
-        extractFiles: extractFilesFromToolResult,
-        showLlmKeyErrorRef,
-      })
 
       updateSlots((prev) => {
         const next = new Map(prev)

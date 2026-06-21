@@ -31,6 +31,7 @@ import {
   getModelStatus,
   getStats,
   getTencentMeetingConfigStatus,
+  type KnowledgeStats,
   listSensitiveKeywords,
   removeSensitiveKeyword,
   type SensitiveKeyword,
@@ -47,7 +48,7 @@ import {
   DatabaseBackupCard,
   KnowledgeCompilationCard,
   AgentToolPolicyCard,
-} from "./settings"
+} from "./settings/index"
 
 /** Embedding 供应商定义：标签、默认 Base URL、推荐模型 */
 const EMBEDDING_PROVIDERS: Record<

@@ -1,5 +1,4 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { formatAppError } from "@/lib/app-error"
 import { ensureDefaultProject, listProjects, type ProjectSummary } from "@/lib/project-commands"
 import { createCtxTyped } from "@/lib/create-ctx"
 

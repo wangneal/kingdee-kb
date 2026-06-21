@@ -20,6 +20,7 @@ import {
   type CandidateScopeItem,
   type ContractScopeItem,
   type ContractScopeProgressEvent,
+  type ScopeCreepResult,
   checkScopeCreep,
   confirmScopeItems,
   type DocumentMeta,

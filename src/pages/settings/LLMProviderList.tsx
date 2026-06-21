@@ -9,7 +9,8 @@ import {
   setDefaultLLMProvider,
   setProviderPolicy,
 } from "@/lib/skill-commands"
-import { ProviderFormDialog } from "./ProviderFormDialog"
+import ProviderFormDialog from "./ProviderFormDialog"
+import { PROVIDER_PRESETS } from "./constants"
 
 const PROTOCOL_LABELS: Record<LLMProviderConfig["protocol"], string> = {
   openai: "OpenAI",

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react"
 import { TOAST_AUTO_DISMISS_MS } from "@/lib/constants"
 import { getOcrConfig, saveOcrConfig } from "@/lib/skill-commands"
 import type { OcrProviderConfig } from "@/lib/skill-types"
-import { ImageTypeExclusion } from "./ImageTypeExclusion"
+import ImageTypeExclusion from "./ImageTypeExclusion"
 
 const OCR_PROVIDER_LABEL: Record<string, string> = {
   baidu: "百度",

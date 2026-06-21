@@ -12,6 +12,7 @@
 
 import type { AgentMessage, AgentSlot, FileAttachment, RAGSource } from "@/contexts/AgentContext"
 import type { AgentEvent } from "@/lib/tauri-commands"
+import type { AppErrorPayload } from "@/lib/app-error"
 
 // ── Constants ───────────────────────────────────────────────────────────
 
@@ -103,12 +104,15 @@ export function copySlot(slot: AgentSlot): AgentSlot {
 
 /** Mark the last streaming assistant message as non-streaming. */
 export function markLastNonStreaming(slot: AgentSlot): AgentSlot {
-  return {
-    ...slot,
-    messages: slot.messages.map((m) =>
-      m.streaming ? { ...m, streaming: false, statusText: undefined } : m,
-    ),
+  const msgs = slot.messages
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].streaming) {
+      const updated = [...msgs]
+      updated[i] = { ...msgs[i], streaming: false, statusText: undefined }
+      return { ...slot, messages: updated }
+    }
   }
+  return slot
 }
 
 // ── Text append helpers ─────────────────────────────────────────────────
@@ -168,7 +172,7 @@ export function createEventHandlerMap(opts: {
   extractSources: (toolName: string, result: string) => RAGSource[] | undefined
   summarizeTool: (toolName: string, result: string) => string
   extractFiles: (toolName: string, result: string) => FileAttachment[]
-  showLlmKeyErrorRef: { current: (err: unknown) => void }
+  showLlmKeyErrorRef: { current: (payload: AppErrorPayload) => void }
 }): (slot: AgentSlot, event: AgentEvent, toolName: string) => DispatchResult {
   const { nextId, extractSources, summarizeTool, extractFiles, showLlmKeyErrorRef } = opts
 
@@ -226,7 +230,7 @@ export function createEventHandlerMap(opts: {
       return { slot: { ...slot, currentTrace: trace, messages: msgs }, toolName }
     },
 
-    done(slot) {
+    done(slot, event) {
       if (event.type !== "done") return { slot, toolName: "" }
       const updated = markLastNonStreaming(slot)
       return { slot: { ...updated, loading: false }, toolName: "" }

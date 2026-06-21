@@ -7,7 +7,6 @@ import {
   Download,
   Eye,
   X,
-  Trash2,
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import type {
@@ -29,6 +28,8 @@ import {
   listSkillPermissionRules,
   revokeSkillPermissionRule,
 } from "@/lib/tauri-commands"
+import AgentToolOutputLimitsPanel from "./AgentToolOutputLimitsPanel"
+import SkillPermissionRulesPanel from "./SkillPermissionRulesPanel"
 
 const TOOL_EFFECT_LABELS: Record<AgentToolProfile["effect"], string> = {
   read_only: "只读",

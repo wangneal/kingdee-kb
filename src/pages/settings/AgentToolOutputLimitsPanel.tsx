@@ -1,12 +1,6 @@
 import { Loader2 } from "lucide-react"
 import type { AgentToolOutputLimits } from "@/lib/tauri-commands"
 
-const DEFAULT_AGENT_TOOL_OUTPUT_LIMITS: AgentToolOutputLimits = {
-  max_chars: 12000,
-  max_bytes: 50 * 1024,
-  max_lines: 2000,
-}
-
 const AGENT_TOOL_OUTPUT_LIMIT_BOUNDS = {
   max_chars: { min: 1000, max: 200000, label: "字符" },
   max_bytes: { min: 1024, max: 2 * 1024 * 1024, label: "字节" },

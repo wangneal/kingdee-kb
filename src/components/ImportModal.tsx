@@ -5,15 +5,17 @@
  * 使用 useImport hook 获取导入函数和配置，不暴露知识编译开关和项目选择。
  */
 
-import { FileText, FolderOpen, X } from "lucide-react"
+import { X } from "lucide-react"
 import { useCallback, useEffect, useState } from "react"
 import { useImport } from "@/hooks/useImport"
 import { getImportDialogDefaultPath } from "@/lib/dialog-options"
+import { open } from "@tauri-apps/plugin-dialog"
 import type { IngestionResult } from "@/lib/tauri-commands"
 import {
   ImportActionArea,
   ImportFeedback,
   ImportTabs,
+  TABS,
   TextImportTab,
   type Feedback,
   type TabKey,
@@ -273,7 +275,7 @@ export default function ImportModal({
           {activeTab === "file" && (
             <ImportActionArea
               hint={SUPPORTED_FILE_HINT}
-              icon={FileText}
+              icon={TABS[1].icon}
               buttonText="点击选择文件"
               onClick={handleFileImport}
               loading={isLoading}
@@ -284,7 +286,7 @@ export default function ImportModal({
           {activeTab === "folder" && (
             <ImportActionArea
               hint="导入文件夹内所有支持格式的文档"
-              icon={FolderOpen}
+              icon={TABS[2].icon}
               buttonText="点击选择文件夹"
               onClick={handleFolderImport}
               loading={isLoading}
