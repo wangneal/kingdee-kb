@@ -63,6 +63,11 @@ pnpm tauri dev
 
 # 构建生产包
 pnpm tauri build
+
+# 代码检查
+cargo clippy --all-targets -- -D warnings  # Rust
+pnpm lint                                  # TypeScript
+pnpm typecheck                             # 类型检查
 ```
 
 ## 项目结构

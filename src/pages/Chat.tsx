@@ -229,7 +229,6 @@ export default function Chat() {
 
   const [input, setInput] = useState("")
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
-  const attaching = false
   const [llmReady, setLlmReady] = useState<boolean | null>(null)
   const [providers, setProviders] = useState<LLMProviderConfig[]>([])
   const [selectedProviderId, setSelectedProviderId] = useState<string>("")
@@ -401,7 +400,7 @@ export default function Chat() {
 
   const handleSend = useCallback(async () => {
     const text = input.trim()
-    if ((!text && attachments.length === 0) || loading || attaching) return
+    if ((!text && attachments.length === 0) || loading) return
 
     // 发送前检查 LLM 是否已配置
     if (llmReady === false) {
@@ -483,7 +482,7 @@ export default function Chat() {
   )
 
   const handleAttach = useCallback(async () => {
-    if (loading || attaching) return
+    if (loading) return
     try {
       const selected = await open({
         multiple: true,
@@ -816,15 +815,11 @@ export default function Chat() {
             <button
               type="button"
               onClick={handleAttach}
-              disabled={loading || attaching}
+              disabled={loading}
               title="添加附件"
               className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              {attaching ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Paperclip className="h-4 w-4" />
-              )}
+              <Paperclip className="h-4 w-4" />
             </button>
 
             {/* 模型选择器 */}
@@ -951,7 +946,7 @@ export default function Chat() {
             <button
               type="button"
               onClick={handleSend}
-              disabled={loading || attaching || (!input.trim() && attachments.length === 0)}
+              disabled={loading || (!input.trim() && attachments.length === 0)}
               className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {loading ? (

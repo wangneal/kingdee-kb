@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react"
 import { Route, Routes } from "react-router-dom"
 import ErrorBoundary from "./components/ErrorBoundary"
 import Layout from "./components/Layout"
@@ -9,19 +10,21 @@ import { AudioProvider } from "./contexts/AudioContext"
 import { KbCompilationProvider } from "./contexts/KbCompilationContext"
 import { OutlineProvider } from "./contexts/OutlineContext"
 import { ProjectProvider } from "./contexts/ProjectContext"
-import Browse from "./pages/Browse"
-import Chat from "./pages/Chat"
-import Home from "./pages/Home"
-import Import from "./pages/Import"
-import KnowledgeGraph from "./pages/KnowledgeGraph"
-import Meetings from "./pages/Meetings"
-import Products from "./pages/Products"
-import ProjectManagement from "./pages/ProjectManagement"
-import ResearchAssistant from "./pages/ResearchAssistant"
-import RiskControl from "./pages/RiskControl"
-import Search from "./pages/Search"
-import Settings from "./pages/Settings"
-import Skills from "./pages/Skills"
+
+// 路由懒加载：非首屏页面按需加载，减少初始包体积
+const Browse = lazy(() => import("./pages/Browse"))
+const Chat = lazy(() => import("./pages/Chat"))
+const Home = lazy(() => import("./pages/Home"))
+const Import = lazy(() => import("./pages/Import"))
+const KnowledgeGraph = lazy(() => import("./pages/KnowledgeGraph"))
+const Meetings = lazy(() => import("./pages/Meetings"))
+const Products = lazy(() => import("./pages/Products"))
+const ProjectManagement = lazy(() => import("./pages/ProjectManagement"))
+const ResearchAssistant = lazy(() => import("./pages/ResearchAssistant"))
+const RiskControl = lazy(() => import("./pages/RiskControl"))
+const Search = lazy(() => import("./pages/Search"))
+const Settings = lazy(() => import("./pages/Settings"))
+const Skills = lazy(() => import("./pages/Skills"))
 
 function App() {
   return (
@@ -32,6 +35,13 @@ function App() {
             <AsrConfigProvider>
               <AppErrorProvider>
                 <AgentProvider>
+              <Suspense
+                fallback={
+                  <div className="flex h-screen items-center justify-center text-neutral-400">
+                    加载中…
+                  </div>
+                }
+              >
               <Routes>
                 <Route path="/" element={<Layout />}>
                   <Route index element={<Home />} />
@@ -68,6 +78,7 @@ function App() {
                   <Route path="settings" element={<Settings />} />
                 </Route>
               </Routes>
+              </Suspense>
                 </AgentProvider>
               </AppErrorProvider>
             </AsrConfigProvider>

@@ -1,7 +1,12 @@
-//! LLM 鏈嶅姟 鈥?鏀寔 SSE 娴佸紡鐨勫鍗忚 LLM 瀹㈡埛绔?//!
-//! 鏀寔 OpenAI锛圕hat Completions锛夊拰 Anthropic锛圡essages锛夊崗璁€?//! 鐢ㄦ埛鍦ㄨ缃腑閫夋嫨鎻愪緵鍟嗭紱鍚庣鐩存帴浣跨敤璇ユ彁渚涘晢鐨勫師鐢熷崗璁?鈥?鏃犻渶鍗忚杞崲銆?//!
-//! 鎻愪緵瀹屾暣鐨?RAG 绠￠亾锛?//!   宓屽叆鏌ヨ 鈫?娣峰悎鎼滅储 鈫?涓婁笅鏂囩粍瑁?鈫?LLM 琛ュ叏锛圫SE锛?//!
-//! 浼橀泤鍥為€€锛氬綋 LLM 涓嶅彲鐢ㄦ椂锛屼粎杩斿洖鎼滅储缁撴灉銆?
+//! LLM 服务 — 支持 SSE 流式的多协议 LLM 客户端
+//!
+//! 支持 OpenAI（Chat Completions）和 Anthropic（Messages）协议。
+//! 用户在设置中选择供应商；后端直接使用该供应商的原生协议 — 无需协议转换。
+//!
+//! 提供完整的 RAG 管道：
+//!   嵌入查询 → 混合搜索 → 上下文组装 → LLM 补全（SSE）
+//!
+//! 优雅退退：当 LLM 不可用时，仅返回搜索结果。
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, RwLock};
@@ -147,7 +152,6 @@ fn with_anthropic_headers(
 
     request
         .header("anthropic-version", ANTHROPIC_VERSION)
-        .header("anthropic-dangerous-direct-browser-access", "true")
         .header("Content-Type", "application/json")
 }
 

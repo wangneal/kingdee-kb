@@ -15,18 +15,19 @@ pub use services::template_docx;
 pub use services::template_schema;
 pub use services::template_xlsx;
 
-/// 在线 ASR 配置存储（腾讯云）- JSON 文件持久化
+/// 在线 ASR 配置存储（腾讯云）— 使用系统钥匙串保护密钥
 pub struct AsrConfigStore {
-    config_path: std::path::PathBuf,
     pub tencent_secret_id: Option<String>,
     pub tencent_secret_key: Option<String>,
 }
 
+const KEYRING_SERVICE: &str = "kingdee-kb";
+const ASR_SECRET_ID_ACCOUNT: &str = "tencent_asr_secret_id";
+const ASR_SECRET_KEY_ACCOUNT: &str = "tencent_asr_secret_key";
+
 impl AsrConfigStore {
-    pub fn new(db_path: &std::path::Path) -> Self {
-        let config_path = db_path.with_file_name("asr_config.json");
+    pub fn new(_db_path: &std::path::Path) -> Self {
         let mut store = Self {
-            config_path,
             tencent_secret_id: None,
             tencent_secret_key: None,
         };
@@ -35,30 +36,36 @@ impl AsrConfigStore {
     }
 
     fn load(&mut self) {
-        let content = match std::fs::read_to_string(&self.config_path) {
-            Ok(c) => c,
-            Err(_) => return,
+        self.tencent_secret_id = Self::read_credential(ASR_SECRET_ID_ACCOUNT);
+        self.tencent_secret_key = Self::read_credential(ASR_SECRET_KEY_ACCOUNT);
+    }
+
+    fn read_credential(account: &str) -> Option<String> {
+        let entry = match keyring::Entry::new(KEYRING_SERVICE, account) {
+            Ok(e) => e,
+            Err(_) => return None,
         };
-        if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&content) {
-            self.tencent_secret_id = cfg
-                .get("tencent_secret_id")
-                .and_then(|v| v.as_str().map(String::from));
-            self.tencent_secret_key = cfg
-                .get("tencent_secret_key")
-                .and_then(|v| v.as_str().map(String::from));
+        match entry.get_password() {
+            Ok(val) if !val.is_empty() => Some(val),
+            _ => None,
         }
     }
 
-    fn save_to_file(&self) -> Result<(), String> {
-        let map = serde_json::json!({
-            "tencent_secret_id": self.tencent_secret_id,
-            "tencent_secret_key": self.tencent_secret_key,
-        });
-        let content = serde_json::to_string_pretty(&map)
-            .map_err(|e| format!("序列化 ASR 配置失败: {}", e))?;
-        std::fs::write(&self.config_path, content)
-            .map_err(|e| format!("写入 ASR 配置失败: {}", e))?;
-        Ok(())
+    fn write_credential(account: &str, value: &str) -> Result<(), String> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, account)
+            .map_err(|e| format!("无法访问系统凭据存储: {}", e))?;
+        entry
+            .set_password(value)
+            .map_err(|e| format!("写入凭据失败: {}", e))
+    }
+
+    fn delete_credential(account: &str) -> Result<(), String> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, account)
+            .map_err(|e| format!("无法访问系统凭据存储: {}", e))?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(format!("删除凭据失败: {}", e)),
+        }
     }
 
     pub fn save_tencent(
@@ -66,9 +73,25 @@ impl AsrConfigStore {
         secret_id: Option<String>,
         secret_key: Option<String>,
     ) -> Result<(), String> {
+        match secret_id {
+            Some(ref id) if !id.trim().is_empty() => {
+                Self::write_credential(ASR_SECRET_ID_ACCOUNT, id.trim())?;
+            }
+            _ => {
+                Self::delete_credential(ASR_SECRET_ID_ACCOUNT)?;
+            }
+        }
+        match secret_key {
+            Some(ref key) if !key.trim().is_empty() => {
+                Self::write_credential(ASR_SECRET_KEY_ACCOUNT, key.trim())?;
+            }
+            _ => {
+                Self::delete_credential(ASR_SECRET_KEY_ACCOUNT)?;
+            }
+        }
         self.tencent_secret_id = secret_id;
         self.tencent_secret_key = secret_key;
-        self.save_to_file()
+        Ok(())
     }
 
     pub fn get_status(&self) -> serde_json::Value {

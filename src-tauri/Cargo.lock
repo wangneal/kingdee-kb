@@ -3734,7 +3734,7 @@ dependencies = [
 
 [[package]]
 name = "kingdee-kb"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "async-trait",
