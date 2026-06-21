@@ -116,8 +116,6 @@ export function createDefaultSlot(): AgentSlot {
   }
 }
 
-/** @deprecated Use createDefaultSlot() instead to avoid shared mutable state */
-export const DEFAULT_SLOT: AgentSlot = createDefaultSlot()
 
 export interface SendMessageOptions {
   projectId?: number | null

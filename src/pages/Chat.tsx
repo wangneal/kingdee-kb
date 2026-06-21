@@ -34,7 +34,7 @@ import { VerificationBadge } from "@/components/VerificationBadge"
 import {
   type AgentMessage,
   buildAgentHistory,
-  DEFAULT_SLOT,
+  createDefaultSlot,
   type FileAttachment,
   type RAGSource,
   type ReActTrace,
@@ -224,7 +224,7 @@ export default function Chat() {
   const chatStorageKey = `${CHAT_STORAGE_KEY}:${currentProjectId ?? "none"}`
   const agent = useAgent()
   const navigate = useNavigate()
-  const slot = agent.slots.get("chat") ?? DEFAULT_SLOT
+  const slot = agent.slots.get("chat") ?? createDefaultSlot()
   const { messages, loading, currentTrace } = slot
 
   const [input, setInput] = useState("")

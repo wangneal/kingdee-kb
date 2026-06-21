@@ -1,12 +1,12 @@
 import { Brain, Loader2, Send } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { DEFAULT_SLOT, useAgent } from "@/contexts/AgentContext"
+import { createDefaultSlot, useAgent } from "@/contexts/AgentContext"
 import { PRODUCT_NAME } from "@/lib/constants"
 
 export default function AnalysisTab({ projectId }: { projectId: number | null }) {
   const agent = useAgent()
   const slotId = `risk-analysis:${projectId ?? "none"}`
-  const slot = agent.slots.get(slotId) ?? DEFAULT_SLOT
+  const slot = agent.slots.get(slotId) ?? createDefaultSlot()
   const { messages, loading, currentTrace } = slot
   const [input, setInput] = useState("")
   const chatEndRef = useRef<HTMLDivElement>(null)

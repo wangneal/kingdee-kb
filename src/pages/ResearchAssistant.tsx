@@ -22,7 +22,7 @@ import MarkdownEditor from "@/components/outliner/MarkdownEditor"
 import MindmapView from "@/components/outliner/MindmapView"
 import OutlineTree from "@/components/outliner/OutlineTree"
 import { useToast } from "@/components/Toast"
-import { DEFAULT_SLOT, useAgent } from "@/contexts/AgentContext"
+import { createDefaultSlot, useAgent } from "@/contexts/AgentContext"
 import { useAppError } from "@/contexts/AppErrorContext"
 import { useOutline } from "@/contexts/OutlineContext"
 import { useProject } from "@/contexts/ProjectContext"
@@ -432,7 +432,7 @@ function SessionDetailView({
 }) {
   const { session, records } = detail
   const agent = useAgent()
-  const slot = agent.slots.get("research") ?? DEFAULT_SLOT
+  const slot = agent.slots.get("research") ?? createDefaultSlot()
   const aiLoading = slot.loading
   const { currentProjectId } = useProject()
   const [recording, setRecording] = useState(false)
