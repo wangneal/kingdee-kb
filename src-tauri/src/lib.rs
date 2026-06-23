@@ -491,7 +491,7 @@ pub fn run() {
             // Phase 5: 知识图谱
             commands::knowledge_graph::build_knowledge_graph,
             commands::knowledge_graph::get_graph_neighbors,
-            commands::knowledge_graph::get_graph_stats,
+            commands::knowledge_graph::get_full_graph,
             commands::knowledge_graph::graph_expand_search,
             // File operations
             commands::core::save_attachment_as,

@@ -6,7 +6,7 @@
 use tauri::State;
 
 use crate::app_state::AppState;
-use crate::services::knowledge_graph::{GraphNeighbor, GraphRecommendation, GraphStats};
+use crate::services::knowledge_graph::{FullGraph, GraphNeighbor, GraphRecommendation, GraphStats};
 
 /// 构建/重建项目知识图谱（4 信号：wikilink、tag 共现、source 共源、co_citation）。
 /// 返回插入的边数。
@@ -91,6 +91,21 @@ pub async fn get_graph_stats(
         .lock()
         .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
     store.get_graph_stats(project_id)
+}
+
+/// 获取项目完整图数据（所有节点和边），用于前端可视化。
+///
+/// ⚠️ 实验性能力 — 不影响主流程，仅供探索性使用。
+#[tauri::command]
+pub async fn get_full_graph(
+    state: State<'_, AppState>,
+    project_id: i64,
+) -> Result<FullGraph, String> {
+    let store = state
+        .graph_store
+        .lock()
+        .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+    store.get_full_graph(project_id)
 }
 
 /// 图扩展检索：给定页面，推荐相关页面。

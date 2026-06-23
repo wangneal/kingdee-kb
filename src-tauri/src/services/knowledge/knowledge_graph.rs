@@ -63,14 +63,39 @@ pub struct GraphRecommendation {
     pub matched_signals: Vec<String>,
 }
 
-/// 图统计信息
+/// 全图节点（用于前端可视化）
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphStats {
-    pub total_edges: i64,
-    pub total_nodes: i64,
-    pub signal_breakdown: HashMap<String, i64>,
-    pub avg_degree: f64,
+pub struct FullGraphNode {
+    pub slug: String,
+    pub title: String,
+    pub page_type: String,
+    pub degree: i64,
 }
+
+/// 全图边（用于前端可视化）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FullGraphEdge {
+    pub source: String,
+    pub target: String,
+    pub signal: String,
+    pub weight: f64,
+}
+
+/// 全图数据（节点 + 边）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FullGraph {
+    pub nodes: Vec<FullGraphNode>,
+    pub edges: Vec<FullGraphEdge>,
+}
+
+ /// 图统计信息
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct GraphStats {
+     pub total_edges: i64,
+     pub total_nodes: i64,
+     pub signal_breakdown: HashMap<String, i64>,
+     pub avg_degree: f64,
+ }
 
 /// 知识图谱数据操作层
 pub struct GraphStore {
@@ -638,7 +663,65 @@ impl GraphStore {
         })
     }
 
-    // ─── 图扩展检索 ───
+    /// 获取项目完整图数据（所有节点和边），用于前端可视化。
+    pub fn get_full_graph(&self, project_id: i64) -> Result<FullGraph, String> {
+        // 1. 获取所有边
+        let mut stmt = self
+            .db
+            .prepare(
+                "SELECT source_slug, target_slug, signal, weight
+                 FROM knowledge_graph
+                 WHERE project_id = ?1",
+            )
+            .map_err(|e| format!("准备全图边查询失败: {}", e))?;
+
+        let rows = stmt
+            .query_map(params![project_id], |row| {
+                Ok(FullGraphEdge {
+                    source: row.get(0)?,
+                    target: row.get(1)?,
+                    signal: row.get(2)?,
+                    weight: row.get(3)?,
+                })
+            })
+            .map_err(|e| format!("执行全图边查询失败: {}", e))?;
+
+        let mut edges: Vec<FullGraphEdge> = Vec::new();
+        let mut all_slugs: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut degree_map: HashMap<String, i64> = HashMap::new();
+
+        for row in rows {
+            let edge = row.map_err(|e| format!("读取全图边行失败: {}", e))?;
+            all_slugs.insert(edge.source.clone());
+            all_slugs.insert(edge.target.clone());
+            *degree_map.entry(edge.source.clone()).or_insert(0) += 1;
+            *degree_map.entry(edge.target.clone()).or_insert(0) += 1;
+            edges.push(edge);
+        }
+
+        // 2. 获取节点标题和类型
+        let slug_list: Vec<String> = all_slugs.into_iter().collect();
+        let page_info = self.get_page_info_map(project_id, &slug_list)?;
+
+        let nodes: Vec<FullGraphNode> = slug_list
+            .iter()
+            .map(|slug| {
+                let (title, page_type) = page_info
+                    .get(slug)
+                    .cloned()
+                    .unwrap_or_else(|| (slug.clone(), "unknown".to_string()));
+                FullGraphNode {
+                    slug: slug.clone(),
+                    title,
+                    page_type,
+                    degree: degree_map.get(slug).copied().unwrap_or(0),
+                }
+            })
+            .collect();
+
+        Ok(FullGraph { nodes, edges })
+    }
+
 
     /// 图扩展检索：给定页面，推荐相关页面。
     ///

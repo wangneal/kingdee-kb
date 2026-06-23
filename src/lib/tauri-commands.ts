@@ -1558,6 +1558,28 @@ export interface GraphNeighbor {
   weight: number
 }
 
+/** 全图节点（匹配 Rust FullGraphNode） */
+export interface FullGraphNode {
+  slug: string
+  title: string
+  page_type: string
+  degree: number
+}
+
+/** 全图边（匹配 Rust FullGraphEdge） */
+export interface FullGraphEdge {
+  source: string
+  target: string
+  signal: string
+  weight: number
+}
+
+/** 全图数据（节点 + 边） */
+export interface FullGraph {
+  nodes: FullGraphNode[]
+  edges: FullGraphEdge[]
+}
+
 /** 知识图谱统计 */
 export async function getGraphStats(projectId: number): Promise<GraphStats> {
   return invoke("get_graph_stats", { projectId })
@@ -1566,6 +1588,11 @@ export async function getGraphStats(projectId: number): Promise<GraphStats> {
 /** 获取节点邻居（关联页面） */
 export async function getGraphNeighbors(projectId: number, slug: string): Promise<GraphNeighbor[]> {
   return invoke("get_graph_neighbors", { projectId, slug })
+}
+
+/** 获取项目完整图数据（所有节点和边），用于前端可视化 */
+export async function getFullGraph(projectId: number): Promise<FullGraph> {
+  return invoke("get_full_graph", { projectId })
 }
 
 /** 构建/重建知识图谱（返回插入边数） */
