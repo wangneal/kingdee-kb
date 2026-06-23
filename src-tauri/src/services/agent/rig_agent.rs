@@ -594,7 +594,8 @@ impl RigAgent {
         let model = config.get_default_model_name();
         let temperature = config.temperature as f64;
         let max_tokens = agent_output_tokens(config.effective_max_output_tokens());
-        let prompt = build_prompt_with_history(history, user_message);
+        let context_window = config.effective_context_window();
+        let prompt = build_prompt_with_history(history, user_message, context_window);
         info!(
             session = %sid,
             provider = ?config.protocol,
@@ -1495,10 +1496,14 @@ fn looks_like_output_limit_error(raw: &str) -> bool {
         || lower.contains("truncated")
 }
 
-fn build_prompt_with_history(history: &[ChatMessage], user_message: &str) -> String {
-    // 对话历史字符数上限（约 8000-12000 中文 tokens），保证多轮对话上下文连贯
-    // 业界标准（Anthropic）：保留最近 5-10 轮完整对话
-    const MAX_HISTORY_CHARS: usize = 24_000;
+fn build_prompt_with_history(history: &[ChatMessage], user_message: &str, context_window: u32) -> String {
+    // 按用户配置的 context_window 动态计算历史预算：
+    //   - 预留 50% 给 system prompt + RAG 检索上下文 + LLM 输出
+    //   - 剩余 50% 用于对话历史
+    //   - 上下文窗口按 ~3.5 字符/token 折算（中英混合保守估计）
+    //   - 下限 8_000 字符、上限 96_000 字符（防止极端配置）
+    let max_history_chars = ((context_window as f64 * 0.5 * 3.5) as usize)
+        .clamp(8_000, 96_000);
 
     if history.is_empty() {
         return user_message.to_string();
@@ -1514,7 +1519,7 @@ fn build_prompt_with_history(history: &[ChatMessage], user_message: &str) -> Str
         };
         let line = format!("{}: {}\n", role, msg.content.trim());
         let line_chars = line.chars().count();
-        if chars + line_chars > MAX_HISTORY_CHARS {
+        if chars + line_chars > max_history_chars {
             break;
         }
         chars += line_chars;
