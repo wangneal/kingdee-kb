@@ -1106,14 +1106,27 @@ impl MetadataStore {
         model_id: Option<&str>,
     ) -> Result<(), String> {
         let now = chrono::Utc::now().to_rfc3339();
+        // 用 INSERT OR IGNORE + UPDATE 替代 INSERT OR REPLACE：
+        // REPLACE 对同 id 行先 DELETE 再 INSERT，会触发 agent_messages 的
+        // ON DELETE CASCADE，把整个会话历史清空——用户每发一条新消息就丢失
+        // 之前所有轮次。IGNORE 不触发 CASCADE，旧消息保留；随后 UPDATE 刷新
+        // status / updated_at / ended_at。
         self.db
             .execute(
-                "INSERT OR REPLACE INTO agent_sessions
+                "INSERT OR IGNORE INTO agent_sessions
                  (id, project_id, slot, status, provider_id, model_id, started_at, updated_at, ended_at)
                  VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?6, NULL)",
                 params![id, project_id, slot, provider_id, model_id, now],
             )
             .map_err(|e| format!("创建 Agent 会话账本失败: {}", e))?;
+        self.db
+            .execute(
+                "UPDATE agent_sessions
+                 SET status = 'running', updated_at = ?1, ended_at = NULL
+                 WHERE id = ?2",
+                params![now, id],
+            )
+            .map_err(|e| format!("更新 Agent 会话状态失败: {}", e))?;
         Ok(())
     }
 
