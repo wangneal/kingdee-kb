@@ -12,7 +12,7 @@ import { KbCompilationProvider } from "./contexts/KbCompilationContext"
 import { OutlineProvider } from "./contexts/OutlineContext"
 import { ProjectProvider } from "./contexts/ProjectContext"
 
-// 路由懒加载：非首屏页面按需加载，减少初始包体积
+// 首屏页面直接加载，其余路由懒加载以减少初始包体积
 const Browse = lazy(() => import("./pages/Browse"))
 const Chat = lazy(() => import("./pages/Chat"))
 const Import = lazy(() => import("./pages/Import"))

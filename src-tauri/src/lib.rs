@@ -108,9 +108,11 @@ impl AsrConfigStore {
         })() {
             // secret_key 写入失败，回滚 secret_id 到旧值
             if let Some(ref prev_id) = old_id {
-                let _ = Self::write_credential(ASR_SECRET_ID_ACCOUNT, prev_id);
-            } else {
-                let _ = Self::delete_credential(ASR_SECRET_ID_ACCOUNT);
+                if let Err(rollback_err) = Self::write_credential(ASR_SECRET_ID_ACCOUNT, prev_id) {
+                    warn!(rollback = %rollback_err, original = %e, "回滚 secret_id 失败，钥匙串状态可能不一致");
+                }
+            } else if let Err(rollback_err) = Self::delete_credential(ASR_SECRET_ID_ACCOUNT) {
+                warn!(rollback = %rollback_err, original = %e, "回滚删除 secret_id 失败，钥匙串状态可能不一致");
             }
             return Err(e);
         }

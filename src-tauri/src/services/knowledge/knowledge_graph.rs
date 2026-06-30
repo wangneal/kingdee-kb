@@ -88,12 +88,12 @@ pub struct FullGraph {
     pub edges: Vec<FullGraphEdge>,
 }
 
- /// 图统计信息
- #[derive(Debug, Clone, Serialize, Deserialize)]
- pub struct GraphStats {
-     pub total_edges: i64,
-     pub total_nodes: i64,
-     pub signal_breakdown: HashMap<String, i64>,
+/// 图统计信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphStats {
+    pub total_edges: i64,
+    pub total_nodes: i64,
+    pub signal_breakdown: HashMap<String, i64>,
      pub avg_degree: f64,
  }
 
@@ -664,14 +664,17 @@ impl GraphStore {
     }
 
     /// 获取项目完整图数据（所有节点和边），用于前端可视化。
+    ///
+    /// 限制最多 5000 条边，防止超大项目内存爆炸。
     pub fn get_full_graph(&self, project_id: i64) -> Result<FullGraph, String> {
-        // 1. 获取所有边
+        // 1. 获取所有边（LIMIT 5000 防止超大项目）
         let mut stmt = self
             .db
             .prepare(
                 "SELECT source_slug, target_slug, signal, weight
                  FROM knowledge_graph
-                 WHERE project_id = ?1",
+                 WHERE project_id = ?1
+                 LIMIT 5000",
             )
             .map_err(|e| format!("准备全图边查询失败: {}", e))?;
 

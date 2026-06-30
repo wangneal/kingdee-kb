@@ -1498,8 +1498,9 @@ fn looks_like_output_limit_error(raw: &str) -> bool {
 
 fn build_prompt_with_history(history: &[ChatMessage], user_message: &str, context_window: u32) -> String {
     // 按用户配置的 context_window 动态计算历史预算：
-    //   - 预留 50% 给 system prompt + RAG 检索上下文 + LLM 输出
-    //   - 剩余 50% 用于对话历史
+    //   - 50% 留给对话历史
+    //   - 另 50% 涵盖 system prompt + RAG 检索上下文 + max_output_tokens（LLM 输出）
+    //     （max_output 已含在这 50% 内，不再单独扣减；偏保守，不会溢出）
     //   - 上下文窗口按 ~3.5 字符/token 折算（中英混合保守估计）
     //   - 下限 8_000 字符、上限 96_000 字符（防止极端配置）
     let max_history_chars = ((context_window as f64 * 0.5 * 3.5) as usize)
